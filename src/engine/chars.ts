@@ -32,10 +32,11 @@
 // not lock.
 
 import {
-  activePage,
+  activeIndexAt,
   eventKey,
   randInt,
   type ExtensionScope,
+  type KeyedEvent,
   type SwitchState,
 } from "./interpreter.ts";
 import { keyedRecord } from "./clone.ts";
@@ -189,14 +190,40 @@ function cloneRoute(route: RouteRun | null): RouteRun | null {
   };
 }
 
+function cloneChar(ch: CharState): CharState {
+  return { ...ch, route: cloneRoute(ch.route), patrol: cloneRoute(ch.patrol) };
+}
+
 /** Clone mutable character state while retaining prototype-safe id tables. */
 export function cloneChars(s0: CharsState): CharsState {
   const chars = keyedRecord<CharState>();
-  for (const id of Object.keys(s0.chars)) {
-    const ch = s0.chars[id]!;
-    chars[id] = { ...ch, route: cloneRoute(ch.route), patrol: cloneRoute(ch.patrol) };
-  }
+  for (const id of Object.keys(s0.chars)) chars[id] = cloneChar(s0.chars[id]!);
   return { rng: s0.rng, chars };
+}
+
+/** Ids of the characters a shareChars copy has copied so far. A state absent
+ *  from this map (cloneChars, createChars) owns every character it holds. */
+const OWNED = new WeakMap<CharsState, Set<string>>();
+
+/** A working copy that shares each character object with `s0` until the
+ *  first write to it (ownChar). stepSession folds one of these per frame:
+ *  most characters stand still, so most are never copied. */
+export function shareChars(s0: CharsState): CharsState {
+  const s: CharsState = { rng: s0.rng, chars: keyedRecord(s0.chars) };
+  OWNED.set(s, new Set());
+  return s;
+}
+
+/** The character `id` of `s`, copied first if it is still shared. Every
+ *  write to a character of a working copy goes through here. */
+function ownChar(s: CharsState, id: string): CharState {
+  const ch = s.chars[id]!;
+  const owned = OWNED.get(s);
+  if (!owned || owned.has(id)) return ch;
+  owned.add(id);
+  const copy = cloneChar(ch);
+  s.chars[id] = copy;
+  return copy;
 }
 
 export interface SyncResult {
@@ -221,25 +248,65 @@ export function syncPages(
   extension?: ExtensionScope,
 ): { state: CharsState; result: SyncResult } {
   const s = cloneChars(s0);
-  const abortedWaiters: string[] = [];
-  const live = new Set<string>();
-
+  const events: KeyedEvent[] = [];
+  const slotsById = new Map<string, number[]>();
   for (const ev of map.events ?? []) {
-    const key = eventKey(map.id, ev.id);
-    if (erased.has(key)) continue;
-    const active = activePage(ev, sw, map.id, facing, extension);
-    if (!active) continue;
-    live.add(ev.id);
+    slotsById.set(ev.id, [...(slotsById.get(ev.id) ?? []), events.length]);
+    events.push({ ev, key: eventKey(map.id, ev.id), index: events.length });
+  }
+  const result = syncPagesInPlace(
+    s,
+    events,
+    slotsById,
+    sw,
+    cfg,
+    (key) => erased.has(key),
+    placements,
+    facing,
+    extension,
+  );
+  return { state: s, result };
+}
 
-    // A `place` command relocates the spawn origin; MV Set Event
-    // Location moves a not-yet-loaded event's future start too.
-    const placed = placements[ev.id];
-    const ox = placed ? placed.x : ev.x;
-    const oy = placed ? placed.y : ev.y;
-    const initialFacing: Dir4 = placed?.dir ? DIR4[placed.dir] : (active.page.dir ? DIR4[active.page.dir] : 0);
+/** syncPages on a working copy the caller owns. `events` are the map's
+ *  events with their keys in authored order and `slotsById` each id's
+ *  positions in that list (World.keyedEvents/slotsById). `motion`, when
+ *  given, receives the active page's moveType of every event that has an
+ *  active page at `facing` (erased or not), as the session's motion table
+ *  would. With `detachPatrol` a page switch gives the patrol template its
+ *  own copy of the new route, as a copy of the returned state would. */
+export function syncPagesInPlace(
+  s: CharsState,
+  events: readonly KeyedEvent[],
+  slotsById: ReadonlyMap<string, readonly number[]>,
+  sw: SwitchState,
+  cfg: MovementConfig,
+  isErased: (key: string) => boolean,
+  placements: Readonly<Record<string, Placement>> = keyedRecord(),
+  facing?: Facing,
+  extension?: ExtensionScope,
+  motion?: Record<string, MotionType>,
+  detachPatrol = false,
+): SyncResult {
+  const abortedWaiters: string[] = [];
+  const liveSlot = new Array<boolean>(events.length);
 
-    const existing = s.chars[ev.id];
+  for (const { ev, key, index: slot } of events) {
+    const index = activeIndexAt(ev, sw, key, facing, extension);
+    if (motion && index >= 0) motion[ev.id] = ev.pages[index]!.moveType ?? "static";
+    liveSlot[slot] = index >= 0 && !isErased(key);
+    if (!liveSlot[slot]) continue;
+    const page = ev.pages[index]!;
+
+    let existing = s.chars[ev.id];
     if (!existing) {
+      // A `place` command relocates the spawn origin; MV Set Event
+      // Location moves a not-yet-loaded event's future start too.
+      const placed = placements[ev.id];
+      const ox = placed ? placed.x : ev.x;
+      const oy = placed ? placed.y : ev.y;
+      const initialFacing: Dir4 = placed?.dir ? DIR4[placed.dir] : (page.dir ? DIR4[page.dir] : 0);
+      OWNED.get(s)?.add(ev.id);
       s.chars[ev.id] = {
         id: ev.id,
         tx: ox,
@@ -250,25 +317,29 @@ export function syncPages(
         phase: 0,
         moving: false,
         stepDir: initialFacing,
-        pageIndex: active.index,
-        visible: active.page.sprite != null,
-        blocks: active.page.blocks === true,
+        pageIndex: index,
+        visible: page.sprite != null,
+        blocks: page.blocks === true,
         thinkIn: 0,
-        route: makePatrol(active.page.moveRoute),
-        patrol: makePatrol(active.page.moveRoute),
+        route: makePatrol(page.moveRoute),
+        patrol: makePatrol(page.moveRoute),
       };
       continue;
     }
 
-    existing.visible = active.page.sprite != null;
-    existing.blocks = active.page.blocks === true;
-    if (active.index !== existing.pageIndex) {
+    const visible = page.sprite != null;
+    const blocks = page.blocks === true;
+    if (existing.visible === visible && existing.blocks === blocks && existing.pageIndex === index) continue;
+    existing = ownChar(s, ev.id);
+    existing.visible = visible;
+    existing.blocks = blocks;
+    if (index !== existing.pageIndex) {
       // A running fiber compiled from the OLD page keeps running, but its
       // parked route and the visual patrol belong to the page that is gone.
       if (existing.route?.waiter) abortedWaiters.push(existing.route.waiter);
-      existing.pageIndex = active.index;
-      existing.route = makePatrol(active.page.moveRoute);
-      existing.patrol = existing.route;
+      existing.pageIndex = index;
+      existing.route = makePatrol(page.moveRoute);
+      existing.patrol = detachPatrol ? cloneRoute(existing.route) : existing.route;
       existing.phase = 0;
       existing.moving = false;
       existing.px = existing.tx * cfg.tile;
@@ -276,21 +347,26 @@ export function syncPages(
       existing.thinkIn = 0;
       // MV resets the event's facing to the new page's authored direction
       // on page setup (page.dir).
-      if (active.page.dir) {
-        existing.facing = DIR4[active.page.dir];
+      if (page.dir) {
+        existing.facing = DIR4[page.dir];
         existing.stepDir = existing.facing;
       }
     }
   }
 
+  // A character is live while any event carrying its id is.
+  const live = (id: string): boolean => {
+    for (const slot of slotsById.get(id) ?? []) if (liveSlot[slot]) return true;
+    return false;
+  };
   for (const id of Object.keys(s.chars)) {
-    if (!live.has(id)) {
+    if (!live(id)) {
       const gone = s.chars[id]!;
       if (gone.route?.waiter) abortedWaiters.push(gone.route.waiter);
       delete s.chars[id];
     }
   }
-  return { state: s, result: { abortedWaiters } };
+  return { abortedWaiters };
 }
 
 function makePatrol(route: MoveRoute | undefined): RouteRun | null {
@@ -480,12 +556,31 @@ export function stepChars(
   motion: Readonly<Record<string, MotionType>>,
 ): { state: CharsState; finishedWaiters: string[] } {
   const s = cloneChars(s0);
+  return { state: s, finishedWaiters: stepCharsInPlace(s, table, player, cfg, locked, motion) };
+}
+
+/** stepChars on a working copy the caller owns; returns finishedWaiters. */
+export function stepCharsInPlace(
+  s: CharsState,
+  table: PassageTable,
+  player: PlayerPlace,
+  cfg: MovementConfig,
+  locked: ReadonlySet<string>,
+  motion: Readonly<Record<string, MotionType>>,
+): string[] {
   const frames = stepFrames(cfg);
   const finishedWaiters: string[] = [];
   const others = new Map(Object.entries(s.chars));
 
   for (const id of Object.keys(s.chars).sort()) {
-    const ch = s.chars[id]!;
+    const shared = s.chars[id]!;
+    // Characters the branches below leave untouched stay shared: a locked
+    // one, and an idle one with no route, no pause and a static page.
+    if (!shared.moving) {
+      if (locked.has(shared.id) && !(shared.route && !shared.route.patrol)) continue;
+      if (!shared.route && shared.thinkIn === 0 && (motion[id] ?? "static") === "static") continue;
+    }
+    const ch = ownChar(s, id);
     others.set(id, ch);
 
     // Mid-step: interpolate. Nothing interrupts a step once committed
@@ -548,7 +643,7 @@ export function stepChars(
     else if (kind === "approach") approachStep(ch, table, player, others, cfg);
   }
 
-  return { state: s, finishedWaiters };
+  return finishedWaiters;
 }
 
 /** Advance one authored route step, clearing any path plan. Handles the

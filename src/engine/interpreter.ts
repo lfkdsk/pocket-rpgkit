@@ -283,11 +283,23 @@ export function activePage(
   facing?: Facing,
   extension?: ExtensionScope,
 ): { page: Page; index: number } | null {
-  const key = eventKey(mapId, ev.id);
+  const index = activeIndexAt(ev, s, eventKey(mapId, ev.id), facing, extension);
+  return index < 0 ? null : { page: ev.pages[index]!, index };
+}
+
+/** activePage's page index for a caller that already holds the event key;
+ *  -1 when no page condition holds. */
+export function activeIndexAt(
+  ev: GameEvent,
+  s: SwitchState,
+  key: string,
+  facing?: Facing,
+  extension?: ExtensionScope,
+): number {
   for (let i = ev.pages.length - 1; i >= 0; i--) {
-    if (pageConditionHolds(ev.pages[i]!, s, key, facing, extension)) return { page: ev.pages[i]!, index: i };
+    if (pageConditionHolds(ev.pages[i]!, s, key, facing, extension)) return i;
   }
-  return null;
+  return -1;
 }
 
 export function eventKey(mapId: string, eventId: string): string {
@@ -693,6 +705,12 @@ export interface World {
   eventsById?: ReadonlyMap<string, GameEvent>;
   cellEvents?: ReadonlyMap<number, readonly GameEvent[]>;
   alwaysScanEvents?: readonly GameEvent[];
+  /** The map's events with their eventKey in authored order, and each
+   * event id's positions in that list, for per-tick page synchronization.
+   * This index assumes map.events is immutable; callers that replace or
+   * mutate that array must rebuild the World so the cache is invalidated. */
+  keyedEvents?: readonly KeyedEvent[];
+  slotsById?: ReadonlyMap<string, readonly number[]>;
   /** Project item catalog (id -> Item), for a shop's price fallback
    *  (goods entries without their own `price` use the item's own) and its
    *  sell price fallback (floor(item.price / 2) when a shop has no
@@ -717,6 +735,36 @@ export interface WorldOptions {
   extensions?: ExtensionRuntime;
   items?: readonly Item[];
   inventory?: { maxPerItem?: number; maxKinds?: number };
+}
+
+export interface KeyedEvent {
+  ev: GameEvent;
+  key: string;
+  /** Position in World.keyedEvents. */
+  index: number;
+}
+
+/** A world's keyed events and per-id positions, built on the spot for a
+ *  World made without createWorld. */
+export function keyedEventsOf(w: World): {
+  events: readonly KeyedEvent[];
+  slotsById: ReadonlyMap<string, readonly number[]>;
+} {
+  if (w.keyedEvents && w.slotsById) return { events: w.keyedEvents, slotsById: w.slotsById };
+  return indexEvents(w.map);
+}
+
+function indexEvents(map: MapDef): { events: KeyedEvent[]; slotsById: Map<string, number[]> } {
+  const events: KeyedEvent[] = [];
+  const slotsById = new Map<string, number[]>();
+  for (const ev of map.events ?? []) {
+    const index = events.length;
+    events.push({ ev, key: eventKey(map.id, ev.id), index });
+    const slots = slotsById.get(ev.id);
+    if (slots) slots.push(index);
+    else slotsById.set(ev.id, [index]);
+  }
+  return { events, slotsById };
 }
 
 export interface InterpError {
@@ -835,6 +883,7 @@ export function createWorld(
     maxPerItem: options.inventory?.maxPerItem ?? SHOP_ITEM_CAP,
     maxKinds: options.inventory?.maxKinds,
   };
+  const keyed = indexEvents(map);
   return {
     hz,
     map,
@@ -843,6 +892,8 @@ export function createWorld(
     eventsById,
     cellEvents,
     alwaysScanEvents,
+    keyedEvents: keyed.events,
+    slotsById: keyed.slotsById,
     items: itemsById,
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
@@ -901,30 +952,65 @@ function cloneFiber(f: Fiber): Fiber {
   };
 }
 
+type SwitchRecord = "switches" | "self" | "items" | "variables" | "shopStock";
+
+/** Switch-bank records a shareInterp copy still shares with its source.
+ *  A record is copied on its first write (ownRecord), so a bank no command
+ *  wrote keeps its record identities from state to state, and a record a
+ *  state was returned with is never written again. */
+const SHARED_RECORDS = new WeakMap<SwitchState, Set<SwitchRecord>>();
+
+/** The switch-bank record `k` of `sw`, copied first if a shareInterp copy
+ *  still shares it. Every write to a record of a working copy goes through
+ *  here. */
+export function ownRecord<K extends SwitchRecord>(sw: SwitchState, k: K): SwitchState[K] {
+  const shared = SHARED_RECORDS.get(sw);
+  if (shared?.delete(k)) sw[k] = keyedRecord(sw[k] as Record<string, unknown>) as SwitchState[K];
+  return sw[k];
+}
+
 export function cloneInterp(s0: InterpState): InterpState {
+  return copyInterp(s0, {
+    switches: keyedRecord(s0.sw.switches),
+    self: keyedRecord(s0.sw.self),
+    items: keyedRecord(s0.sw.items),
+    variables: keyedRecord(s0.sw.variables),
+    shopStock: keyedRecord(s0.sw.shopStock),
+    gold: s0.sw.gold,
+    playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
+    rng: s0.sw.rng,
+  });
+}
+
+/** cloneInterp for stepSession's private working copy: the switch-bank
+ *  records stay shared with `s0` until a write goes through ownRecord.
+ *  Callers must not write the records directly. */
+export function shareInterp(s0: InterpState): InterpState {
+  const sw: SwitchState = {
+    switches: s0.sw.switches,
+    self: s0.sw.self,
+    items: s0.sw.items,
+    variables: s0.sw.variables,
+    shopStock: s0.sw.shopStock,
+    gold: s0.sw.gold,
+    playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
+    rng: s0.sw.rng,
+  };
+  SHARED_RECORDS.set(sw, new Set<SwitchRecord>(["switches", "self", "items", "variables", "shopStock"]));
+  return copyInterp(s0, sw);
+}
+
+function copyInterp(s0: InterpState, sw: SwitchState): InterpState {
   const main = s0.main ? cloneFiber(s0.main) : null;
   const parallels = keyedRecord<Fiber>();
   for (const key of Object.keys(s0.parallels)) parallels[key] = cloneFiber(s0.parallels[key]!);
   const s: InterpState = {
     frame: s0.frame,
-    // Plain field-for-field copy, not createSwitchState's normalization:
-    // cloneInterp also runs on every live step (stepInterpWithExtensions),
-    // where a content-error check (e.g. resolveTransfer's non-integer
-    // coordinate guard) must still see an out-of-range value a bug
-    // introduced mid-frame instead of having it silently floored away first.
-    // The restore boundary (restoreSessionSnapshot) normalizes explicitly
-    // after calling this, since a checksum-valid envelope is otherwise
-    // already required to carry safe integers (save-validate.ts).
-    sw: {
-      switches: keyedRecord(s0.sw.switches),
-      self: keyedRecord(s0.sw.self),
-      items: keyedRecord(s0.sw.items),
-      variables: keyedRecord(s0.sw.variables),
-      shopStock: keyedRecord(s0.sw.shopStock),
-      gold: s0.sw.gold,
-      playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
-      rng: s0.sw.rng,
-    },
+    // `sw` is either a field-for-field deep bank copy (cloneInterp) or a
+    // record-sharing COW bank (shareInterp). Neither path normalizes values:
+    // live content errors must remain observable until an explicit save or
+    // restore boundary validates them.
+    sw,
     main,
     parallels,
     modal: cloneModal(s0.modal),
@@ -1274,12 +1360,13 @@ function clampVariableRecord(
 function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
   switch (ins.op) {
     case "switch":
-      s.sw.switches[ins.id] = ins.value;
+      ownRecord(s.sw, "switches")[ins.id] = ins.value;
       break;
     case "variable": {
+      const variables = ownRecord(s.sw, "variables");
       if (ins.set.op === "random") {
         const r = randInt(s.sw.rng, ins.set.min, ins.set.max);
-        s.sw.variables[ins.id] = clampFiniteVar(r.value);
+        variables[ins.id] = clampFiniteVar(r.value);
         s.sw.rng = r.next;
       } else if ("from" in ins.set) {
         // T2-16: the operand is another variable's live value (target OP
@@ -1290,14 +1377,14 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
         // write); the arithmetic ops treat a non-number source/target as 0.
         const op = ins.set.op;
         if (op === "copy") {
-          const b = s.sw.variables[ins.set.from] ?? 0;
-          s.sw.variables[ins.id] = typeof b === "number" ? clampFiniteVar(b) : b;
+          const b = variables[ins.set.from] ?? 0;
+          variables[ins.id] = typeof b === "number" ? clampFiniteVar(b) : b;
         } else {
-          const held = s.sw.variables[ins.id];
+          const held = variables[ins.id];
           const a = typeof held === "number" ? held : 0;
-          const source = s.sw.variables[ins.set.from];
+          const source = variables[ins.set.from];
           const b = typeof source === "number" ? source : 0;
-          s.sw.variables[ins.id] = clampFiniteVar(
+          variables[ins.id] = clampFiniteVar(
             op === "add" ? a + b
             : op === "sub" ? a - b
             : op === "mul" ? a * b
@@ -1306,9 +1393,9 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
           );
         }
       } else {
-        const held = s.sw.variables[ins.id];
+        const held = variables[ins.id];
         const cur = typeof held === "number" ? held : 0;
-        s.sw.variables[ins.id] = clampFiniteVar(
+        variables[ins.id] = clampFiniteVar(
           ins.set.op === "set" ? ins.set.value
           : ins.set.op === "add" ? cur + ins.set.value
           : cur - ins.set.value,
@@ -1317,16 +1404,18 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
       break;
     }
     case "selfSwitch":
-      s.sw.self[f.key] = ins.value ? ins.key : undefined;
+      ownRecord(s.sw, "self")[f.key] = ins.value ? ins.key : undefined;
       break;
     case "gold":
       s.sw.gold = clampFiniteVar(s.sw.gold + (ins.set === "add" ? ins.amount : -ins.amount));
       break;
-    case "item":
-      s.sw.items[ins.item] = clampFiniteVar(
-        (s.sw.items[ins.item] ?? 0) + (ins.set === "add" ? ins.count : -ins.count),
+    case "item": {
+      const items = ownRecord(s.sw, "items");
+      items[ins.item] = clampFiniteVar(
+        (items[ins.item] ?? 0) + (ins.set === "add" ? ins.count : -ins.count),
       );
       break;
+    }
     case "se":
       s.cues.push({ name: ins.name, volume: ins.volume, pitch: ins.pitch });
       break;
@@ -1917,21 +2006,34 @@ export function stepInterpWithExtensions(
   input: InterpInput,
   ext0: JsonValue,
 ): InterpStepResult {
-  const extension: MutableExtensionScope = {
-    runtime: w.extensions,
-    ext: cloneExtension(w.extensions, ext0),
-  };
+  const s = cloneInterp(s0);
+  const ext = stepInterpWithExtensionsInPlace(
+    w,
+    s,
+    input,
+    cloneExtension(w.extensions, ext0),
+  );
+  return { interp: s, ext };
+}
+
+/** Extension-aware interpreter fold on a working copy the caller owns.
+ * The returned extension value replaces the caller's owned ext slot. */
+export function stepInterpWithExtensionsInPlace(
+  w: World,
+  s: InterpState,
+  input: InterpInput,
+  ext0: JsonValue,
+): JsonValue {
+  const extension: MutableExtensionScope = { runtime: w.extensions, ext: ext0 };
   // A fatalized state is frozen: no triggers scan, no fiber advances. The
   // frame clock still ticks so render/host code keeps its cadence, but the
   // cyclic program can never consume another step (review 1274 B1).
-  if (s0.error) {
-    const frozen = cloneInterp(s0);
-    frozen.frame = s0.frame + 1;
-    frozen.cues = [];
-    return { interp: frozen, ext: extension.ext };
+  if (s.error) {
+    s.frame++;
+    s.cues = [];
+    return extension.ext;
   }
-  const s = cloneInterp(s0);
-  s.frame = s0.frame + 1;
+  s.frame++;
   s.cues = [];
   // Transfer/route/place requests live only on the step that issued them:
   // P1④ reads them off that step, performs the work, then resumes the fiber.
@@ -1960,7 +2062,13 @@ export function stepInterpWithExtensions(
   if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension);
   const mainBattles = s.pendingBattles.splice(queuedBattleCount);
   s.pendingBattles.push(...mainBattles, ...parallelBattles);
-  return { interp: s, ext: extension.ext };
+  return extension.ext;
+}
+
+/** stepInterp on a working copy the caller owns (stepSession's per-frame
+ * copy): advances `s` itself instead of copying it again. */
+export function stepInterpInPlace(w: World, s: InterpState, input: InterpInput): void {
+  stepInterpWithExtensionsInPlace(w, s, input, w.extensions.initial);
 }
 
 /** Backwards-compatible interpreter-only fold. Projects using extension

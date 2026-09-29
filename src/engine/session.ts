@@ -36,19 +36,21 @@ import { deepClone, keyedRecord } from "./clone.ts";
 import {
   activePage,
   clampFiniteVar,
-  cloneInterp,
   continueBattle,
   continueExternal,
   createInterpState,
   createWorld,
   fiberIsExternal,
   isBusy,
+  keyedEventsOf,
   messageHoldsPlayer,
+  ownRecord,
   randInt,
   replaceItemCounts,
   rngNext,
   secondsToFrames,
-  stepInterpWithExtensions,
+  shareInterp,
+  stepInterpWithExtensionsInPlace,
   type ExtensionScope,
   type InterpInput,
   type InterpState,
@@ -72,13 +74,12 @@ import {
   type SceneSlot,
 } from "./battle.ts";
 import {
-  charCell,
-  cloneChars,
   createChars,
   installRoute,
   placeChar,
-  stepChars,
-  syncPages,
+  shareChars,
+  stepCharsInPlace,
+  syncPagesInPlace,
   BFS_CELLS_PER_TICK,
   DEFAULT_PATH_RETRIES,
   PATH_REPLAN_TICKS,
@@ -95,6 +96,7 @@ import {
   facingToward,
 } from "./pathfind.ts";
 import {
+  dirFromButtons,
   initialMovement,
   stepFrames,
   stepMovement,
@@ -563,10 +565,10 @@ export function startSession(
  *  (the map interpreter rebuild shares this object). */
 function clearLocalBank(sw: SwitchState): void {
   for (const id of Object.keys(sw.switches)) {
-    if (id.startsWith("local.")) delete sw.switches[id];
+    if (id.startsWith("local.")) delete ownRecord(sw, "switches")[id];
   }
   for (const id of Object.keys(sw.variables)) {
-    if (id.startsWith("local.")) delete sw.variables[id];
+    if (id.startsWith("local.")) delete ownRecord(sw, "variables")[id];
   }
 }
 
@@ -875,13 +877,15 @@ export function stepSession(
   s0: SessionState,
   input: SessionInput,
 ): SessionState {
-  const interp = cloneInterp(s0.interp);
+  // One working copy per frame. The reference ticks below advance it in
+  // place; characters and switch records stay shared with s0 until written.
+  const interp = shareInterp(s0.interp);
   const s: SessionState = {
     frame: s0.frame,
     mapId: s0.mapId,
     sw: interp.sw,
     move: { ...s0.move },
-    chars: cloneChars(s0.chars),
+    chars: shareChars(s0.chars),
     interp,
     fade: s0.fade ? { ...s0.fade } : null,
     playerRoute: s0.playerRoute
@@ -987,20 +991,26 @@ function stepReferenceTick(
   // 1. Reconcile NPC pages. A page switch (or an event that went away)
   //    aborts any forced route parked on it; resume the waiter so the
   //    external fiber cannot deadlock.
-  const erased = new Set(Object.keys(s.interp.erased));
+  const erased = s.interp.erased;
+  const world = sess.worlds.get(s.mapId)!;
   const extension: ExtensionScope = { runtime: sess.extensions, ext: s.ext };
-  const synced = syncPages(
+  const syncFacing = s.move.facing;
+  const syncMotion = keyedRecord<MotionType>();
+  const keyed = keyedEventsOf(world);
+  const synced = syncPagesInPlace(
     s.chars,
-    map,
+    keyed.events,
+    keyed.slotsById,
     s.sw,
     sess.cfg,
-    erased,
+    (key) => Object.prototype.hasOwnProperty.call(erased, key),
     s.interp.placements,
-    s.move.facing,
+    syncFacing,
     extension,
+    syncMotion,
+    true,
   );
-  s.chars = synced.state;
-  for (const waiter of synced.result.abortedWaiters) {
+  for (const waiter of synced.abortedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
   }
 
@@ -1010,13 +1020,14 @@ function stepReferenceTick(
   //    held. A parallel TEXT line does not freeze the world
   //    (review C10) unless the project opts in with
   //    system.messageBlocksPlayer: then any open box holds the player.
-  const world = sess.worlds.get(s.mapId)!;
   const prevFacing = s.move.facing;
   const busy = isBusy(s.interp);
   const capturesDpad = s.interp.modal?.kind === "choices" || s.interp.modal?.kind === "shop";
   const held = messageHoldsPlayer(world, s.interp);
   if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
-    const table = tableWithBodies(sess.tables.get(s.mapId)!, s.chars);
+    // stepMovement consults the table only for a held direction.
+    const base = sess.tables.get(s.mapId)!;
+    const table = dirFromButtons(input.buttons) === null ? base : tableWithBodies(base, s.chars);
     Object.assign(s.move, stepMovement(s.move, input.buttons, table, sess.cfg));
   }
 
@@ -1029,16 +1040,19 @@ function stepReferenceTick(
   };
   const locked = new Set<string>();
   if (s.interp.main) locked.add(eventIdOf(s.interp.main.key, s.mapId));
-  const stepped = stepChars(
+  // The page sync already read every active page at its facing; a turn in
+  // between can flip facing conditions, so only then are they read again.
+  const finishedWaiters = stepCharsInPlace(
     s.chars,
     sess.tables.get(s.mapId)!,
     playerPlace,
     sess.cfg,
     locked,
-    motionOf(map, s.sw, s.move.facing, extension),
+    s.move.facing === syncFacing
+      ? syncMotion
+      : motionOf(map, s.sw, s.move.facing, extension),
   );
-  s.chars = stepped.state;
-  for (const waiter of stepped.finishedWaiters) {
+  for (const waiter of finishedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
   }
 
@@ -1050,8 +1064,8 @@ function stepReferenceTick(
   // indexed event origin without growing the per-frame record.
   const eventCells = keyedRecord<{ x: number; y: number }>();
   for (const ev of map.events ?? []) {
-    const cell = charCell(s.chars, ev);
-    if (cell.x !== ev.x || cell.y !== ev.y) eventCells[ev.id] = cell;
+    const ch = s.chars.chars[ev.id];
+    if (ch && (ch.tx !== ev.x || ch.ty !== ev.y)) eventCells[ev.id] = { x: ch.tx, y: ch.ty };
   }
   const interpInput: InterpInput = {
     confirmEdge: input.confirmEdge,
@@ -1064,17 +1078,16 @@ function stepReferenceTick(
     prevFacing,
     eventCells,
   };
-  const steppedInterp = stepInterpWithExtensions(
+  s.ext = stepInterpWithExtensionsInPlace(
     world,
     s.interp,
     interpInput,
     s.ext,
   );
-  s.interp = steppedInterp.interp;
-  s.ext = steppedInterp.ext;
-  // stepInterp clones the mutable interpreter state, so the switch bank it
-  // returns is a new object; re-alias the session's top-level bank to it so
-  // the values chars/motion read next tick are the ones commands just wrote.
+  // continueExternal above may have replaced s.interp with a copy whose
+  // switch bank is a new object; re-alias the session's top-level bank to it
+  // so the values chars/motion read next tick are the ones commands just
+  // wrote.
   s.sw = s.interp.sw;
   const transfer = s.interp.pendingTransfer;
   if (transfer && !transferMapKnown(sess, transfer.map)) {
