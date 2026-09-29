@@ -123,6 +123,12 @@ export function DialogBox(props: DialogBoxProps) {
   };
   // display: 0 shows, 1 hides (the column and the tab stay mounted).
   const faceDisplay = () => (speaker().name ? 0 : 1);
+  // Both boxes stay mounted and hide while unused: opening a dialog updates
+  // text rows instead of mounting the box subtree (on a 333 MHz PSP a mount
+  // costs about 100 ms of QuickJS time).
+  const choicesDisplay = () => (isChoice() ? 0 : 1);
+  const shopDisplay = () => (isShop() ? 0 : 1);
+  const messageDisplay = () => (props.modal()?.kind === "text" ? 0 : 1);
 
   // Four text rows + the legend row; the column holding them is the paper
   // itself, or the text column right of the portrait when faces are on.
@@ -157,65 +163,61 @@ export function DialogBox(props: DialogBoxProps) {
       style={{ posType: 1, height: 180 }}
       debugName="rpgkit-message-layer"
     >
-      <Show when={props.modal()}>
-        {/* Choices box: docked right, immediately above the message box.
-            During choices the message box is hidden (the prompt lives in
-            this box, MV parity). */}
-        <Show when={isChoice()}>
-          <Panel
-            theme={theme()}
-            style={{ posType: 1, width: 248, height: 96, insetR: 12, insetB: 98 }}
-            paperClass="flex-col p-[6]"
-            debugName="rpgkit-choices-box"
-          >
-            <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-choice-prompt">
-              {`${isChoice() ? (props.modal() as Extract<Modal, { kind: "choices" }>).prompt : ""}`}
-            </Text>
-            <View class="flex-col" style={{ height: 4 }} />
-            <For each={CHOICE_ROWS}>
-              {(row) => {
-                const m = () => props.modal() as Extract<Modal, { kind: "choices" }> | null;
-                const total = () => m()?.options.length ?? 0;
-                // A pure function of the live cursor index: never desyncs
-                // from the reducer, and wrap-around (top<->bottom) recomputes
-                // the correct window with no leftover scroll state.
-                const start = () => windowStart(m()?.index ?? 0, total(), VISIBLE_ROWS);
-                const optIndex = () => start() + row;
-                const exists = () => m()?.kind === "choices" && optIndex() < total();
-                const selected = () => exists() && m()!.index === optIndex();
-                const label = () =>
-                  exists()
-                    ? `${selected() ? "> " : "  "}${truncateLabel(m()!.options[optIndex()]!, ROW_LABEL_MAX)}`
-                    : "";
-                return (
-                  <Text
-                    class="text-xs"
-                    style={{ textColor: selected() ? theme().accent : theme().ink, lineHeight: 14, height: 14 }}
-                    debugName={`rpgkit-choice-${row}`}
-                  >
-                    {`${label()}`}
-                  </Text>
-                );
-              }}
-            </For>
-            <View class="flex-row justify-end" style={{ height: 14, insetT: 4 }}>
-              <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 12, height: 12 }} debugName="rpgkit-choice-legend">
-                {`${props.legend()}`}
+      {/* Choices box: docked right, immediately above the message box.
+          During choices the message box is hidden (the prompt lives in
+          this box, MV parity). */}
+      <Panel
+        theme={theme()}
+        style={{ posType: 1, width: 248, height: 96, insetR: 12, insetB: 98, display: choicesDisplay() }}
+        paperClass="flex-col p-[6]"
+        debugName="rpgkit-choices-box"
+      >
+        <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-choice-prompt">
+          {`${isChoice() ? (props.modal() as Extract<Modal, { kind: "choices" }>).prompt : ""}`}
+        </Text>
+        <View class="flex-col" style={{ height: 4 }} />
+        <For each={CHOICE_ROWS}>
+          {(row) => {
+            const m = () => props.modal() as Extract<Modal, { kind: "choices" }> | null;
+            const total = () => m()?.options.length ?? 0;
+            // A pure function of the live cursor index: never desyncs
+            // from the reducer, and wrap-around (top<->bottom) recomputes
+            // the correct window with no leftover scroll state.
+            const start = () => windowStart(m()?.index ?? 0, total(), VISIBLE_ROWS);
+            const optIndex = () => start() + row;
+            const exists = () => m()?.kind === "choices" && optIndex() < total();
+            const selected = () => exists() && m()!.index === optIndex();
+            const label = () =>
+              exists()
+                ? `${selected() ? "> " : "  "}${truncateLabel(m()!.options[optIndex()]!, ROW_LABEL_MAX)}`
+                : "";
+            return (
+              <Text
+                class="text-xs"
+                style={{ textColor: selected() ? theme().accent : theme().ink, lineHeight: 14, height: 14 }}
+                debugName={`rpgkit-choice-${row}`}
+              >
+                {`${label()}`}
               </Text>
-            </View>
-          </Panel>
-        </Show>
+            );
+          }}
+        </For>
+        <View class="flex-row justify-end" style={{ height: 14, insetT: 4 }}>
+          <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 12, height: 12 }} debugName="rpgkit-choice-legend">
+            {`${props.legend()}`}
+          </Text>
+        </View>
+      </Panel>
 
-        {/* Shop box: same footprint and docking as the choices box, with a
+      {/* Shop box: same footprint and docking as the choices box, with a
             stage/gold header row instead of a prompt and a scrolling row
             list (T2-10). Buy rows a player cannot afford, has capped out
             (backpack cap) or that are out of stock (B1) render dimmed;
             sell rows for an unsellable item (B4) do too. Every dimmed row
             stays navigable, just unconfirmable. */}
-        <Show when={isShop()}>
-          <Panel
+      <Panel
             theme={theme()}
-            style={{ posType: 1, width: 248, height: 96, insetR: 12, insetB: 98 }}
+            style={{ posType: 1, width: 248, height: 96, insetR: 12, insetB: 98, display: shopDisplay() }}
             paperClass="flex-col p-[6]"
             debugName="rpgkit-shop-box"
           >
@@ -289,15 +291,13 @@ export function DialogBox(props: DialogBoxProps) {
                 {`${props.legend()}`}
               </Text>
             </View>
-          </Panel>
-        </Show>
+      </Panel>
 
         {/* Message box: framed panel, four fixed text rows + legend, and
             the portrait column when the game passes faces. */}
-        <Show when={!isChoice() && !isShop()}>
-          <Panel
+      <Panel
             theme={theme()}
-            style={{ posType: 1, height: 92, insetL: 8, insetR: 8, insetB: 8 }}
+            style={{ posType: 1, height: 92, insetL: 8, insetR: 8, insetB: 8, display: messageDisplay() }}
             paperClass="flex-col p-[8]"
             debugName="rpgkit-message-box"
           >
@@ -319,30 +319,28 @@ export function DialogBox(props: DialogBoxProps) {
                 <View style={{ flexDir: 1, grow: 1 }}>{messageRows()}</View>
               </View>
             </Show>
-          </Panel>
-          {/* Name tab: overlaps the frame (border, and rim if any) so it
-              reads as part of the box; paper-coloured text on the border. */}
-          <Show when={props.faces}>
-            <View
-              style={{
-                posType: 1,
-                insetL: 20,
-                insetB: BOX_TOP - (theme().rim ? 3 : 2),
-                height: 15,
-                flexDir: 0,
-                paddingL: 6,
-                paddingR: 6,
-                bgColor: theme().border,
-                display: faceDisplay(),
-              }}
-              debugName="rpgkit-message-name"
-            >
-              <Text class="text-xs" style={{ textColor: theme().paper, lineHeight: 15, height: 15 }}>
-                {`${speaker().name ? speakerLabel(speaker().name!) : ""}`}
-              </Text>
-            </View>
-          </Show>
-        </Show>
+      </Panel>
+      {/* Name tab: overlaps the frame (border, and rim if any) so it
+          reads as part of the box; paper-coloured text on the border. */}
+      <Show when={props.faces}>
+        <View
+          style={{
+            posType: 1,
+            insetL: 20,
+            insetB: BOX_TOP - (theme().rim ? 3 : 2),
+            height: 15,
+            flexDir: 0,
+            paddingL: 6,
+            paddingR: 6,
+            bgColor: theme().border,
+            display: messageDisplay() === 0 ? faceDisplay() : 1,
+          }}
+          debugName="rpgkit-message-name"
+        >
+          <Text class="text-xs" style={{ textColor: theme().paper, lineHeight: 15, height: 15 }}>
+            {`${speaker().name ? speakerLabel(speaker().name!) : ""}`}
+          </Text>
+        </View>
       </Show>
     </View>
   );

@@ -389,9 +389,10 @@ simDescribe("sunstone — render budget", () => {
     };
     const nodes = count(world.getTree());
     // 13 NPC images across three map containers + ground/upper/player/root
-    // + message host + fade; comfortably under the R1 558-node design.
+    // + message host with both dialog boxes (mounted from boot, hidden while
+    // unused) + fade; comfortably under the R1 558-node design.
     expect(nodes).toBeGreaterThan(20);
-    expect(nodes).toBeLessThan(60);
+    expect(nodes).toBeLessThan(90);
   });
 
   test("artifact sizes: bounded pak and bundle", async () => {
