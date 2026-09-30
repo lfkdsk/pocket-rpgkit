@@ -5,7 +5,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline_ref="${1:-a0857e097c9a68880f28ace2c13e2253be886d1c}"
-scratch="${PR1_EQUIV_SCRATCH:-/var/tmp/fleet/1946/equivalence}"
+scratch="${PR1_EQUIV_SCRATCH:-${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/pr1-equivalence}"
 baseline="$scratch/main"
 output="${2:-$scratch/result.json}"
 

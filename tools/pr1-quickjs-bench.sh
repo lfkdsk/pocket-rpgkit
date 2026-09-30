@@ -5,11 +5,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline_ref="${1:-a0857e097c9a68880f28ace2c13e2253be886d1c}"
-scratch="${PR1_QJS_SCRATCH:-/var/tmp/fleet/1946/quickjs}"
-case "$scratch" in
-  /var/tmp/fleet/*) ;;
-  *) echo "PR1_QJS_SCRATCH must be below /var/tmp/fleet" >&2; exit 2 ;;
-esac
+scratch="${PR1_QJS_SCRATCH:-${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/pr1-quickjs}"
 baseline="$scratch/main"
 host="$scratch/host"
 target="$scratch/target"

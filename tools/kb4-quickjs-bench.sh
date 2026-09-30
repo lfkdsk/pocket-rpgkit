@@ -4,8 +4,8 @@
 # zero-churn claim has to hold on the engine the desktop host actually
 # runs, not just Bun/JSC's sim renderer.
 #
-# Builds a scratch copy of vendor/pocketjs/hosts/desktop in /var/tmp/fleet
-# (never /tmp — see AGENTS/CLAUDE guidance), rewrites its path dependencies
+# Builds a scratch copy of vendor/pocketjs/hosts/desktop outside the checkout
+# (KB4_BENCH_ROOT, default under ~/.cache), rewrites its path dependencies
 # to this checkout's own vendor/pocketjs, drops in kb4-quickjs-bench.rs as
 # an `include!`, and runs it release-mode against dist/kb4-battle.{js,pak}.
 # Nothing under vendor/ or in this repo's own Cargo state changes.
@@ -19,7 +19,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist="${1:-$root/dist}"
 vendor="$root/vendor/pocketjs"
-scratch="/var/tmp/fleet/kb4-quickjs-bench"
+scratch="${KB4_BENCH_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/kb4-quickjs}"
 scratch_bench="$scratch/host-bench"
 target_dir="$scratch/target"
 
@@ -63,5 +63,5 @@ if [ -z "$bin" ]; then
   exit 1
 fi
 
-POCKETJS_DIST="$dist" "$bin" kb4_quickjs_bench::battle_frame_and_node_churn --ignored --exact --nocapture \
+KB4_BENCH_SCRATCH="$scratch/runs" POCKETJS_DIST="$dist" "$bin" kb4_quickjs_bench::battle_frame_and_node_churn --ignored --exact --nocapture \
   2>&1 | grep -E "^(KB4_QJS|KB4_CHURN|test result)"

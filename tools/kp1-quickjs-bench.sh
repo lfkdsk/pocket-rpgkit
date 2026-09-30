@@ -7,16 +7,12 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 dist=${1:-$root/dist}
 app=${2:-sunstone}
 seed=${3:-}
-bench_root=${KP1_BENCH_ROOT:-/var/tmp/fleet/1956/quickjs}
+bench_root=${KP1_BENCH_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/kp1-quickjs}
 scratch="$bench_root/host"
 target="$bench_root/target"
 data="$bench_root/data-$app"
 app_data="$data/dev.lfkdsk.rpgkit-kp1-bench/data"
 
-case "$bench_root" in
-  /var/tmp/fleet/*) ;;
-  *) echo "KP1_BENCH_ROOT must be below /var/tmp/fleet" >&2; exit 2 ;;
-esac
 test -f "$dist/$app.js"
 test -f "$dist/$app.pak"
 

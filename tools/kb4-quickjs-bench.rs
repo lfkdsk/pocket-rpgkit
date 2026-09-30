@@ -66,7 +66,7 @@ mod kb4_quickjs_bench {
     impl Bench {
         fn boot(dist: &std::path::Path, viewport: (u32, u32)) -> Self {
             let scratch_root = std::env::var("KB4_BENCH_SCRATCH")
-                .unwrap_or_else(|_| "/var/tmp/fleet/pocket-rpgkit-kb4-bench".to_string());
+                .unwrap_or_else(|_| std::env::temp_dir().join("pocket-rpgkit-kb4-bench").display().to_string());
             let temp = PathBuf::from(format!(
                 "{scratch_root}/qjs-battle-{}-{}x{}",
                 std::process::id(), viewport.0, viewport.1,
