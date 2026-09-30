@@ -1,7 +1,7 @@
 {
   "title": "Pocket RPG Kit",
   "intro": "Example games for Pocket RPG Kit, a 2D tile-RPG runtime for PocketJS. They run here on the PocketJS core compiled to WebAssembly, from the same bundles the desktop host and the tests run.",
-  "source": "https://github.com/lfkdsk/pocket-rpgkit",
+  "source": "https://github.com/lfkdsk/pocketjs-rpgkit",
   "games": {
     "wander": {
       "title": "Wander: an Endless Grown World",

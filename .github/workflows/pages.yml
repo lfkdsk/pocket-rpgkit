@@ -1,7 +1,7 @@
 name: Pages
 
 # Build the browser-playable examples (`bun run web`) and publish dist/web
-# to GitHub Pages at https://lfkdsk.github.io/pocket-rpgkit/. The
+# to GitHub Pages at https://lfkdsk.github.io/pocketjs-rpgkit/. The
 # repository's Pages source must be set to "GitHub Actions".
 
 on:

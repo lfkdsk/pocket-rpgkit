@@ -121,7 +121,7 @@ The runtime pins PocketJS with a git submodule at
 ## Play in the browser
 
 The examples play in the browser at
-**<https://lfkdsk.github.io/pocket-rpgkit/>**. Each page runs the example's
+**<https://lfkdsk.github.io/pocketjs-rpgkit/>**. Each page runs the example's
 bundle on the PocketJS core compiled to WebAssembly: the same bundle and
 core the sim tests use. Click the game (it also takes the keyboard when the
 page loads), then use the arrow keys and **A**/**Enter**/**Z** to confirm.
@@ -156,7 +156,7 @@ bun vendor/pocket-rpgkit/tools/web.ts --project-root . alpine-post
 ## Quick start
 
 ```sh
-git clone --recurse-submodules https://github.com/lfkdsk/pocket-rpgkit.git
+git clone --recurse-submodules https://github.com/lfkdsk/pocketjs-rpgkit.git
 cd pocket-rpgkit
 bun install
 bun test                 # reducer/format/controller suites; sim cases skip

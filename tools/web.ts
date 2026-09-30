@@ -500,7 +500,7 @@ export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig
   const shape = config.viewport.policy === "fixed" ? config.viewport.logical : config.viewport.default;
   const footer = [
     ...(credits ? ['Art credits and licenses: <a href="ATTRIBUTION.txt">ATTRIBUTION.txt</a>.'] : []),
-    `Built with <a href="${escapeHtml(site.source ?? "https://github.com/lfkdsk/pocket-rpgkit")}">${escapeHtml(site.title)}</a> ` +
+    `Built with <a href="${escapeHtml(site.source ?? "https://github.com/lfkdsk/pocketjs-rpgkit")}">${escapeHtml(site.title)}</a> ` +
       'on <a href="https://github.com/pocket-stack/pocketjs">PocketJS</a>.',
   ].join(" ");
   return [
