@@ -917,6 +917,27 @@ describe("modalChanged — visible modal identity", () => {
     expect(modalChanged(outer, { ...outer })).toBe(false);
   });
 
+  test("dynamic choice metadata compares by content", () => {
+    const dynamic: Modal = {
+      kind: "choices",
+      fiber: "m/sign",
+      prompt: "PARTY",
+      options: ["A", "B"],
+      keys: ["a", "b"],
+      enabled: [true, false],
+      index: 0,
+      cancellable: true,
+    };
+    expect(modalChanged(dynamic, {
+      ...dynamic,
+      options: ["A", "B"],
+      keys: ["a", "b"],
+      enabled: [true, false],
+    })).toBe(false);
+    expect(modalChanged(dynamic, { ...dynamic, options: ["A", "Bee"] })).toBe(true);
+    expect(modalChanged(dynamic, { ...dynamic, enabled: [false, false] })).toBe(true);
+  });
+
   test("a cursor move on the same box is a visible change", () => {
     expect(modalChanged(outer, { ...outer, index: 1 })).toBe(true);
   });
@@ -988,6 +1009,37 @@ describe("host-portable interpreter cloning (F1/1173 QuickJS)", () => {
     expect(open.modal).not.toBeNull();
     // The immutable compiled program stays shared (no per-frame copy).
     expect(copy.main!.stack[0]!.prog).toBe(open.main!.stack[0]!.prog);
+  });
+
+  test("cloned dynamic choices do not alias option metadata arrays", () => {
+    const original = createInterpState();
+    const modal: Modal = {
+      kind: "choices",
+      fiber: "m/sign",
+      prompt: "PARTY",
+      options: ["A", "B"],
+      keys: ["a", "b"],
+      enabled: [true, false],
+      index: 0,
+      cancellable: true,
+    };
+    original.modal = modal;
+
+    const copy = cloneInterp(original);
+    expect(copy.modal).not.toBe(original.modal);
+    expect(copy.modal?.kind).toBe("choices");
+    if (copy.modal?.kind !== "choices") throw new Error("expected cloned choices modal");
+
+    expect(copy.modal.options).not.toBe(modal.options);
+    expect(copy.modal.keys).not.toBe(modal.keys);
+    expect(copy.modal.enabled).not.toBe(modal.enabled);
+
+    copy.modal.options[0] = "Changed";
+    copy.modal.keys![0] = "changed";
+    copy.modal.enabled![0] = false;
+    expect(modal.options).toEqual(["A", "B"]);
+    expect(modal.keys).toEqual(["a", "b"]);
+    expect(modal.enabled).toEqual([true, false]);
   });
 });
 

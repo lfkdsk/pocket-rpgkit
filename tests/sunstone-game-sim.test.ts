@@ -418,9 +418,10 @@ simDescribe("sunstone — render budget", () => {
     // shop command/UI, T2-9 scrolling >4-option choices, T2-16
     // variable-operand arithmetic, and fix 3's construction/restore/ext/
     // battle finite-state normalization), plus the shared bounded-keyframe
-    // rewind path: 438,550 B measured after that addition. The bound keeps a
-    // narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(445_000);
+    // rewind path, and the extension-driven dynamic-choice provider/resolver
+    // path: 449,037 B measured after that addition. The bound keeps a narrow
+    // margin so an accidental bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(456_000);
   });
 });
 

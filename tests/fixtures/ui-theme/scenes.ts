@@ -69,6 +69,25 @@ export const MODALS = {
     index: 0,
     cancellable: false,
   },
+  // An extension-provided list carries stable keys and per-row enabled
+  // state. The selected long label is both scrolled into row 1 and disabled.
+  choicesDynamic: {
+    kind: "choices",
+    fiber: "fixture",
+    prompt: "Choose your live route",
+    options: [
+      "Mercenary route", "Diplomat route", "Smuggler route", "Pilgrim route",
+      "Scholar route", "A label far too long to fit the choices box at all",
+      "Hermit route", "Wanderer route",
+    ],
+    keys: [
+      "mercenary", "diplomat", "smuggler", "pilgrim",
+      "scholar", "long-disabled", "hermit", "wanderer",
+    ],
+    enabled: [true, true, true, true, true, false, true, true],
+    index: 5,
+    cancellable: true,
+  },
   // T2-10 shop buy stage: enough goods to exercise every row state —
   // affordable, unaffordable (torch costs more than the fixture's gold),
   // and at the backpack cap (rope already owns 99) — plus the sell tab.

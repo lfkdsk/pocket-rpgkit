@@ -29,7 +29,9 @@ import {
   assertJsonValue,
   cloneExtension,
   createExtensionRuntime,
+  type ExtensionChoiceResult,
   type ExtensionCommandContext,
+  type ExtensionCommandResult,
   type ExtensionReadContext,
   type ExtensionRuntime,
 } from "./extensions.ts";
@@ -39,6 +41,7 @@ import type {
   CommonEvent,
   Condition,
   Dir,
+  ExtensionChoiceWrite,
   Facing,
   GameEvent,
   Item,
@@ -386,6 +389,14 @@ export type Instr =
   | { op: "shop"; id: string; goods: readonly ShopGood[]; sell: boolean; sellList: "disable" | "hide" }
   | { op: "ext"; call: string; args: JsonValue }
   | {
+      op: "extChoice";
+      call: string;
+      args: JsonValue;
+      prompt: string;
+      cancel: boolean;
+      write: Readonly<ExtensionChoiceWrite> | null;
+    }
+  | {
       op: "battle";
       setup: JsonValue;
       onWin: Prog | null;
@@ -494,6 +505,27 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
         case "ext":
           emit({ op: "ext", call: c.call, args: deepClone(c.args) });
           break;
+        case "extChoice": {
+          const write = c.write ? { ...c.write } : null;
+          if (write) {
+            const targets = Object.values(write);
+            if (targets.some((target) => typeof target !== "string" || target.length === 0)) {
+              throw new Error("extChoice write destinations must be non-empty variable ids");
+            }
+            if (new Set(targets).size !== targets.length) {
+              throw new Error("extChoice write destinations must be distinct");
+            }
+          }
+          emit({
+            op: "extChoice",
+            call: c.call,
+            args: deepClone(c.args),
+            prompt: c.prompt,
+            cancel: c.cancel ?? false,
+            write,
+          });
+          break;
+        }
         case "battle":
           emit({
             op: "battle",
@@ -557,6 +589,11 @@ export interface ChoiceModal {
   fiber: string;
   prompt: string;
   options: string[];
+  /** Present only for extChoice. Stable logical ids preserve the cursor when
+   * the extension reorders or replaces its live rows. */
+  keys?: string[];
+  /** Present only for extChoice. False rows remain navigable but inert. */
+  enabled?: boolean[];
   index: number;
   cancellable: boolean;
 }
@@ -629,7 +666,11 @@ export function modalChanged(a: Modal | null, b: Modal | null): boolean {
       a.prompt !== b.prompt ||
       a.cancellable !== b.cancellable ||
       a.options.length !== b.options.length ||
-      a.options.some((opt, i) => opt !== b.options[i])
+      a.options.some((opt, i) => opt !== b.options[i]) ||
+      (a.keys === undefined) !== (b.keys === undefined) ||
+      (a.enabled === undefined) !== (b.enabled === undefined) ||
+      (a.keys?.some((key, i) => key !== b.keys?.[i]) ?? false) ||
+      (a.enabled?.some((enabled, i) => enabled !== b.enabled?.[i]) ?? false)
     );
   }
   if (a.kind === "shop" && b.kind === "shop") {
@@ -989,7 +1030,12 @@ export function cloneModal(m: Modal | null): Modal | null {
   if (m === null) return null;
   if (m.kind === "text") return { ...m, lines: [...m.lines] };
   if (m.kind === "shop") return { ...m, rows: m.rows.map((row) => ({ ...row })) };
-  return { ...m, options: [...m.options] };
+  return {
+    ...m,
+    options: [...m.options],
+    ...(m.keys ? { keys: [...m.keys] } : {}),
+    ...(m.enabled ? { enabled: [...m.enabled] } : {}),
+  };
 }
 
 function cloneMoveRoute(route: MoveRoute): MoveRoute {
@@ -1610,77 +1656,81 @@ interface MutableExtensionScope extends ExtensionScope {
   ext: JsonValue;
 }
 
-function runExtensionCommand(
+function extensionReadContext(
   s: InterpState,
-  w: World,
-  extension: MutableExtensionScope,
-  call: string,
-  args: JsonValue,
-): void {
-  // Registration is validated when each map is acquired. A missing handler
-  // or malformed handler result therefore violates the game-programming
-  // contract, rather than being an authored event/variable failure; these
-  // assertions intentionally throw instead of becoming content errors.
-  const handler = extension.runtime.commands[call];
-  if (!handler) {
-    if (extension.runtime.allowUnknown) return;
-    throw new Error(`extension command ${JSON.stringify(call)} is not registered`);
-  }
-  let cursor = s.sw.rng;
-  const context: ExtensionCommandContext = {
+  extension: ExtensionScope,
+): ExtensionReadContext {
+  return {
     ext: deepClone(extension.ext),
     switches: s.sw.switches,
     variables: s.sw.variables,
     items: s.sw.items,
     gold: s.sw.gold,
-    random: () => {
-      const draw = rngNext(cursor);
-      cursor = draw.next;
-      return draw.value;
-    },
   };
-  const result = handler(context, deepClone(args));
-  s.sw.rng = cursor;
-  if (result === undefined) return;
-  if (result === null || typeof result !== "object" || Array.isArray(result)) {
-    throw new Error(`extension command ${JSON.stringify(call)} must return an object or undefined`);
+}
+
+/** Validate every mutation before publishing any of it. `directWrites` are
+ * extChoice's authored result sinks; overlapping resolver writes are a
+ * contract error rather than a hidden last-writer rule. */
+function applyExtensionResult(
+  s: InterpState,
+  w: World,
+  extension: MutableExtensionScope,
+  label: string,
+  rawResult: unknown,
+  directWrites: readonly (readonly [string, VariableValue])[] = [],
+): void {
+  if (rawResult !== undefined && (
+    rawResult === null || typeof rawResult !== "object" || Array.isArray(rawResult)
+  )) {
+    throw new Error(`${label} must return an object or undefined`);
   }
+  const result = rawResult as ExtensionCommandResult | undefined;
   let nextExt = extension.ext;
-  if (Object.prototype.hasOwnProperty.call(result, "ext")) {
-    assertJsonValue(result.ext, `extension command ${JSON.stringify(call)} result.ext`);
-    nextExt = cloneExtension(extension.runtime, result.ext, `extension command ${JSON.stringify(call)} result.ext`);
+  if (result && Object.prototype.hasOwnProperty.call(result, "ext")) {
+    assertJsonValue(result.ext, `${label} result.ext`);
+    nextExt = cloneExtension(extension.runtime, result.ext!, `${label} result.ext`);
   }
   const writes: [string, VariableValue][] = [];
-  if (result.writes !== undefined) {
+  const writeIds = new Set<string>();
+  if (result?.writes !== undefined) {
     if (result.writes === null || typeof result.writes !== "object" || Array.isArray(result.writes)) {
-      throw new Error(`extension command ${JSON.stringify(call)} result.writes must be a record`);
+      throw new Error(`${label} result.writes must be a record`);
     }
     for (const id of Object.keys(result.writes)) {
       const value = result.writes[id];
       if (typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value))) {
-        throw new Error(`extension command ${JSON.stringify(call)} write ${JSON.stringify(id)} must be a string or finite number`);
+        throw new Error(`${label} write ${JSON.stringify(id)} must be a string or finite number`);
       }
       writes.push([id, value]);
+      writeIds.add(id);
     }
   }
+  for (const [id, value] of directWrites) {
+    if (writeIds.has(id)) {
+      throw new Error(`${label} result.writes conflicts with extChoice write target ${JSON.stringify(id)}`);
+    }
+    writeIds.add(id);
+    writes.push([id, value]);
+  }
   let itemReplacements: Record<string, number> | undefined;
-  if (result.items !== undefined) {
+  if (result?.items !== undefined) {
     if (result.items === null || typeof result.items !== "object" || Array.isArray(result.items)) {
-      throw new Error(`extension command ${JSON.stringify(call)} result.items must be a record`);
+      throw new Error(`${label} result.items must be a record`);
     }
     itemReplacements = keyedRecord();
     for (const id of Object.keys(result.items)) {
       const value = result.items[id];
       if (typeof value !== "number" || !Number.isFinite(value)) {
-        throw new Error(`extension command ${JSON.stringify(call)} item ${JSON.stringify(id)} must be a finite number`);
+        throw new Error(`${label} item ${JSON.stringify(id)} must be a finite number`);
       }
       itemReplacements[id] = value;
     }
   }
   let gold: number | undefined;
-  if (result.gold !== undefined) {
+  if (result?.gold !== undefined) {
     if (typeof result.gold !== "number" || !Number.isFinite(result.gold)) {
-      throw new Error(`extension command ${JSON.stringify(call)} result.gold must be a finite number`);
+      throw new Error(`${label} result.gold must be a finite number`);
     }
     gold = Math.max(0, clampFiniteVar(result.gold));
   }
@@ -1700,6 +1750,164 @@ function runExtensionCommand(
   }
   if (items !== undefined) s.sw.items = items;
   if (gold !== undefined) s.sw.gold = gold;
+}
+
+function runExtensionMutation(
+  s: InterpState,
+  w: World,
+  extension: MutableExtensionScope,
+  label: string,
+  invoke: (context: ExtensionCommandContext) => ExtensionCommandResult | void,
+  directWrites: readonly (readonly [string, VariableValue])[] = [],
+): void {
+  let cursor = s.sw.rng;
+  const context: ExtensionCommandContext = {
+    ...extensionReadContext(s, extension),
+    random: () => {
+      const draw = rngNext(cursor);
+      cursor = draw.next;
+      return draw.value;
+    },
+  };
+  const result = invoke(context);
+  s.sw.rng = cursor;
+  applyExtensionResult(s, w, extension, label, result, directWrites);
+}
+
+function runExtensionCommand(
+  s: InterpState,
+  w: World,
+  extension: MutableExtensionScope,
+  call: string,
+  args: JsonValue,
+): void {
+  // Registration is validated when each map is acquired. A missing handler
+  // or malformed handler result therefore violates the game-programming
+  // contract, rather than being an authored event/variable failure; these
+  // assertions intentionally throw instead of becoming content errors.
+  const handler = extension.runtime.commands[call];
+  if (!handler) {
+    if (extension.runtime.allowUnknown) return;
+    throw new Error(`extension command ${JSON.stringify(call)} is not registered`);
+  }
+  runExtensionMutation(
+    s,
+    w,
+    extension,
+    `extension command ${JSON.stringify(call)}`,
+    (context) => handler(context, deepClone(args)),
+  );
+}
+
+interface ResolvedExtensionChoiceOption {
+  key: string;
+  label: string;
+  enabled: boolean;
+  data: JsonValue;
+}
+
+/** Recompute and validate an extChoice list from the current reducer state.
+ * null is the preview-only unknown-call sentinel; [] is a valid cancellable
+ * list. */
+function extensionChoiceOptions(
+  s: InterpState,
+  extension: MutableExtensionScope,
+  ins: Extract<Instr, { op: "extChoice" }>,
+): ResolvedExtensionChoiceOption[] | null {
+  const handler = extension.runtime.choices[ins.call];
+  if (!handler) {
+    if (extension.runtime.allowUnknown) return null;
+    throw new Error(`extension choice ${JSON.stringify(ins.call)} is not registered`);
+  }
+  const raw = handler.options(extensionReadContext(s, extension), deepClone(ins.args));
+  if (!Array.isArray(raw)) {
+    throw new Error(`extension choice ${JSON.stringify(ins.call)} options must return an array`);
+  }
+  const seen = new Set<string>();
+  const options: ResolvedExtensionChoiceOption[] = [];
+  for (let index = 0; index < raw.length; index++) {
+    const option = raw[index];
+    const at = `extension choice ${JSON.stringify(ins.call)} option ${index}`;
+    if (option === null || typeof option !== "object" || Array.isArray(option)) {
+      throw new Error(`${at} must be an object`);
+    }
+    if (typeof option.key !== "string" || option.key.length === 0) {
+      throw new Error(`${at}.key must be a non-empty string`);
+    }
+    if (seen.has(option.key)) {
+      throw new Error(`extension choice ${JSON.stringify(ins.call)} option key ${JSON.stringify(option.key)} is duplicated`);
+    }
+    seen.add(option.key);
+    if (typeof option.label !== "string" || option.label.length === 0) {
+      throw new Error(`${at}.label must be a non-empty string`);
+    }
+    if (option.enabled !== undefined && typeof option.enabled !== "boolean") {
+      throw new Error(`${at}.enabled must be a boolean`);
+    }
+    const data = option.data ?? null;
+    assertJsonValue(data, `${at}.data`);
+    options.push({
+      key: option.key,
+      label: option.label,
+      enabled: option.enabled ?? true,
+      data: deepClone(data),
+    });
+  }
+  if (!ins.cancel && !options.some((option) => option.enabled)) {
+    throw new Error(`extension choice ${JSON.stringify(ins.call)} must provide an enabled option when cancel is false`);
+  }
+  return options;
+}
+
+function extensionChoiceDirectWrites(
+  write: Readonly<ExtensionChoiceWrite> | null,
+  result: ExtensionChoiceResult,
+): [string, VariableValue][] {
+  if (!write) return [];
+  const values = result.kind === "select"
+    ? { index: result.index, key: result.key, cancelled: 0 }
+    : { index: -1, key: "", cancelled: 1 };
+  const writes: [string, VariableValue][] = [];
+  const seen = new Set<string>();
+  for (const field of ["index", "key", "cancelled"] as const) {
+    const id = write[field];
+    if (id === undefined) continue;
+    if (typeof id !== "string" || id.length === 0) {
+      throw new Error(`extChoice write.${field} must be a non-empty variable id`);
+    }
+    if (seen.has(id)) throw new Error("extChoice write destinations must be distinct");
+    seen.add(id);
+    writes.push([id, values[field]]);
+  }
+  return writes;
+}
+
+function resolveExtensionChoice(
+  s: InterpState,
+  w: World,
+  extension: MutableExtensionScope,
+  ins: Extract<Instr, { op: "extChoice" }>,
+  result: ExtensionChoiceResult,
+): void {
+  const handler = extension.runtime.choices[ins.call];
+  if (!handler) {
+    if (extension.runtime.allowUnknown) return;
+    throw new Error(`extension choice ${JSON.stringify(ins.call)} is not registered`);
+  }
+  const directWrites = extensionChoiceDirectWrites(ins.write, result);
+  const label = `extension choice ${JSON.stringify(ins.call)} resolver`;
+  if (handler.resolve) {
+    runExtensionMutation(
+      s,
+      w,
+      extension,
+      label,
+      (context) => handler.resolve!(context, deepClone(ins.args), deepClone(result)),
+      directWrites,
+    );
+  } else {
+    applyExtensionResult(s, w, extension, label, undefined, directWrites);
+  }
 }
 
 function variableRef(value: unknown): value is VariableRef {
@@ -1830,6 +2038,69 @@ function runFiber(
         f.mode = "run"; // fall through: run the branch this frame
       } else {
         return;
+      }
+    } else if (ins.op === "extChoice") {
+      if (s.modal && s.modal.fiber !== f.key) return;
+      const options = extensionChoiceOptions(s, extension, ins);
+      if (options === null) {
+        // Preview-only allowUnknown mirrors an unknown ext command no-op.
+        s.modal = null;
+        f.mode = "run";
+        top.pc++;
+      } else {
+        const previous = s.modal?.kind === "choices" ? s.modal : null;
+        const previousKeys = previous?.keys;
+        const previousKey = previous ? previousKeys?.[previous.index] : undefined;
+        let index = options.length === 0
+          ? 0
+          : Math.min(previous?.index ?? 0, options.length - 1);
+        let displaced = previous === null || previousKeys === undefined;
+        if (previousKey !== undefined) {
+          const same = options.findIndex((option) => option.key === previousKey);
+          if (same >= 0) index = same;
+          else displaced = true;
+        } else if (previousKeys && options.length > 0) {
+          // The previous list was empty. Show the newly arrived first row for
+          // one frame before accepting confirm on an item the player has not
+          // yet seen.
+          displaced = true;
+        }
+        if (!displaced && options.length > 0) {
+          if (input.upEdge) index = (index + options.length - 1) % options.length;
+          if (input.downEdge) index = (index + 1) % options.length;
+        }
+        s.modal = {
+          kind: "choices",
+          fiber: f.key,
+          prompt: substitutePlayerName(ins.prompt, s.sw.playerName ?? DEFAULT_PLAYER_NAME),
+          options: options.map((option) => option.label),
+          keys: options.map((option) => option.key),
+          enabled: options.map((option) => option.enabled),
+          index,
+          cancellable: ins.cancel,
+        };
+        let result: ExtensionChoiceResult | null = null;
+        if (input.confirmEdge && !displaced && options[index]?.enabled) {
+          const option = options[index]!;
+          result = {
+            kind: "select",
+            index,
+            key: option.key,
+            data: deepClone(option.data),
+          };
+        } else if (input.cancelEdge && ins.cancel) {
+          result = { kind: "cancel" };
+        }
+        if (result) {
+          resolveExtensionChoice(s, w, extension, ins, result);
+          s.modal = null;
+          f.mode = "run";
+          top.pc++;
+          // Continue into the run loop: result state is visible to the next
+          // instruction on this same reference tick.
+        } else {
+          return;
+        }
       }
     } else {
       f.mode = "run";
@@ -2010,6 +2281,29 @@ function runFiber(
           cancellable: ins.cancel !== null,
         };
         return;
+      case "extChoice": {
+        // Same single modal slot and fiber mode as authored choices. The
+        // provider runs only after the slot is acquired, so a queued parallel
+        // choice cannot observe time or state from a frame it was not shown.
+        if (s.modal) return;
+        const options = extensionChoiceOptions(s, extension, ins);
+        if (options === null) {
+          top.pc++;
+          break;
+        }
+        f.mode = "choices";
+        s.modal = {
+          kind: "choices",
+          fiber: f.key,
+          prompt: substitutePlayerName(ins.prompt, s.sw.playerName ?? DEFAULT_PLAYER_NAME),
+          options: options.map((option) => option.label),
+          keys: options.map((option) => option.key),
+          enabled: options.map((option) => option.enabled),
+          index: 0,
+          cancellable: ins.cancel,
+        };
+        return;
+      }
       case "shop": {
         // Same single-slot rule as text/choices.
         if (s.modal) return;

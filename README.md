@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-stack/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 21 commands), map-character motion,
+  event interpreter (pages, triggers, 22 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -329,7 +329,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 21 commands
+### The 22 commands
 
 | op | purpose |
 | --- | --- |
@@ -352,11 +352,13 @@ earlier resident map within the same host frame.
 | `place` | relocate `"this"` or a named event to a tile, optionally facing a direction |
 | `shop` | MV-style buy/sell over gold and item counts, from an `id`-namespaced goods list with per-good price/sellPrice/stock/condition overrides |
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
+| `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
 
-`choices` options and `shop` goods share one 4-row scrolling box (`ui/list-window.ts`
-picks the window from the live cursor; a label past 24 characters truncates with
-an ellipsis). A shop sells any owned item at floor(the item's own `price` / 2)
+`choices`, `extChoice`, and `shop` share one 4-row scrolling box
+(`ui/list-window.ts` picks the window from the live cursor; a label past 24
+characters truncates with an ellipsis). A shop sells any owned item at
+floor(the item's own `price` / 2)
 unless a goods entry for it overrides that shop's `sellPrice`, and refuses a
 purchase past `system.inventory.maxPerItem` (default 99) or `maxKinds` (default
 unlimited). A goods entry's `stock` is a finite quantity that shop carries,
@@ -413,6 +415,19 @@ const session = createSession(project, simulationHz(), {
     conditions: {
       "game.party_ready": (ctx) => partyReady(ctx.ext),
     },
+    choices: {
+      "game.choose_member": {
+        options: (ctx) => party(ctx.ext).map((member) => ({
+          key: member.id,          // stable logical identity across refreshes
+          label: member.name,
+          enabled: member.ready,  // defaults to true
+          data: { id: member.id },
+        })),
+        resolve: (ctx, _args, result) => result.kind === "select"
+          ? { ext: selectMember(ctx.ext, result.data) }
+          : undefined,
+      },
+    },
     // Optional encode/decode and validate hooks cover saves and restores.
   },
   battle: battleRules,
@@ -426,13 +441,46 @@ wallet `gold` replacements. An extension condition is read-only and has no
 random API. Item and gold results update the same `SessionState.sw` backpack
 and wallet used by authored item/gold commands and shops; a later command or
 condition in the same tick sees the committed values. Call names must contain
-a namespace (`game.action`). `createSession` lists every command or condition
-used by an inline project but not registered. Editor previews may explicitly
-set `allowUnknown: true`, which makes unknown commands no-ops and conditions
-false. For a sharded project, the same check runs as each map is acquired.
-The optional extension codec encodes only save bytes; live state is decoded
-again on restore. Checksums and attract-mode refolds include the slot, and an
-older v1 save without it loads as `null`.
+a namespace (`game.action`).
+
+An `extChoice` command has the shape
+`{ op:"extChoice", call, args, prompt, cancel?, write? }`. Its registered
+`choices[call].options(readContext, args)` provider returns rows shaped
+`{ key, label, enabled?, data? }`. The provider receives no random function
+and is evaluated from live state on every reference tick while the box is
+open. Keys must be non-empty and unique, and must identify the same logical
+row across refreshes: a retained key keeps the cursor when rows reorder. If
+the selected key disappears, its old numeric position is clamped into the
+new list and that frame cannot also confirm the newly exposed row. A false
+`enabled` value leaves a row navigable but renders it dim and makes confirm a
+no-op. `data` defaults to `null`, must be JSON, and is opaque to the kit.
+A non-cancellable list must always contain at least one enabled row; an empty
+list is permitted only when `cancel:true`.
+
+Confirm calls the optional `resolve(commandContext, args,
+{ kind:"select", index, key, data })`; cancel, when enabled, calls it with
+`{ kind:"cancel" }`. Only `resolve` receives the saved-RNG `random()` function,
+so refreshing or navigating the list consumes no entropy. `write.index`,
+`write.key`, and `write.cancelled` are optional, distinct variable ids. A
+selection writes its zero-based index, key, and `0`; cancellation writes
+`-1`, `""`, and `1`. These direct writes and the resolver's optional
+`ExtensionCommandResult` commit atomically before the next instruction runs
+on that same reference tick. A resolver may not write one of the same variable
+ids through `result.writes`; overlap is a contract error, not a precedence
+rule.
+
+`createSession` lists every command, condition, or dynamic choice used by an
+inline project but not registered. Editor previews may explicitly set
+`allowUnknown: true`, which makes unknown commands and dynamic choices no-ops
+and conditions false. For a sharded project, the same check runs as each map
+is acquired. An open dynamic choice uses the ordinary modal slot: it captures
+the d-pad, blocks its owning fiber, and makes `worldIdle` false. It is not a
+save point, just like text, authored choices, and shops; rewind reconstructs
+it by the normal pure refold. Per-reference-tick refresh and edge handling keep
+the same outcome at every supported host Hz. The optional extension codec
+encodes only save bytes; live state is decoded again on restore. Checksums and
+attract-mode refolds include the slot, and an older v1 save without it loads
+as `null`.
 
 `BattleRules` is the game-owned pure scene reducer:
 

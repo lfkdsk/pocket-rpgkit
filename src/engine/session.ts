@@ -268,6 +268,7 @@ function visitCondition(c: Condition, found: Set<string>): void {
 function visitCommands(commands: readonly Command[], found: Set<string>): void {
   for (const command of commands) {
     if (command.op === "ext") found.add(`command ${command.call}`);
+    if (command.op === "extChoice") found.add(`choice ${command.call}`);
     if (command.op === "if") {
       visitCondition(command.if, found);
       visitCommands(command.then, found);
@@ -335,7 +336,11 @@ function assertRegisteredExtensions(runtime: ExtensionRuntime, found: ReadonlySe
     const call = entry.slice(space + 1);
     if (!extensionCallNameValid(call)) {
       missing.push(`${kind} ${call} (invalid namespaced call)`);
-    } else if (kind === "command" ? !runtime.commands[call] : !runtime.conditions[call]) {
+    } else if (
+      kind === "command" ? !runtime.commands[call]
+      : kind === "choice" ? !runtime.choices[call]
+      : !runtime.conditions[call]
+    ) {
       missing.push(entry);
     }
   }

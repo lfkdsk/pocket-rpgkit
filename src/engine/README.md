@@ -21,11 +21,12 @@ state.
   `approach` move steps (fixed neighbour order, respects all edge guards
   and bodies; the search is sliced across reference ticks to bound QuickJS
   frame cost).
-- `interpreter.ts` — event pages, triggers, the 21-command interpreter
+- `interpreter.ts` — event pages, triggers, the 22-command interpreter
   (the v1 15 plus `lockInput` / `unlockInput` / `place` / `shop` / `ext` /
-  `battle`), the typewriter clock, the seeded RNG, saveable switch state.
-- `extensions.ts` — namespaced pure command/condition handlers, the opaque
-  JSON extension slot, validation and save codecs.
+  `extChoice` / `battle`), the typewriter clock, the seeded RNG, saveable
+  switch state.
+- `extensions.ts` — namespaced pure command/condition/dynamic-choice handlers,
+  the opaque JSON extension slot, validation and save codecs.
 - `battle.ts` — game-owned battle reducer and scene contracts.
 - `chars.ts` — per-map character motion: page patrol routes, autonomous
   random/approach, command-forced routes, body collision (only
@@ -234,6 +235,38 @@ its optional codec wraps save/restore bytes, and save checksums cover the
 encoded form. Inline projects validate every namespaced call at
 `createSession`; sharded projects also validate each acquired map.
 `allowUnknown` is an explicit preview-only escape hatch.
+
+`{ op:"extChoice", call, args, prompt, cancel?, write? }` uses a registered
+`options.extensions.choices[call]` handler. Its pure
+`options(readContext, args)` function receives no RNG and returns live rows
+`{ key, label, enabled?, data? }`; the interpreter recomputes them every
+reference tick while the modal is open. Keys are non-empty, unique stable
+logical identities. A surviving key preserves the cursor through reordering;
+if it disappears, the old index is clamped and the replacement row cannot be
+confirmed until the following tick. Disabled rows remain navigable and render
+dimmed but ignore confirm. Data defaults to `null`, must be JSON, and is cloned
+for the resolver. A non-cancellable list must expose at least one enabled row;
+only a cancellable list may be empty.
+
+On confirm, the optional `resolve` callback receives the current command
+context and `{ kind:"select", index, key, data }`; on an enabled cancel it
+receives `{ kind:"cancel" }`. The resolver alone has the saved-RNG `random()`
+function, so opening, refreshing, or navigating the modal consumes no entropy.
+The command's optional `write` record names distinct variable destinations:
+selection writes zero-based index/key/`0`, while cancel writes `-1`/`""`/`1`.
+Those values and the resolver's `ExtensionCommandResult` publish atomically,
+and a resolver write targeting the same id is rejected instead of receiving
+an implicit precedence. The next instruction sees the committed result on the
+same reference tick.
+
+The dynamic list reuses the authored-choice modal and four-row scroll window,
+so it captures the d-pad, blocks its owning fiber, and makes `worldIdle` false.
+Existing safe-point policy deliberately rejects a save while it is open.
+Modal state remains plain JSON and rewind rebuilds it through the ordinary
+pure fold; reference-tick option refresh and input edges therefore remain
+identical across supported host rates. Unknown choice calls are rejected with
+other missing extension registrations, or become immediate no-ops only under
+the explicit preview `allowUnknown` option.
 
 A `battle` command parks its fiber and publishes a setup JSON value. General
 interpreter execution remains parallel fibers (ascending event key) before the

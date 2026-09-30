@@ -45,56 +45,62 @@ const SLATE = THEMES.slate;
 const W = 480;
 type Rgb = readonly [number, number, number];
 const rgb = (hex: string): Rgb => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as unknown as Rgb;
-const at = (fb: Uint8Array, x: number, y: number): Rgb => {
-  const i = (y * W + x) * 4;
+const at = (fb: Uint8Array, x: number, y: number, stride = W): Rgb => {
+  const i = (y * stride + x) * 4;
   return [fb[i]!, fb[i + 1]!, fb[i + 2]!];
 };
 const hexOf = (c: Rgb): string => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
-const hexAt = (fb: Uint8Array, x: number, y: number): string => hexOf(at(fb, x, y));
+const hexAt = (fb: Uint8Array, x: number, y: number, stride = W): string => hexOf(at(fb, x, y, stride));
 /** Pixels of exactly `hex` in [x0,x1) x [y0,y1). */
-function count(fb: Uint8Array, hex: string, x0: number, x1: number, y0: number, y1: number): number {
+function count(fb: Uint8Array, hex: string, x0: number, x1: number, y0: number, y1: number, stride = W): number {
   const [r, g, b] = rgb(hex);
   let n = 0;
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
-      const i = (y * W + x) * 4;
+      const i = (y * stride + x) * 4;
       if (fb[i] === r && fb[i + 1] === g && fb[i + 2] === b) n++;
     }
   }
   return n;
 }
 /** Pixels in the rectangle that are not `hex` (glyphs, art, anything). */
-const notCount = (fb: Uint8Array, hex: string, x0: number, x1: number, y0: number, y1: number): number =>
-  (x1 - x0) * (y1 - y0) - count(fb, hex, x0, x1, y0, y1);
+const notCount = (fb: Uint8Array, hex: string, x0: number, x1: number, y0: number, y1: number, stride = W): number =>
+  (x1 - x0) * (y1 - y0) - count(fb, hex, x0, x1, y0, y1, stride);
 /** Positions of the pixels that are exactly `hex` (full-coverage glyph
  *  cores when `hex` is a text colour). */
-function mask(fb: Uint8Array, hex: string, x0: number, x1: number, y0: number, y1: number): number[] {
+function mask(fb: Uint8Array, hex: string, x0: number, x1: number, y0: number, y1: number, stride = W): number[] {
   const out: number[] = [];
-  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (hexAt(fb, x, y) === hex) out.push(y * W + x);
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (hexAt(fb, x, y, stride) === hex) out.push(y * stride + x);
   return out;
 }
 /** A w x h block of the frame starting at (x, y), RGBA bytes. */
-function crop(fb: Uint8Array, x: number, y: number, w: number, h: number): Uint8Array {
+function crop(fb: Uint8Array, x: number, y: number, w: number, h: number, stride = W): Uint8Array {
   const out = new Uint8Array(w * h * 4);
-  for (let row = 0; row < h; row++) out.set(fb.subarray(((y + row) * W + x) * 4, ((y + row) * W + x + w) * 4), row * w * 4);
+  for (let row = 0; row < h; row++) out.set(fb.subarray(((y + row) * stride + x) * 4, ((y + row) * stride + x + w) * 4), row * w * 4);
   return out;
 }
 
 /** The four frame rings of a box: every pixel on the outer 2 px ring is
  *  `border`; the next ring is `ring` (the rim, or the paper). */
-function expectFrame(fb: Uint8Array, box: { x0: number; x1: number; y0: number; y1: number }, border: string, ring: string): void {
+function expectFrame(
+  fb: Uint8Array,
+  box: { x0: number; x1: number; y0: number; y1: number },
+  border: string,
+  ring: string,
+  stride = W,
+): void {
   const { x0, x1, y0, y1 } = box;
   const w = x1 - x0;
   const h = y1 - y0;
   // Outer two rows/columns, then the ring just inside.
-  expect(count(fb, border, x0, x1, y0, y0 + 2)).toBe(w * 2);
-  expect(count(fb, border, x0, x1, y1 - 2, y1)).toBe(w * 2);
-  expect(count(fb, border, x0, x0 + 2, y0, y1)).toBe(h * 2);
-  expect(count(fb, border, x1 - 2, x1, y0, y1)).toBe(h * 2);
-  expect(count(fb, ring, x0 + 2, x1 - 2, y0 + 2, y0 + 3)).toBe(w - 4);
-  expect(count(fb, ring, x0 + 2, x1 - 2, y1 - 3, y1 - 2)).toBe(w - 4);
-  expect(count(fb, ring, x0 + 2, x0 + 3, y0 + 2, y1 - 2)).toBe(h - 4);
-  expect(count(fb, ring, x1 - 3, x1 - 2, y0 + 2, y1 - 2)).toBe(h - 4);
+  expect(count(fb, border, x0, x1, y0, y0 + 2, stride)).toBe(w * 2);
+  expect(count(fb, border, x0, x1, y1 - 2, y1, stride)).toBe(w * 2);
+  expect(count(fb, border, x0, x0 + 2, y0, y1, stride)).toBe(h * 2);
+  expect(count(fb, border, x1 - 2, x1, y0, y1, stride)).toBe(h * 2);
+  expect(count(fb, ring, x0 + 2, x1 - 2, y0 + 2, y0 + 3, stride)).toBe(w - 4);
+  expect(count(fb, ring, x0 + 2, x1 - 2, y1 - 3, y1 - 2, stride)).toBe(w - 4);
+  expect(count(fb, ring, x0 + 2, x0 + 3, y0 + 2, y1 - 2, stride)).toBe(h - 4);
+  expect(count(fb, ring, x1 - 3, x1 - 2, y0 + 2, y1 - 2, stride)).toBe(h - 4);
 }
 
 const MSG = { x0: 8, x1: 472, y0: 172, y1: 264 };
@@ -367,6 +373,39 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     expect(treeHasText(world.getTree(), "Mercenary route")).toBe(true);
     expect(treeHasText(world.getTree(), "Pilgrim route")).toBe(true);
     expect(treeHasText(world.getTree(), "Wanderer route")).toBe(false);
+  });
+
+  test("extension choices scroll and truncate while a disabled selection stays dim", () => {
+    const fb = shot({ modal: "choicesDynamic" });
+    const tree = world.getTree();
+    // index 5 uses window [4..7], with the selected long label on row 1.
+    for (const label of ["Scholar route", "Hermit route", "Wanderer route"]) {
+      expect(treeHasText(tree, label), label).toBe(true);
+    }
+    expect(treeHasText(tree, "Mercenary route")).toBe(false);
+    expect(treeHasText(tree, "A label far too long to…")).toBe(true);
+    expect(treeHasText(tree, "A label far too long to fit the choices box at all")).toBe(false);
+    // Disabled wins over selected: the "> " cursor remains, but the entire
+    // row is dim and contributes no accent pixels.
+    expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 118, 132)).toBeGreaterThan(15);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 118, 132)).toBe(0);
+  });
+
+  test("extension choices keep their fixed frame and semantic colours in a 960x544 viewport", () => {
+    const stride = 960;
+    const wideChoices = { x0: 700, x1: 948, y0: 350, y1: 446 };
+    try {
+      world.resizeViewport(stride, 544);
+      const fb = shot({ modal: "choicesDynamic" });
+      expect(fb.length).toBe(stride * 544 * 4);
+      expectFrame(fb, wideChoices, DEFAULT_UI_THEME.border, DEFAULT_UI_THEME.paper, stride);
+      // Content starts at (708, 358); selected index 5 is window row 1.
+      expect(count(fb, DEFAULT_UI_THEME.dim, 708, 940, 390, 404, stride)).toBeGreaterThan(15);
+      expect(count(fb, DEFAULT_UI_THEME.accent, 708, 940, 390, 404, stride)).toBe(0);
+    } finally {
+      world.resizeViewport(W, 272);
+      show({});
+    }
   });
 
   // --- T2-10 shop ----------------------------------------------------------

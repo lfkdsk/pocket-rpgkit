@@ -105,6 +105,16 @@ describe("worldIdle derived predicate", () => {
     const modals: Modal[] = [
       { kind: "text", fiber: "idle-map/p", lines: ["x"], total: 1, revealed: 0, complete: false },
       { kind: "choices", fiber: "idle-map/p", prompt: "?", options: ["a", "b"], index: 0, cancellable: false },
+      {
+        kind: "choices",
+        fiber: "idle-map/p",
+        prompt: "PARTY",
+        options: ["A", "B"],
+        keys: ["a", "b"],
+        enabled: [true, false],
+        index: 0,
+        cancellable: true,
+      },
       { kind: "shop", fiber: "idle-map/p", gold: 0, sell: false, stage: "buy", index: 0, rows: [{ kind: "leave" }] },
     ];
     for (const modal of modals) {

@@ -21,7 +21,7 @@ const INTEGER_OPS = new Set([
   "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp",
   "wait", "gold", "item", "se", "erase", "exit", "transfer",
   "moveRoute", "common", "lockInput", "unlockInput", "place", "shop",
-  "ext", "battle",
+  "ext", "extChoice", "battle",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -447,6 +447,32 @@ function validateProg(prog: unknown, path: string): string | null {
         if (problem) return problem;
         break;
       }
+      case "extChoice": {
+        if (typeof ins.call !== "string" || !extensionCallNameValid(ins.call)) {
+          return fail(`${here}.call`, "namespaced extension call required");
+        }
+        if (typeof ins.prompt !== "string") return fail(`${here}.prompt`, "string required");
+        if (typeof ins.cancel !== "boolean") return fail(`${here}.cancel`, "boolean required");
+        const problem = jsonValueProblem(ins.args, `${here}.args`);
+        if (problem) return problem;
+        if (ins.write !== null) {
+          if (!isRecord(ins.write)) return fail(`${here}.write`, "record or null required");
+          const ids: string[] = [];
+          for (const field of ["index", "key", "cancelled"] as const) {
+            const id = ins.write[field];
+            if (id === undefined) continue;
+            if (typeof id !== "string" || id.length === 0) {
+              return fail(`${here}.write.${field}`, "non-empty variable id required");
+            }
+            ids.push(id);
+          }
+          if (ids.length === 0) return fail(`${here}.write`, "at least one destination required");
+          if (new Set(ids).size !== ids.length) {
+            return fail(`${here}.write`, "destinations must be distinct");
+          }
+        }
+        break;
+      }
       case "battle": {
         const problem = jsonValueProblem(ins.setup, `${here}.setup`);
         if (problem) return problem;
@@ -642,14 +668,34 @@ function validateModal(v: unknown, path: string, liveKeys: ReadonlySet<string>):
   }
   if (v.kind === "choices") {
     if (typeof v.prompt !== "string") return fail(`${path}.prompt`, "string required");
-    if (!Array.isArray(v.options) || v.options.length === 0 ||
-      !v.options.every((o) => typeof o === "string")) {
-      return fail(`${path}.options`, "non-empty string array required");
-    }
-    if (!isNonNegInt(v.index) || v.index >= v.options.length) {
-      return fail(`${path}.index`, "choice index out of range");
+    if (!Array.isArray(v.options) || !v.options.every((o) => typeof o === "string")) {
+      return fail(`${path}.options`, "string array required");
     }
     if (typeof v.cancellable !== "boolean") return fail(`${path}.cancellable`, "boolean required");
+    const dynamic = v.keys !== undefined || v.enabled !== undefined;
+    if (dynamic) {
+      if (!Array.isArray(v.keys) || v.keys.length !== v.options.length ||
+        !v.keys.every((key) => typeof key === "string" && key.length > 0)) {
+        return fail(`${path}.keys`, "one non-empty string key per option required");
+      }
+      if (new Set(v.keys).size !== v.keys.length) {
+        return fail(`${path}.keys`, "choice keys must be unique");
+      }
+      if (!Array.isArray(v.enabled) || v.enabled.length !== v.options.length ||
+        !v.enabled.every((enabled) => typeof enabled === "boolean")) {
+        return fail(`${path}.enabled`, "one boolean per option required");
+      }
+      if (!v.cancellable && !v.enabled.some((enabled) => enabled === true)) {
+        return fail(`${path}.enabled`, "a non-cancellable dynamic choice needs an enabled option");
+      }
+    } else if (v.options.length === 0) {
+      return fail(`${path}.options`, "non-empty string array required");
+    }
+    if (!isNonNegInt(v.index) || (
+      v.options.length === 0 ? v.index !== 0 : v.index >= v.options.length
+    )) {
+      return fail(`${path}.index`, "choice index out of range");
+    }
     return null;
   }
   if (v.kind === "shop") {

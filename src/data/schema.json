@@ -583,6 +583,29 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "call", "args", "prompt"],
+          "properties": {
+            "op": { "const": "extChoice" },
+            "call": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)+$" },
+            "args": {},
+            "prompt": { "type": "string", "maxLength": 52 },
+            "cancel": { "type": "boolean", "description": "Default false. When true, cancel closes the modal and reports a cancel result." },
+            "write": {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "index": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+                "key": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+                "cancelled": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" }
+              }
+            }
+          },
+          "description": "Extension-provided dynamic choice list. Rows are recomputed from live state; selection optionally writes result variables and invokes the registered resolver."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "call", "args"],
           "properties": {
             "op": { "const": "ext" },

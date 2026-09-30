@@ -148,6 +148,15 @@ export interface VariableOpRef {
   from: string;
 }
 
+/** Optional built-in result sinks for an extension-provided choice. All
+ * values are variable ids. On selection they receive index/key/0; on cancel
+ * they receive -1/""/1 respectively. */
+export interface ExtensionChoiceWrite {
+  index?: string;
+  key?: string;
+  cancelled?: string;
+}
+
 /** T2-10/B1: one row of a shop's goods list. `price` overrides the item's
  *  own catalog price for buying at THIS shop only, falling back to it when
  *  omitted. `sellPrice` overrides this shop's buy-back price for the item
@@ -216,6 +225,16 @@ export type Command =
   | { op: "place"; target: "this" | { event: string }; x: number; y: number; dir?: Dir }
   /** Game-owned pure command handler, registered on createSession(). */
   | { op: "ext"; call: string; args: JsonValue }
+  /** A choice list supplied from live state by a registered pure extension.
+   * The optional resolver may update extension/built-in state after a pick. */
+  | {
+      op: "extChoice";
+      call: string;
+      args: JsonValue;
+      prompt: string;
+      cancel?: boolean;
+      write?: ExtensionChoiceWrite;
+    }
   /** MV-style Battle Processing. The game assigns meaning to setup and owns
    * the pure battle reducer; the interpreter only parks/resumes the fiber. */
   | {

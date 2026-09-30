@@ -45,7 +45,10 @@ const maybeTest = preflight.ok ? test : test.skip;
 // absent.
 // The worldIdle condition adds 1,820 bytes of shared session/interpreter code;
 // it remains independent of the opt-in battle UI identifiers checked below.
-const EXPECTED_BYTES = 440_370;
+// Extension-driven choices add 8,667 bytes to that same shared interpreter,
+// modal and registration path. The identifier assertion below continues to
+// guard that the opt-in battle UI itself is absent.
+const EXPECTED_BYTES = 449_037;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

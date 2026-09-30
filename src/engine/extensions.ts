@@ -45,6 +45,35 @@ export type ExtensionConditionHandler = (
   args: JsonValue,
 ) => boolean;
 
+/** One live row returned by an extension-driven choice provider. `key`
+ * identifies the logical row across refreshes; `data` is never interpreted
+ * by the kit and is returned to the resolver on confirmation. */
+export interface ExtensionChoiceOption {
+  key: string;
+  label: string;
+  enabled?: boolean;
+  data?: JsonValue;
+}
+
+export type ExtensionChoiceResult =
+  | { kind: "select"; index: number; key: string; data: JsonValue }
+  | { kind: "cancel" };
+
+/** Pure dynamic-list provider plus an optional mutation callback. Options
+ * deliberately receive no random source: merely keeping a modal open must
+ * not advance the saved RNG cursor. */
+export interface ExtensionChoiceHandler {
+  options(
+    context: ExtensionReadContext,
+    args: JsonValue,
+  ): readonly ExtensionChoiceOption[];
+  resolve?(
+    context: ExtensionCommandContext,
+    args: JsonValue,
+    result: ExtensionChoiceResult,
+  ): ExtensionCommandResult | void;
+}
+
 export interface ExtensionCodec {
   /** Convert runtime JSON state to its save representation. */
   encode(value: JsonValue): JsonValue;
@@ -59,6 +88,7 @@ export interface ExtensionOptions {
   initial?: JsonValue;
   commands?: Readonly<Record<string, ExtensionCommandHandler>>;
   conditions?: Readonly<Record<string, ExtensionConditionHandler>>;
+  choices?: Readonly<Record<string, ExtensionChoiceHandler>>;
   codec?: ExtensionCodec;
   validate?: ExtensionValidator;
   /** Editor/preview escape hatch. Unknown commands become no-ops and unknown
@@ -72,6 +102,7 @@ export interface ExtensionRuntime {
   readonly initial: JsonValue;
   readonly commands: Readonly<Record<string, ExtensionCommandHandler>>;
   readonly conditions: Readonly<Record<string, ExtensionConditionHandler>>;
+  readonly choices: Readonly<Record<string, ExtensionChoiceHandler>>;
   readonly codec: ExtensionCodec | null;
   readonly validate: ExtensionValidator | null;
   readonly allowUnknown: boolean;
@@ -122,7 +153,8 @@ function validateExtension(runtime: ExtensionRuntime, value: JsonValue, label: s
 export function createExtensionRuntime(options: ExtensionOptions = {}): ExtensionRuntime {
   const commands = keyedRecord(options.commands);
   const conditions = keyedRecord(options.conditions);
-  for (const call of [...Object.keys(commands), ...Object.keys(conditions)]) {
+  const choices = keyedRecord(options.choices);
+  for (const call of [...Object.keys(commands), ...Object.keys(conditions), ...Object.keys(choices)]) {
     if (!extensionCallNameValid(call)) {
       throw new Error(`extension call ${JSON.stringify(call)} must use a namespaced name such as "game.action"`);
     }
@@ -132,6 +164,7 @@ export function createExtensionRuntime(options: ExtensionOptions = {}): Extensio
     initial,
     commands,
     conditions,
+    choices,
     codec: options.codec ?? null,
     validate: options.validate ?? null,
     allowUnknown: options.allowUnknown ?? false,

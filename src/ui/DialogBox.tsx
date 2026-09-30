@@ -189,6 +189,7 @@ export function DialogBox(props: DialogBoxProps) {
             const optIndex = () => start() + row;
             const exists = () => m()?.kind === "choices" && optIndex() < total();
             const selected = () => exists() && m()!.index === optIndex();
+            const disabled = () => exists() && m()!.enabled?.[optIndex()] === false;
             const label = () =>
               exists()
                 ? `${selected() ? "> " : "  "}${truncateLabel(m()!.options[optIndex()]!, ROW_LABEL_MAX)}`
@@ -196,7 +197,7 @@ export function DialogBox(props: DialogBoxProps) {
             return (
               <Text
                 class="text-xs"
-                style={{ textColor: selected() ? theme().accent : theme().ink, lineHeight: 14, height: 14 }}
+                style={{ textColor: disabled() ? theme().dim : selected() ? theme().accent : theme().ink, lineHeight: 14, height: 14 }}
                 debugName={`rpgkit-choice-${row}`}
               >
                 {`${label()}`}

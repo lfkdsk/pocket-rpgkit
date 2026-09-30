@@ -4,9 +4,11 @@ import { AttractController } from "../src/engine/attract.ts";
 import { rngNext } from "../src/engine/interpreter.ts";
 import {
   createSession,
+  isSessionWorldIdle,
   startSession,
   stepSession,
   type Session,
+  type SessionInput,
   type SessionState,
 } from "../src/engine/session.ts";
 import {
@@ -17,9 +19,15 @@ import {
   SaveError,
 } from "../src/engine/save.ts";
 import { restoreSessionEnvelope } from "../src/engine/save-restore.ts";
+import type { ExtensionCommandResult, ExtensionOptions } from "../src/engine/extensions.ts";
 import type { Command, GameEvent, JsonValue, MapDef, Project } from "../src/engine/types.ts";
 
 const TILE = "plain.0";
+const RIGHT = 0x0020;
+const DOWN = 0x0040;
+const L = 0x0100;
+const CIRCLE = 0x2000;
+const CROSS = 0x4000;
 
 function map(id: string, commands: Command[] = [], condition?: GameEvent["pages"][number]["condition"]): MapDef {
   return {
@@ -50,8 +58,143 @@ function project(commands: Command[], extraMaps: MapDef[] = []): Project {
   };
 }
 
-function step(session: Session, state: SessionState): SessionState {
-  return stepSession(session, state, { buttons: 0 });
+function step(
+  session: Session,
+  state: SessionState,
+  input: SessionInput = { buttons: 0 },
+): SessionState {
+  return stepSession(session, state, input);
+}
+
+function projectWithEvents(events: GameEvent[]): Project {
+  const p = project([]);
+  return { ...p, maps: [{ ...p.maps[0]!, events }] };
+}
+
+const RESULT_WRITE = {
+  index: "choice.index",
+  key: "choice.key",
+  cancelled: "choice.cancelled",
+} as const;
+
+function partyChoice(
+  cancel = true,
+  write: Extract<Command, { op: "extChoice" }>["write"] = RESULT_WRITE,
+): Extract<Command, { op: "extChoice" }> {
+  return {
+    op: "extChoice",
+    call: "demo.party",
+    args: { source: "party" },
+    prompt: "Choose for {name}",
+    cancel,
+    ...(write ? { write } : {}),
+  };
+}
+
+function partyExtensions(withResolver = true): ExtensionOptions {
+  const handler: NonNullable<ExtensionOptions["choices"]>[string] = {
+    options(context, args) {
+      expect(args).toEqual({ source: "party" });
+      const revision = context.variables.revision === 1 ? 1
+        : context.variables.revision === 2 ? 2
+        : 0;
+      const option = (key: string, label: string, enabled = true) => ({
+        key,
+        label,
+        enabled,
+        data: { key, revision },
+      });
+      if (revision === 1) {
+        return [option("b", "Beta live"), option("a", "Alpha live"), option("x", "Locked live", false)];
+      }
+      if (revision === 2) return [option("b", "Beta only")];
+      return [option("a", "Alpha"), option("x", "Locked", false), option("b", "Beta")];
+    },
+  };
+  if (withResolver) {
+    handler.resolve = (context, args, result): ExtensionCommandResult => {
+      expect(args).toEqual({ source: "party" });
+      const ext = context.ext as {
+        party: string[];
+        resolves: JsonValue[];
+        cancellations: number;
+      };
+      const receipt = Math.floor(context.random() * 1_000_000);
+      if (result.kind === "cancel") {
+        return {
+          ext: {
+            ...ext,
+            cancellations: ext.cancellations + 1,
+            resolves: [...ext.resolves, { kind: "cancel", receipt }],
+          },
+          writes: { "resolver.kind": "cancel" },
+        };
+      }
+      const data = result.data as { key: string; revision: number };
+      return {
+        ext: {
+          ...ext,
+          party: ext.party.filter((key) => key !== result.key),
+          resolves: [...ext.resolves, { ...result, receipt }],
+        },
+        writes: {
+          "resolver.kind": "select",
+          "resolver.dataRevision": data.revision,
+        },
+      };
+    };
+  }
+  return {
+    initial: { party: ["a", "b"], resolves: [], cancellations: 0 },
+    choices: { "demo.party": handler },
+  };
+}
+
+/** A parallel choice opens before a lexically-later parallel changes the
+ * provider's live input. On the next reducer tick the list is rebuilt. */
+function dynamicChoiceProject(revision: 1 | 2 = 1): Project {
+  return projectWithEvents([
+    {
+      id: "a-choice",
+      x: 1,
+      y: 1,
+      pages: [
+        {
+          trigger: "parallel",
+          commands: [partyChoice(), { op: "switch", id: "choice.done", value: true }],
+        },
+        { trigger: "action", commands: [], condition: { switch: "choice.done" } },
+      ],
+    },
+    {
+      id: "z-refresh",
+      x: 1,
+      y: 2,
+      pages: [
+        {
+          trigger: "parallel",
+          commands: [
+            {
+              op: "if",
+              if: { kind: "worldIdle" },
+              then: [{ op: "switch", id: "observer.idle", value: true }],
+              else: [{ op: "switch", id: "observer.busy", value: true }],
+            },
+            { op: "variable", id: "revision", set: { op: "set", value: revision } },
+            { op: "switch", id: "refresh.done", value: true },
+          ],
+        },
+        { trigger: "action", commands: [], condition: { switch: "refresh.done" } },
+      ],
+    },
+  ]);
+}
+
+function choiceModal(state: SessionState) {
+  const modal = state.interp.modal;
+  expect(modal?.kind).toBe("choices");
+  if (modal?.kind !== "choices") throw new Error("expected choices modal");
+  return modal;
 }
 
 describe("KB1 extension commands and conditions", () => {
@@ -96,9 +239,136 @@ describe("KB1 extension commands and conditions", () => {
     expect(after.sw.switches["condition-passed"]).toBe(true);
   });
 
+  test("a live choice refreshes every tick, follows its stable key, blocks disabled confirmation, and resolves atomically", () => {
+    const p = dynamicChoiceProject();
+    const session = createSession(p, 60, { extensions: partyExtensions() });
+    let state = startSession(p, session);
+
+    state = step(session, state);
+    const retainedOpen = state;
+    const retainedJson = JSON.stringify(retainedOpen);
+    expect(choiceModal(state)).toMatchObject({
+      prompt: "Choose for Player",
+      options: ["Alpha", "Locked", "Beta"],
+      keys: ["a", "x", "b"],
+      enabled: [true, false, true],
+      index: 0,
+      cancellable: true,
+    });
+    expect(state.interp.main).toBeNull();
+    expect(state.sw.switches["observer.busy"]).toBe(true);
+    expect(state.sw.switches["observer.idle"]).toBeUndefined();
+    expect(isSessionWorldIdle(state)).toBe(false);
+
+    const beforeMove = [state.move.tx, state.move.ty, state.move.px, state.move.py];
+    state = step(session, state, { buttons: RIGHT });
+    expect([state.move.tx, state.move.ty, state.move.px, state.move.py]).toEqual(beforeMove);
+    expect(choiceModal(state)).toMatchObject({
+      options: ["Beta live", "Alpha live", "Locked live"],
+      keys: ["b", "a", "x"],
+      enabled: [true, true, false],
+      index: 1,
+    });
+    expect(JSON.stringify(retainedOpen)).toBe(retainedJson);
+
+    state = step(session, state, { buttons: 0, downEdge: true });
+    expect(choiceModal(state).index).toBe(2);
+    const beforeDisabled = state.ext;
+    state = step(session, state, { buttons: 0, confirmEdge: true });
+    expect(choiceModal(state).index).toBe(2);
+    expect(state.ext).toEqual(beforeDisabled);
+    expect(state.sw.variables["choice.key"]).toBeUndefined();
+    expect(state.sw.variables["resolver.kind"]).toBeUndefined();
+    expect(state.sw.switches["choice.done"]).toBeUndefined();
+
+    state = step(session, state, { buttons: 0, downEdge: true });
+    expect(choiceModal(state).index).toBe(0);
+    state = step(session, state, { buttons: 0, confirmEdge: true });
+    expect(state.interp.modal).toBeNull();
+    expect(state.sw.variables).toMatchObject({
+      "choice.index": 0,
+      "choice.key": "b",
+      "choice.cancelled": 0,
+      "resolver.kind": "select",
+      "resolver.dataRevision": 1,
+    });
+    expect(state.ext).toMatchObject({
+      party: ["a"],
+      cancellations: 0,
+      resolves: [{ kind: "select", index: 0, key: "b", data: { key: "b", revision: 1 } }],
+    });
+    expect(state.sw.switches["choice.done"]).toBe(true);
+    expect(isSessionWorldIdle(state)).toBe(true);
+  });
+
+  test("a disappearing selected key suppresses the same-frame confirm until the replacement row has been shown", () => {
+    const p = dynamicChoiceProject(2);
+    const session = createSession(p, 60, { extensions: partyExtensions() });
+    let state = step(session, startSession(p, session));
+    expect(choiceModal(state)).toMatchObject({ keys: ["a", "x", "b"], index: 0 });
+
+    state = step(session, state, { buttons: 0, confirmEdge: true });
+    expect(choiceModal(state)).toMatchObject({
+      options: ["Beta only"],
+      keys: ["b"],
+      index: 0,
+    });
+    expect(state.sw.variables["choice.key"]).toBeUndefined();
+    expect((state.ext as { resolves: JsonValue[] }).resolves).toEqual([]);
+
+    state = step(session, state, { buttons: 0, confirmEdge: true });
+    expect(state.interp.modal).toBeNull();
+    expect(state.sw.variables["choice.key"]).toBe("b");
+    expect((state.ext as { resolves: JsonValue[] }).resolves).toHaveLength(1);
+  });
+
+  test("cancel writes explicit sentinels and reaches the resolver; non-cancellable cancel is ignored", () => {
+    const cancellable = project([partyChoice(), { op: "erase" }]);
+    const session = createSession(cancellable, 60, { extensions: partyExtensions() });
+    let state = step(session, startSession(cancellable, session));
+    state = step(session, state, { buttons: 0, cancelEdge: true });
+    expect(state.interp.modal).toBeNull();
+    expect(state.sw.variables).toMatchObject({
+      "choice.index": -1,
+      "choice.key": "",
+      "choice.cancelled": 1,
+      "resolver.kind": "cancel",
+    });
+    expect(state.ext).toMatchObject({ cancellations: 1, resolves: [{ kind: "cancel" }] });
+
+    const fixed = project([partyChoice(false), { op: "erase" }]);
+    const fixedSession = createSession(fixed, 60, { extensions: partyExtensions() });
+    let fixedState = step(fixedSession, startSession(fixed, fixedSession));
+    fixedState = step(fixedSession, fixedState, { buttons: 0, cancelEdge: true });
+    expect(choiceModal(fixedState)).toMatchObject({ index: 0, cancellable: false });
+    expect(fixedState.sw.variables["choice.cancelled"]).toBeUndefined();
+    expect((fixedState.ext as { resolves: JsonValue[] }).resolves).toEqual([]);
+  });
+
+  test("direct result writes work when the choice resolver is omitted", () => {
+    const p = project([partyChoice(false), { op: "erase" }]);
+    const session = createSession(p, 60, { extensions: partyExtensions(false) });
+    let state = step(session, startSession(p, session));
+    state = step(session, state, { buttons: 0, confirmEdge: true });
+    expect(state.interp.modal).toBeNull();
+    expect(state.ext).toEqual({ party: ["a", "b"], resolves: [], cancellations: 0 });
+    expect(state.sw.variables).toMatchObject({
+      "choice.index": 0,
+      "choice.key": "a",
+      "choice.cancelled": 0,
+    });
+    expect(state.sw.variables["resolver.kind"]).toBeUndefined();
+  });
+
   test("createSession lists every unregistered call; preview no-op is explicit", () => {
     const commands: Command[] = [
       { op: "ext", call: "demo.missing_command", args: null },
+      {
+        op: "extChoice",
+        call: "demo.missing_choice",
+        args: null,
+        prompt: "Preview",
+      },
       {
         op: "if",
         if: { kind: "ext", call: "demo.missing_condition", args: [] },
@@ -108,14 +378,151 @@ describe("KB1 extension commands and conditions", () => {
     ];
     const p = project(commands);
     expect(() => createSession(p)).toThrow(
-      "createSession: unregistered extension calls: command demo.missing_command, condition demo.missing_condition",
+      "createSession: unregistered extension calls: choice demo.missing_choice, command demo.missing_command, condition demo.missing_condition",
     );
 
     const preview = createSession(p, 60, { extensions: { allowUnknown: true } });
     const state = step(preview, startSession(p, preview));
     expect(state.ext).toBeNull();
+    expect(state.interp.modal).toBeNull();
     expect(state.sw.switches["preview-false"]).toBe(true);
     expect(state.sw.switches["wrong"]).toBeUndefined();
+  });
+
+  for (const scenario of [
+    {
+      name: "a non-array provider result",
+      raw: null,
+      message: "options must return an array",
+    },
+    {
+      name: "a non-object option",
+      raw: [null],
+      message: "option 0 must be an object",
+    },
+    {
+      name: "an empty key",
+      raw: [{ key: "", label: "A" }],
+      message: "option 0.key must be a non-empty string",
+    },
+    {
+      name: "duplicate stable keys",
+      raw: [{ key: "a", label: "A" }, { key: "a", label: "Again" }],
+      message: "option key \"a\" is duplicated",
+    },
+    {
+      name: "an empty label",
+      raw: [{ key: "a", label: "" }],
+      message: "option 0.label must be a non-empty string",
+    },
+    {
+      name: "a non-boolean enabled flag",
+      raw: [{ key: "a", label: "A", enabled: "yes" }],
+      message: "option 0.enabled must be a boolean",
+    },
+    {
+      name: "non-JSON option data",
+      raw: [{ key: "a", label: "A", data: { bad: Number.POSITIVE_INFINITY } }],
+      message: "option 0.data: $.bad: finite number required",
+    },
+    {
+      name: "a non-cancellable list with no enabled row",
+      raw: [{ key: "a", label: "A", enabled: false }],
+      message: "must provide an enabled option when cancel is false",
+    },
+  ] as const) {
+    test(`an extension choice rejects ${scenario.name}`, () => {
+      const p = project([{
+        op: "extChoice",
+        call: "demo.invalid",
+        args: null,
+        prompt: "Invalid",
+        cancel: false,
+      }]);
+      const session = createSession(p, 60, {
+        extensions: {
+          choices: {
+            "demo.invalid": { options: () => scenario.raw as never },
+          },
+        },
+      });
+      const initial = startSession(p, session);
+      const retained = JSON.stringify(initial);
+      expect(() => step(session, initial)).toThrow(scenario.message);
+      expect(JSON.stringify(initial)).toBe(retained);
+    });
+  }
+
+  test("a cancellable provider may expose an empty list and cancel it", () => {
+    const p = project([partyChoice(true), { op: "erase" }]);
+    const session = createSession(p, 60, {
+      extensions: {
+        choices: { "demo.party": { options: () => [] } },
+      },
+    });
+    let state = step(session, startSession(p, session));
+    expect(choiceModal(state)).toMatchObject({ options: [], keys: [], enabled: [], index: 0, cancellable: true });
+    state = step(session, state, { buttons: 0, cancelEdge: true });
+    expect(state.interp.modal).toBeNull();
+    expect(state.sw.variables).toMatchObject({
+      "choice.index": -1,
+      "choice.key": "",
+      "choice.cancelled": 1,
+    });
+  });
+
+  test("write destinations are non-empty and distinct", () => {
+    const registered = { extensions: partyExtensions(false) };
+    expect(() => createSession(project([
+      partyChoice(true, { key: "" }),
+    ]), 60, registered)).toThrow("write destinations must be non-empty variable ids");
+    expect(() => createSession(project([
+      partyChoice(true, { index: "same", key: "same" }),
+    ]), 60, registered)).toThrow("write destinations must be distinct");
+  });
+
+  test("resolver writes cannot collide with direct sinks and a failed resolution publishes nothing", () => {
+    const p = project([partyChoice(false, { key: "choice.key" }), { op: "erase" }]);
+    const session = createSession(p, 60, {
+      extensions: {
+        initial: { untouched: true },
+        choices: {
+          "demo.party": {
+            options: () => [{ key: "a", label: "Alpha", data: { nested: [1, 2] } }],
+            resolve: () => ({ ext: { changed: true }, writes: { "choice.key": "shadow" } }),
+          },
+        },
+      },
+    });
+    const open = step(session, startSession(p, session));
+    const retained = JSON.stringify(open);
+    expect(() => step(session, open, { buttons: 0, confirmEdge: true })).toThrow(
+      "result.writes conflicts with extChoice write target \"choice.key\"",
+    );
+    expect(JSON.stringify(open)).toBe(retained);
+    expect(open.ext).toEqual({ untouched: true });
+    expect(open.sw.variables["choice.key"]).toBeUndefined();
+  });
+
+  test("a choice resolver must return an extension result object or undefined", () => {
+    const p = project([partyChoice(false), { op: "erase" }]);
+    const session = createSession(p, 60, {
+      extensions: {
+        choices: {
+          "demo.party": {
+            options: () => [{ key: "a", label: "Alpha" }],
+            resolve: () => 7 as never,
+          },
+        },
+      },
+    });
+    const open = step(session, startSession(p, session));
+    const retained = JSON.stringify(open);
+    expect(() => step(session, open, { buttons: 0, confirmEdge: true })).toThrow(
+      "extension choice \"demo.party\" resolver must return an object or undefined",
+    );
+    expect(JSON.stringify(open)).toBe(retained);
+    expect(open.interp.modal).not.toBeNull();
   });
 
   test("codec, validator, checksum, JSON round-trip and restore all cover ext", () => {
@@ -171,6 +578,59 @@ describe("KB1 extension commands and conditions", () => {
     expect(restoreSessionEnvelope(session, JSON.stringify(current)).ext).toBeNull();
   });
 
+  test("a safe parallel wait containing a future extChoice restores, while the open modal is not saveable", () => {
+    const p = projectWithEvents([{
+      id: "saved-choice",
+      x: 1,
+      y: 1,
+      pages: [
+        {
+          trigger: "parallel",
+          commands: [
+            { op: "wait", seconds: 0.5 },
+            partyChoice(false),
+            { op: "switch", id: "choice.done", value: true },
+          ],
+        },
+        { trigger: "action", commands: [], condition: { switch: "choice.done" } },
+      ],
+    }]);
+    const session = createSession(p, 60, { extensions: partyExtensions() });
+    let direct = startSession(p, session);
+    for (let frame = 0; frame < 10; frame++) direct = step(session, direct);
+    expect(direct.interp.parallels["a/saved-choice"]?.mode).toBe("wait");
+
+    const waitingSnapshot = createSessionSnapshot(session, direct, 0);
+    let restored = restoreSessionEnvelope(session, encodeEnvelope(waitingSnapshot));
+    expect(canonicalJson(createSessionSnapshot(session, restored, 0))).toBe(canonicalJson(waitingSnapshot));
+    for (let frame = 0; frame < 40 && direct.interp.modal === null; frame++) {
+      direct = step(session, direct);
+      restored = step(session, restored);
+      expect(restored).toEqual(direct);
+    }
+    expect(choiceModal(direct)).toMatchObject({ keys: ["a", "x", "b"], index: 0 });
+    expect(restored).toEqual(direct);
+    expect(direct.interp.main).toBeNull();
+    expect(() => createSessionSnapshot(session, direct, 0)).toThrow(/no modal or scene open/);
+
+    direct = step(session, direct, { buttons: 0, confirmEdge: true });
+    restored = step(session, restored, { buttons: 0, confirmEdge: true });
+    expect(restored).toEqual(direct);
+    expect(direct.sw.switches["choice.done"]).toBe(true);
+    expect(direct.sw.variables).toMatchObject({
+      "choice.index": 0,
+      "choice.key": "a",
+      "choice.cancelled": 0,
+    });
+    expect(direct.ext).toMatchObject({ party: ["b"], resolves: [{ kind: "select", key: "a" }] });
+
+    const completed = createSessionSnapshot(session, direct, 0);
+    const completedRestored = restoreSessionEnvelope(session, encodeEnvelope(completed));
+    expect(canonicalJson(createSessionSnapshot(session, completedRestored, 0))).toBe(canonicalJson(completed));
+    expect(completedRestored.ext).toEqual(direct.ext);
+    expect(completedRestored.sw.variables).toEqual(direct.sw.variables);
+  });
+
   test("attract rewind refolds extension state and RNG from a clean session", () => {
     const p = project([{ op: "ext", call: "demo.tick", args: null }]);
     const extensions = {
@@ -208,6 +668,103 @@ describe("KB1 extension commands and conditions", () => {
     expect(rewound.length).toBe(3);
     expect(rewound.state.ext).toEqual({ count: 3, rolls: expect.any(Array) });
     expect(rewound.state).toEqual(fresh.state);
+  });
+
+  test("attract rewind across a resolved extChoice restores its modal, cursor, extension state, and RNG", () => {
+    const p = project([partyChoice(false), { op: "erase" }]);
+    const controller = new AttractController(p, [], {
+      hz: 60,
+      attractEnabled: false,
+      rewindSeconds: 3 / 60,
+      extensions: partyExtensions(),
+    });
+    controller.startPlay();
+    controller.step(0); // open, index 0 (a)
+    controller.step(DOWN); // disabled x
+    controller.step(0); // release
+    controller.step(DOWN); // enabled b
+    controller.step(0); // release; rewind target
+    const beforeSelection = structuredClone(controller.state);
+    expect(choiceModal(controller.state)).toMatchObject({ keys: ["a", "x", "b"], index: 2 });
+
+    controller.step(CIRCLE);
+    controller.step(0);
+    controller.step(0);
+    const completed = structuredClone(controller.state);
+    const completedLength = controller.length;
+    expect(completed.ext).toMatchObject({ party: ["a"], resolves: [{ kind: "select", key: "b" }] });
+
+    controller.step(L);
+    expect(controller.length).toBe(completedLength - 3);
+    expect(controller.state).toEqual(beforeSelection);
+    expect(choiceModal(controller.state)).toMatchObject({ keys: ["a", "x", "b"], index: 2 });
+    expect((controller.state.ext as { resolves: JsonValue[] }).resolves).toEqual([]);
+
+    controller.step(CIRCLE);
+    controller.step(0);
+    controller.step(0);
+    expect(controller.state).toEqual(completed);
+  });
+
+  test("an extChoice journey has the same semantic state at 60/30/20/4 Hz", () => {
+    const run = (hz: 60 | 30 | 20 | 4): string => {
+      const p = dynamicChoiceProject();
+      const session = createSession(p, hz, { extensions: partyExtensions() });
+      let state = startSession(p, session);
+      const ticksPerFrame = 60 / hz;
+      for (let tick = 0; tick < 180; tick += ticksPerFrame) {
+        state = step(session, state, {
+          buttons: 0,
+          downEdge: tick === 60 || tick === 120,
+          confirmEdge: tick === 90 || tick === 150,
+        });
+      }
+      expect(state.interp.frame).toBe(180);
+      expect(state.interp.modal).toBeNull();
+      expect(state.sw.variables).toMatchObject({
+        "choice.index": 0,
+        "choice.key": "b",
+        "choice.cancelled": 0,
+        "resolver.dataRevision": 1,
+      });
+      expect(state.ext).toMatchObject({ party: ["a"], resolves: [{ kind: "select", key: "b" }] });
+      return JSON.stringify({ ...state, frame: 0 });
+    };
+
+    const reference = run(60);
+    for (const hz of [30, 20, 4] as const) expect(run(hz), `${hz} Hz`).toBe(reference);
+  });
+
+  test("attract presents an extChoice boundary and readable hold at every host rate", () => {
+    const p = project([partyChoice(false), { op: "erase" }]);
+    const tape = [0, CIRCLE, 0];
+    const states = ([60, 30, 20, 4] as const).map((hz) => {
+      const controller = new AttractController(p, tape, {
+        hz,
+        tapeHz: 60,
+        endHoldFrames: 60_000,
+        extensions: partyExtensions(),
+      });
+      controller.startAttract();
+      controller.step(0);
+      expect(controller.status().demoFrame, `open boundary at ${hz} Hz`).toBe(1);
+      expect(controller.presentedModal(), `visible choice at ${hz} Hz`).toMatchObject({
+        kind: "choices",
+        keys: ["a", "x", "b"],
+        enabled: [true, false, true],
+        index: 0,
+      });
+
+      controller.step(0);
+      expect(controller.status().demoFrame, `held source at ${hz} Hz`).toBe(1);
+      expect(controller.status().readHold, `read hold at ${hz} Hz`).toBeGreaterThan(0);
+      let guard = 0;
+      while (controller.status().demoFrame < tape.length && guard++ < hz * 5) controller.step(0);
+      expect(controller.status().demoFrame, `completed tape at ${hz} Hz`).toBe(tape.length);
+      expect(controller.state.ext).toMatchObject({ party: ["b"], resolves: [{ kind: "select", key: "a" }] });
+      return controller.state;
+    });
+    expect(states.slice(1)).toEqual([states[0], states[0], states[0]]);
   });
 
   test("transfer resolves map, coordinates and direction from live variables", () => {
@@ -296,11 +853,21 @@ describe("KB1 extension commands and conditions", () => {
     });
   }
 
-  test("schema/editor JSON round-trip preserves ext and battle commands verbatim", () => {
+  test("schema/editor JSON round-trip preserves ext, extChoice, and battle commands verbatim", () => {
     const p = project([{
       op: "if",
       if: { kind: "ext", call: "demo.ready", args: { flag: true } },
-      then: [{ op: "ext", call: "demo.run", args: [1, "two", null] }],
+      then: [
+        { op: "ext", call: "demo.run", args: [1, "two", null] },
+        {
+          op: "extChoice",
+          call: "demo.pick",
+          args: { party: true },
+          prompt: "Choose",
+          cancel: true,
+          write: { index: "picked.index", key: "picked.key", cancelled: "picked.cancelled" },
+        },
+      ],
       else: [{ op: "battle", setup: { enemy: "slime" }, onWin: [{ op: "switch", id: "won", value: true }] }],
     }]);
     const text = serializeProject(p);

@@ -319,6 +319,39 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   shapes do not change. The normative schema identity is refreshed as usual;
   attract replay/rewind re-derives the value from restored state.
 
+## v1 amendment — 2026-09-30 (extension-provided dynamic choices)
+
+- **Dynamic extension choices:** `{ "op": "extChoice", "call":
+  "namespace.name", "args": <json>, "prompt": "...", "cancel"?: boolean,
+  "write"?: { "index"?, "key"?, "cancelled"? } }` opens the existing
+  scrolling choice modal from a registered `ExtensionOptions.choices` handler.
+  Its pure `options` function returns `{key,label,enabled?,data?}` rows from
+  the live read-only extension and built-in banks on every reference tick.
+- Keys are unique stable logical identities and preserve the cursor across
+  reorderings. A removed key clamps the old index and suppresses confirmation
+  for that refresh tick. Disabled rows remain visible and navigable but cannot
+  be confirmed. Row data is opaque finite JSON, defaults to `null`, and is
+  cloned into the selection result. A non-cancellable list must retain an
+  enabled row; only a cancellable list may be empty.
+- Confirm/cancel optionally write result fields to distinct variable ids:
+  selection writes its zero-based index, key, and `cancelled=0`; cancellation
+  writes `-1`, `""`, and `cancelled=1`. The optional `resolve` callback receives
+  either `{kind:"select",index,key,data}` or `{kind:"cancel"}` and may return
+  the same extension/variable/item/gold replacements as an `ext` command.
+  Direct destinations and resolver writes may not overlap; all results validate
+  before one atomic commit visible to the next same-tick instruction.
+- Row generation has no random API. Only `resolve` can draw the saved session
+  RNG, and only on a selection/cancel edge, so idle modal ticks consume no
+  entropy. Unknown handlers are rejected during inline-project creation or
+  sharded-map acquisition; explicit preview `allowUnknown` treats the command
+  as a no-op.
+- The modal captures directional input, blocks its owning fiber and makes
+  `worldIdle` false. Existing safe-point policy forbids saving while it is open;
+  rewind reconstructs it through the ordinary pure reducer, and per-reference-
+  tick refresh preserves behavior across supported host rates. Existing
+  projects and save payloads keep their prior behavior. The normative schema
+  identity is refreshed as usual.
+
 ## v1 runtime note — 2026-09-30 (bounded rewind keyframes)
 
 - `AttractController` now retains process-local full-state keyframes every
