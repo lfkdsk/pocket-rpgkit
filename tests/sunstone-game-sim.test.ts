@@ -389,10 +389,11 @@ simDescribe("sunstone — render budget", () => {
     };
     const nodes = count(world.getTree());
     // 13 NPC images across three map containers + ground/upper/player/root
-    // + message host with both dialog boxes (mounted from boot, hidden while
-    // unused) + fade; comfortably under the R1 558-node design.
+    // + message host with text, choices, and shop panels mounted from boot
+    // (hidden while unused) + fade measured 119 nodes after PR #1. A 130-node
+    // cap leaves 11 nodes of headroom and stays far below the R1 558-node design.
     expect(nodes).toBeGreaterThan(20);
-    expect(nodes).toBeLessThan(90);
+    expect(nodes).toBeLessThan(130);
   });
 
   test("artifact sizes: bounded pak and bundle", async () => {

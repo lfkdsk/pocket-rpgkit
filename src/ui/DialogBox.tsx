@@ -21,7 +21,7 @@
 //   │                   ○ next  │
 //   └───────────────────────────┘
 //
-// Both boxes are Panels coloured by the `theme` prop (ui/theme.ts); without
+// All three boxes are Panels coloured by the `theme` prop (ui/theme.ts); without
 // one they draw the kit's default palette.
 //
 // Portraits. With a `faces` table, a text whose first line opens with a
@@ -123,7 +123,7 @@ export function DialogBox(props: DialogBoxProps) {
   };
   // display: 0 shows, 1 hides (the column and the tab stay mounted).
   const faceDisplay = () => (speaker().name ? 0 : 1);
-  // Both boxes stay mounted and hide while unused: opening a dialog updates
+  // All three boxes stay mounted and hide while unused: opening a dialog updates
   // text rows instead of mounting the box subtree (on a 333 MHz PSP a mount
   // costs about 100 ms of QuickJS time).
   const choicesDisplay = () => (isChoice() ? 0 : 1);

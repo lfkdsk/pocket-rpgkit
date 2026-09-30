@@ -35,7 +35,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // equally, kb4-battle included or not. It also moved when battles and
 // extensions started sharing the session's items and gold (the engine's
 // shared write-back path); re-verified with src/ui/battle/ moved out: equal.
-const EXPECTED_BYTES = 428_778;
+// PR #1's persistent text/choice/shop branches add 426 bytes to the shared
+// DialogBox implementation; this is the measured post-build Sunstone bundle.
+const EXPECTED_BYTES = 429_204;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {
