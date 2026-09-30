@@ -84,9 +84,11 @@ describe("KB1 extension commands and conditions", () => {
       },
     });
     const before = startSession(p, session);
+    const retainedBefore = JSON.stringify(before);
     const expected = rngNext(before.sw.rng);
     const after = step(session, before);
 
+    expect(JSON.stringify(before)).toBe(retainedBefore);
     expect(before.ext).toEqual({ count: 0 });
     expect(after.ext).toEqual({ count: 2 });
     expect(after.sw.variables["demo.roll"]).toBe(Math.floor(expected.value * 1_000_000));

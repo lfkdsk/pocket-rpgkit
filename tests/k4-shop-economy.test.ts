@@ -232,6 +232,42 @@ describe("B1-test: Tuxemon economy census shape (multi-shop, save round trip)", 
     expect(itemRows(state)).toEqual(["potion", "tm_avalanche", "tuxeball_diurnal"]);
   });
 
+  test("buying and selling never mutate retained item or finite-stock banks", () => {
+    const session = createSession(project, 60);
+    let state = startSession(
+      project,
+      session,
+      createSwitchState({ gold: 5_000, items: { potion: 2 } }),
+    );
+
+    state = tick(session, state, { confirmEdge: true });
+    state = seek(session, state, (row) => row.kind === "item" && row.item === "tm_avalanche");
+    const beforeBuy = state;
+    const beforeBuyJson = JSON.stringify(beforeBuy);
+    state = tick(session, state, { confirmEdge: true });
+    expect(JSON.stringify(beforeBuy)).toBe(beforeBuyJson);
+    expect(beforeBuy.sw.items.tm_avalanche).toBeUndefined();
+    expect(beforeBuy.sw.shopStock["spyder_cotton_tech:tm_avalanche"]).toBeUndefined();
+    expect(state.sw.items.tm_avalanche).toBe(1);
+    expect(state.sw.shopStock["spyder_cotton_tech:tm_avalanche"]).toBe(0);
+
+    state = tick(session, state, { cancelEdge: true }); // north -> south
+    state = tick(session, state, { confirmEdge: true });
+    state = tick(session, state, { cancelEdge: true }); // south -> north
+    state = tick(session, state, { confirmEdge: true });
+    state = seek(session, state, (row) => row.kind === "sell");
+    state = tick(session, state, { confirmEdge: true });
+    state = seek(session, state, (row) => row.kind === "item" && row.item === "tm_avalanche");
+    const beforeSell = state;
+    const beforeSellJson = JSON.stringify(beforeSell);
+    state = tick(session, state, { confirmEdge: true });
+    expect(JSON.stringify(beforeSell)).toBe(beforeSellJson);
+    expect(beforeSell.sw.items.tm_avalanche).toBe(1);
+    expect(beforeSell.sw.shopStock["spyder_cotton_tech:tm_avalanche"]).toBe(0);
+    expect(state.sw.items.tm_avalanche).toBe(0);
+    expect(state.sw.shopStock["spyder_cotton_tech:tm_avalanche"]).toBe(1);
+  });
+
   test(
     "two shops sell the same item back at different prices, a finite-stock good survives a " +
       "real save/restore round trip and restocks on sell-back, and a save checkpoint replays identically",

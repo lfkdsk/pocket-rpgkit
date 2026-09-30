@@ -195,6 +195,31 @@ describe("KB2 battle processing", () => {
     expect(Object.values(state.interp.parallels).some((fiber) => fiber.mode === "external")).toBe(false);
   });
 
+  test("queued battle completion never mutates any retained session state", () => {
+    const p = projectWithEvents([
+      parallelBattleEvent("z-second", { enemyHp: 1 }),
+      parallelBattleEvent("a-first", { enemyHp: 1 }),
+    ]);
+    const session = createSession(p, 60, { battle: toyBattleRules });
+    const retained: Array<{ state: SessionState; json: string }> = [];
+    let state = startSession(p, session);
+
+    for (let frame = 0; frame < 240; frame++) {
+      retained.push({ state, json: JSON.stringify(state) });
+      const attack = state.scene !== null && toyState(state.scene.state).phase === "choice";
+      state = step(session, state, attack ? CIRCLE : 0);
+      if (
+        state.scene === null && state.interp.pendingBattles.length === 0 &&
+        state.sw.switches["done.a-first"] && state.sw.switches["done.z-second"]
+      ) break;
+    }
+
+    expect(state.sw.switches["toy.result.win"]).toBe(true);
+    expect(state.ext).toEqual({ toyStarts: 2, toyResults: ["win", "win"] });
+    expect(state.interp.pendingBattles).toEqual([]);
+    for (const previous of retained) expect(JSON.stringify(previous.state)).toBe(previous.json);
+  });
+
   test("a main request precedes same-tick parallels, whose keys sort ascending", () => {
     const p = project({ enemyHp: 1 }, [
       parallelBattleEvent("z-last", { enemyHp: 1 }),

@@ -274,7 +274,9 @@ export function syncPages(
  *  given, receives the active page's moveType of every event that has an
  *  active page at `facing` (erased or not), as the session's motion table
  *  would. With `detachPatrol` a page switch gives the patrol template its
- *  own copy of the new route, as a copy of the returned state would. */
+ *  own copy of the new route, as a copy of the returned state would. The
+ *  safe default detaches it; callers may opt out only when they immediately
+ *  deep-clone the result before any route can advance. */
 export function syncPagesInPlace(
   s: CharsState,
   events: readonly KeyedEvent[],
@@ -286,7 +288,7 @@ export function syncPagesInPlace(
   facing?: Facing,
   extension?: ExtensionScope,
   motion?: Record<string, MotionType>,
-  detachPatrol = false,
+  detachPatrol = true,
 ): SyncResult {
   const abortedWaiters: string[] = [];
   const liveSlot = new Array<boolean>(events.length);

@@ -554,6 +554,46 @@ describe("I1-fix2 — char motion folds fixed reference ticks", () => {
 });
 
 describe("character reducer purity", () => {
+  test("a page-switch patrol template is detached by default", () => {
+    const npc: GameEvent = {
+      id: "npc",
+      x: 3,
+      y: 3,
+      pages: [
+        {
+          trigger: "action",
+          sprite: "a",
+          blocks: true,
+          moveRoute: route(["moveLeft"], true),
+          commands: [],
+        },
+        {
+          condition: { switch: "second-page" },
+          trigger: "action",
+          sprite: "a",
+          blocks: true,
+          moveRoute: route(["moveRight", "wait"], true),
+          commands: [],
+        },
+      ],
+    };
+    const map = makeMap([npc]);
+    const first = synced(map);
+    const switched = syncPages(
+      first,
+      map,
+      createSwitchState({ switches: { "second-page": true } }),
+      CFG,
+      new Set(),
+    ).state;
+    const current = switched.chars.npc!;
+
+    expect(current.pageIndex).toBe(1);
+    expect(current.route).not.toBe(current.patrol);
+    current.route!.pc = 1;
+    expect(current.patrol!.pc).toBe(0);
+  });
+
   test("advancing an active route never mutates retained input states", () => {
     const map = makeMap([ev("npc", 3, 3, {
       moveRoute: route(["moveRight", "wait", "moveLeft"], true),

@@ -847,10 +847,12 @@ function advanceBattleScene(
   // B1 (fix 3): a battle completion's numeric write shares
   // the interpreter's finite-safe-integer normalizer, same as an ext
   // command's writes and every authored variable/gold/item command.
+  const variables = writes.length > 0 ? ownRecord(s.interp.sw, "variables") : null;
   for (const [id, value] of writes) {
-    s.interp.sw.variables[id] = typeof value === "number" ? clampFiniteVar(value) : value;
+    variables![id] = typeof value === "number" ? clampFiniteVar(value) : value;
   }
-  for (const [id, value] of switches) s.interp.sw.switches[id] = value;
+  const switchBank = switches.length > 0 ? ownRecord(s.interp.sw, "switches") : null;
+  for (const [id, value] of switches) switchBank![id] = value;
   if (items !== undefined) s.interp.sw.items = items;
   if (gold !== undefined) s.interp.sw.gold = gold;
   if (scene.pausedTicks > 0) {

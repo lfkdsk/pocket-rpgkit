@@ -1608,10 +1608,11 @@ function runExtensionCommand(
     ? undefined
     : replaceItemCounts(s.sw.items, itemReplacements, w.inventory);
   extension.ext = nextExt;
+  const variables = writes.length > 0 ? ownRecord(s.sw, "variables") : null;
   for (const [id, value] of writes) {
     // B1 (fix 3): an ext command's numeric write shares the same
     // finite-safe-integer normalizer as every other variable write.
-    s.sw.variables[id] = typeof value === "number" ? clampFiniteVar(value) : value;
+    variables![id] = typeof value === "number" ? clampFiniteVar(value) : value;
   }
   if (items !== undefined) s.sw.items = items;
   if (gold !== undefined) s.sw.gold = gold;
@@ -1769,22 +1770,23 @@ function runFiber(
         if (row.kind === "item" && stage === "buy") {
           if (row.canAfford && !row.atCap) {
             s.sw.gold = clampFiniteVar(s.sw.gold - row.price);
-            s.sw.items[row.item] = clampFiniteVar((s.sw.items[row.item] ?? 0) + 1);
+            const items = ownRecord(s.sw, "items");
+            items[row.item] = clampFiniteVar((items[row.item] ?? 0) + 1);
             if (row.stock !== null) {
-              s.sw.shopStock[shopStockKey(ins.id, row.item)] = clampFiniteVar(row.stock - 1);
+              ownRecord(s.sw, "shopStock")[shopStockKey(ins.id, row.item)] = clampFiniteVar(row.stock - 1);
             }
           }
         } else if (row.kind === "item" && stage === "sell") {
           // B4: an unsellable row (dimmed, still navigable under
           // sellList:"disable") cannot be confirmed sold.
           if (row.sellable) {
-            s.sw.items[row.item] = clampFiniteVar(Math.max(0, row.owned - 1));
+            ownRecord(s.sw, "items")[row.item] = clampFiniteVar(Math.max(0, row.owned - 1));
             s.sw.gold = clampFiniteVar(s.sw.gold + row.price);
             const good = ins.goods.find((g) => g.item === row.item && g.stock !== undefined);
             if (good) {
               const key = shopStockKey(ins.id, row.item);
               const current = keyedValue(s.sw.shopStock, key) ?? good.stock!;
-              s.sw.shopStock[key] = clampFiniteVar(current + 1);
+              ownRecord(s.sw, "shopStock")[key] = clampFiniteVar(current + 1);
             }
           }
         } else if (row.kind === "sell") {
