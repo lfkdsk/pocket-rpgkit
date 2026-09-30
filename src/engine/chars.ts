@@ -33,9 +33,11 @@
 
 import {
   activeIndexAt,
+  effectiveEventAppearance,
   eventKey,
   randInt,
   type ConditionContext,
+  type EventAppearanceState,
   type ExtensionScope,
   type KeyedEvent,
   type SwitchState,
@@ -248,6 +250,7 @@ export function syncPages(
   facing?: Facing,
   extension?: ExtensionScope,
   conditionContext?: ConditionContext,
+  appearances?: Readonly<Record<string, EventAppearanceState>>,
 ): { state: CharsState; result: SyncResult } {
   const s = cloneChars(s0);
   const events: KeyedEvent[] = [];
@@ -269,6 +272,7 @@ export function syncPages(
     undefined,
     true,
     conditionContext,
+    appearances,
   );
   return { state: s, result };
 }
@@ -295,6 +299,7 @@ export function syncPagesInPlace(
   motion?: Record<string, MotionType>,
   detachPatrol = true,
   conditionContext?: ConditionContext,
+  appearances?: Readonly<Record<string, EventAppearanceState>>,
 ): SyncResult {
   const abortedWaiters: string[] = [];
   const liveSlot = new Array<boolean>(events.length);
@@ -315,6 +320,7 @@ export function syncPagesInPlace(
       const oy = placed ? placed.y : ev.y;
       const initialFacing: Dir4 = placed?.dir ? DIR4[placed.dir] : (page.dir ? DIR4[page.dir] : 0);
       OWNED.get(s)?.add(ev.id);
+      const appearance = appearances?.[ev.id];
       s.chars[ev.id] = {
         id: ev.id,
         tx: ox,
@@ -326,7 +332,12 @@ export function syncPagesInPlace(
         moving: false,
         stepDir: initialFacing,
         pageIndex: index,
-        visible: page.sprite != null,
+        visible: appearance === undefined
+          ? page.sprite != null
+          : effectiveEventAppearance(
+              { pageIndex: index, sprite: page.sprite ?? null },
+              appearance,
+            ).visible,
         blocks: page.blocks === true,
         thinkIn: 0,
         route: makePatrol(page.moveRoute),
@@ -335,7 +346,13 @@ export function syncPagesInPlace(
       continue;
     }
 
-    const visible = page.sprite != null;
+    const appearance = appearances?.[ev.id];
+    const visible = appearance === undefined
+      ? page.sprite != null
+      : effectiveEventAppearance(
+          { pageIndex: index, sprite: page.sprite ?? null },
+          appearance,
+        ).visible;
     const blocks = page.blocks === true;
     if (existing.visible === visible && existing.blocks === blocks && existing.pageIndex === index) continue;
     existing = ownChar(s, ev.id);

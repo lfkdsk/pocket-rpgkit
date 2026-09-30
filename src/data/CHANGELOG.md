@@ -352,6 +352,31 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   projects and save payloads keep their prior behavior. The normative schema
   identity is refreshed as usual.
 
+## v1 amendment — 2026-09-30 (runtime appearance, visual layers, tile properties)
+
+- **Change Character Appearance:** `appearance` targets the player, the
+  running event, or a named event and may replace its walking `sprite`,
+  0..255 `opacity`, and/or `visible` flag. `null` restores a field's default.
+  Player appearance is project-wide and `saveDefault:true` records a new
+  sprite reset baseline; event appearance lasts only until that event changes
+  page. `{ kind: "appearance", target, sprite }` compares the effective key.
+- **Prepackaged visual layers:** `layer` changes `visible` and/or `variant`
+  for a named `GameAssets.layers` entry. Reserved `ground`/`upper` bands,
+  additional below/above world bands, and viewport-space screen overlays are
+  supported by both eager and streamed map sources. Art remains immutable and
+  build-time cooked; switching rebinds stable nodes or resident streamed
+  textures instead of baking a map at runtime.
+- **Runtime tile passage:** `tileProperty` sparsely replaces one current-map
+  cell's `passage`, one-sided `enter`, and/or `exit` masks. `null` restores the
+  authored field and an empty edge list explicitly opens that half. Player
+  movement, NPC movement and path search share the derived table. The matching
+  condition checks requested explicit fields, including absence via `null`.
+- Layer, event-appearance and tile-property records are per map visit and are
+  cleared by every transfer (including same-map); player appearance crosses
+  maps. All records participate in save validation, save restore, attract
+  rewind and fixed-rate replay. Older v1 documents and saves may omit every
+  new field and retain their previous behavior.
+
 ## v1 runtime note — 2026-09-30 (bounded rewind keyframes)
 
 - `AttractController` now retains process-local full-state keyframes every

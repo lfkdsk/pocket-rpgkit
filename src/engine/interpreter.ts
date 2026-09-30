@@ -52,6 +52,7 @@ import type {
   PageCondition,
   RouteTarget,
   ShopGood,
+  TilePropertyOverride,
   TransferCoordinate,
   TransferDirection,
   TransferMap,
@@ -108,6 +109,41 @@ export function randInt(rngState: number, min: number, max: number): { value: nu
 
 export type SelfKey = "A" | "B" | "C" | "D";
 
+/** Sparse player appearance state. Missing keys retain the baked defaults,
+ * which keeps projects that never use the command byte-for-byte unchanged. */
+export interface PlayerAppearanceState {
+  defaultSprite?: string;
+  sprite?: string;
+  opacity?: number;
+  visible?: boolean;
+}
+
+/** One event override, pinned to the page on which it was issued. */
+export interface EventAppearanceState {
+  pageIndex: number;
+  sprite?: string;
+  opacity?: number;
+  visible?: boolean;
+}
+
+/** Authored page appearance supplied to condition evaluation by Session. */
+export interface EventPageAppearance {
+  pageIndex: number;
+  sprite: string | null;
+}
+
+/** Per-visit visual layer selection. Missing fields mean asset defaults. */
+export interface LayerState {
+  visible?: boolean;
+  variant?: string;
+}
+
+export interface EffectiveAppearance {
+  sprite: string | null;
+  opacity: number;
+  visible: boolean;
+}
+
 export interface SwitchState {
   switches: Record<string, boolean>;
   /** `${mapId}/${eventId}` -> held self switch (undefined = none). R2 v1
@@ -127,12 +163,16 @@ export interface SwitchState {
   /** The player's name, substituted for the {name} text token. Part of the
    *  save snapshot; a fresh session seeds it from Project.playerName. */
   playerName: string;
+  /** Project-wide player walking appearance. Absent is the baked player
+   *  art at full opacity. `defaultSprite` is the reset baseline while
+   *  `sprite` is the current MV-style Change Image override. */
+  playerAppearance?: PlayerAppearanceState;
   /** Mulberry32 cursor. Part of the save snapshot (R2 §3.1). */
   rng: number;
 }
 
 export function createSwitchState(init?: Partial<SwitchState>): SwitchState {
-  return {
+  const state: SwitchState = {
     switches: keyedRecord(init?.switches),
     self: keyedRecord(init?.self),
     // B1 (fix 3): this public constructor is also the state a
@@ -148,10 +188,68 @@ export function createSwitchState(init?: Partial<SwitchState>): SwitchState {
     playerName: init?.playerName ?? DEFAULT_PLAYER_NAME,
     rng: init?.rng ?? 0x12345678,
   };
+  if (init?.playerAppearance) state.playerAppearance = { ...init.playerAppearance };
+  return state;
 }
 
 function keyedValue<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
   return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
+function hasOwn(record: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/** Effective player appearance. A null sprite means the manifest's baked
+ * player frames, rather than an invisible character. */
+export function effectivePlayerAppearance(s: SwitchState): EffectiveAppearance {
+  const a = s.playerAppearance;
+  return {
+    sprite: a?.sprite ?? a?.defaultSprite ?? null,
+    opacity: a?.opacity ?? 255,
+    visible: a?.visible ?? true,
+  };
+}
+
+/** Effective event appearance for a known active page. An override is
+ * ignored as soon as its issuing page is no longer active. */
+export function effectiveEventAppearance(
+  page: EventPageAppearance,
+  override?: Readonly<EventAppearanceState>,
+): EffectiveAppearance {
+  const current = override?.pageIndex === page.pageIndex ? override : undefined;
+  const sprite = current?.sprite ?? page.sprite;
+  return {
+    sprite,
+    opacity: current?.opacity ?? 255,
+    visible: sprite !== null && (current?.visible ?? true),
+  };
+}
+
+function targetEventId(target: Exclude<RouteTarget, "player">, eventKey: string): string {
+  if (target !== "this") return target.event;
+  const slash = eventKey.indexOf("/");
+  return slash < 0 ? eventKey : eventKey.slice(slash + 1);
+}
+
+function dirMask(dirs: readonly Dir[]): number {
+  const bits: Record<Dir, number> = { down: 1, left: 2, up: 4, right: 8 };
+  let mask = 0;
+  for (const dir of dirs) mask |= bits[dir];
+  return mask;
+}
+
+function tileOverrideFieldMatches(
+  override: Readonly<TilePropertyOverride> | undefined,
+  field: keyof TilePropertyOverride,
+  expected: TilePropertyOverride[typeof field] | null | undefined,
+): boolean {
+  if (expected === undefined) return true;
+  if (expected === null) return override === undefined || !hasOwn(override, field);
+  if (!override || !hasOwn(override, field)) return false;
+  const actual = override[field];
+  if (Array.isArray(expected)) return Array.isArray(actual) && dirMask(actual) === dirMask(expected);
+  return actual === expected;
 }
 
 // --- conditions and page selection ------------------------------------------
@@ -161,6 +259,14 @@ function keyedValue<T>(record: Readonly<Record<string, T>>, key: string): T | un
  * and deliberately never serialized. */
 export interface ConditionContext {
   worldIdle: boolean;
+  /** Current page index and authored sprite for each live map event. */
+  eventPages?: Readonly<Record<string, EventPageAppearance>>;
+  /** Per-visit overrides are separate so an event page switch can discard
+   *  them without changing authored data. */
+  eventAppearances?: Readonly<Record<string, EventAppearanceState>>;
+  tileProperties?: Readonly<Record<string, TilePropertyOverride>>;
+  mapWidth?: number;
+  mapHeight?: number;
 }
 
 export function evalCondition(
@@ -195,6 +301,26 @@ export function evalCondition(
       // A facing condition needs a live player direction. Callers that do
       // not have one cannot prove the condition and therefore fail it.
       return facing !== undefined && facing === FACING_OF_DIR[c.dir];
+    case "appearance": {
+      if (c.target === "player") return effectivePlayerAppearance(s).sprite === c.sprite;
+      const id = targetEventId(c.target, eventKey);
+      const page = context?.eventPages ? keyedValue(context.eventPages, id) : undefined;
+      if (!page) return false;
+      const override = context?.eventAppearances
+        ? keyedValue(context.eventAppearances, id)
+        : undefined;
+      return effectiveEventAppearance(page, override).sprite === c.sprite;
+    }
+    case "tileProperty": {
+      if (!Number.isInteger(c.x) || !Number.isInteger(c.y) || c.x < 0 || c.y < 0 ||
+          context?.mapWidth === undefined || context.mapHeight === undefined ||
+          c.x >= context.mapWidth || c.y >= context.mapHeight) return false;
+      const index = String(c.y * context.mapWidth + c.x);
+      const override = context.tileProperties ? keyedValue(context.tileProperties, index) : undefined;
+      return tileOverrideFieldMatches(override, "passage", c.passage) &&
+        tileOverrideFieldMatches(override, "enter", c.enter) &&
+        tileOverrideFieldMatches(override, "exit", c.exit);
+    }
     case "worldIdle": {
       // Like facing, a low-level caller without the live runtime context
       // cannot prove this derived condition. Negation applies after that
@@ -385,6 +511,23 @@ export type Instr =
       fadeFrames: number;
     }
   | { op: "moveRoute"; target: RouteTarget; wait: boolean; route: MoveRoute }
+  | {
+      op: "appearance";
+      target: RouteTarget;
+      sprite?: string | null;
+      opacity?: number | null;
+      visible?: boolean | null;
+      saveDefault: boolean;
+    }
+  | { op: "layer"; layer: string; visible?: boolean | null; variant?: string | null }
+  | {
+      op: "tileProperty";
+      x: number;
+      y: number;
+      passage?: "pass" | "block" | null;
+      enter?: Dir[] | null;
+      exit?: Dir[] | null;
+    }
   | { op: "common"; id: string }
   | { op: "shop"; id: string; goods: readonly ShopGood[]; sell: boolean; sellList: "disable" | "hide" }
   | { op: "ext"; call: string; args: JsonValue }
@@ -496,6 +639,34 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
         case "moveRoute":
           emit({ op: "moveRoute", target: c.target, wait: c.wait ?? true, route: c.route });
           break;
+        case "appearance":
+          emit({
+            op: "appearance",
+            target: c.target,
+            ...(c.sprite === undefined ? {} : { sprite: c.sprite }),
+            ...(c.opacity === undefined ? {} : { opacity: c.opacity }),
+            ...(c.visible === undefined ? {} : { visible: c.visible }),
+            saveDefault: c.saveDefault ?? false,
+          });
+          break;
+        case "layer":
+          emit({
+            op: "layer",
+            layer: c.layer,
+            ...(c.visible === undefined ? {} : { visible: c.visible }),
+            ...(c.variant === undefined ? {} : { variant: c.variant }),
+          });
+          break;
+        case "tileProperty":
+          emit({
+            op: "tileProperty",
+            x: c.x,
+            y: c.y,
+            ...(c.passage === undefined ? {} : { passage: c.passage }),
+            ...(c.enter === undefined ? {} : { enter: c.enter === null ? null : [...c.enter] }),
+            ...(c.exit === undefined ? {} : { exit: c.exit === null ? null : [...c.exit] }),
+          });
+          break;
         case "common":
           emit({ op: "common", id: c.id });
           break;
@@ -567,6 +738,10 @@ export interface InterpInput {
   /** Live cells of map characters this frame (P1④ NPC motion); event id ->
    *  cell. Events absent from the record stand on their authored x/y. */
   eventCells?: Record<string, Cell>;
+  /** Active page/sprite snapshot used by appearance conditions. The
+   * interpreter overlays its live command state, so a following `if` sees
+   * an appearance command issued earlier in the same reference tick. */
+  eventPages?: Record<string, EventPageAppearance>;
   /** Session/host state that lives outside InterpState but participates in
    *  the derived worldIdle condition. Low-level interpreter users may omit
    *  it when they have no scene, fade, player route, or menu. */
@@ -776,6 +951,10 @@ export interface World {
    * mutate that array must rebuild the World so the cache is invalidated. */
   keyedEvents?: readonly KeyedEvent[];
   slotsById?: ReadonlyMap<string, readonly number[]>;
+  /** Precomputed feature gates for condition context that otherwise needs
+   * per-tick event-page records or tile metadata. */
+  needsEventPages?: boolean;
+  needsTilePropertyContext?: boolean;
   /** Project item catalog (id -> Item), for a shop's price fallback
    *  (goods entries without their own `price` use the item's own) and its
    *  sell price fallback (floor(item.price / 2) when a shop has no
@@ -857,6 +1036,13 @@ export interface InterpState {
    *  commands: event id -> tile + facing. syncPages spawns a later-created
    *  character here instead of the authored x/y. Cleared on map entry. */
   placements: Record<string, { x: number; y: number; dir: Dir | null }>;
+  /** MV Change Image-style event overrides for this map visit. Each entry
+   * is tied to its issuing page and is discarded on the next page change. */
+  eventAppearances?: Record<string, EventAppearanceState>;
+  /** Named visual-layer changes for this map visit. */
+  layers?: Record<string, LayerState>;
+  /** Row-major cell index -> runtime passage/edge replacement. */
+  tileProperties?: Record<string, TilePropertyOverride>;
   /** Sound cues emitted on this frame; the host drains them after step. */
   cues: SoundCue[];
   pendingTransfer: PendingTransfer | null;
@@ -941,9 +1127,58 @@ export function isWorldIdle(
 
 function liveConditionContext(
   s: InterpState,
+  w: World,
   blockers: Readonly<WorldIdleBlockers> | undefined,
+  eventPages?: Readonly<Record<string, EventPageAppearance>>,
 ): ConditionContext {
-  return { worldIdle: isWorldIdle(s, blockers) };
+  const context: ConditionContext = { worldIdle: isWorldIdle(s, blockers) };
+  if (eventPages) {
+    context.eventPages = eventPages;
+    context.eventAppearances = s.eventAppearances;
+  }
+  if (w.needsTilePropertyContext) {
+    context.tileProperties = s.tileProperties;
+    context.mapWidth = w.map.width;
+    context.mapHeight = w.map.height;
+  }
+  return context;
+}
+
+const CONTEXT_EVENT_PAGES = 1;
+const CONTEXT_TILE_PROPERTIES = 2;
+
+function conditionContextFlags(condition: Condition): number {
+  if (condition.kind === "appearance" && condition.target !== "player") {
+    return CONTEXT_EVENT_PAGES;
+  }
+  return condition.kind === "tileProperty" ? CONTEXT_TILE_PROPERTIES : 0;
+}
+
+function pageConditionContextFlags(condition: PageCondition | undefined): number {
+  let flags = 0;
+  for (const clause of condition?.all ?? []) flags |= conditionContextFlags(clause);
+  return flags;
+}
+
+function programContextFlags(program: readonly Instr[]): number {
+  let flags = 0;
+  for (const instruction of program) {
+    if (instruction.op === "appearance" && typeof instruction.target === "object") {
+      flags |= CONTEXT_EVENT_PAGES;
+    } else if (instruction.op === "if") {
+      flags |= conditionContextFlags(instruction.cond);
+    } else if (instruction.op === "shop") {
+      for (const good of instruction.goods) flags |= pageConditionContextFlags(good.condition);
+    } else if (instruction.op === "choices") {
+      for (const branch of instruction.branches) flags |= programContextFlags(branch);
+      if (instruction.cancel) flags |= programContextFlags(instruction.cancel);
+    } else if (instruction.op === "battle") {
+      if (instruction.onWin) flags |= programContextFlags(instruction.onWin);
+      if (instruction.onLose) flags |= programContextFlags(instruction.onLose);
+      if (instruction.onEscape) flags |= programContextFlags(instruction.onEscape);
+    }
+  }
+  return flags;
 }
 
 export function createWorld(
@@ -953,10 +1188,20 @@ export function createWorld(
   options: WorldOptions = {},
 ): World {
   const commonPrograms = new Map<string, Prog>();
-  for (const event of common) commonPrograms.set(event.id, compile(event.commands, hz));
+  let contextFlags = 0;
+  for (const event of common) {
+    const program = compile(event.commands, hz);
+    commonPrograms.set(event.id, program);
+    contextFlags |= programContextFlags(program);
+  }
   const pagePrograms = new Map<string, readonly Prog[]>();
   for (const event of map.events ?? []) {
-    pagePrograms.set(eventKey(map.id, event.id), event.pages.map((page) => compile(page.commands, hz)));
+    const programs = event.pages.map((page) => compile(page.commands, hz));
+    pagePrograms.set(eventKey(map.id, event.id), programs);
+    for (let index = 0; index < event.pages.length; index++) {
+      contextFlags |= pageConditionContextFlags(event.pages[index]!.condition);
+      contextFlags |= programContextFlags(programs[index]!);
+    }
   }
   const orderedEvents = [...(map.events ?? [])]
     .sort((a, b) => (eventIdLess(a.id, b.id) ? -1 : a.id === b.id ? 0 : 1));
@@ -999,6 +1244,8 @@ export function createWorld(
     alwaysScanEvents,
     keyedEvents: keyed.events,
     slotsById: keyed.slotsById,
+    needsEventPages: (contextFlags & CONTEXT_EVENT_PAGES) !== 0,
+    needsTilePropertyContext: (contextFlags & CONTEXT_TILE_PROPERTIES) !== 0,
     items: itemsById,
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
@@ -1089,7 +1336,8 @@ export function cloneInterp(s0: InterpState): InterpState {
     gold: s0.sw.gold,
     playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
     rng: s0.sw.rng,
-  });
+    ...(s0.sw.playerAppearance ? { playerAppearance: { ...s0.sw.playerAppearance } } : {}),
+  }, false);
 }
 
 /** cloneInterp for stepSession's private working copy: the switch-bank
@@ -1105,12 +1353,27 @@ export function shareInterp(s0: InterpState): InterpState {
     gold: s0.sw.gold,
     playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
     rng: s0.sw.rng,
+    ...(s0.sw.playerAppearance ? { playerAppearance: { ...s0.sw.playerAppearance } } : {}),
   };
   SHARED_RECORDS.set(sw, new Set<SwitchRecord>(["switches", "self", "items", "variables", "shopStock"]));
-  return copyInterp(s0, sw);
+  return copyInterp(s0, sw, true);
 }
 
-function copyInterp(s0: InterpState, sw: SwitchState): InterpState {
+function cloneTileProperties(
+  source: Readonly<Record<string, TilePropertyOverride>>,
+): Record<string, TilePropertyOverride> {
+  const out = keyedRecord<TilePropertyOverride>();
+  for (const [index, tile] of Object.entries(source)) {
+    out[index] = {
+      ...tile,
+      ...(tile.enter ? { enter: [...tile.enter] } : {}),
+      ...(tile.exit ? { exit: [...tile.exit] } : {}),
+    };
+  }
+  return out;
+}
+
+function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boolean): InterpState {
   const main = s0.main ? cloneFiber(s0.main) : null;
   const parallels = keyedRecord<Fiber>();
   for (const key of Object.keys(s0.parallels)) parallels[key] = cloneFiber(s0.parallels[key]!);
@@ -1128,6 +1391,19 @@ function copyInterp(s0: InterpState, sw: SwitchState): InterpState {
     touched: keyedRecord(s0.touched),
     inputLocked: s0.inputLocked,
     placements: clonePlacements(s0.placements),
+    ...(s0.eventAppearances ? {
+      eventAppearances: Object.fromEntries(
+        Object.entries(s0.eventAppearances).map(([id, appearance]) => [id, { ...appearance }]),
+      ),
+    } : {}),
+    ...(s0.layers ? {
+      layers: Object.fromEntries(
+        Object.entries(s0.layers).map(([id, layer]) => [id, { ...layer }]),
+      ),
+    } : {}),
+    ...(s0.tileProperties ? {
+      tileProperties: shareTileProperties ? s0.tileProperties : cloneTileProperties(s0.tileProperties),
+    } : {}),
     cues: s0.cues.map((cue) => ({ ...cue })),
     pendingTransfer: s0.pendingTransfer ? { ...s0.pendingTransfer } : null,
     pendingMoveRoutes: s0.pendingMoveRoutes.map((r) => ({
@@ -1260,13 +1536,14 @@ function cancelStaleParallels(
   w: World,
   facing: Facing,
   extension: ExtensionScope,
-  blockers?: Readonly<WorldIdleBlockers>,
+  input: InterpInput,
 ): void {
   for (const key of Object.keys(s.parallels)) {
     const f = s.parallels[key]!;
     const ev = worldEventById(w, key.slice(w.map.id.length + 1));
     const active = ev && !s.erased[key]
-      ? activePage(ev, s.sw, w.map.id, facing, extension, liveConditionContext(s, blockers))
+      ? activePage(ev, s.sw, w.map.id, facing, extension,
+          liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages))
       : null;
     // Same page still active: keep running. A page change (index differs)
     // cancels; scanTriggers restarts a fiber for the new page on this step.
@@ -1313,7 +1590,7 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
       w.map.id,
       input.facing,
       extension,
-      liveConditionContext(s, input.worldIdleBlockers),
+      liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages),
     );
     if (!active) continue;
     const { page, index } = active;
@@ -1594,7 +1871,7 @@ function shopRows(
   state: InterpState,
   eventKey: string,
   extension: ExtensionScope,
-  blockers?: Readonly<WorldIdleBlockers>,
+  input: InterpInput,
 ): ShopRow[] {
   const sw = state.sw;
   if (stage === "buy") {
@@ -1609,7 +1886,7 @@ function shopRows(
         eventKey,
         undefined,
         extension,
-        liveConditionContext(state, blockers),
+        liveConditionContext(state, w, input.worldIdleBlockers, input.eventPages),
       )) continue;
       const price = resolveGoodsPrice(g, w.items);
       const owned = keyedValue(sw.items, g.item) ?? 0;
@@ -1949,6 +2226,167 @@ function resolveTransfer(
   return { map, x, y, dir, fadeFrames: ins.fadeFrames };
 }
 
+function emptyRecord(record: object): boolean {
+  return Object.keys(record).length === 0;
+}
+
+function applyAppearanceCommand(
+  s: InterpState,
+  w: World,
+  f: Fiber,
+  input: InterpInput,
+  ins: Extract<Instr, { op: "appearance" }>,
+): void {
+  if (ins.opacity !== undefined && ins.opacity !== null &&
+      (!Number.isInteger(ins.opacity) || ins.opacity < 0 || ins.opacity > 255)) {
+    s.error = { kind: "content", message: `appearance in ${f.key}: opacity must be an integer from 0 to 255` };
+    return;
+  }
+
+  if (ins.target === "player") {
+    if (ins.saveDefault && ins.sprite === undefined) {
+      s.error = { kind: "content", message: `appearance in ${f.key}: saveDefault requires sprite` };
+      return;
+    }
+    const next: PlayerAppearanceState = { ...(s.sw.playerAppearance ?? {}) };
+    if (ins.saveDefault) {
+      if (ins.sprite === null) delete next.defaultSprite;
+      else next.defaultSprite = ins.sprite!;
+      delete next.sprite;
+    } else if (ins.sprite !== undefined) {
+      if (ins.sprite === null) delete next.sprite;
+      else next.sprite = ins.sprite;
+    }
+    if (ins.opacity !== undefined) {
+      if (ins.opacity === null || ins.opacity === 255) delete next.opacity;
+      else next.opacity = ins.opacity;
+    }
+    if (ins.visible !== undefined) {
+      if (ins.visible === null) delete next.visible;
+      else next.visible = ins.visible;
+    }
+    if (emptyRecord(next)) delete s.sw.playerAppearance;
+    else s.sw.playerAppearance = next;
+    return;
+  }
+
+  if (ins.saveDefault) {
+    s.error = { kind: "content", message: `appearance in ${f.key}: saveDefault is only valid for player` };
+    return;
+  }
+  const eventId = targetEventId(ins.target, f.key);
+  const event = worldEventById(w, eventId);
+  if (!event) {
+    s.error = { kind: "content", message: `appearance in ${f.key}: event ${JSON.stringify(eventId)} does not exist` };
+    return;
+  }
+  const pageIndex = ins.target === "this"
+    ? f.pageIndex
+    : input.eventPages?.[eventId]?.pageIndex;
+  if (pageIndex === undefined || pageIndex < 0) {
+    s.error = { kind: "content", message: `appearance in ${f.key}: event ${JSON.stringify(eventId)} has no active page` };
+    return;
+  }
+  const current = s.eventAppearances?.[eventId];
+  const next: EventAppearanceState = current?.pageIndex === pageIndex
+    ? { ...current }
+    : { pageIndex };
+  if (ins.sprite !== undefined) {
+    if (ins.sprite === null) delete next.sprite;
+    else next.sprite = ins.sprite;
+  }
+  if (ins.opacity !== undefined) {
+    if (ins.opacity === null || ins.opacity === 255) delete next.opacity;
+    else next.opacity = ins.opacity;
+  }
+  if (ins.visible !== undefined) {
+    if (ins.visible === null) delete next.visible;
+    else next.visible = ins.visible;
+  }
+  if (Object.keys(next).length === 1) {
+    if (s.eventAppearances) {
+      delete s.eventAppearances[eventId];
+      if (emptyRecord(s.eventAppearances)) delete s.eventAppearances;
+    }
+  } else {
+    if (!s.eventAppearances) s.eventAppearances = keyedRecord();
+    s.eventAppearances[eventId] = next;
+  }
+}
+
+function applyLayerCommand(s: InterpState, ins: Extract<Instr, { op: "layer" }>): void {
+  const next: LayerState = { ...(s.layers?.[ins.layer] ?? {}) };
+  if (ins.visible !== undefined) {
+    if (ins.visible === null) delete next.visible;
+    else next.visible = ins.visible;
+  }
+  if (ins.variant !== undefined) {
+    if (ins.variant === null) delete next.variant;
+    else next.variant = ins.variant;
+  }
+  if (emptyRecord(next)) {
+    if (s.layers) {
+      delete s.layers[ins.layer];
+      if (emptyRecord(s.layers)) delete s.layers;
+    }
+  } else {
+    if (!s.layers) s.layers = keyedRecord();
+    s.layers[ins.layer] = next;
+  }
+}
+
+function applyTilePropertyCommand(
+  s: InterpState,
+  w: World,
+  f: Fiber,
+  ins: Extract<Instr, { op: "tileProperty" }>,
+): void {
+  if (!Number.isInteger(ins.x) || !Number.isInteger(ins.y) || ins.x < 0 || ins.y < 0 ||
+      ins.x >= w.map.width || ins.y >= w.map.height) {
+    s.error = {
+      kind: "content",
+      message: `tileProperty in ${f.key}: (${ins.x},${ins.y}) outside ${w.map.id} (${w.map.width}x${w.map.height})`,
+    };
+    return;
+  }
+  const key = String(ins.y * w.map.width + ins.x);
+  const record = s.tileProperties ? cloneTileProperties(s.tileProperties) : keyedRecord<TilePropertyOverride>();
+  const next: TilePropertyOverride = { ...(record[key] ?? {}) };
+  if (ins.passage !== undefined) {
+    if (ins.passage === null) delete next.passage;
+    else next.passage = ins.passage;
+  }
+  if (ins.enter !== undefined) {
+    if (ins.enter === null) delete next.enter;
+    else next.enter = [...ins.enter];
+  }
+  if (ins.exit !== undefined) {
+    if (ins.exit === null) delete next.exit;
+    else next.exit = [...ins.exit];
+  }
+  if (emptyRecord(next)) {
+    delete record[key];
+    if (emptyRecord(record)) delete s.tileProperties;
+    else s.tileProperties = record;
+  } else {
+    record[key] = next;
+    s.tileProperties = record;
+  }
+}
+
+/** Drop event visual overrides whose issuing page is no longer active.
+ * Session calls this immediately after page reconciliation. */
+export function clearStaleEventAppearances(
+  s: InterpState,
+  pages: Readonly<Record<string, EventPageAppearance>>,
+): void {
+  if (!s.eventAppearances) return;
+  for (const id of Object.keys(s.eventAppearances)) {
+    if (pages[id]?.pageIndex !== s.eventAppearances[id]!.pageIndex) delete s.eventAppearances[id];
+  }
+  if (emptyRecord(s.eventAppearances)) delete s.eventAppearances;
+}
+
 function runFiber(
   s: InterpState,
   w: World,
@@ -2114,7 +2552,7 @@ function runFiber(
       const prev = s.modal && s.modal.kind === "shop" ? s.modal : null;
       let stage: "buy" | "sell" = prev?.stage ?? "buy";
       let index = prev?.index ?? 0;
-      let rows = shopRows(stage, ins, w, s, f.key, extension, input.worldIdleBlockers);
+      let rows = shopRows(stage, ins, w, s, f.key, extension, input);
       if (rows.length > 0) {
         if (input.upEdge) index = (index + rows.length - 1) % rows.length;
         if (input.downEdge) index = (index + 1) % rows.length;
@@ -2168,7 +2606,7 @@ function runFiber(
         // fall through into the run loop below: the shop closes and the
         // fiber continues past it on the SAME frame (text/choices parity).
       } else {
-        rows = shopRows(stage, ins, w, s, f.key, extension, input.worldIdleBlockers);
+        rows = shopRows(stage, ins, w, s, f.key, extension, input);
         index = rows.length > 0 ? Math.min(index, rows.length - 1) : 0;
         s.modal = { kind: "shop", fiber: f.key, gold: s.sw.gold, sell: ins.sell, stage, index, rows };
         return;
@@ -2204,7 +2642,7 @@ function runFiber(
           f.key,
           input.facing,
           extension,
-          liveConditionContext(s, input.worldIdleBlockers),
+          liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages),
         ) ? top.pc + 1 : ins.onFalse;
         break;
       case "jmp":
@@ -2225,6 +2663,20 @@ function runFiber(
         break;
       case "unlockInput":
         s.inputLocked = false;
+        top.pc++;
+        break;
+      case "appearance":
+        applyAppearanceCommand(s, w, f, input, ins);
+        if (s.error) return;
+        top.pc++;
+        break;
+      case "layer":
+        applyLayerCommand(s, ins);
+        top.pc++;
+        break;
+      case "tileProperty":
+        applyTilePropertyCommand(s, w, f, ins);
+        if (s.error) return;
         top.pc++;
         break;
       case "place": {
@@ -2308,7 +2760,7 @@ function runFiber(
         // Same single-slot rule as text/choices.
         if (s.modal) return;
         f.mode = "shop";
-        const rows = shopRows("buy", ins, w, s, f.key, extension, input.worldIdleBlockers);
+        const rows = shopRows("buy", ins, w, s, f.key, extension, input);
         s.modal = { kind: "shop", fiber: f.key, gold: s.sw.gold, sell: ins.sell, stage: "buy", index: 0, rows };
         return;
       }
@@ -2431,7 +2883,7 @@ export function stepInterpWithExtensionsInPlace(
   s.pendingPlacements = [];
   s.abortedRoutes = [];
 
-  cancelStaleParallels(s, w, input.facing, extension, input.worldIdleBlockers);
+  cancelStaleParallels(s, w, input.facing, extension, input);
   scanTriggers(s, w, input, extension);
   const budget: StepBudget = { remaining: RUNAWAY_STEP_LIMIT };
   const queuedBattleCount = s.pendingBattles.length;

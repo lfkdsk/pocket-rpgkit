@@ -21,10 +21,10 @@ state.
   `approach` move steps (fixed neighbour order, respects all edge guards
   and bodies; the search is sliced across reference ticks to bound QuickJS
   frame cost).
-- `interpreter.ts` — event pages, triggers, the 22-command interpreter
+- `interpreter.ts` — event pages, triggers, the 25-command interpreter
   (the v1 15 plus `lockInput` / `unlockInput` / `place` / `shop` / `ext` /
-  `extChoice` / `battle`), the typewriter clock, the seeded RNG, saveable
-  switch state.
+  `extChoice` / `battle` / `appearance` / `layer` / `tileProperty`), the
+  typewriter clock, the seeded RNG, saveable switch state.
 - `extensions.ts` — namespaced pure command/condition/dynamic-choice handlers,
   the opaque JSON extension slot, validation and save codecs.
 - `battle.ts` — game-owned battle reducer and scene contracts.
@@ -117,6 +117,21 @@ Conventions:
   modals and external requests published earlier in that same tick.
 - **Per-visit locals:** a switch or variable id prefixed `local.`
   is reset on every map entry; it never survives a transfer.
+- **Runtime appearance:** `appearance` changes the effective player/event
+  walking sprite, 0..255 opacity, or visibility. Player state is project-wide
+  and saveable; `saveDefault:true` replaces its reset baseline. Event state is
+  tied to the issuing page and is removed on page change. The matching
+  condition compares the effective sprite key.
+- **Runtime visual layers:** `layer` stores a named layer's visibility and/or
+  prepackaged variant for this map visit. The UI resolves those names through
+  immutable `GameAssets.layers`; every transfer clears the selections.
+- **Runtime tile properties:** `tileProperty` sparsely replaces one cell's
+  passage and entry/exit masks. `sessionPassageTable()` derives and caches the
+  collision table by reducer-record identity, so player, NPC and pathfinding
+  agree without mutating `Session.tables`. Standalone interpreter/mover hosts
+  should call `withTilePropertyOverrides(authored, interp.tileProperties)`.
+  The corresponding condition compares explicit override fields; `null`
+  means that field is absent.
 - **Place and initial facing:** the `place` command relocates
   `"this"` or `{event}` to a tile (and optional facing); a page `dir` sets
   the facing the character shows when that page spawns it or on a page

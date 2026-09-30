@@ -492,6 +492,63 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "target"],
+          "anyOf": [
+            { "required": ["sprite"] },
+            { "required": ["opacity"] },
+            { "required": ["visible"] }
+          ],
+          "properties": {
+            "op": { "const": "appearance" },
+            "target": { "$ref": "#/$defs/routeTarget" },
+            "sprite": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+            "opacity": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 255 }, { "type": "null" }] },
+            "visible": { "oneOf": [{ "type": "boolean" }, { "type": "null" }] },
+            "saveDefault": { "type": "boolean", "description": "Player only: remember sprite as the baseline restored by sprite:null." }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "saveDefault": { "const": true } }, "required": ["saveDefault"] },
+              "then": { "properties": { "target": { "const": "player" } }, "required": ["sprite"] }
+            }
+          ],
+          "description": "Change Image/opacity/visibility. Event overrides last until page change; player overrides persist across maps. null restores the field default."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "layer"],
+          "anyOf": [{ "required": ["visible"] }, { "required": ["variant"] }],
+          "properties": {
+            "op": { "const": "layer" },
+            "layer": { "type": "string", "minLength": 1 },
+            "visible": { "oneOf": [{ "type": "boolean" }, { "type": "null" }] },
+            "variant": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
+          },
+          "description": "Select visibility and/or a prepackaged variant for a named visual layer during this map visit."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "x", "y"],
+          "anyOf": [
+            { "required": ["passage"] },
+            { "required": ["enter"] },
+            { "required": ["exit"] }
+          ],
+          "properties": {
+            "op": { "const": "tileProperty" },
+            "x": { "type": "integer", "minimum": 0 },
+            "y": { "type": "integer", "minimum": 0 },
+            "passage": { "oneOf": [{ "enum": ["pass", "block"] }, { "type": "null" }] },
+            "enter": { "oneOf": [{ "type": "array", "uniqueItems": true, "items": { "enum": ["down", "left", "right", "up"] } }, { "type": "null" }] },
+            "exit": { "oneOf": [{ "type": "array", "uniqueItems": true, "items": { "enum": ["down", "left", "right", "up"] } }, { "type": "null" }] }
+          },
+          "description": "Replace per-cell terrain passage and/or blocked entry/exit edges for this map visit; null restores the authored field."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "seconds"],
           "properties": {
             "op": { "const": "wait" },
@@ -814,6 +871,36 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             "kind": { "const": "facing" },
             "dir": { "enum": ["down", "left", "right", "up"], "description": "The player facing. In a page condition it gates action/playerTouch pages by direction; in a playerTouch page it also re-fires when the player turns while standing in the area." }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "target", "sprite"],
+          "properties": {
+            "kind": { "const": "appearance" },
+            "target": { "$ref": "#/$defs/routeTarget" },
+            "sprite": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
+          },
+          "description": "Compare a character's effective walking-sprite key; null denotes baked player art or a sprite-less event page."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "x", "y"],
+          "anyOf": [
+            { "required": ["passage"] },
+            { "required": ["enter"] },
+            { "required": ["exit"] }
+          ],
+          "properties": {
+            "kind": { "const": "tileProperty" },
+            "x": { "type": "integer", "minimum": 0 },
+            "y": { "type": "integer", "minimum": 0 },
+            "passage": { "oneOf": [{ "enum": ["pass", "block"] }, { "type": "null" }] },
+            "enter": { "oneOf": [{ "type": "array", "uniqueItems": true, "items": { "enum": ["down", "left", "right", "up"] } }, { "type": "null" }] },
+            "exit": { "oneOf": [{ "type": "array", "uniqueItems": true, "items": { "enum": ["down", "left", "right", "up"] } }, { "type": "null" }] }
+          },
+          "description": "True when every listed runtime tile-property field has the requested explicit override; null means no override for that field."
         },
         {
           "type": "object",

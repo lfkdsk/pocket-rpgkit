@@ -201,10 +201,16 @@ writeFileSync(
     `  maxChunks: ${chunkCount},\n` +
     `  world: { ${q(R2_MAP_ID)}: { w: ${R2_MAP_SIZE.width * TILE}, h: ${R2_MAP_SIZE.height * TILE} }, ${q(R2_SECOND_MAP_ID)}: { w: ${R2_MAP_SIZE.width * TILE}, h: ${R2_MAP_SIZE.height * TILE} } },\n` +
     `  order: [${q(R2_MAP_ID)}, ${q(R2_SECOND_MAP_ID)}],\n` +
-    `  npcSrc: { walker: WALKER },\n` +
+    `  npcSrc: { walker: WALKER, alt: "assets/walker-idle-3.png" },\n` +
     `  player: WALKER,\n` +
     `  playerHeight: 32,\n` +
     `  animated: ${animated},\n` +
+    `  layers: {\n` +
+    `    ground: { placement: "ground", mode: "eager", variants: { void: { chunks: { ${q(R2_MAP_ID)}: ${names(secondUpperNames)} }, columns: { ${q(R2_MAP_ID)}: ${baked.columns} } } } },\n` +
+    `    upper: { placement: "upper", mode: "eager", variants: {} },\n` +
+    `    "extra-canopy": { placement: "above", mode: "eager", variants: { on: { chunks: { ${q(R2_MAP_ID)}: ${names(upperNames)} }, columns: { ${q(R2_MAP_ID)}: ${baked.columns} } } } },\n` +
+    `    "screen-tint": { placement: "screen", variants: { blue: { color: "#2040c080" } } },\n` +
+    `  },\n` +
     `};\n`,
 );
 

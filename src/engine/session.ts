@@ -36,6 +36,7 @@ import { startupProfileMark } from "../startup-profile.ts";
 
 import {
   activePage,
+  clearStaleEventAppearances,
   clampFiniteVar,
   continueBattle,
   continueExternal,
@@ -55,6 +56,7 @@ import {
   stepInterpWithExtensionsInPlace,
   type ExtensionScope,
   type ConditionContext,
+  type EventPageAppearance,
   type InterpInput,
   type InterpState,
   type PendingBattle,
@@ -110,7 +112,7 @@ import {
 } from "./movement.ts";
 import { MOTION_HZ, motionTicksPerFrame } from "./motion-clock.ts";
 import type { Dir4, PassageTable } from "./passability.ts";
-import { buildPassage, canStepFrom, stampBlockedCells } from "./passability.ts";
+import { buildPassage, canStepFrom, stampBlockedCells, withTilePropertyOverrides } from "./passability.ts";
 import {
   MAP_SCHEMA_HASH,
   isProjectShell,
@@ -223,6 +225,14 @@ export interface Session {
   maps: Map<string, MapDef>;
   worlds: Map<string, ReturnType<typeof createWorld>>;
   tables: Map<string, PassageTable>;
+  /** Derived runtime views, keyed by the immutable tile override record.
+   * Never serialized; a rewind/restore with another record identity recooks
+   * before collision or pathfinding reads it. */
+  runtimeTables: Map<string, {
+    base: PassageTable;
+    overrides: NonNullable<InterpState["tileProperties"]>;
+    table: PassageTable;
+  }>;
   /** Metadata for every sharded map without retaining any MapDef payload. */
   mapIndex: ReadonlyMap<string, MapIndexEntry> | null;
   /** Content identity copied into save envelopes for sharded projects. */
@@ -372,6 +382,7 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
     sess.maps.set(id, prepared.map);
     sess.worlds.set(id, prepared.world);
     sess.tables.set(id, prepared.table);
+    sess.runtimeTables.delete(id);
     sess.preparingMap = null;
     return prepared.map;
   }
@@ -392,6 +403,7 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
   sess.maps.set(id, map);
   sess.worlds.set(id, world);
   sess.tables.set(id, table);
+  sess.runtimeTables.delete(id);
   if (sess.preparingMap?.id === id) sess.preparingMap = null;
   startupProfileMark("map-acquire:end");
   return map;
@@ -456,6 +468,7 @@ export function releaseSessionMapsExcept(sess: Session, ids: readonly string[]):
   for (const id of [...sess.maps.keys()]) if (!keep.has(id)) sess.maps.delete(id);
   for (const id of [...sess.worlds.keys()]) if (!keep.has(id)) sess.worlds.delete(id);
   for (const id of [...sess.tables.keys()]) if (!keep.has(id)) sess.tables.delete(id);
+  for (const id of [...sess.runtimeTables.keys()]) if (!keep.has(id)) sess.runtimeTables.delete(id);
   if (sess.preparingMap && !keep.has(sess.preparingMap.id)) sess.preparingMap = null;
   sess.repository.releaseExcept(ids);
 }
@@ -504,6 +517,7 @@ export function createSession(
       maps: new Map(),
       worlds: new Map(),
       tables: new Map(),
+      runtimeTables: new Map(),
       mapIndex: index,
       content: { manifest, schema: MAP_SCHEMA_HASH },
       repository: maps,
@@ -541,6 +555,7 @@ export function createSession(
     maps: inlineMaps,
     worlds,
     tables,
+    runtimeTables: new Map(),
     mapIndex: null,
     content: null,
     repository: null,
@@ -636,6 +651,48 @@ function enterMap(
   s.interp = createInterpState(s.sw);
   s.sw = s.interp.sw;
   s.playerRoute = null;
+}
+
+/** The effective terrain for this exact reducer branch. The authored table
+ * remains immutable; a changed/rewound override record gets its own derived
+ * typed arrays, while ordinary projects return the base table by identity. */
+export function sessionPassageTable(sess: Session, s: SessionState): PassageTable {
+  const base = sess.tables.get(s.mapId)!;
+  const overrides = s.interp.tileProperties;
+  if (!overrides || Object.keys(overrides).length === 0) return base;
+  const cached = sess.runtimeTables.get(s.mapId);
+  if (cached?.base === base && cached.overrides === overrides) return cached.table;
+  const table = withTilePropertyOverrides(base, overrides);
+  sess.runtimeTables.set(s.mapId, { base, overrides, table });
+  return table;
+}
+
+function eventPagesOf(map: MapDef, chars: CharsState): Record<string, EventPageAppearance> {
+  const out = keyedRecord<EventPageAppearance>();
+  for (const ev of map.events ?? []) {
+    const pageIndex = chars.chars[ev.id]?.pageIndex;
+    if (pageIndex === undefined || !ev.pages[pageIndex]) continue;
+    out[ev.id] = { pageIndex, sprite: ev.pages[pageIndex]!.sprite ?? null };
+  }
+  return out;
+}
+
+function sessionConditionContext(
+  world: ReturnType<typeof createWorld>,
+  s: SessionState,
+  eventPages: Readonly<Record<string, EventPageAppearance>> | undefined,
+): ConditionContext {
+  const context: ConditionContext = { worldIdle: isSessionWorldIdle(s) };
+  if (eventPages) {
+    context.eventPages = eventPages;
+    context.eventAppearances = s.interp.eventAppearances;
+  }
+  if (world.needsTilePropertyContext) {
+    context.tileProperties = s.interp.tileProperties;
+    context.mapWidth = world.map.width;
+    context.mapHeight = world.map.height;
+  }
+  return context;
 }
 
 /** The baked map table plus blocking-character bodies, held as a sparse
@@ -1043,7 +1100,9 @@ function stepReferenceTick(
   const erased = s.interp.erased;
   const world = sess.worlds.get(s.mapId)!;
   const extension: ExtensionScope = { runtime: sess.extensions, ext: s.ext };
-  const conditionContext: ConditionContext = { worldIdle: isSessionWorldIdle(s) };
+  const needsEventPages = world.needsEventPages === true || s.interp.eventAppearances !== undefined;
+  const previousEventPages = needsEventPages ? eventPagesOf(map, s.chars) : undefined;
+  let conditionContext = sessionConditionContext(world, s, previousEventPages);
   const syncFacing = s.move.facing;
   const syncMotion = keyedRecord<MotionType>();
   const keyed = keyedEventsOf(world);
@@ -1060,10 +1119,16 @@ function stepReferenceTick(
     syncMotion,
     true,
     conditionContext,
+    s.interp.eventAppearances,
   );
+  const eventPages = needsEventPages ? eventPagesOf(map, s.chars) : undefined;
+  if (eventPages && s.interp.eventAppearances) clearStaleEventAppearances(s.interp, eventPages);
+  conditionContext = sessionConditionContext(world, s, eventPages);
   for (const waiter of synced.abortedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
   }
+
+  const passage = sessionPassageTable(sess, s);
 
   // 2. Mover — frozen while a blocking fiber runs, the player's own forced
   //    route is driving, a choices box (including one owned by a PARALLEL
@@ -1077,8 +1142,7 @@ function stepReferenceTick(
   const held = messageHoldsPlayer(world, s.interp);
   if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
     // stepMovement consults the table only for a held direction.
-    const base = sess.tables.get(s.mapId)!;
-    const table = dirFromButtons(input.buttons) === null ? base : tableWithBodies(base, s.chars);
+    const table = dirFromButtons(input.buttons) === null ? passage : tableWithBodies(passage, s.chars);
     Object.assign(s.move, stepMovement(s.move, input.buttons, table, sess.cfg));
   }
 
@@ -1095,7 +1159,7 @@ function stepReferenceTick(
   // between can flip facing conditions, so only then are they read again.
   const finishedWaiters = stepCharsInPlace(
     s.chars,
-    sess.tables.get(s.mapId)!,
+    passage,
     playerPlace,
     sess.cfg,
     locked,
@@ -1128,6 +1192,7 @@ function stepReferenceTick(
     facing: s.move.facing,
     prevFacing,
     eventCells,
+    eventPages,
     worldIdleBlockers: sessionWorldIdleBlockers(s),
   };
   s.ext = stepInterpWithExtensionsInPlace(
@@ -1349,7 +1414,7 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
     // fall through to the next command on this landing tick
   }
 
-  const table = tableWithBodies(sess.tables.get(s.mapId)!, s.chars);
+  const table = tableWithBodies(sessionPassageTable(sess, s), s.chars);
   // MV advances a move list at most once per stop tick: consume exactly
   // ONE route command on this reference tick (matching chars.stepRoute).
   // Instant-only routes (a repeat face route) therefore take one command

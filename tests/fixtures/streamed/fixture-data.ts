@@ -78,3 +78,43 @@ export const STREAMED_PROJECT: Project = {
   items: [],
   maps: [map(FIELD_ID, FIELD_SIZE, [transferEvent()]), map(HARBOR_ID, HARBOR_SIZE, [returnEvent()])],
 };
+
+/** Opt-in controller for streamed runtime-layer integration. The first
+ * action selects the prepackaged sparse variant and hides upper paint; the
+ * second returns both layers to their authored sources. */
+export const STREAMED_KV1_PROJECT: Project = {
+  ...STREAMED_PROJECT,
+  title: "Streamed runtime layer fixture",
+  maps: [
+    map(FIELD_ID, FIELD_SIZE, [{
+      id: "stream-layer-controller",
+      x: 3,
+      y: 10,
+      pages: [
+        {
+          trigger: "action",
+          commands: [
+            { op: "layer", layer: "ground", variant: "sparse" },
+            { op: "layer", layer: "upper", visible: false },
+            { op: "switch", id: "stream.kv1.changed", value: true },
+          ],
+        },
+        {
+          condition: { switch: "stream.kv1.changed" },
+          trigger: "action",
+          commands: [
+            { op: "layer", layer: "ground", variant: null },
+            { op: "layer", layer: "upper", visible: null },
+            { op: "switch", id: "stream.kv1.reset", value: true },
+          ],
+        },
+        {
+          condition: { switch: "stream.kv1.reset" },
+          trigger: "action",
+          commands: [],
+        },
+      ],
+    }]),
+    map(HARBOR_ID, HARBOR_SIZE, [returnEvent()]),
+  ],
+};

@@ -21,7 +21,7 @@ const INTEGER_OPS = new Set([
   "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp",
   "wait", "gold", "item", "se", "erase", "exit", "transfer",
   "moveRoute", "common", "lockInput", "unlockInput", "place", "shop",
-  "ext", "extChoice", "battle",
+  "appearance", "layer", "tileProperty", "ext", "extChoice", "battle",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -53,6 +53,20 @@ function isFiniteNumber(v: unknown): v is number {
 
 function fail(path: string, msg: string): string {
   return `${path}: ${msg}`;
+}
+
+function validateAppearanceTarget(v: unknown, path: string): string | null {
+  if (v === "player" || v === "this") return null;
+  if (isRecord(v) && typeof v.event === "string" && v.event.length > 0) return null;
+  return fail(path, "player|this|{event: id} required");
+}
+
+function validateDirections(v: unknown, path: string): string | null {
+  if (!Array.isArray(v) || !v.every((dir) => ["down", "left", "right", "up"].includes(dir as string))) {
+    return fail(path, "direction array required");
+  }
+  if (new Set(v).size !== v.length) return fail(path, "directions must be unique");
+  return null;
 }
 
 // Condition vocabulary (engine/types.ts Condition). The reducer's
@@ -97,6 +111,30 @@ function validateCondition(v: unknown, path: string): string | null {
         return fail(`${path}.dir`, "bad direction");
       }
       return null;
+    case "appearance": {
+      const target = validateAppearanceTarget(v.target, `${path}.target`);
+      if (target) return target;
+      if (v.sprite !== null && typeof v.sprite !== "string") {
+        return fail(`${path}.sprite`, "string or null required");
+      }
+      return null;
+    }
+    case "tileProperty": {
+      if (!isNonNegInt(v.x) || !isNonNegInt(v.y)) return fail(path, "x/y non-negative integers required");
+      if (v.passage === undefined && v.enter === undefined && v.exit === undefined) {
+        return fail(path, "at least one tile property required");
+      }
+      if (v.passage !== undefined && v.passage !== null && v.passage !== "pass" && v.passage !== "block") {
+        return fail(`${path}.passage`, "pass|block|null required");
+      }
+      for (const field of ["enter", "exit"] as const) {
+        if (v[field] !== undefined && v[field] !== null) {
+          const dirs = validateDirections(v[field], `${path}.${field}`);
+          if (dirs) return dirs;
+        }
+      }
+      return null;
+    }
     case "worldIdle":
       if (v.negate !== undefined && typeof v.negate !== "boolean") {
         return fail(`${path}.negate`, "boolean required");
@@ -404,6 +442,57 @@ function validateProg(prog: unknown, path: string): string | null {
         if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
         break;
       }
+      case "appearance": {
+        const target = validateAppearanceTarget(ins.target, `${here}.target`);
+        if (target) return target;
+        if (ins.sprite !== undefined && ins.sprite !== null && typeof ins.sprite !== "string") {
+          return fail(`${here}.sprite`, "string or null required");
+        }
+        if (ins.opacity !== undefined && ins.opacity !== null &&
+            (!isNonNegInt(ins.opacity) || ins.opacity > 255)) {
+          return fail(`${here}.opacity`, "integer 0..255 or null required");
+        }
+        if (ins.visible !== undefined && ins.visible !== null && typeof ins.visible !== "boolean") {
+          return fail(`${here}.visible`, "boolean or null required");
+        }
+        if (typeof ins.saveDefault !== "boolean") return fail(`${here}.saveDefault`, "boolean required");
+        if (ins.saveDefault && ins.target !== "player") {
+          return fail(`${here}.saveDefault`, "only valid for player");
+        }
+        if (ins.saveDefault && ins.sprite === undefined) {
+          return fail(`${here}.sprite`, "required with saveDefault");
+        }
+        break;
+      }
+      case "layer":
+        if (typeof ins.layer !== "string" || ins.layer.length === 0) {
+          return fail(`${here}.layer`, "non-empty string required");
+        }
+        if (ins.visible !== undefined && ins.visible !== null && typeof ins.visible !== "boolean") {
+          return fail(`${here}.visible`, "boolean or null required");
+        }
+        if (ins.variant !== undefined && ins.variant !== null && typeof ins.variant !== "string") {
+          return fail(`${here}.variant`, "string or null required");
+        }
+        break;
+      case "tileProperty":
+        if (!isNonNegInt(ins.x) || !isNonNegInt(ins.y)) {
+          return fail(here, "x/y non-negative integers required");
+        }
+        if (ins.passage === undefined && ins.enter === undefined && ins.exit === undefined) {
+          return fail(here, "at least one tile property required");
+        }
+        if (ins.passage !== undefined && ins.passage !== null &&
+            ins.passage !== "pass" && ins.passage !== "block") {
+          return fail(`${here}.passage`, "pass|block|null required");
+        }
+        for (const field of ["enter", "exit"] as const) {
+          if (ins[field] !== undefined && ins[field] !== null) {
+            const dirs = validateDirections(ins[field], `${here}.${field}`);
+            if (dirs) return dirs;
+          }
+        }
+        break;
       case "common":
         if (needStr("id")) return fail(`${here}.id`, "string required");
         break;
@@ -625,6 +714,22 @@ function validateSwitchState(v: unknown, path: string): string | null {
       return fail(`${path}.playerName`, "string of length 1..24 required");
     }
   }
+  if (v.playerAppearance !== undefined) {
+    if (!isRecord(v.playerAppearance)) return fail(`${path}.playerAppearance`, "object required");
+    for (const field of ["defaultSprite", "sprite"] as const) {
+      const value = v.playerAppearance[field];
+      if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
+        return fail(`${path}.playerAppearance.${field}`, "non-empty string required");
+      }
+    }
+    if (v.playerAppearance.opacity !== undefined &&
+        (!isNonNegInt(v.playerAppearance.opacity) || v.playerAppearance.opacity > 255)) {
+      return fail(`${path}.playerAppearance.opacity`, "integer 0..255 required");
+    }
+    if (v.playerAppearance.visible !== undefined && typeof v.playerAppearance.visible !== "boolean") {
+      return fail(`${path}.playerAppearance.visible`, "boolean required");
+    }
+  }
   return null;
 }
 
@@ -645,6 +750,67 @@ function validatePlacements(v: unknown, path: string): string | null {
     if (!isNonNegInt(p.x) || !isNonNegInt(p.y)) return fail(`${at}`, "x/y non-negative integers required");
     if (p.dir !== null && !["down", "left", "right", "up"].includes(p.dir as string)) {
       return fail(`${at}.dir`, "bad direction or null");
+    }
+  }
+  return null;
+}
+
+function validateEventAppearances(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "record required");
+  for (const [id, appearance] of Object.entries(v)) {
+    const at = `${path}.${id}`;
+    if (!isRecord(appearance) || !isNonNegInt(appearance.pageIndex)) {
+      return fail(at, "appearance with non-negative pageIndex required");
+    }
+    if (appearance.sprite !== undefined &&
+        (typeof appearance.sprite !== "string" || appearance.sprite.length === 0)) {
+      return fail(`${at}.sprite`, "non-empty string required");
+    }
+    if (appearance.opacity !== undefined &&
+        (!isNonNegInt(appearance.opacity) || appearance.opacity > 255)) {
+      return fail(`${at}.opacity`, "integer 0..255 required");
+    }
+    if (appearance.visible !== undefined && typeof appearance.visible !== "boolean") {
+      return fail(`${at}.visible`, "boolean required");
+    }
+  }
+  return null;
+}
+
+function validateLayers(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "record required");
+  for (const [id, layer] of Object.entries(v)) {
+    const at = `${path}.${id}`;
+    if (id.length === 0 || !isRecord(layer)) return fail(at, "non-empty layer id and object required");
+    if (layer.visible !== undefined && typeof layer.visible !== "boolean") {
+      return fail(`${at}.visible`, "boolean required");
+    }
+    if (layer.variant !== undefined && (typeof layer.variant !== "string" || layer.variant.length === 0)) {
+      return fail(`${at}.variant`, "non-empty string required");
+    }
+  }
+  return null;
+}
+
+function validateTileProperties(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "record required");
+  for (const [index, tile] of Object.entries(v)) {
+    const at = `${path}.${index}`;
+    const parsed = Number(index);
+    if (!isNonNegInt(parsed) || String(parsed) !== index || !isRecord(tile)) {
+      return fail(at, "canonical non-negative cell index and object required");
+    }
+    if (tile.passage !== undefined && tile.passage !== "pass" && tile.passage !== "block") {
+      return fail(`${at}.passage`, "pass|block required");
+    }
+    for (const field of ["enter", "exit"] as const) {
+      if (tile[field] !== undefined) {
+        const dirs = validateDirections(tile[field], `${at}.${field}`);
+        if (dirs) return dirs;
+      }
+    }
+    if (tile.passage === undefined && tile.enter === undefined && tile.exit === undefined) {
+      return fail(at, "at least one tile property required");
     }
   }
   return null;
@@ -813,6 +979,18 @@ export function validateSnapshot(snap: unknown): string | null {
   }
   const pl = validatePlacements(it.placements, "state.interp.placements");
   if (pl) return pl;
+  if (it.eventAppearances !== undefined) {
+    const appearances = validateEventAppearances(it.eventAppearances, "state.interp.eventAppearances");
+    if (appearances) return appearances;
+  }
+  if (it.layers !== undefined) {
+    const layers = validateLayers(it.layers, "state.interp.layers");
+    if (layers) return layers;
+  }
+  if (it.tileProperties !== undefined) {
+    const tiles = validateTileProperties(it.tileProperties, "state.interp.tileProperties");
+    if (tiles) return tiles;
+  }
   if (!Array.isArray(it.cues)) return "state.interp.cues: array required";
   if (it.cues.length !== 0) return "state.interp.cues: cues must drain before save";
   if (it.pendingTransfer !== null) {

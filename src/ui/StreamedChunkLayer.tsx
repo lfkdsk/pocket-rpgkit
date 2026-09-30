@@ -53,6 +53,10 @@ export interface StreamedChunkLayerProps {
   margin?: number;
   /** Loads per frame for this layer. Omit for no limit; zero pauses uploads. */
   loadBudget?: number;
+  /** Invalidates the current map's refs when a prepackaged variant changes. */
+  sourceKey?: string;
+  /** Keeps residency and the node pool warm while hiding only paint. */
+  visible?: boolean;
   debugName?: string;
   /** Diagnostics callback, emitted only when streaming state changes. */
   onStats?: (stats: StreamedChunkLayerStats) => void;
@@ -82,12 +86,17 @@ function parseRef(ref: string): { key: string; index: number } {
  * remain at world coordinates and change only when the chunk window changes. */
 export function StreamedChunkLayer(props: StreamedChunkLayerProps): SolidJSX.Element {
   const root = createElement("view");
-  setProp(root, "style", { posType: 1, insetL: 0, insetT: 0, width: 0, height: 0 });
+  setProp(root, "style", {
+    posType: 1, insetL: 0, insetT: 0, width: 0, height: 0,
+    display: props.visible === false ? 1 : 0,
+  });
   setProp(root, "debugName", props.debugName ?? "rpgkit-stream");
 
   const live = new Map<number, LiveChunk>();
   const pool: NodeMirror[] = [];
   let currentMap = "";
+  let currentSourceKey = "";
+  let visible = props.visible !== false;
   let currentRefs: readonly (string | null)[] = [];
   let columns = 0;
   let rows = 0;
@@ -130,9 +139,10 @@ export function StreamedChunkLayer(props: StreamedChunkLayerProps): SolidJSX.Ele
     lastWindow = EMPTY_WINDOW;
   };
 
-  const selectMap = (mapId: string): void => {
+  const selectMap = (mapId: string, sourceKey: string): void => {
     clear();
     currentMap = mapId;
+    currentSourceKey = sourceKey;
     currentRefs = props.refs[mapId] ?? [];
     columns = props.columns[mapId] ?? 0;
     if (!Number.isInteger(columns) || columns < 1 || currentRefs.length % columns !== 0) {
@@ -168,7 +178,13 @@ export function StreamedChunkLayer(props: StreamedChunkLayerProps): SolidJSX.Ele
   };
 
   const sync = (): void => {
-    if (currentMap !== props.mapId) selectMap(props.mapId);
+    const nextVisible = props.visible !== false;
+    if (visible !== nextVisible) {
+      visible = nextVisible;
+      setProp(root, "style", { display: visible ? 0 : 1 }, root.domAttrs?.style);
+    }
+    const sourceKey = props.sourceKey ?? "";
+    if (currentMap !== props.mapId || currentSourceKey !== sourceKey) selectMap(props.mapId, sourceKey);
     if (columns === 0 || rows === 0) {
       report(0);
       return;

@@ -20,6 +20,57 @@ export interface StreamedGameAssets {
   loadBudget?: number;
 }
 
+/** One prepackaged eager variant of a named map layer. Switching variants
+ * only rebinds image names; it never invokes the map cooker at runtime. */
+export interface EagerMapLayerVariant {
+  chunks: Readonly<Record<string, readonly string[]>>;
+  columns: Readonly<Record<string, number>>;
+}
+
+/** One prepackaged streamed variant. All variants of a mounted layer should
+ * use the same chunkPx; `sourceKey` invalidation releases/rebinds only the
+ * viewport-resident textures. */
+export interface StreamedMapLayerVariant {
+  refs: Readonly<Record<string, readonly (string | null)[]>>;
+  columns: Readonly<Record<string, number>>;
+  chunkPx: number;
+  margin?: number;
+  loadBudget?: number;
+}
+
+export type MapLayerVariant = EagerMapLayerVariant | StreamedMapLayerVariant;
+
+/** A stable world-space layer. `ground` and `upper` describe variants for
+ * the built-in bands; `below`/`above` mount an additional band before/after
+ * actors. Additional above layers are flat overlays rather than row-sliced
+ * occluders. */
+export interface GameMapLayerAssets {
+  placement: "ground" | "upper" | "below" | "above";
+  mode: "eager" | "streamed";
+  defaultVariant?: string;
+  defaultVisible?: boolean;
+  /** Fixed eager slot capacity across every variant/map. */
+  maxChunks?: number;
+  variants: Readonly<Record<string, MapLayerVariant>>;
+}
+
+/** A viewport-space overlay variant, drawn over the world and below dialog.
+ * It may be a translucent solid colour, a scaled image, or both. */
+export interface ScreenLayerVariant {
+  color?: string;
+  image?: string;
+  opacity?: number;
+}
+
+export interface GameScreenLayerAssets {
+  placement: "screen";
+  defaultVariant?: string;
+  defaultVisible?: boolean;
+  variants: Readonly<Record<string, ScreenLayerVariant>>;
+}
+
+export type GameVisualLayerAssets = GameMapLayerAssets | GameScreenLayerAssets;
+
 /** One animated-tile placement on a map. `sprite` is the registered sprite
  *  atlas name (an entry in the app's sprites.json); its frame count and
  *  frame duration live there, so the core auto-plays the atlas and the JS
@@ -80,4 +131,7 @@ export interface GameAssets {
   stream?: StreamedGameAssets;
   /** Map id -> render-only animated tile placements. */
   animated?: Readonly<Record<string, readonly AnimatedTile[]>>;
+  /** Optional named runtime layers and prepackaged variants. The reducer
+   * stores only {visible,variant}; these immutable assets remain render-only. */
+  layers?: Readonly<Record<string, GameVisualLayerAssets>>;
 }

@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-stack/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 22 commands), map-character motion,
+  event interpreter (pages, triggers, 25 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -339,7 +339,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 22 commands
+### The 25 commands
 
 | op | purpose |
 | --- | --- |
@@ -348,9 +348,12 @@ earlier resident map within the same host frame.
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
-| `if` | condition over switch/variable/selfSwitch/item/gold/facing, derived `worldIdle`, or a registered `ext` predicate, with `else` |
+| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, or a registered `ext` predicate, with `else` |
 | `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }` |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
+| `appearance` | change a player's/event's walking sprite, opacity, or visibility; optionally save a new player reset baseline |
+| `layer` | show/hide a named visual layer or select one of its prepackaged variants for this map visit |
+| `tileProperty` | replace one cell's passage and/or one-sided entry/exit edge masks for this map visit |
 | `wait` | virtual-time pause (seconds, compiled against `simulationHz`) |
 | `gold` | add/sub gold |
 | `item` | add/remove an item count |
@@ -364,6 +367,46 @@ earlier resident map within the same host frame.
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
+
+`appearance` uses the same targets as `moveRoute`: `"player"`, `"this"`, or
+`{ "event": "id" }`. A string `sprite` resolves through the project's
+`sprites` and `GameAssets.npcSrc`; `null` restores the authored page sprite
+or the player's reset baseline. `opacity` is an integer from 0 through 255,
+and `visible` is independent of collision. Player changes cross map transfers
+and enter saves; `saveDefault:true` remembers the supplied player sprite as
+the baseline that a later `sprite:null` restores. An event change belongs to
+the issuing active page and is discarded on its next page change. The
+`appearance` condition compares the resulting sprite key, not opacity or
+visibility.
+
+`layer` stores only `{visible, variant}` in reducer state. The immutable art
+is declared under `GameAssets.layers`: `ground` and `upper` can replace the
+built-in bands; `below` and `above` add world-space bands; `screen` draws a
+colour/image overlay above the world and below dialog. Map variants use eager
+`chunks`/`columns` or streamed `refs`/`columns`/`chunkPx`; a screen variant
+uses `color`, `image`, and optional `opacity`. Every variant is cooked and
+packed at build time. Switching one rebinds existing nodes (and, for a
+streamed layer, only its viewport-resident textures); hiding keeps its node
+and texture pools warm. `null` restores an asset default. Unknown variants
+are content errors when rendered.
+
+`tileProperty` addresses the current map by tile `x`,`y`. `passage` replaces
+the cell's authored pass/block opinion; `enter` and `exit` replace the blocked
+direction list for that half of a crossing after passage is applied. An empty
+list explicitly opens all directions, while `null` removes that field's
+runtime override. Player movement, NPC routes, and path search all read the
+same derived table. The matching condition tests fields in the explicit
+runtime override (`null` means absent), so a command followed by `if` observes
+its write in the same reference tick.
+
+Layer and tile-property overrides are per map visit: every transfer, including
+a same-map transfer, clears them. Player appearance is project-wide; event
+appearance is per visit and page-bound. All three are ordinary reducer state,
+so saves and attract rewind restore them deterministically and old saves that
+omit them retain their old defaults. A battle scene freezes map fibers by
+default, so these commands resume with their owning fiber after battle; modal
+and `worldIdle` behavior is otherwise identical to every other instant
+command.
 
 `choices`, `extChoice`, and `shop` share one 4-row scrolling box
 (`ui/list-window.ts` picks the window from the live cursor; a label past 24
@@ -775,6 +818,29 @@ above them. Pass `onStreamStats` to `GameView` for per-layer resident,
 texture-byte, upload, free, pool and pending counts. `chunkWindow` from the
 engine package exposes the same clamped viewport arithmetic for tooling and
 tests.
+
+Runtime layer variants use the same two source shapes. For example:
+
+```ts
+layers: {
+  ground: {
+    placement: "ground", mode: "streamed",
+    variants: { winter: { refs: winterRefs, columns, chunkPx: 256 } },
+  },
+  mist: {
+    placement: "above", mode: "eager",
+    variants: { thick: { chunks: mistChunks, columns: mistColumns } },
+  },
+  weather: {
+    placement: "screen",
+    variants: { night: { color: "#00008080" }, torch: { image: torchOverlay } },
+  },
+}
+```
+
+The command selects only these names; it never causes a map image to be
+baked at runtime. Built-in `upper` visibility hides upper row slices and
+above-tile animations without hiding the actor nodes interleaved between them.
 
 ### Animated map tiles and 16×32 walkers
 

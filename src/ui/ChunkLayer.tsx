@@ -15,13 +15,20 @@ export interface ChunkLayerProps {
   slots?: number;
   nodeRef?: (node: NodeMirror) => void;
   debugName?: string;
+  /** Keeps the fixed node pool mounted; display alone changes. */
+  visible?: boolean;
 }
 
 export function ChunkLayer(props: ChunkLayerProps) {
   startupProfileMark("ui-ground:start");
   const indices = Array.from({ length: props.slots ?? props.names.length }, (_, i) => i);
   const view = (
-    <View class="absolute" nodeRef={props.nodeRef} debugName={props.debugName}>
+    <View
+      class="absolute"
+      style={{ display: props.visible === false ? 1 : 0 }}
+      nodeRef={props.nodeRef}
+      debugName={props.debugName}
+    >
       {indices.map((i) => (
         <Image
           src={props.names[i] ?? ""}

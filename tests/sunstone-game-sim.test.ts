@@ -343,8 +343,11 @@ simDescribe("sunstone — fixed transfer tape: pixels and op burst", () => {
     expect(burst.createNode + burst.destroyNode).toBe(0);
     expect(burst.insertBefore + burst.removeChild).toBe(0);
     // Besides image swaps: one combined camera/actor position batch, five
-    // changed depths, and four geometry writes for one height-changing slot.
-    expect(total).toBeLessThanOrEqual(33);
+    // changed depths, four geometry writes for one height-changing slot, and
+    // four image/identity operations for two stable hidden event slots now
+    // reserved for runtime appearance changes. The plane still does no
+    // allocation or rebaking.
+    expect(total).toBeLessThanOrEqual(37);
   });
 });
 
@@ -418,10 +421,11 @@ simDescribe("sunstone — render budget", () => {
     // shop command/UI, T2-9 scrolling >4-option choices, T2-16
     // variable-operand arithmetic, and fix 3's construction/restore/ext/
     // battle finite-state normalization), plus the shared bounded-keyframe
-    // rewind path, and the extension-driven dynamic-choice provider/resolver
-    // path: 449,037 B measured after that addition. The bound keeps a narrow
-    // margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(456_000);
+    // rewind path, the extension-driven dynamic-choice provider/resolver path,
+    // and the generic runtime appearance/layer render path: 482,523 B measured
+    // after those additions. The bound keeps a narrow margin so an accidental
+    // bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(489_000);
   });
 });
 

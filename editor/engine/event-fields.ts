@@ -144,6 +144,13 @@ export function conditionFields(condition: Condition, prefix = ""): EditableFiel
       return [field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS)];
     case "ext":
       return [field(p("call"), "CALL", condition.call, "text", undefined, true), field(p("args"), "ARGS", JSON.stringify(condition.args), "text", undefined, true)];
+    case "appearance":
+      return [field(p("target"), "TARGET", JSON.stringify(condition.target), "text", undefined, true), field(p("sprite"), "SPRITE", condition.sprite ?? "null", "text", undefined, true)];
+    case "tileProperty":
+      return [
+        field(p("x"), "X", condition.x, "integer", undefined, true), field(p("y"), "Y", condition.y, "integer", undefined, true),
+        field(p("props"), "PROPS", JSON.stringify({ passage: condition.passage, enter: condition.enter, exit: condition.exit }), "text", undefined, true),
+      ];
   }
 }
 
@@ -205,6 +212,9 @@ export function commandFields(command: Command): EditableField[] {
     case "shop":
     case "ext":
     case "extChoice":
+    case "appearance":
+    case "layer":
+    case "tileProperty":
     case "battle": return [];
   }
 }

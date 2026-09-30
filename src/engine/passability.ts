@@ -27,7 +27,7 @@
 // Pure TS: the sheet table is injected as a Map so this module has no
 // project/schema dependency and runs under plain bun.
 
-import type { MapDef, Sheet, TileId } from "./types.ts";
+import type { Dir, MapDef, Sheet, TileId, TilePropertyOverride } from "./types.ts";
 import { parseTileId } from "./tiles.ts";
 
 export type Dir4 = 0 | 1 | 2 | 3; // 0 down, 1 left, 2 up, 3 right (Facing order)
@@ -73,6 +73,12 @@ export const PASS = 1;
 export type PassageOverride = typeof BLOCK | 0 | typeof PASS;
 
 const DIR_NAMES = ["down", "left", "up", "right"] as const;
+
+function edgeMaskOf(dirs: readonly Dir[]): EdgeMask {
+  let mask: EdgeMask = 0;
+  for (const name of dirs) mask |= EDGE_BITS[DIR_NAMES.indexOf(name) as Dir4]!;
+  return mask;
+}
 
 /** Direction-agnostic "may this tile be stood on" sheet opinion. */
 function sheetCellSolid(sheet: Sheet | undefined, cell: number): boolean {
@@ -208,6 +214,39 @@ export function setPassageOverride(
   }
   table.overrides[idx] = flag;
   cookPassageCell(table, idx);
+}
+
+/** Immutable runtime view of an authored passage table. Only maps that have
+ * live tile-property changes pay for the typed-array copies; absent/empty
+ * overrides return `base` by identity. Runtime enter/exit lists replace the
+ * corresponding cooked static edge mask, while a passage `pass` keeps the
+ * existing rule of reopening target terrain/entry but retaining source
+ * exits unless an explicit runtime exit list replaces them. */
+export function withTilePropertyOverrides(
+  base: PassageTable,
+  overrides: Readonly<Record<string, TilePropertyOverride>> | undefined,
+): PassageTable {
+  if (!overrides || Object.keys(overrides).length === 0) return base;
+  const table: PassageTable = {
+    ...base,
+    overrides: base.overrides.slice(),
+    solid: base.solid.slice(),
+    entryMask: base.entryMask.slice(),
+    exitMask: base.exitMask.slice(),
+  };
+  for (const key of Object.keys(overrides)) {
+    const idx = Number(key);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= table.overrides.length || String(idx) !== key) {
+      throw new Error(`runtime tile-property index ${JSON.stringify(key)} outside ${table.width}x${table.height}`);
+    }
+    const patch = overrides[key]!;
+    if (patch.passage !== undefined) {
+      setPassageOverride(table, idx, patch.passage === "pass" ? PASS : BLOCK);
+    }
+    if (patch.enter !== undefined) table.entryMask[idx] = edgeMaskOf(patch.enter);
+    if (patch.exit !== undefined) table.exitMask[idx] = edgeMaskOf(patch.exit);
+  }
+  return table;
 }
 
 const OPPOSITE: readonly Dir4[] = [2, 3, 0, 1]; // down<->up, left<->right

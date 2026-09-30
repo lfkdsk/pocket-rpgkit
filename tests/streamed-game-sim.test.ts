@@ -41,6 +41,16 @@ const expectPixel = (frame: Uint8Array, x: number, y: number, rgba: readonly num
   expect(pixel(frame, x, y)).toEqual([...rgba]);
 };
 
+function findNode(tree: unknown, name: string): any {
+  const node = tree as { n?: string; k?: unknown[] };
+  if (node?.n === name) return node;
+  for (const child of node?.k ?? []) {
+    const found = findNode(child, name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 async function golden(name: string, frame: Uint8Array): Promise<string> {
   const url = new URL(`./goldens/${name}.png`, import.meta.url);
   if (process.env.STREAMED_UPDATE_GOLDENS) await Bun.write(url, encodePNG(frame, 480, 272));
@@ -116,4 +126,40 @@ simDescribe("GameView streamed chunks", () => {
     }
     expect(stats().ground).toMatchObject({ resident: 4, textures: 4, uploads: 4, pending: 0 });
   });
+
+  test("rebinds a streamed variant and hides upper paint without rebuilding nodes", async () => {
+    const world = await bootGameWorld(appBundle("streamed"), 60, { __streamedKv1: true });
+    const step = (buttons = 0): void => {
+      world.frame(buttons, 0x8080);
+      world.tick();
+    };
+    step();
+    const groundId = findNode(world.getTree(), "rpgkit-ground").i;
+    const actorsId = findNode(world.getTree(), "rpgkit-actors-wide-field").i;
+    expectPixel(world.render(), 10, 10, FIELD_CHUNK_COLOURS[0]!);
+    expect(stats().ground).toMatchObject({ resident: 4, textures: 4, uploads: 4, frees: 0 });
+    expect(stats().upper).toMatchObject({ resident: 1, textures: 1, uploads: 1, frees: 0 });
+
+    step(BTN.CIRCLE);
+    step();
+    expect(world.probes().state.interp.layers).toEqual({
+      ground: { variant: "sparse" },
+      upper: { visible: false },
+    });
+    expectPixel(world.render(), 10, 10, [0, 0, 0, 255]);
+    expect(stats().ground).toMatchObject({ resident: 1, textures: 1, uploads: 5, frees: 4 });
+    // Visibility is paint-only: the upper texture remains resident and the
+    // actor-bearing root must remain mounted.
+    expect(stats().upper).toMatchObject({ resident: 1, textures: 1, uploads: 1, frees: 0 });
+    expect(findNode(world.getTree(), "rpgkit-ground").i).toBe(groundId);
+    expect(findNode(world.getTree(), "rpgkit-actors-wide-field").i).toBe(actorsId);
+
+    step(BTN.CIRCLE);
+    step();
+    expect(world.probes().state.interp.layers).toBeUndefined();
+    expectPixel(world.render(), 10, 10, FIELD_CHUNK_COLOURS[0]!);
+    expect(stats().ground).toMatchObject({ resident: 4, textures: 4, uploads: 9, frees: 5 });
+    expect(findNode(world.getTree(), "rpgkit-ground").i).toBe(groundId);
+    expect(findNode(world.getTree(), "rpgkit-actors-wide-field").i).toBe(actorsId);
+  }, 30_000);
 });

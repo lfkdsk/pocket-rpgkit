@@ -111,6 +111,19 @@ function conditionDetail(condition: Condition): { fields: InspectorField[]; read
         fields: [field("call", "CALL", condition.call, true), field("args", "ARGS", stringValue(condition.args), true)],
         readOnly: true,
       };
+    case "appearance":
+      return {
+        fields: [field("target", "TARGET", stringValue(condition.target), true), field("sprite", "SPRITE", condition.sprite ?? "null", true)],
+        readOnly: true,
+      };
+    case "tileProperty":
+      return {
+        fields: [
+          field("x", "X", condition.x, true), field("y", "Y", condition.y, true),
+          field("props", "PROPS", stringValue({ passage: condition.passage, enter: condition.enter, exit: condition.exit }), true),
+        ],
+        readOnly: true,
+      };
   }
 }
 
@@ -185,6 +198,8 @@ function conditionSummary(condition: Condition): string {
     case "facing": return condition.dir;
     case "worldIdle": return condition.negate ? "world busy" : "world idle";
     case "ext": return condition.call;
+    case "appearance": return `appearance ${condition.sprite ?? "default"}`;
+    case "tileProperty": return `tile (${condition.x}, ${condition.y})`;
   }
 }
 

@@ -25,4 +25,8 @@ export const GAME_ASSETS: GameAssets = {
     "violet-harbor": 3,
   },
 },
+  layers: {
+    ground: { placement: "ground", mode: "streamed", variants: { sparse: { refs: { "wide-field": [null,"ui:tile.fixture-wide-field-upper#1",null,null,null,null,null,null,null,null,null,null] }, columns: { "wide-field": 4 }, chunkPx: 256 } } },
+    upper: { placement: "upper", mode: "streamed", variants: {} },
+  },
 };

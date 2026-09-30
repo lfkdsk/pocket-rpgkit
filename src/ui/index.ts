@@ -30,7 +30,14 @@ export {
 export type {
   AnimatedTile,
   CharacterFrames,
+  EagerMapLayerVariant,
   GameAssets,
+  GameMapLayerAssets,
+  GameScreenLayerAssets,
+  GameVisualLayerAssets,
+  MapLayerVariant,
   NpcArt,
+  ScreenLayerVariant,
   StreamedGameAssets,
+  StreamedMapLayerVariant,
 } from "./game-assets.ts";

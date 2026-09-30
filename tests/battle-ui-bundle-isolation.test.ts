@@ -45,10 +45,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // absent.
 // The worldIdle condition adds 1,820 bytes of shared session/interpreter code;
 // it remains independent of the opt-in battle UI identifiers checked below.
-// Extension-driven choices add 8,667 bytes to that same shared interpreter,
-// modal and registration path. The identifier assertion below continues to
-// guard that the opt-in battle UI itself is absent.
-const EXPECTED_BYTES = 449_037;
+// Extension-driven choices and KV1's generic runtime appearance, named-layer
+// and tile-property paths are shared GameView/session/interpreter code; moving
+// src/ui/battle/ out still produces this exact bundle while the distinctive
+// battle identifiers remain absent.
+const EXPECTED_BYTES = 482_523;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

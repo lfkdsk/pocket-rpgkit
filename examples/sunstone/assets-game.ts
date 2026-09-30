@@ -77,7 +77,7 @@ export const GAME_ASSETS: GameAssets = {
   upper: MAP_UPPER,
   chunkColumns: MAP_CHUNK_COLUMNS,
   maxChunks: MAP_MAX_CHUNKS,
-  maxActors: 7,
+  maxActors: 9,
   world: MAP_WORLD,
   order: MAP_ORDER,
   npcSrc: NPC_SRC,

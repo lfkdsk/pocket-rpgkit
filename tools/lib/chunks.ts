@@ -177,11 +177,8 @@ export function gameManifestSource(opts: {
   const chunkCount = (m: { width: number; height: number }): number =>
     Math.ceil(m.width / CHUNK_TILES) * Math.ceil(m.height / CHUNK_TILES);
   const maxChunks = Math.max(1, ...opts.maps.map(chunkCount));
-  const drawableSprites = new Set(opts.npcSrc.map(([key]) => key));
   const maxActors = Math.max(0, ...opts.maps.map((m) =>
-    m.events?.filter((event) =>
-      event.pages.some((page) => page.sprite != null && drawableSprites.has(page.sprite)),
-    ).length ?? 0));
+    m.events?.length ?? 0));
   const frames = (name: string, names: readonly string[]): string => {
     if (names.length !== 4) throw new Error(`gameManifestSource: ${name} needs 4 facings, got ${names.length}`);
     return `export const ${name}: readonly [string, string, string, string] = [\n${table(names.map((n) => q(n)))}\n];\n\n`;

@@ -39,7 +39,7 @@ import {
 import type { MapDef } from "../engine/types.ts";
 import { CHUNK_PX, TILE } from "../engine/tiles.ts";
 import type { AnimatedTilesStats } from "./AnimatedTiles.tsx";
-import type { GameAssets } from "./game-assets.ts";
+import type { GameAssets, MapLayerVariant } from "./game-assets.ts";
 import type { StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import { startupProfileMark } from "../startup-profile.ts";
 
@@ -95,6 +95,10 @@ export interface OccludingUpperLayerProps {
   camera: () => ChunkPoint;
   viewport: () => ChunkViewport;
   debugName?: string;
+  /** Selected prepackaged upper source. undefined keeps the legacy source. */
+  source?: () => { key: string; variant?: MapLayerVariant };
+  /** Hide upper rows/above animations without hiding actor children. */
+  visible?: () => boolean;
   onStreamStats?: (stats: StreamedChunkLayerStats) => void;
   onAnimatedStats?: (stats: AnimatedTilesStats) => void;
   children?: SolidJSX.Element;
@@ -121,6 +125,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   let spriteNodesCreated = 0;
 
   let currentMap = "";
+  let currentSourceKey = "";
   let mapWidth = 0;
   let mapHeight = 0;
   const worldWidth = props.worldWidth
@@ -130,6 +135,8 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   let columns = 0;
   let chunkRows = 0;
   let chunkPx = CHUNK_PX;
+  let streamMargin = TILE;
+  let streamLoadBudget: number | undefined;
   let aboveByRow = new Map<number, AboveTile[]>();
   let lastTextureWindow: ChunkWindow = EMPTY_WINDOW;
   let lastTileWindow: ChunkWindow = EMPTY_WINDOW;
@@ -138,6 +145,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   let rebind = false;
   const stream = props.assets.stream;
   const isStreamed = stream !== undefined;
+  let upperVisible = props.visible?.() ?? true;
 
   const reportStream = (pending: number): void => {
     if (!isStreamed || !props.onStreamStats) return;
@@ -203,26 +211,42 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     for (const [id, node] of [...row.animations]) releaseAnimationNode(id, row, node);
   };
 
-  const selectMap = (mapId: string): void => {
+  const selectMap = (mapId: string, sourceKey: string): void => {
     for (const row of rows) {
       for (const [id, node] of [...row.animations]) releaseAnimationNode(id, row, node);
     }
     clearTextures();
     currentMap = mapId;
+    currentSourceKey = sourceKey;
     const map = props.maps.get(mapId);
     if (!map) throw new Error(`OccludingUpperLayer: unknown map ${JSON.stringify(mapId)}`);
     mapWidth = map.width;
     mapHeight = map.height;
 
+    const selected = props.source?.().variant;
     if (stream) {
-      refs = stream.upper[mapId] ?? [];
+      if (selected && !("refs" in selected)) {
+        throw new Error("OccludingUpperLayer: streamed base requires streamed variants");
+      }
+      const source = selected && "refs" in selected ? selected : undefined;
+      refs = source?.refs[mapId] ?? stream.upper[mapId] ?? [];
       names = [];
-      columns = stream.columns[mapId] ?? 0;
-      chunkPx = stream.chunkPx;
+      columns = source?.columns[mapId] ?? stream.columns[mapId] ?? 0;
+      chunkPx = source?.chunkPx ?? stream.chunkPx;
+      streamMargin = source?.margin ?? stream.margin ?? TILE;
+      streamLoadBudget = source?.loadBudget ?? stream.loadBudget;
     } else {
+      if (selected && !("chunks" in selected)) {
+        throw new Error("OccludingUpperLayer: eager base requires eager variants");
+      }
+      const source = selected && "chunks" in selected ? selected : undefined;
       refs = [];
-      names = props.assets.upper[mapId] ?? props.assets.upper[props.firstMapId] ?? [];
-      columns = props.assets.chunkColumns[mapId]
+      names = source?.chunks[mapId]
+        ?? props.assets.upper[mapId]
+        ?? props.assets.upper[props.firstMapId]
+        ?? [];
+      columns = source?.columns[mapId]
+        ?? props.assets.chunkColumns[mapId]
         ?? props.assets.chunkColumns[props.firstMapId]
         ?? (names.length > 0 ? 1 : 0);
       chunkPx = CHUNK_PX;
@@ -263,7 +287,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
       chunkPx,
       columns,
       chunkRows,
-      stream?.margin ?? TILE,
+      streamMargin,
     );
   };
 
@@ -302,7 +326,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     }
     missing.sort((a, b) => a.distance - b.distance || a.index - b.index);
 
-    const configured = stream.loadBudget;
+    const configured = streamLoadBudget;
     if (configured !== undefined && (!Number.isFinite(configured) || configured < 0)) {
       throw new Error(`OccludingUpperLayer: loadBudget must be a non-negative number, got ${configured}`);
     }
@@ -351,6 +375,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
       height: TILE,
       overflow: ENUMS.Overflow.Hidden,
       zIndex: upperRowDepth(y, worldWidth),
+      display: upperVisible ? 0 : 1,
     });
     insertNode(root, node);
     const row: LiveRow = { node, y, images: [], indices: [], animations: new Map(), used: false };
@@ -490,7 +515,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   // Establish the initial map metadata/debug identity during mount; texture
   // uploads and viewport row creation remain frame-driven like the existing
   // streamed and animated layers.
-  selectMap(props.mapId);
+  selectMap(props.mapId, props.source?.().key ?? "");
   startupProfileMark("ui-upper:selected");
   const viewport = props.viewport();
   const rowCount = Math.ceil(viewport.h / TILE) + 3;
@@ -502,7 +527,15 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   startupProfileMark("ui-upper:pooled");
 
   onFrame(() => {
-    if (currentMap !== props.mapId) selectMap(props.mapId);
+    const nextVisible = props.visible?.() ?? true;
+    if (upperVisible !== nextVisible) {
+      upperVisible = nextVisible;
+      for (const row of rows) {
+        setProp(row.node, "style", { display: upperVisible ? 0 : 1 }, row.node.domAttrs?.style);
+      }
+    }
+    const sourceKey = props.source?.().key ?? "";
+    if (currentMap !== props.mapId || currentSourceKey !== sourceKey) selectMap(props.mapId, sourceKey);
     syncTextures();
     syncRows();
   });

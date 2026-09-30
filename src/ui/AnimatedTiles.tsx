@@ -55,6 +55,8 @@ export interface AnimatedTilesProps {
   /** Extra ring in tiles around the viewport to keep mounted (default 1). */
   ringTiles?: number;
   debugName?: string;
+  /** Hide paint without unbinding atlases or changing the viewport pool. */
+  visible?: boolean;
   onStats?: (stats: AnimatedTilesStats) => void;
 }
 
@@ -69,7 +71,10 @@ const EMPTY: ChunkWindow = { x0: 0, y0: 0, x1: -1, y1: -1 };
 export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
   startupProfileMark(`ui-animated-${props.above ? "above" : "below"}:start`);
   const root = createElement("view");
-  setProp(root, "style", { posType: 1, insetL: 0, insetT: 0, width: 0, height: 0 });
+  setProp(root, "style", {
+    posType: 1, insetL: 0, insetT: 0, width: 0, height: 0,
+    display: props.visible === false ? 1 : 0,
+  });
   setProp(root, "debugName", props.debugName ?? (props.above ? "rpgkit-anim-above" : "rpgkit-anim-below"));
 
   const pool: NodeMirror[] = [];
@@ -81,6 +86,7 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
   let hasTiles = false;
   let lastWindow: ChunkWindow = EMPTY;
   let created = 0;
+  let visible = props.visible !== false;
 
   const report = (): void => {
     props.onStats?.({ mapId: currentMap, mounted: live.size, created, pooled: pool.length });
@@ -114,6 +120,11 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
   };
 
   const sync = (): void => {
+    const nextVisible = props.visible !== false;
+    if (visible !== nextVisible) {
+      visible = nextVisible;
+      setProp(root, "style", { display: visible ? 0 : 1 }, root.domAttrs?.style);
+    }
     if (currentMap !== props.mapId) selectMap(props.mapId);
     if (!hasTiles) {
       if (live.size !== 0) {

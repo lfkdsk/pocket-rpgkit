@@ -73,6 +73,18 @@ export type Trigger = "action" | "playerTouch" | "autorun" | "parallel";
  *  event by id (MV Set Movement Route on any event). */
 export type RouteTarget = "player" | "this" | { event: string };
 
+/** A character whose runtime walking appearance can be changed. */
+export type AppearanceTarget = RouteTarget;
+
+/** Per-cell passage fields a runtime tileProperty command can replace.
+ * Missing fields keep their authored value; an empty direction list
+ * explicitly opens every edge in that half of the crossing. */
+export interface TilePropertyOverride {
+  passage?: "pass" | "block";
+  enter?: Dir[];
+  exit?: Dir[];
+}
+
 /** Target of a turn-toward / approach step: the player or a named event. */
 export type CharTarget = "player" | { event: string };
 
@@ -122,6 +134,19 @@ export type Condition =
   | { kind: "item"; id: string; count: number }
   | { kind: "gold"; amount: number }
   | { kind: "facing"; dir: Dir }
+  /** Compare the character's effective walking-sprite key. null denotes
+   *  the built-in player art or an event page with no sprite. */
+  | { kind: "appearance"; target: AppearanceTarget; sprite: string | null }
+  /** Compare explicitly authored runtime tile-property overrides. Every
+   *  present field must match; null means that field has no override. */
+  | {
+      kind: "tileProperty";
+      x: number;
+      y: number;
+      passage?: "pass" | "block" | null;
+      enter?: Dir[] | null;
+      exit?: Dir[] | null;
+    }
   /** True only while the map world is the unobstructed top-level state.
    *  `negate` asks for any blocking world state instead. */
   | { kind: "worldIdle"; negate?: boolean }
@@ -196,6 +221,30 @@ export type Command =
       fade?: number;
     }
   | { op: "moveRoute"; target: RouteTarget; wait?: boolean; route: MoveRoute }
+  /** Change a walking character's image/opacity/visibility. null resets one
+   *  field. Event changes last until that event changes page; player changes
+   *  cross maps. `saveDefault` makes a player sprite the reset baseline. */
+  | {
+      op: "appearance";
+      target: AppearanceTarget;
+      sprite?: string | null;
+      opacity?: number | null;
+      visible?: boolean | null;
+      saveDefault?: boolean;
+    }
+  /** Change one named visual layer for this map visit. A null field restores
+   *  its asset default; variant names resolve through GameAssets. */
+  | { op: "layer"; layer: string; visible?: boolean | null; variant?: string | null }
+  /** Override passage and/or one-sided blocked edges at one map cell for
+   *  this visit. null clears that field back to the authored map value. */
+  | {
+      op: "tileProperty";
+      x: number;
+      y: number;
+      passage?: "pass" | "block" | null;
+      enter?: Dir[] | null;
+      exit?: Dir[] | null;
+    }
   | { op: "wait"; seconds: number }
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }

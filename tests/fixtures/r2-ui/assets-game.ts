@@ -15,7 +15,7 @@ export const GAME_ASSETS: GameAssets = {
   maxChunks: 4,
   world: { "r2-ui-field": { w: 1024, h: 640 }, "r2-ui-second": { w: 1024, h: 640 } },
   order: ["r2-ui-field", "r2-ui-second"],
-  npcSrc: { walker: WALKER },
+  npcSrc: { walker: WALKER, alt: "assets/walker-idle-3.png" },
   player: WALKER,
   playerHeight: 32,
   animated: {
@@ -2583,4 +2583,10 @@ export const GAME_ASSETS: GameAssets = {
     { x: 17, y: 11, above: true, sprite: "assets/anim/anim-0.png" },
   ],
 },
+  layers: {
+    ground: { placement: "ground", mode: "eager", variants: { void: { chunks: { "r2-ui-field": ["assets/map-r2-ui-second-upper-0.png", "assets/map-r2-ui-second-upper-1.png", "assets/map-r2-ui-second-upper-2.png", "assets/map-r2-ui-second-upper-3.png"] }, columns: { "r2-ui-field": 2 } } } },
+    upper: { placement: "upper", mode: "eager", variants: {} },
+    "extra-canopy": { placement: "above", mode: "eager", variants: { on: { chunks: { "r2-ui-field": ["assets/map-r2-ui-field-upper-0.png", "assets/map-r2-ui-field-upper-1.png", "assets/map-r2-ui-field-upper-2.png", "assets/map-r2-ui-field-upper-3.png"] }, columns: { "r2-ui-field": 2 } } } },
+    "screen-tint": { placement: "screen", variants: { blue: { color: "#2040c080" } } },
+  },
 };

@@ -20,7 +20,7 @@
 
 import { MAX_FIBER_STACK_DEPTH } from "./interpreter.ts";
 import type { MapDef } from "./types.ts";
-import { isStandable, type PassageTable } from "./passability.ts";
+import { isStandable, withTilePropertyOverrides, type PassageTable } from "./passability.ts";
 import type { SaveSnapshot } from "./save.ts";
 import { SaveError, decodeEnvelopeText } from "./save.ts";
 import { cloneInterp, createSwitchState } from "./interpreter.ts";
@@ -55,7 +55,13 @@ export function restoreProblem(
   if (tx < 0 || ty < 0 || tx >= map.width || ty >= map.height) {
     return `player tile (${tx},${ty}) is outside ${map.id} (${map.width}x${map.height})`;
   }
-  if (!isStandable(table, tx, ty)) {
+  let effectiveTable: PassageTable;
+  try {
+    effectiveTable = withTilePropertyOverrides(table, snap.interp.tileProperties);
+  } catch (error) {
+    return `runtime tile properties are invalid: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (!isStandable(effectiveTable, tx, ty)) {
     return `player tile (${tx},${ty}) is not standable on ${map.id}`;
   }
 

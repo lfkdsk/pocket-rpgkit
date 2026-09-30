@@ -23,7 +23,7 @@
 
 import { stepFrames } from "./movement.ts";
 import { canStepFrom, type Dir4, type PassageTable } from "./passability.ts";
-import { stepSession, type Session, type SessionState } from "./session.ts";
+import { sessionPassageTable, stepSession, type Session, type SessionState } from "./session.ts";
 
 // BTN masks, duplicated so this engine module keeps zero framework imports.
 const BTN_UP = 0x0010;
@@ -140,7 +140,7 @@ function less(a: Node, b: Node): boolean {
 /** Plan host-frame masks that bring the player to rest on (tx,ty). */
 export function searchWalk(q: WalkSearch): WalkPlan {
   const { session: sess, state: start } = q;
-  const table = sess.tables.get(start.mapId)!;
+  const table = sessionPassageTable(sess, start);
   const W = table.width;
   const goal = q.ty * W + q.tx;
   const dist = distanceField(table, q.tx, q.ty, q.avoid);

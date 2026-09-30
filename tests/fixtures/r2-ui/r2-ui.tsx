@@ -8,7 +8,7 @@ import {
 import type { Project } from "../../../src/engine/types.ts";
 import { toyBattleRules, toyState } from "../toy-battle.ts";
 import { GAME_ASSETS } from "./assets-game.ts";
-import { R2_UI_PROJECT } from "./fixture-data.ts";
+import { KV1_UI_PROJECT, R2_UI_PROJECT } from "./fixture-data.ts";
 
 export interface R2UiStats {
   below?: AnimatedTilesStats;
@@ -22,16 +22,22 @@ declare global {
   var __r2Battle: boolean | undefined;
   // eslint-disable-next-line no-var
   var __r2FatalTransfer: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __r2Kv1: boolean | undefined;
 }
 
 const stats: R2UiStats = {};
 globalThis.__r2UiStats = stats;
 const battleFixture = globalThis.__r2Battle === true;
 const fatalTransferFixture = globalThis.__r2FatalTransfer === true;
+const kv1Fixture = globalThis.__r2Kv1 === true;
 globalThis.__r2Battle = undefined;
 globalThis.__r2FatalTransfer = undefined;
+globalThis.__r2Kv1 = undefined;
 
-const project: Project = battleFixture
+const project: Project = kv1Fixture
+  ? KV1_UI_PROJECT
+  : battleFixture
   ? {
       ...R2_UI_PROJECT,
       maps: R2_UI_PROJECT.maps.map((map, index) => index === 0

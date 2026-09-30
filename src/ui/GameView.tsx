@@ -53,7 +53,13 @@ import {
 } from "../engine/session.ts";
 import { isProjectShell, MapNotReadyError } from "../engine/map-repository.ts";
 import { AttractController, type AttractStatus } from "../engine/attract.ts";
-import { activePage, eventIdLess, modalChanged } from "../engine/interpreter.ts";
+import {
+  activePage,
+  effectiveEventAppearance,
+  effectivePlayerAppearance,
+  eventIdLess,
+  modalChanged,
+} from "../engine/interpreter.ts";
 import type {
   CameraState,
   Facing,
@@ -70,7 +76,14 @@ import { TILE } from "../engine/tiles.ts";
 import { DialogBox } from "./DialogBox.tsx";
 import type { UiTheme } from "./theme.ts";
 import type { Modal } from "../engine/interpreter.ts";
-import type { GameAssets, NpcArt } from "./game-assets.ts";
+import type {
+  GameAssets,
+  GameMapLayerAssets,
+  GameScreenLayerAssets,
+  MapLayerVariant,
+  NpcArt,
+  ScreenLayerVariant,
+} from "./game-assets.ts";
 import { AnimatedTiles, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import { ChunkLayer } from "./ChunkLayer.tsx";
 import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
@@ -89,10 +102,9 @@ function spritePaints(def: SpriteDef | undefined): boolean {
 }
 
 /** Events that ever show a character image, indexed in stable mount order. */
-function collectMapSlots(map: MapDef, sprites: Sprites): GameEvent[] {
+function collectMapSlots(map: MapDef): GameEvent[] {
   const slots: GameEvent[] = [];
   for (const ev of [...(map.events as GameEvent[])].sort((a, b) => (eventIdLess(a.id, b.id) ? -1 : a.id === b.id ? 0 : 1))) {
-    if (!ev.pages.some((p) => spritePaints(p.sprite != null ? sprites[p.sprite!] : undefined))) continue;
     slots.push(ev);
   }
   return slots;
@@ -104,7 +116,7 @@ interface NpcRenderSlot {
   py: number;
 }
 
-type NpcFrame = [number, number, string, 16 | 32];
+type NpcFrame = [number, number, string, 16 | 32, number, boolean];
 
 function depthOrder(points: readonly (readonly [number, number, ...unknown[]])[], worldWidth: number): string {
   const actors = points
@@ -121,13 +133,19 @@ function npcFrame(
   npcSrc: GameAssets["npcSrc"],
   extensions: ExtensionRuntime,
 ): NpcFrame {
-  const active = activePage(event, state.sw, state.mapId, state.move.facing, {
-    runtime: extensions,
-    ext: state.ext,
-  }, { worldIdle: isSessionWorldIdle(state) });
-  const name = active?.page.sprite;
-  const art: NpcArt | "" = name && spritePaints(sprites[name]) ? (npcSrc[name] ?? "") : "";
   const ch = state.chars.chars[event.id];
+  const active = ch && event.pages[ch.pageIndex]
+    ? { page: event.pages[ch.pageIndex]!, index: ch.pageIndex }
+    : activePage(event, state.sw, state.mapId, state.move.facing, {
+        runtime: extensions,
+        ext: state.ext,
+      }, { worldIdle: isSessionWorldIdle(state) });
+  const appearance = effectiveEventAppearance(
+    { pageIndex: active?.index ?? -1, sprite: active?.page.sprite ?? null },
+    state.interp.eventAppearances?.[event.id],
+  );
+  const name = appearance.sprite;
+  const art: NpcArt | "" = name && spritePaints(sprites[name]) ? (npcSrc[name] ?? "") : "";
   return [
     ch ? ch.px : event.x * TILE,
     ch ? ch.py : event.y * TILE,
@@ -135,11 +153,58 @@ function npcFrame(
       ? art
       : playerImageKey(walkPose(ch ? ch.phase : 0), ch ? ch.facing : 0, art),
     typeof art === "string" ? 16 : art.h,
+    appearance.opacity / 255,
+    appearance.visible && art !== "",
   ];
 }
 
-function npcStyle(height: 16 | 32, depth: number) {
-  return { posType: 1, insetL: 0, insetT: TILE - height, width: TILE, height, zIndex: depth };
+function npcStyle(height: 16 | 32, depth: number, opacity: number, visible: boolean) {
+  return {
+    posType: 1,
+    insetL: 0,
+    insetT: TILE - height,
+    width: TILE,
+    height,
+    zIndex: depth,
+    opacity,
+    display: visible ? 0 : 1,
+  };
+}
+
+interface PlayerRenderFrame {
+  src: string;
+  height: 16 | 32;
+  opacity: number;
+  visible: boolean;
+}
+
+function playerFrame(
+  state: SessionState,
+  sprites: Sprites,
+  npcSrc: GameAssets["npcSrc"],
+  builtIn: GameAssets["player"],
+  builtInHeight: 16 | 32,
+): PlayerRenderFrame {
+  const appearance = effectivePlayerAppearance(state.sw);
+  if (appearance.sprite === null) {
+    return {
+      src: playerImageKey(walkPose(state.move.phase), state.move.facing, builtIn),
+      height: builtInHeight,
+      opacity: appearance.opacity / 255,
+      visible: appearance.visible,
+    };
+  }
+  const art = spritePaints(sprites[appearance.sprite]) ? npcSrc[appearance.sprite] : undefined;
+  return {
+    src: typeof art === "string"
+      ? art
+      : art
+        ? playerImageKey(walkPose(state.move.phase), state.move.facing, art)
+        : "",
+    height: typeof art === "string" || art === undefined ? 16 : art.h,
+    opacity: appearance.opacity / 255,
+    visible: appearance.visible && art !== undefined,
+  };
 }
 
 /** The only mounted actor subtree. It owns enough stable image slots for any
@@ -167,9 +232,11 @@ function CurrentMapActors(props: {
     const source = slots[index];
     const frame = source
       ? npcFrame(initial, source, props.sprites, props.npcSrc, props.extensions)
-      : [0, 0, "", 16] as const;
+      : [0, 0, "", 16, 1, false] as const;
     const node = createElement("image");
-    setProp(node, "style", npcStyle(frame[3], actorDepth(frame[0], frame[1], stride)));
+    setProp(node, "style", npcStyle(
+      frame[3], actorDepth(frame[0], frame[1], stride), frame[4], frame[5],
+    ));
     setProp(node, "src", frame[2]);
     if (source) setProp(node, "debugName", `rpgkit-npc-${source.id}`);
     return { node, px: frame[0], py: frame[1] };
@@ -177,6 +244,9 @@ function CurrentMapActors(props: {
   startupProfileMark("ui-actors:pooled");
 
   const [playerDepth, setPlayerDepth] = createSignal(actorDepth(initial.move.px, initial.move.py, stride));
+  const [playerVisual, setPlayerVisual] = createSignal(
+    playerFrame(initial, props.sprites, props.npcSrc, props.player, props.playerHeight),
+  );
   let hero: NodeMirror | undefined;
   let positions: JumpBatch | undefined;
   let { px, py } = initial.move;
@@ -249,7 +319,7 @@ function CurrentMapActors(props: {
       const source = slots[index];
       const frame: NpcFrame = source
         ? npcFrame(state, source, props.sprites, props.npcSrc, props.extensions)
-        : [0, 0, "", 16];
+        : [0, 0, "", 16, 1, false];
       frames.push(frame);
       const npc = npcs[index]!;
       if (!transfer && source && (npc.px !== frame[0] || npc.py !== frame[1])) {
@@ -278,14 +348,27 @@ function CurrentMapActors(props: {
       const npc = npcs[index]!;
       const oldStyle = npc.node.domAttrs?.style as ReturnType<typeof npcStyle> | undefined;
       setProp(npc.node, "src", frame[2], npc.node.domAttrs?.src as string | undefined);
-      setProp(npc.node, "style", npcStyle(frame[3],
-        slots[index] && reorder ? actorDepth(frame[0], frame[1], stride) : oldStyle?.zIndex ?? 0), oldStyle);
+      setProp(npc.node, "style", npcStyle(
+        frame[3],
+        slots[index] && reorder ? actorDepth(frame[0], frame[1], stride) : oldStyle?.zIndex ?? 0,
+        frame[4],
+        frame[5],
+      ), oldStyle);
       if (transfer) setProp(npc.node, "debugName", slots[index] ? `rpgkit-npc-${slots[index]!.id}` : undefined);
     }
     px = state.move.px;
     py = state.move.py;
     cx = camera.x;
     cy = camera.y;
+    const nextPlayer = playerFrame(state, props.sprites, props.npcSrc, props.player, props.playerHeight);
+    setPlayerVisual((current) =>
+      current.src === nextPlayer.src &&
+      current.height === nextPlayer.height &&
+      current.opacity === nextPlayer.opacity &&
+      current.visible === nextPlayer.visible
+        ? current
+        : nextPlayer,
+    );
   });
 
   const view = (
@@ -294,7 +377,10 @@ function CurrentMapActors(props: {
         pose={props.pose()}
         facing={props.facing()}
         frames={props.player}
-        height={props.playerHeight}
+        src={playerVisual().src}
+        height={playerVisual().height}
+        opacity={playerVisual().opacity}
+        visible={playerVisual().visible}
         zIndex={playerDepth()}
         debugName="rpgkit-player"
         ref={(node) => {
@@ -306,6 +392,149 @@ function CurrentMapActors(props: {
   );
   startupProfileMark("ui-actors:end");
   return view;
+}
+
+const EMPTY_CHUNKS: Readonly<Record<string, readonly string[]>> = {};
+const EMPTY_REFS: Readonly<Record<string, readonly (string | null)[]>> = {};
+const EMPTY_COLUMNS: Readonly<Record<string, number>> = {};
+
+function selectedVariant(
+  id: string,
+  assets: GameMapLayerAssets | GameScreenLayerAssets,
+  state: SessionState,
+): { name: string | null; variant: MapLayerVariant | ScreenLayerVariant | undefined; visible: boolean } {
+  const override = state.interp.layers?.[id];
+  const name = override?.variant ?? assets.defaultVariant ?? null;
+  const variant = name === null ? undefined : assets.variants[name];
+  if (name !== null && variant === undefined) {
+    throw new Error(`GameView: layer ${JSON.stringify(id)} has no variant ${JSON.stringify(name)}`);
+  }
+  return {
+    name,
+    variant,
+    visible: override?.visible ?? assets.defaultVisible ?? true,
+  };
+}
+
+function maxLayerChunks(layer: GameMapLayerAssets): number {
+  let max = 1;
+  for (const variant of Object.values(layer.variants)) {
+    if (!("chunks" in variant)) continue;
+    for (const chunks of Object.values(variant.chunks)) max = Math.max(max, chunks.length);
+  }
+  return layer.maxChunks ?? max;
+}
+
+/** One optional extra world-space band. Its nodes stay mounted across
+ * visibility and variant changes; a source key makes streamed textures
+ * release/rebind without rebuilding any map art. */
+function ExtraMapLayer(props: {
+  id: string;
+  layer: GameMapLayerAssets;
+  mapId: Accessor<string>;
+  revision: Accessor<number>;
+  state: () => SessionState;
+  camera: () => CameraState;
+  viewport: () => { w: number; h: number };
+}) {
+  const selection = () => {
+    props.revision();
+    return selectedVariant(props.id, props.layer, props.state());
+  };
+  const variant = (): MapLayerVariant | undefined => {
+    const value = selection().variant;
+    if (value === undefined) return undefined;
+    if (!("chunks" in value) && !("refs" in value)) {
+      throw new Error(`GameView: map layer ${JSON.stringify(props.id)} selected a screen variant`);
+    }
+    if (props.layer.mode === "eager" && !("chunks" in value)) {
+      throw new Error(`GameView: eager layer ${JSON.stringify(props.id)} requires eager variants`);
+    }
+    if (props.layer.mode === "streamed" && !("refs" in value)) {
+      throw new Error(`GameView: streamed layer ${JSON.stringify(props.id)} requires streamed variants`);
+    }
+    return value;
+  };
+  const streamedVariant = () => {
+    const value = variant();
+    return value && "refs" in value ? value : undefined;
+  };
+  const eagerVariant = () => {
+    const value = variant();
+    return value && "chunks" in value ? value : undefined;
+  };
+  const firstStreamed = Object.values(props.layer.variants).find(
+    (candidate): candidate is Extract<MapLayerVariant, { refs: unknown }> => "refs" in candidate,
+  );
+  if (props.layer.mode === "streamed") {
+    if (!firstStreamed) throw new Error(`GameView: streamed layer ${JSON.stringify(props.id)} has no source`);
+    for (const candidate of Object.values(props.layer.variants)) {
+      if (!("refs" in candidate) || candidate.chunkPx !== firstStreamed.chunkPx) {
+        throw new Error(`GameView: streamed layer ${JSON.stringify(props.id)} variants must share chunkPx`);
+      }
+    }
+  }
+  return props.layer.mode === "streamed" ? (
+    <StreamedChunkLayer
+      mapId={props.mapId()}
+      refs={streamedVariant()?.refs ?? EMPTY_REFS}
+      columns={streamedVariant()?.columns ?? EMPTY_COLUMNS}
+      chunkPx={firstStreamed!.chunkPx}
+      camera={props.camera}
+      viewport={props.viewport}
+      margin={streamedVariant()?.margin}
+      loadBudget={streamedVariant()?.loadBudget}
+      sourceKey={`${props.id}:${selection().name ?? ""}`}
+      visible={selection().visible && streamedVariant() !== undefined}
+      debugName={`rpgkit-layer-${props.id}`}
+    />
+  ) : (
+    <ChunkLayer
+      names={eagerVariant()?.chunks[props.mapId()] ?? []}
+      columns={eagerVariant()?.columns[props.mapId()] ?? 1}
+      slots={maxLayerChunks(props.layer)}
+      visible={selection().visible && eagerVariant() !== undefined}
+      debugName={`rpgkit-layer-${props.id}`}
+    />
+  );
+}
+
+function ScreenVisualLayer(props: {
+  id: string;
+  layer: GameScreenLayerAssets;
+  revision: Accessor<number>;
+  state: () => SessionState;
+}) {
+  const selection = () => {
+    props.revision();
+    return selectedVariant(props.id, props.layer, props.state());
+  };
+  const variant = (): ScreenLayerVariant | undefined => {
+    const value = selection().variant;
+    if (value === undefined) return undefined;
+    if ("chunks" in value || "refs" in value) {
+      throw new Error(`GameView: screen layer ${JSON.stringify(props.id)} selected a map variant`);
+    }
+    return value;
+  };
+  return (
+    <View
+      class="absolute w-full h-full"
+      style={{
+        posType: 1,
+        bgColor: variant()?.color ?? "#00000000",
+        opacity: variant()?.opacity ?? 1,
+        display: selection().visible && variant() !== undefined ? 0 : 1,
+      }}
+      debugName={`rpgkit-screen-layer-${props.id}`}
+    >
+      <Image
+        class="absolute w-full h-full"
+        src={variant()?.image ?? ""}
+        style={{ posType: 1, display: variant()?.image ? 0 : 1 }}
+      />
+    </View>
+  );
 }
 
 function StartupProfileTail() {
@@ -380,6 +609,39 @@ export function GameView(props: GameViewProps) {
   }
   const BattleSceneView = props.battleScene;
   const stream = assets.stream;
+  const layerAssets = assets.layers ?? {};
+  const groundLayer = layerAssets.ground?.placement === "ground" ? layerAssets.ground : undefined;
+  const upperLayer = layerAssets.upper?.placement === "upper" ? layerAssets.upper : undefined;
+  if (layerAssets.ground && !groundLayer) throw new Error("GameView: layer 'ground' must use placement 'ground'");
+  if (layerAssets.upper && !upperLayer) throw new Error("GameView: layer 'upper' must use placement 'upper'");
+  const expectedMode = stream ? "streamed" : "eager";
+  if (groundLayer && groundLayer.mode !== expectedMode) {
+    throw new Error(`GameView: ground variants must use ${expectedMode} sources`);
+  }
+  if (upperLayer && upperLayer.mode !== expectedMode) {
+    throw new Error(`GameView: upper variants must use ${expectedMode} sources`);
+  }
+  for (const [id, layer] of [["ground", groundLayer], ["upper", upperLayer]] as const) {
+    if (!layer) continue;
+    for (const variant of Object.values(layer.variants)) {
+      if (stream) {
+        if (!("refs" in variant) || variant.chunkPx !== stream.chunkPx) {
+          throw new Error(`GameView: ${id} streamed variants must share the base chunkPx`);
+        }
+      } else if (!("chunks" in variant)) {
+        throw new Error(`GameView: ${id} eager variants require eager chunk sources`);
+      }
+    }
+  }
+  const extraBelow = Object.entries(layerAssets).filter(
+    (entry): entry is [string, GameMapLayerAssets] => entry[1].placement === "below",
+  );
+  const extraAbove = Object.entries(layerAssets).filter(
+    (entry): entry is [string, GameMapLayerAssets] => entry[1].placement === "above",
+  );
+  const screenLayers = Object.entries(layerAssets).filter(
+    (entry): entry is [string, GameScreenLayerAssets] => entry[1].placement === "screen",
+  );
   // The host rate selects how many fixed 60 Hz reference ticks each frame
   // folds. Time-bearing commands compile against that fixed reference.
   const hz = simulationHz();
@@ -410,11 +672,11 @@ export function GameView(props: GameViewProps) {
   const mapsById = session.maps;
   const sprites = (project.sprites ?? {}) as Sprites;
   const initialMap = mapsById.get(state.mapId)!;
-  const slotCache = new Map<string, GameEvent[]>([[state.mapId, collectMapSlots(initialMap, sprites)]]);
+  const slotCache = new Map<string, GameEvent[]>([[state.mapId, collectMapSlots(initialMap)]]);
   const inlineMaxActors = isProjectShell(project)
     ? 0
-    : Math.max(0, ...project.maps.map((map) => collectMapSlots(map, sprites).length));
-  const actorSlotCount = Math.max(slotCache.get(state.mapId)!.length, assets.maxActors ?? inlineMaxActors);
+    : Math.max(0, ...project.maps.map((map) => collectMapSlots(map).length));
+  const actorSlotCount = Math.max(slotCache.get(state.mapId)!.length, assets.maxActors ?? 0, inlineMaxActors);
   const dimensions = isProjectShell(project)
     ? project.mapIndex
     : project.maps.map((map) => ({ id: map.id, width: map.width, height: map.height }));
@@ -426,7 +688,7 @@ export function GameView(props: GameViewProps) {
     if (!slots) {
       const map = mapsById.get(state.mapId);
       if (!map) throw new Error(`GameView: map ${JSON.stringify(state.mapId)} is not resident`);
-      slots = collectMapSlots(map, sprites);
+      slots = collectMapSlots(map);
       if (slots.length > actorSlotCount) {
         throw new Error(
           `GameView: map ${JSON.stringify(state.mapId)} needs ${slots.length} actor slots; ` +
@@ -484,6 +746,39 @@ export function GameView(props: GameViewProps) {
   let camera = cameraFor(state);
   globalThis.__rpgGameCamera = camera;
   const [fade, setFade] = createSignal(0);
+  const layerFingerprint = (value: SessionState): string =>
+    value.interp.layers ? JSON.stringify(value.interp.layers) : "";
+  let paintedLayers = layerFingerprint(state);
+  const [layerRevision, setLayerRevision] = createSignal(0);
+  const builtInLayer = (
+    id: "ground" | "upper",
+    definition: GameMapLayerAssets | undefined,
+  ): { name: string | null; variant?: MapLayerVariant; visible: boolean } => {
+    layerRevision();
+    const override = state.interp.layers?.[id];
+    if (!definition) {
+      if (override?.variant !== undefined) {
+        throw new Error(`GameView: layer ${JSON.stringify(id)} has no variant ${JSON.stringify(override.variant)}`);
+      }
+      return { name: null, visible: override?.visible ?? true };
+    }
+    const selection = selectedVariant(id, definition, state);
+    const variant = selection.variant;
+    if (variant && !("chunks" in variant) && !("refs" in variant)) {
+      throw new Error(`GameView: built-in layer ${JSON.stringify(id)} selected a screen variant`);
+    }
+    return { name: selection.name, variant: variant as MapLayerVariant | undefined, visible: selection.visible };
+  };
+  const groundSelection = () => builtInLayer("ground", groundLayer);
+  const upperSelection = () => builtInLayer("upper", upperLayer);
+  const groundStreamVariant = () => {
+    const variant = groundSelection().variant;
+    return variant && "refs" in variant ? variant : undefined;
+  };
+  const groundEagerVariant = () => {
+    const variant = groundSelection().variant;
+    return variant && "chunks" in variant ? variant : undefined;
+  };
   startupProfileMark("game-view:model");
 
   // Live play fires reducer edges from the action handlers. Under the
@@ -603,6 +898,7 @@ export function GameView(props: GameViewProps) {
     globalThis.__rpgGameCamera = camera;
 
     const op = fadeOpacity(state.fade);
+    const nextLayers = layerFingerprint(state);
     batch(() => {
       if (state.mapId !== prev.mapId || mapId() !== state.mapId) setMapId(state.mapId);
       // The walker pose is a pure function of the saved mover phase, so a
@@ -611,6 +907,10 @@ export function GameView(props: GameViewProps) {
       if (nextPose !== pose()) setPose(nextPose);
       if (state.move.facing !== facing()) setFacing(state.move.facing);
       if (op !== fade()) setFade(op);
+      if (nextLayers !== paintedLayers) {
+        paintedLayers = nextLayers;
+        setLayerRevision((revision) => revision + 1);
+      }
       const shownModal = attract ? attract.presentedModal() : state.interp.modal;
       setModal((m) => (modalChanged(m, shownModal) ? deepClone(shownModal) : m));
       setScene(state.scene ? cloneScene(state.scene) : null);
@@ -659,21 +959,29 @@ export function GameView(props: GameViewProps) {
           {stream ? (
             <StreamedChunkLayer
               mapId={mapId()}
-              refs={stream.ground}
-              columns={stream.columns}
+              refs={groundStreamVariant()?.refs ?? stream.ground}
+              columns={groundStreamVariant()?.columns ?? stream.columns}
               chunkPx={stream.chunkPx}
               camera={() => camera}
               viewport={() => viewport()}
-              margin={stream.margin}
-              loadBudget={stream.loadBudget}
+              margin={groundStreamVariant()?.margin ?? stream.margin}
+              loadBudget={groundStreamVariant()?.loadBudget ?? stream.loadBudget}
+              sourceKey={`ground:${groundSelection().name ?? ""}`}
+              visible={groundSelection().visible}
               debugName="rpgkit-ground"
               onStats={(stats) => props.onStreamStats?.("ground", stats)}
             />
           ) : (
             <ChunkLayer
-              names={assets.ground[mapId()] ?? assets.ground[firstMapId]!}
-              columns={assets.chunkColumns[mapId()] ?? assets.chunkColumns[firstMapId] ?? 1}
-              slots={assets.maxChunks}
+              names={groundEagerVariant()?.chunks[mapId()]
+                ?? assets.ground[mapId()]
+                ?? assets.ground[firstMapId]!}
+              columns={groundEagerVariant()?.columns[mapId()]
+                ?? assets.chunkColumns[mapId()]
+                ?? assets.chunkColumns[firstMapId]
+                ?? 1}
+              slots={Math.max(assets.maxChunks, groundLayer ? maxLayerChunks(groundLayer) : 1)}
+              visible={groundSelection().visible}
               debugName="rpgkit-ground"
             />
           )}
@@ -690,9 +998,22 @@ export function GameView(props: GameViewProps) {
                 return { w: m.width, h: m.height };
               }}
               debugName="rpgkit-anim-below"
+              visible={groundSelection().visible}
               onStats={(stats) => props.onAnimatedStats?.("below", stats)}
             />
           ) : null}
+
+          {extraBelow.map(([id, layer]) => (
+            <ExtraMapLayer
+              id={id}
+              layer={layer}
+              mapId={mapId}
+              revision={layerRevision}
+              state={() => state}
+              camera={() => camera}
+              viewport={() => viewport()}
+            />
+          ))}
 
           <OccludingUpperLayer
             mapId={mapId()}
@@ -702,6 +1023,11 @@ export function GameView(props: GameViewProps) {
             worldWidth={worldWidth}
             camera={() => camera}
             viewport={() => viewport()}
+            source={() => ({
+              key: `upper:${upperSelection().name ?? ""}`,
+              variant: upperSelection().variant,
+            })}
+            visible={() => upperSelection().visible}
             debugName="rpgkit-actors"
             onStreamStats={(stats) => props.onStreamStats?.("upper", stats)}
             onAnimatedStats={(stats) => props.onAnimatedStats?.("above", stats)}
@@ -722,8 +1048,29 @@ export function GameView(props: GameViewProps) {
               camera={() => camera}
             />
           </OccludingUpperLayer>
+
+          {extraAbove.map(([id, layer]) => (
+            <ExtraMapLayer
+              id={id}
+              layer={layer}
+              mapId={mapId}
+              revision={layerRevision}
+              state={() => state}
+              camera={() => camera}
+              viewport={() => viewport()}
+            />
+          ))}
             </View>
           </View>
+
+          {screenLayers.map(([id, layer]) => (
+            <ScreenVisualLayer
+              id={id}
+              layer={layer}
+              revision={layerRevision}
+              state={() => state}
+            />
+          ))}
 
           <DialogBox
             modal={modal}

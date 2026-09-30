@@ -9,6 +9,8 @@ export const WALKING_NPC = { x: 22, y: 14 } as const;
 export const LATE_NPC = { x: 50, y: 35 } as const;
 export const SECOND_NPC = { x: 7, y: 5 } as const;
 export const ABOVE_ANIMATION = { x: 17, y: 11 } as const;
+export const KV1_CONTROLLER = { x: PLAYER_START.x, y: PLAYER_START.y + 1 } as const;
+export const KV1_SUBJECT = { x: PLAYER_START.x + 3, y: PLAYER_START.y } as const;
 
 /** Representative positions from the original-world comparison, arranged
  *  on the second fixture map. `head` and `foot` describe opaque upper cells
@@ -169,4 +171,74 @@ export const R2_UI_PROJECT: Project = {
   },
   items: [],
   maps: [R2_MAP, R2_SECOND_MAP],
+};
+
+/** Opt-in visual fixture used by kv1-ui-sim. Four action presses expose
+ * appearance, built-in layer replacement/hiding, an extra map band, then a
+ * viewport overlay without changing the default r2-ui fixture frames. */
+export const KV1_UI_PROJECT: Project = {
+  ...R2_UI_PROJECT,
+  title: "KV1 runtime visuals",
+  sprites: {
+    ...R2_UI_PROJECT.sprites,
+    alt: { kind: "image", src: "assets/walker-idle-3.png" },
+  },
+  maps: [{
+    ...R2_MAP,
+    events: [
+      {
+        id: "appearance-subject",
+        x: KV1_SUBJECT.x,
+        y: KV1_SUBJECT.y,
+        pages: [{ trigger: "action", sprite: "walker", commands: [] }],
+      },
+      {
+        id: "visual-controller",
+        x: KV1_CONTROLLER.x,
+        y: KV1_CONTROLLER.y,
+        pages: [
+          {
+            trigger: "action",
+            commands: [
+              { op: "appearance", target: "player", sprite: "alt" },
+              { op: "appearance", target: { event: "appearance-subject" }, sprite: "alt" },
+              { op: "switch", id: "kv1.stage.1", value: true },
+            ],
+          },
+          {
+            condition: { switch: "kv1.stage.1" },
+            trigger: "action",
+            commands: [
+              { op: "appearance", target: "player", opacity: 128 },
+              { op: "appearance", target: { event: "appearance-subject" }, visible: false },
+              { op: "layer", layer: "ground", variant: "void" },
+              { op: "layer", layer: "upper", visible: false },
+              { op: "switch", id: "kv1.stage.2", value: true },
+            ],
+          },
+          {
+            condition: { switch: "kv1.stage.2" },
+            trigger: "action",
+            commands: [
+              { op: "layer", layer: "extra-canopy", variant: "on", visible: true },
+              { op: "switch", id: "kv1.stage.3", value: true },
+            ],
+          },
+          {
+            condition: { switch: "kv1.stage.3" },
+            trigger: "action",
+            commands: [
+              { op: "layer", layer: "screen-tint", variant: "blue", visible: true },
+              { op: "switch", id: "kv1.stage.4", value: true },
+            ],
+          },
+          {
+            condition: { switch: "kv1.stage.4" },
+            trigger: "action",
+            commands: [],
+          },
+        ],
+      },
+    ],
+  }],
 };

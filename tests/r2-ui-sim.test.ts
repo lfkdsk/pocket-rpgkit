@@ -311,7 +311,9 @@ simDescribe("16x32 walkers", () => {
     expect(findNodes(beforeTree, "rpgkit-actors-").map((node) => node.n)).toEqual([
       "rpgkit-actors-r2-ui-field",
     ]);
-    expect(findNodes(beforeTree, "rpgkit-npc-")).toHaveLength(3);
+    // KV1 reserves a stable hidden slot for every event, including the
+    // sprite-less transfer trigger, so a later appearance command can show it.
+    expect(findNodes(beforeTree, "rpgkit-npc-")).toHaveLength(4);
 
     pump(world, 1);
     const after = findNode(world.getTree(), "rpgkit-npc-late-npc");
@@ -347,7 +349,8 @@ simDescribe("16x32 walkers", () => {
       `rpgkit-actors-${R2_SECOND_MAP_ID}`,
     ]);
     const destinationNpcs = findNodes(tree, "rpgkit-npc-");
-    expect(destinationNpcs).toHaveLength(20);
+    // The sprite-less return trigger also owns a hidden runtime-appearance slot.
+    expect(destinationNpcs).toHaveLength(21);
     const destinationIds = new Set(destinationNpcs.map((node) => node.i));
     expect([...firstIds].every((id) => destinationIds.has(id))).toBe(true);
     const destination = findNode(tree, "rpgkit-npc-second-npc");

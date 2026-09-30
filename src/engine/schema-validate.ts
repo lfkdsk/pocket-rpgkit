@@ -1,9 +1,9 @@
 // src/engine/schema-validate.ts — minimal JSON Schema (draft
 // 2020-12 subset) validator covering the constructs data/schema.json uses:
 // type, const, enum, properties/required/additionalProperties, items,
-// minItems/maxItems, oneOf, $ref + $defs, pattern, minLength/maxLength,
-// minimum/maximum, exclusiveMinimum, minProperties, uniqueItems,
-// prefixItems. Not a general-purpose validator — a zero-dependency checker
+// minItems/maxItems, oneOf/anyOf/allOf, if/then/else, $ref + $defs, pattern,
+// minLength/maxLength, minimum/maximum, exclusiveMinimum, minProperties,
+// uniqueItems, prefixItems. Not a general-purpose validator — a zero-dependency checker
 // for THIS schema, so the runtime data keeps an acceptance gate without
 // adding a dependency.
 
@@ -148,6 +148,24 @@ export function validateSchema(
       const matches = candidates.filter((branch) => walk(branch, v)).length;
       recording = wasRecording;
       if (matches !== 1) fail(`oneOf: matched ${matches} branches (need exactly 1)`);
+    }
+    if (sch.anyOf) {
+      const wasRecording = recording;
+      recording = false;
+      const matches = (sch.anyOf as Schema[]).filter((branch) => walk(branch, v)).length;
+      recording = wasRecording;
+      if (matches === 0) fail("anyOf: matched no branches");
+    }
+    if (sch.allOf) {
+      for (const branch of sch.allOf as Schema[]) if (!walk(branch, v)) valid = false;
+    }
+    if (sch.if) {
+      const wasRecording = recording;
+      recording = false;
+      const matches = walk(sch.if as Schema, v);
+      recording = wasRecording;
+      const branch = matches ? sch.then : sch.else;
+      if (branch && !walk(branch as Schema, v)) valid = false;
     }
     return valid;
   };

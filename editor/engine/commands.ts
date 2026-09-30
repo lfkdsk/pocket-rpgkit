@@ -285,6 +285,12 @@ export function commandSummary(command: unknown): string {
       return `Extension ${text(command.call)} ${jsonPreview(command.args)}`;
     case "extChoice":
       return `Extension choice ${text(command.call)}: ${text(command.prompt)}`;
+    case "appearance":
+      return `Appearance ${jsonPreview(command.target)} ${jsonPreview({ sprite: command.sprite, opacity: command.opacity, visible: command.visible })}`;
+    case "layer":
+      return `Layer ${text(command.layer)} ${jsonPreview({ visible: command.visible, variant: command.variant })}`;
+    case "tileProperty":
+      return `Tile property (${numberText(command.x)}, ${numberText(command.y)}) ${jsonPreview({ passage: command.passage, enter: command.enter, exit: command.exit })}`;
     case "battle":
       return `Battle ${jsonPreview(command.setup)}`;
     default:

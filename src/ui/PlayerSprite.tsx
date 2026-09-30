@@ -42,11 +42,16 @@ export interface PlayerSpriteProps {
   pose: WalkPose;
   facing: Facing;
   frames: PlayerFrames;
+  /** Runtime-selected static/walker frame. Omit for the baked player art. */
+  src?: string;
   /** Frame height in px: 16 (square) or 32 (a tall walker whose top half
    *  overflows the occupied tile upward). Default 16. */
   height?: 16 | 32;
   /** Paint-only actor depth, normally derived from the live (y, x). */
   zIndex?: number;
+  /** 0..1 render opacity; default 1. */
+  opacity?: number;
+  visible?: boolean;
   debugName?: string;
   ref?: (n: NodeMirror) => void;
 }
@@ -58,12 +63,20 @@ export function playerImageKey(pose: WalkPose, facing: Facing, frames: PlayerFra
 }
 
 export function PlayerSprite(props: PlayerSpriteProps) {
-  const h = props.height ?? 16;
   return (
     <Image
       class="absolute"
-      src={playerImageKey(props.pose, props.facing, props.frames)}
-      style={{ posType: 1, insetL: 0, insetT: 16 - h, width: 16, height: h, zIndex: props.zIndex ?? 0 }}
+      src={props.src ?? playerImageKey(props.pose, props.facing, props.frames)}
+      style={{
+        posType: 1,
+        insetL: 0,
+        insetT: 16 - (props.height ?? 16),
+        width: 16,
+        height: props.height ?? 16,
+        zIndex: props.zIndex ?? 0,
+        opacity: props.opacity ?? 1,
+        display: props.visible === false ? 1 : 0,
+      }}
       ref={props.ref}
       debugName={props.debugName}
     />
