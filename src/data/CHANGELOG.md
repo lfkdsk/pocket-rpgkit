@@ -210,6 +210,11 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   data; zero-fade transfers retain their all-at-once behavior.
 - Filesystem save helpers accept the shell content identity for writing,
   loading and listing slots, so a different map manifest or schema is rejected.
+- A splitter-emitted shell manifest is used directly as the content/save
+  identity for trusted application packages, avoiding a redundant synchronous
+  SHA-256 during startup. Shells without a declared manifest are still hashed;
+  untrusted declared manifests can opt into recomputation with
+  `verifyMapManifest: true`. Map-index structure is always validated.
 
 ## v1 amendment — 2026-09-29 (extension state and Battle Processing)
 
@@ -287,6 +292,16 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
 - The values use the existing save/snapshot/rewind path and fixed-rate fold.
   `canSave` is unchanged: an active battle or queued external work is still
   not a save point.
+
+## v1 amendment — 2026-09-30 (shell manifest freshness check)
+
+- `assertShellManifestFresh(shell)` exports the build/test-time freshness
+  check for a packaged shell's declared `mapManifestHash`: it recomputes the
+  manifest hash over the shell content and throws with both the declared and
+  computed digests on mismatch, and likewise rejects a missing or malformed
+  declaration. The runtime trust default is unchanged, so an application that
+  packages a `ProjectShell` must call this in its build or test pipeline
+  after writing the shell. `splitProjectMaps` self-checks its own output.
 
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

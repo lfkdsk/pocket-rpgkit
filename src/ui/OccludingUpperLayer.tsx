@@ -41,6 +41,7 @@ import { CHUNK_PX, TILE } from "../engine/tiles.ts";
 import type { AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import type { GameAssets } from "./game-assets.ts";
 import type { StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
+import { startupProfileMark } from "../startup-profile.ts";
 
 const EMPTY_WINDOW: ChunkWindow = { x0: 0, y0: 0, x1: -1, y1: -1 };
 
@@ -102,6 +103,7 @@ export interface OccludingUpperLayerProps {
 /** Persistent current-map upper/actor plane. Rows and image slices remain
  *  attached while scrolling or transferring; animation nodes are retained. */
 export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.Element {
+  startupProfileMark("ui-upper:start");
   const root = createElement("view");
   setProp(root, "style", { posType: ENUMS.PosType.Absolute, insetL: 0, insetT: 0, width: 0, height: 0 });
   insert(root, () => props.children);
@@ -489,6 +491,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   // uploads and viewport row creation remain frame-driven like the existing
   // streamed and animated layers.
   selectMap(props.mapId);
+  startupProfileMark("ui-upper:selected");
   const viewport = props.viewport();
   const rowCount = Math.ceil(viewport.h / TILE) + 3;
   const sliceCount = Math.min(
@@ -496,6 +499,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     Math.ceil(viewport.w / chunkPx) + 2,
   );
   for (let y = 0; y < rowCount; y++) rows.push(makeRow(y, sliceCount));
+  startupProfileMark("ui-upper:pooled");
 
   onFrame(() => {
     if (currentMap !== props.mapId) selectMap(props.mapId);
@@ -516,5 +520,6 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     reportAnimated();
   });
 
+  startupProfileMark("ui-upper:end");
   return root as unknown as SolidJSX.Element;
 }

@@ -279,6 +279,31 @@ pass `{ verify: true }` as the third argument to recheck it. A source with
 network boundary. Runtime loading checks compilation-critical structure by
 default because the splitter already performed the full schema check; pass
 `{ validate: "full" }` as the third argument for untrusted authoring inputs.
+The splitter-emitted `mapManifestHash` is likewise used directly as the
+trusted package's save/content identity. A shell without that field is hashed
+at startup; pass `verifyMapManifest: true` in `createSession` options to
+recompute and compare a declared hash when accepting an untrusted or mutable
+shell. Index shape, duplicate ids/entries and the start-map reference are
+validated in both modes.
+
+Because the runtime trusts a declared hash, an application that packages a
+`ProjectShell` must verify its freshness at build or test time. After writing
+the shell, read it back and call `assertShellManifestFresh` (exported from
+`pocket-rpgkit/engine`); it recomputes the manifest hash and throws with both
+the declared and computed digests on any mismatch, catching stale or
+hand-edited shells before release:
+
+```ts
+import { readFileSync } from "node:fs";
+import { assertShellManifestFresh } from "pocket-rpgkit/engine";
+
+assertShellManifestFresh(JSON.parse(readFileSync("dist/project-shell.json", "utf8")));
+```
+
+`splitProjectMaps` already self-checks its output, so a shell that went
+straight from the splitter to disk always passes; the check guards every
+later mutation. Hand-authored shells without a declared `mapManifestHash` are
+hashed at startup and have no build identity to verify.
 
 `createSession(project, hz, { maps: repository })` synchronously validates and compiles
 only the starting map. A transfer acquires its destination, then evicts the

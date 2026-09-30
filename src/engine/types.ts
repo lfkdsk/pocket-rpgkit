@@ -406,8 +406,9 @@ export interface MapIndexEntry {
 
 /** A large-project document keeps global data inline but moves MapDef
  * payloads into independently addressable entries. The optional hashes are
- * emitted by the kit splitter; runtimes also recompute them, so hand-built
- * shells remain usable without weakening save compatibility checks. */
+ * emitted by the kit splitter and become the runtime/save content identity.
+ * Hand-built shells without a manifest remain usable because the runtime
+ * computes one; untrusted declared manifests can be explicitly rechecked. */
 export interface ProjectShell extends Omit<Project, "maps"> {
   mapIndex: readonly MapIndexEntry[];
   mapManifestHash?: string;

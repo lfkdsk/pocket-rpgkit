@@ -74,6 +74,7 @@ import { AnimatedTiles, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import { ChunkLayer } from "./ChunkLayer.tsx";
 import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
+import { startupProfileMark } from "../startup-profile.ts";
 
 type Sprites = Record<string, SpriteDef>;
 
@@ -157,6 +158,7 @@ function CurrentMapActors(props: {
   worldNode: () => NodeMirror | undefined;
   camera: () => CameraState;
 }) {
+  startupProfileMark("ui-actors:start");
   const initial = props.state();
   let slots = props.slots();
   const stride = props.worldWidth;
@@ -171,6 +173,7 @@ function CurrentMapActors(props: {
     if (source) setProp(node, "debugName", `rpgkit-npc-${source.id}`);
     return { node, px: frame[0], py: frame[1] };
   });
+  startupProfileMark("ui-actors:pooled");
 
   const [playerDepth, setPlayerDepth] = createSignal(actorDepth(initial.move.px, initial.move.py, stride));
   let hero: NodeMirror | undefined;
@@ -284,7 +287,7 @@ function CurrentMapActors(props: {
     cy = camera.y;
   });
 
-  return (
+  const view = (
     <>
       <PlayerSprite
         pose={props.pose()}
@@ -300,6 +303,13 @@ function CurrentMapActors(props: {
       {npcs.map((npc) => npc.node as any)}
     </>
   );
+  startupProfileMark("ui-actors:end");
+  return view;
+}
+
+function StartupProfileTail() {
+  onMount(() => startupProfileMark("game-view:mounted"));
+  return null;
 }
 
 // The view exposes its bare reducer state and camera to sim tests; the
@@ -355,6 +365,7 @@ export interface GameViewProps {
 }
 
 export function GameView(props: GameViewProps) {
+  startupProfileMark("game-view:start");
   const { project, assets } = props;
   // Shop box item display names, keyed by id (DialogBox falls back to the
   // raw id for anything absent). Derived once from the project's own item
@@ -362,6 +373,7 @@ export function GameView(props: GameViewProps) {
   const itemNames: Readonly<Record<string, { name: string }>> = Object.fromEntries(
     project.items.map((it) => [it.id, { name: it.name }]),
   );
+  startupProfileMark("game-view:item-names");
   if ((props.battle === undefined) !== (props.battleScene === undefined)) {
     throw new Error("GameView: battle and battleScene must be registered together");
   }
@@ -389,7 +401,9 @@ export function GameView(props: GameViewProps) {
         battle: props.battle,
         scene: props.scene,
       });
+  startupProfileMark("game-view:session");
   let state: SessionState = attract ? attract.state : startSession(project, session);
+  startupProfileMark("game-view:state");
   globalThis.__rpgSessionState = state;
 
   const mapsById = session.maps;
@@ -469,6 +483,7 @@ export function GameView(props: GameViewProps) {
   let camera = cameraFor(state);
   globalThis.__rpgGameCamera = camera;
   const [fade, setFade] = createSignal(0);
+  startupProfileMark("game-view:model");
 
   // Live play fires reducer edges from the action handlers. Under the
   // attract controller the legend is presentational: every press edge
@@ -615,7 +630,7 @@ export function GameView(props: GameViewProps) {
     });
   });
 
-  return (
+  const view = (
     <View class="w-full h-full overflow-hidden bg-black">
       <Show when={scene() === null}>
         <>
@@ -800,6 +815,9 @@ export function GameView(props: GameViewProps) {
           </Text>
         </View>
       </Show>
+      <StartupProfileTail />
     </View>
   );
+  startupProfileMark("game-view:tree");
+  return view;
 }

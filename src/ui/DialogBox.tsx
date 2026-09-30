@@ -45,6 +45,7 @@ import type { Modal, ShopRow } from "../engine/interpreter.ts";
 import { truncateLabel, windowStart } from "./list-window.ts";
 import { Panel } from "./Panel.tsx";
 import { resolveUiTheme, speakerLabel, splitSpeaker, type SpeakerSplit, type UiTheme } from "./theme.ts";
+import { startupProfileMark } from "../startup-profile.ts";
 
 /** Portrait images are 64x64: pak images must be power-of-two. */
 const FACE_PX = 64;
@@ -99,6 +100,7 @@ const ROW_LABEL_MAX = 24;
 const NO_SPEAKER: SpeakerSplit = { name: null, rest: "", cut: 0 };
 
 export function DialogBox(props: DialogBoxProps) {
+  startupProfileMark("ui-dialog:start");
   const theme = createMemo(() => resolveUiTheme(props.theme));
   const isChoice = () => props.modal()?.kind === "choices";
   const isShop = () => props.modal()?.kind === "shop";
@@ -157,7 +159,7 @@ export function DialogBox(props: DialogBoxProps) {
     </>
   );
 
-  return (
+  const view = (
     <View
       class="absolute left-0 right-0 bottom-0"
       style={{ posType: 1, height: 180 }}
@@ -344,4 +346,6 @@ export function DialogBox(props: DialogBoxProps) {
       </Show>
     </View>
   );
+  startupProfileMark("ui-dialog:end");
+  return view;
 }

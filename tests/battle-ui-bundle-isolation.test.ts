@@ -37,7 +37,10 @@ const maybeTest = preflight.ok ? test : test.skip;
 // shared write-back path); re-verified with src/ui/battle/ moved out: equal.
 // PR #1's persistent text/choice/shop branches add 426 bytes to the shared
 // DialogBox implementation; this is the measured post-build Sunstone bundle.
-const EXPECTED_BYTES = 429_204;
+// KP1's opt-in startup phase marks are shared GameView/session code and remain
+// inert unless a benchmark host installs the global hook; they do not add a
+// dependency on the separately checked battle identifiers below.
+const EXPECTED_BYTES = 432_062;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

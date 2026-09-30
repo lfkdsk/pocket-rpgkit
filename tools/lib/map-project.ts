@@ -7,6 +7,7 @@
 import { canonicalJson, utf8Encode } from "../../src/engine/save.ts";
 import {
   MAP_SCHEMA_HASH,
+  assertShellManifestFresh,
   canonicalMapJson,
   mapManifestHash,
   sha256Text,
@@ -78,6 +79,10 @@ export function splitProjectMaps(
     ...unhashed,
     mapManifestHash: mapManifestHash(unhashed),
   };
+  // Build-time self-check: the declared identity must match what the exported
+  // freshness check computes, so a packaged shell read back from disk and
+  // passed to assertShellManifestFresh cannot drift from the splitter.
+  assertShellManifestFresh(shell);
   const shellText = canonicalJson(shell);
   return {
     shell,

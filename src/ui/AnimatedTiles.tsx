@@ -30,6 +30,7 @@ import {
   type ChunkWindow,
 } from "../engine/chunk-window.ts";
 import { TILE } from "../engine/tiles.ts";
+import { startupProfileMark } from "../startup-profile.ts";
 
 export interface AnimatedTilesStats {
   mapId: string;
@@ -66,6 +67,7 @@ const EMPTY: ChunkWindow = { x0: 0, y0: 0, x1: -1, y1: -1 };
 /** One animated-tile z-band. The parent owns the world translation; nodes
  *  sit at world tile coordinates and rebind only when the window changes. */
 export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
+  startupProfileMark(`ui-animated-${props.above ? "above" : "below"}:start`);
   const root = createElement("view");
   setProp(root, "style", { posType: 1, insetL: 0, insetT: 0, width: 0, height: 0 });
   setProp(root, "debugName", props.debugName ?? (props.above ? "rpgkit-anim-above" : "rpgkit-anim-below"));
@@ -166,5 +168,6 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
     live.clear();
     report();
   });
+  startupProfileMark(`ui-animated-${props.above ? "above" : "below"}:end`);
   return root as unknown as SolidJSX.Element;
 }

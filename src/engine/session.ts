@@ -32,6 +32,7 @@
 // No host imports, no wall clock, no Math.random (docs/SIMULATION.md).
 
 import { deepClone, keyedRecord } from "./clone.ts";
+import { startupProfileMark } from "../startup-profile.ts";
 
 import {
   activePage,
@@ -110,7 +111,7 @@ import { buildPassage, canStepFrom, stampBlockedCells } from "./passability.ts";
 import {
   MAP_SCHEMA_HASH,
   isProjectShell,
-  mapManifestHash,
+  resolveMapManifestHash,
   validateMapIndex,
   type MapContentIdentity,
 } from "./map-repository.ts";
@@ -229,6 +230,10 @@ export interface SceneOptions {
 
 export interface SessionOptions {
   maps?: MapRepository;
+  /** Recompute and verify a ProjectShell's declared mapManifestHash. Splitter
+   * output in a trusted app package uses the declared build identity directly
+   * by default; shells without one are always hashed. */
+  verifyMapManifest?: boolean;
   extensions?: ExtensionOptions;
   battle?: BattleRules;
   scene?: SceneOptions;
@@ -325,6 +330,7 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
     if (sess.preparingMap?.id === id) sess.preparingMap = null;
     return hit;
   }
+  startupProfileMark("map-acquire:start");
   const expected = sess.mapIndex?.get(id);
   const repository = sess.repository;
   if (!expected || !repository) throw new Error(`session: unknown map ${id}`);
@@ -343,19 +349,24 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
     return prepared.map;
   }
   const map = repository.acquire(id);
+  startupProfileMark("map-acquire:decoded");
   if (map.id !== expected.id || map.width !== expected.width || map.height !== expected.height) {
     throw new Error(`map repository: payload metadata mismatch for ${id}`);
   }
   assertRegisteredExtensions(sess.extensions, mapExtensionCalls(map));
   assertBattleRegistered(sess.battle, mapUsesBattle(map));
+  startupProfileMark("map-acquire:validated");
   // Compile into locals first. A throw leaves the live cache and simulation
   // untouched, which is what an async caller needs before retrying a frame.
   const world = createWorld(map, sess.commonEvents, MOTION_HZ, sess.worldOptions);
+  startupProfileMark("map-acquire:world");
   const table = buildPassage(map, sess.sheets);
+  startupProfileMark("map-acquire:passage");
   sess.maps.set(id, map);
   sess.worlds.set(id, world);
   sess.tables.set(id, table);
   if (sess.preparingMap?.id === id) sess.preparingMap = null;
+  startupProfileMark("map-acquire:end");
   return map;
 }
 
@@ -427,6 +438,7 @@ export function createSession(
   hz: number = MOTION_HZ,
   optionsOrMaps?: SessionOptions | MapRepository,
 ): Session {
+  startupProfileMark("session-create:start");
   // v1.3 compatibility: the original third parameter was a bare repository.
   const options: SessionOptions = optionsOrMaps &&
     typeof (optionsOrMaps as MapRepository).acquire === "function" &&
@@ -445,13 +457,13 @@ export function createSession(
   };
   assertRegisteredExtensions(extensions, commonExtensionCalls(commonEvents));
   assertBattleRegistered(options.battle ?? null, commonEvents.some((event) => commandsUseBattle(event.commands)));
+  startupProfileMark("session-create:registrations");
   if (isProjectShell(project)) {
     if (!maps) throw new Error("map repository: ProjectShell requires a MapRepository");
     const index = validateMapIndex(project.mapIndex);
-    const manifest = mapManifestHash(project);
-    if (project.mapManifestHash !== undefined && project.mapManifestHash !== manifest) {
-      throw new Error("map repository: shell manifest hash mismatch");
-    }
+    startupProfileMark("session-create:index-validated");
+    const manifest = resolveMapManifestHash(project, options.verifyMapManifest === true);
+    startupProfileMark("session-create:manifest-resolved");
     if (project.mapSchemaHash !== undefined && project.mapSchemaHash !== MAP_SCHEMA_HASH) {
       throw new Error("map repository: shell schema hash mismatch");
     }
@@ -478,6 +490,7 @@ export function createSession(
     };
     acquireSessionMap(session, project.start.map);
     releaseSessionMapsExcept(session, [project.start.map]);
+    startupProfileMark("session-create:end");
     return session;
   }
   for (const map of project.maps) {
@@ -493,6 +506,7 @@ export function createSession(
     project.maps.map((m) => [m.id, createWorld(m, commonEvents, MOTION_HZ, worldOptions)]),
   );
   const tables = new Map(project.maps.map((m) => [m.id, buildPassage(m, sheets)]));
+  startupProfileMark("session-create:end");
   return {
     cfg: { tile: project.tileSize, speed: 2 },
     hz,
@@ -519,13 +533,14 @@ export function startSession(
   sw0?: SwitchState,
   ext0?: JsonValue,
 ): SessionState {
+  startupProfileMark("session-start:start");
   const start = project.start;
   acquireSessionMap(session, start.map);
   releaseSessionMapsExcept(session, [start.map]);
   if (sw0) {
     const interp = createInterpState(sw0);
     clearLocalBank(interp.sw);
-    return {
+    const state: SessionState = {
       frame: 0,
       mapId: start.map,
       sw: interp.sw,
@@ -537,6 +552,8 @@ export function startSession(
       ext: cloneExtension(session.extensions, ext0 === undefined ? session.extensions.initial : ext0),
       scene: null,
     };
+    startupProfileMark("session-start:end");
+    return state;
   }
   // Fresh playthrough: seed the project's starting gold (the remaining
   // switch/item/variable banks begin empty) and the configurable default
@@ -544,7 +561,7 @@ export function startSession(
   const interp = createInterpState();
   interp.sw.gold = clampFiniteVar(project.initialGold ?? 0);
   if (project.playerName) interp.sw.playerName = project.playerName;
-  return {
+  const state: SessionState = {
     frame: 0,
     mapId: start.map,
     sw: interp.sw,
@@ -556,6 +573,8 @@ export function startSession(
     ext: cloneExtension(session.extensions, ext0 === undefined ? session.extensions.initial : ext0),
     scene: null,
   };
+  startupProfileMark("session-start:end");
+  return state;
 }
 
 /** Drop per-visit switch/variable ids. Any switch or variable

@@ -5,6 +5,7 @@
 
 import { Image, View, type NodeMirror } from "@pocketjs/framework/components";
 import { CHUNK_PX } from "../engine/tiles.ts";
+import { startupProfileMark } from "../startup-profile.ts";
 
 export interface ChunkLayerProps {
   names: readonly string[];
@@ -17,8 +18,9 @@ export interface ChunkLayerProps {
 }
 
 export function ChunkLayer(props: ChunkLayerProps) {
+  startupProfileMark("ui-ground:start");
   const indices = Array.from({ length: props.slots ?? props.names.length }, (_, i) => i);
-  return (
+  const view = (
     <View class="absolute" nodeRef={props.nodeRef} debugName={props.debugName}>
       {indices.map((i) => (
         <Image
@@ -34,4 +36,6 @@ export function ChunkLayer(props: ChunkLayerProps) {
       ))}
     </View>
   );
+  startupProfileMark("ui-ground:end");
+  return view;
 }

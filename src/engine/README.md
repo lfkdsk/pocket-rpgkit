@@ -205,8 +205,13 @@ Transfer semantics:
 ## Extensions and battle scenes
 
 `createSession(project, hz, options)` accepts `options.maps`,
-`options.extensions` and `options.battle`. The former bare-repository third
-argument remains accepted for v1 callers.
+`options.extensions`, `options.battle`, and `options.verifyMapManifest`. The
+last option recomputes a sharded shell's declared content hash for untrusted
+inputs; packaged splitter output uses its build-time hash directly. The former
+bare-repository third argument remains accepted for v1 callers.
+`assertShellManifestFresh(shell)` exports the matching build/test-time check:
+an application that packages a shell calls it after writing the shell to disk,
+so a stale or hand-edited declared hash fails the build instead of shipping.
 
 An `ext` command handler receives cloned JSON arguments, read-only built-in
 banks and `random()`, the only permitted entropy source. It returns a new

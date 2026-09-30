@@ -6,6 +6,7 @@
 // source all accept exactly the same entries.
 
 import PROJECT_SCHEMA from "../data/schema.json";
+import { startupProfileMark } from "../startup-profile.ts";
 import { canonicalJson, utf8Encode } from "./save.ts";
 import { validateSchema, type VError } from "./schema-validate.ts";
 import type {
@@ -31,8 +32,6 @@ const SHA256_K = [
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ] as const;
 
-const rotr = (v: number, n: number): number => (v >>> n) | (v << (32 - n));
-
 /** SHA-256 over bytes, returned as 64 lowercase hex digits. */
 export function sha256Bytes(input: Uint8Array): string {
   const bitLength = input.length * 8;
@@ -52,7 +51,17 @@ export function sha256Bytes(input: Uint8Array): string {
   bytes[end + 6] = low >>> 8;
   bytes[end + 7] = low;
 
-  const h: number[] = [...SHA256_INIT];
+  // Keep the compression state in locals and inline rotates. QuickJS has no
+  // JIT, so the old helper calls and per-block array destructuring dominated
+  // startup for large project shells even though the digest itself is small.
+  let h0: number = SHA256_INIT[0];
+  let h1: number = SHA256_INIT[1];
+  let h2: number = SHA256_INIT[2];
+  let h3: number = SHA256_INIT[3];
+  let h4: number = SHA256_INIT[4];
+  let h5: number = SHA256_INIT[5];
+  let h6: number = SHA256_INIT[6];
+  let h7: number = SHA256_INIT[7];
   const w = new Uint32Array(64);
   for (let offset = 0; offset < bytes.length; offset += 64) {
     for (let i = 0; i < 16; i++) {
@@ -62,17 +71,24 @@ export function sha256Bytes(input: Uint8Array): string {
     for (let i = 16; i < 64; i++) {
       const a = w[i - 15]!;
       const b = w[i - 2]!;
-      const s0 = rotr(a, 7) ^ rotr(a, 18) ^ (a >>> 3);
-      const s1 = rotr(b, 17) ^ rotr(b, 19) ^ (b >>> 10);
+      const s0 = ((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3);
+      const s1 = ((b >>> 17) | (b << 15)) ^ ((b >>> 19) | (b << 13)) ^ (b >>> 10);
       w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) >>> 0;
     }
-    let [a, b, c, d, e, f, g, hh] = h;
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let hh = h7;
     for (let i = 0; i < 64; i++) {
-      const s1 = rotr(e!, 6) ^ rotr(e!, 11) ^ rotr(e!, 25);
-      const ch = (e! & f!) ^ (~e! & g!);
-      const t1 = (hh! + s1 + ch + SHA256_K[i]! + w[i]!) >>> 0;
-      const s0 = rotr(a!, 2) ^ rotr(a!, 13) ^ rotr(a!, 22);
-      const maj = (a! & b!) ^ (a! & c!) ^ (b! & c!);
+      const s1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (hh + s1 + ch + SHA256_K[i]! + w[i]!) >>> 0;
+      const s0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+      const maj = (a & b) ^ (a & c) ^ (b & c);
       const t2 = (s0 + maj) >>> 0;
       hh = g;
       g = f;
@@ -83,16 +99,18 @@ export function sha256Bytes(input: Uint8Array): string {
       b = a;
       a = (t1 + t2) >>> 0;
     }
-    h[0] = (h[0]! + a!) >>> 0;
-    h[1] = (h[1]! + b!) >>> 0;
-    h[2] = (h[2]! + c!) >>> 0;
-    h[3] = (h[3]! + d!) >>> 0;
-    h[4] = (h[4]! + e!) >>> 0;
-    h[5] = (h[5]! + f!) >>> 0;
-    h[6] = (h[6]! + g!) >>> 0;
-    h[7] = (h[7]! + hh!) >>> 0;
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+    h5 = (h5 + f) >>> 0;
+    h6 = (h6 + g) >>> 0;
+    h7 = (h7 + hh) >>> 0;
   }
-  return h.map((v) => v.toString(16).padStart(8, "0")).join("");
+  return [h0, h1, h2, h3, h4, h5, h6, h7]
+    .map((v) => v.toString(16).padStart(8, "0"))
+    .join("");
 }
 
 export const sha256Text = (text: string): string => sha256Bytes(utf8Encode(text));
@@ -120,6 +138,8 @@ export interface MapContentIdentity {
   schema: string;
 }
 
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
 function shellWithoutDeclaredHashes(shell: ProjectShell): Record<string, unknown> {
   const value = { ...shell } as Record<string, unknown>;
   delete value.mapManifestHash;
@@ -128,14 +148,58 @@ function shellWithoutDeclaredHashes(shell: ProjectShell): Record<string, unknown
 }
 
 export function mapManifestHash(shell: ProjectShell): string {
-  return sha256Text(canonicalJson(shellWithoutDeclaredHashes(shell)));
+  const canonical = canonicalJson(shellWithoutDeclaredHashes(shell));
+  startupProfileMark("map-manifest:canonical");
+  return sha256Text(canonical);
 }
 
-export function shellContentIdentity(shell: ProjectShell): MapContentIdentity {
+/** Resolve the build identity of a project shell. Splitter output already
+ * carries this SHA-256, just as trusted package map entries carry their own
+ * checksums, so the synchronous runtime need not hash the whole shell again.
+ * Hand-authored shells without a declared value retain the computed fallback;
+ * callers admitting untrusted/mutable shells can request a full recheck. */
+export function resolveMapManifestHash(shell: ProjectShell, verify = false): string {
+  const declared = shell.mapManifestHash;
+  if (declared !== undefined && !SHA256_HEX.test(declared)) {
+    throw new Error("map repository: invalid shell manifest hash");
+  }
+  if (declared === undefined) return mapManifestHash(shell);
+  if (verify && mapManifestHash(shell) !== declared) {
+    throw new Error("map repository: shell manifest hash mismatch");
+  }
+  return declared;
+}
+
+export function shellContentIdentity(shell: ProjectShell, verify = false): MapContentIdentity {
   return {
-    manifest: mapManifestHash(shell),
+    manifest: resolveMapManifestHash(shell, verify),
     schema: shell.mapSchemaHash ?? MAP_SCHEMA_HASH,
   };
+}
+
+/** Build/test-time freshness check for a packaged ProjectShell. Recomputes
+ * the manifest hash over the shell's actual content and compares it against
+ * the declared `mapManifestHash`, throwing with both digests when they
+ * differ. The runtime trusts a declared hash by default (see
+ * `resolveMapManifestHash`), so an application that packages a ProjectShell
+ * must call this in its build or test pipeline — right after the importer
+ * writes the shell — to catch stale or hand-edited shells before release.
+ * A hand-authored shell without a declared hash is hashed at startup and has
+ * no build identity to verify. */
+export function assertShellManifestFresh(shell: ProjectShell): void {
+  const declared = shell.mapManifestHash;
+  if (declared === undefined) {
+    throw new Error("map repository: shell declares no mapManifestHash to verify");
+  }
+  if (!SHA256_HEX.test(declared)) {
+    throw new Error("map repository: invalid shell manifest hash");
+  }
+  const computed = mapManifestHash(shell);
+  if (computed !== declared) {
+    throw new Error(
+      `map repository: shell manifest hash mismatch: declared ${declared}, computed ${computed}`,
+    );
+  }
 }
 
 export function isProjectShell(project: ProjectSource): project is ProjectShell {
@@ -227,7 +291,7 @@ export function validateMapIndex(entries: readonly MapIndexEntry[]): Map<string,
   const names = new Set<string>();
   for (const meta of entries) {
     if (!meta.id || !meta.entry || !Number.isInteger(meta.width) || meta.width < 1 ||
-      !Number.isInteger(meta.height) || meta.height < 1 || !/^[0-9a-f]{64}$/.test(meta.sha256)) {
+      !Number.isInteger(meta.height) || meta.height < 1 || !SHA256_HEX.test(meta.sha256)) {
       throw new Error(`map repository: invalid mapIndex entry ${JSON.stringify(meta.id)}`);
     }
     if (index.has(meta.id)) throw new Error(`map repository: duplicate map id ${meta.id}`);

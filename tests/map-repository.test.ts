@@ -1,12 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { AttractController } from "../src/engine/attract.ts";
 import {
   MapNotReadyError,
   MAP_SCHEMA_HASH,
+  assertShellManifestFresh,
   canonicalMapJson,
   createJsonMapRepository,
   decodeMapEntryBytes,
   mapChecksum,
+  mapManifestHash,
+  resolveMapManifestHash,
   sha256Text,
   validateMapDefStructure,
 } from "../src/engine/map-repository.ts";
@@ -29,7 +34,7 @@ import {
 import { restoreSessionEnvelope } from "../src/engine/save-restore.ts";
 import { validateSchema } from "../src/engine/schema-validate.ts";
 import { splitProjectMaps } from "../tools/lib/map-project.ts";
-import type { MapDef, Project } from "../src/engine/types.ts";
+import type { MapDef, Project, ProjectShell } from "../src/engine/types.ts";
 import type { MapRepository } from "../src/engine/types.ts";
 import schema from "../src/data/schema.json";
 
@@ -183,6 +188,39 @@ describe("sharded map repository", () => {
       expect(entry.meta.sha256).toBe(sha256Text(entry.text));
       expect(entry.meta.sha256).toBe(mapChecksum(JSON.parse(entry.text)));
     }
+  });
+
+  test("declared manifests are trusted for package startup and can be strictly verified", () => {
+    const split = splitProjectMaps(fixture());
+    const files = new Map(split.entries.map((entry) => [entry.path, entry.text]));
+    const repository = () => createJsonMapRepository(split.shell.mapIndex, {
+      read: (entry) => files.get(entry),
+    });
+    const changed = { ...split.shell, title: "changed after splitting" };
+
+    const trusted = createSession(changed, 60, { maps: repository() });
+    expect(trusted.content?.manifest).toBe(split.shell.mapManifestHash);
+    expect(() => createSession(changed, 60, {
+      maps: repository(),
+      verifyMapManifest: true,
+    })).toThrow(/manifest hash mismatch/);
+
+    const unhashed = { ...changed, mapManifestHash: undefined };
+    const computed = createSession(unhashed, 60, { maps: repository() });
+    expect(computed.content?.manifest).toBe(mapManifestHash(unhashed));
+    expect(computed.content?.manifest).not.toBe(split.shell.mapManifestHash);
+
+    expect(() => createSession({ ...split.shell, mapManifestHash: "invalid" }, 60, {
+      maps: repository(),
+    })).toThrow(/invalid shell manifest hash/);
+    const duplicate = {
+      ...split.shell,
+      mapIndex: split.shell.mapIndex.map((entry, index) => index === 1
+        ? { ...entry, id: split.shell.mapIndex[0]!.id }
+        : entry),
+    };
+    expect(() => createSession(duplicate, 60, { maps: repository() }))
+      .toThrow(/duplicate map id/);
   });
 
   test("map entries are stable ASCII JSON and the byte reader decodes in bounded chunks", () => {
@@ -743,5 +781,114 @@ describe("staged map loading keeps session registrations", () => {
     expect(() => {
       for (let i = 0; i < 40; i++) state = stepSession(session, state, { buttons: 0 });
     }).toThrow(/unregistered extension calls: command demo\.mark/);
+  });
+});
+
+describe("shell manifest freshness check", () => {
+  let tempDir = "";
+
+  beforeAll(() => {
+    // Real disk round-trip: the check must hold for the bytes a packager
+    // writes and reads back. The directory is per-process and removed after.
+    tempDir = mkdtempSync(join(import.meta.dir, `.shell-fresh-${process.pid}-`));
+  });
+
+  afterAll(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("a split shell stays fresh through a JSON disk round-trip", () => {
+    const split = splitProjectMaps(fixture());
+    const declared = split.shell.mapManifestHash!;
+    const path = join(tempDir, "project-shell.json");
+
+    // What a naive packager writes: JSON.stringify of the shell object.
+    writeFileSync(path, JSON.stringify(split.shell));
+    const roundTripped = JSON.parse(readFileSync(path, "utf8")) as ProjectShell;
+    expect(() => assertShellManifestFresh(roundTripped)).not.toThrow();
+    expect(resolveMapManifestHash(roundTripped, true)).toBe(declared);
+
+    // The splitter's own canonical bytes, exactly as files[] carries them.
+    writeFileSync(path, split.shellText);
+    const canonical = JSON.parse(readFileSync(path, "utf8")) as ProjectShell;
+    expect(() => assertShellManifestFresh(canonical)).not.toThrow();
+    expect(resolveMapManifestHash(canonical, true)).toBe(declared);
+  });
+
+  test("any non-hash content change is rejected with both digests", () => {
+    const split = splitProjectMaps(fixture());
+    const declared = split.shell.mapManifestHash!;
+    const cases: [string, (shell: ProjectShell) => ProjectShell][] = [
+      ["title", (shell) => ({ ...shell, title: "hand-edited after packaging" })],
+      ["mapIndex entry", (shell) => ({
+        ...shell,
+        mapIndex: shell.mapIndex.map((entry, index) => index === 0
+          ? { ...entry, width: 240 }
+          : entry),
+      })],
+      ["system settings", (shell) => ({
+        ...shell,
+        system: { ...shell.system, messageBlocksPlayer: true },
+      })],
+      ["start spot", (shell) => ({ ...shell, start: { ...shell.start, x: 2 } })],
+    ];
+    for (const [name, mutate] of cases) {
+      const mutated = mutate(split.shell);
+      let caught: unknown;
+      try {
+        assertShellManifestFresh(mutated);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, name).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message, name).toMatch(/manifest hash mismatch/);
+      expect(message, name).toContain(declared);
+      expect(message, name).toContain(mapManifestHash(mutated));
+      // The runtime opt-in must reject the same stale declaration.
+      expect(() => resolveMapManifestHash(mutated, true), name)
+        .toThrow(/manifest hash mismatch/);
+    }
+  });
+
+  test("a shell without a valid declared hash cannot be checked", () => {
+    const split = splitProjectMaps(fixture());
+    expect(() => assertShellManifestFresh({ ...split.shell, mapManifestHash: undefined }))
+      .toThrow(/declares no mapManifestHash/);
+    expect(() => assertShellManifestFresh({ ...split.shell, mapManifestHash: "tampered" }))
+      .toThrow(/invalid shell manifest hash/);
+  });
+
+  test("a stale declared hash is rejected before an old save can load against changed content", () => {
+    // The review's stale-hash reproduction, locked as a test: a save taken
+    // against the original content must not restore onto a shell whose content
+    // changed while keeping the stale declared hash.
+    const split = splitProjectMaps(fixture());
+    const files = new Map(split.entries.map((entry) => [entry.path, entry.text]));
+    const repository = () => createJsonMapRepository(split.shell.mapIndex, {
+      read: (entry) => files.get(entry),
+    });
+
+    const session = createSession(split.shell, 60, repository());
+    let state = startSession(split.shell, session);
+    for (let i = 0; i < 5; i++) state = pulse(session, state);
+    const envelope = encodeEnvelope(
+      createSnapshot(state.mapId, state.move, state.interp, 0),
+      session.content,
+    );
+
+    const mutated = { ...split.shell, title: "changed after the save was taken" };
+    expect(() => assertShellManifestFresh(mutated)).toThrow(/manifest hash mismatch/);
+    expect(() => createSession(mutated, 60, {
+      maps: repository(),
+      verifyMapManifest: true,
+    })).toThrow(/manifest hash mismatch/);
+
+    // Documented trust boundary: without the build/test-time check, the
+    // runtime trusts the stale declaration and the old save silently loads —
+    // which is exactly why packaging apps must run the check.
+    const trusted = createSession(mutated, 60, repository());
+    expect(trusted.content?.manifest).toBe(split.shell.mapManifestHash);
+    expect(restoreSessionEnvelope(trusted, envelope).mapId).toBe(state.mapId);
   });
 });
