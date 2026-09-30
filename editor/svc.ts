@@ -16,6 +16,8 @@
 //   {t:"mouse",x,y,d,b,sh}      pointer: b 0 left / 2 right; sh = shift;
 //                               a Reset sends a bare {d:false} release
 //   {t:"scroll",dy}             wheel scrolls the tile palette
+//   {t:"ch",s}                  typed text (including IME output)
+//   {t:"paste",text}            pasted text
 //
 // guest → host lines:
 //   {t:"save",text}             persist the exported document
@@ -55,6 +57,14 @@ export interface KeyEvent {
   alt: boolean;
   ctl: boolean;
 }
+export interface CharacterEvent {
+  t: "ch";
+  s: string;
+}
+export interface PasteEvent {
+  t: "paste";
+  text: string;
+}
 /** A parsed host line. `t` is the discriminant; the typed interfaces below
  *  document each dialect, and extra fields stay accessible through the
  *  index signature. */
@@ -72,6 +82,7 @@ export type HostLine = {
   w?: number;
   h?: number;
   dy?: number;
+  s?: string;
   text?: string;
 };
 
@@ -89,6 +100,8 @@ type SvcLine =
   | LoadEvent
   | ResizeEvent
   | KeyEvent
+  | CharacterEvent
+  | PasteEvent
   | { t: "hello"; w: number; h: number };
 
 export type { SvcLine };

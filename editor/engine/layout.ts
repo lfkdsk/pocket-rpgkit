@@ -69,6 +69,22 @@ export const PAL_GRID_TOP = 33;
 export const ERASER_INDEX = 0;
 export const PAL_KEY_ERASER = "__eraser__";
 
+export const EVENT_TOOL_IDS = ["new", "edit", "copy", "delete"] as const;
+export type EventTool = (typeof EVENT_TOOL_IDS)[number];
+
+/** Event-mode tools replace the tile palette. Coordinates are local to that
+ * panel (whose screen top is HEADER_H), matching PalettePanel's convention. */
+export function eventToolButtons(): { id: EventTool; x: number; y: number; w: number; h: number }[] {
+  return EVENT_TOOL_IDS.map((id, index) => ({ id, x: 6, y: 62 + index * 27, w: PAL_W - 12, h: 22 }));
+}
+
+export function hitEventTool(x: number, y: number): EventTool | null {
+  for (const button of eventToolButtons()) {
+    if (inside(x, y, button)) return button.id;
+  }
+  return null;
+}
+
 export type Layer = "ground" | "upper";
 
 // Header buttons (y 2..18).

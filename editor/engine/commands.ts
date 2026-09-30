@@ -1,0 +1,809 @@
+// editor/engine/commands.ts — pure helpers for presenting and editing the
+// recursive event-command tree. This module deliberately knows nothing about
+// the editor store or host: a page/common-event command array goes in and a
+// structurally shared replacement comes out.
+
+import type {
+  Command,
+  Condition,
+  MoveStep,
+  PageCondition,
+} from "../../src/engine/types.ts";
+
+/** A segment says which child list of a command to enter. `index` is always
+ * relative to the list reached by the preceding segments. The root list is
+ * represented by the empty path, so paths are serializable and easy to use as
+ * selection state. */
+export type CommandListPathSegment =
+  | { readonly kind: "if"; readonly index: number; readonly branch: "then" | "else" }
+  | { readonly kind: "choices"; readonly index: number; readonly branch: "option"; readonly option: number }
+  | { readonly kind: "choices"; readonly index: number; readonly branch: "cancel" }
+  | { readonly kind: "battle"; readonly index: number; readonly branch: "win" | "lose" | "escape" };
+
+export type CommandListPath = readonly CommandListPathSegment[];
+
+/** The address of one command. For insertion functions, `index` is a slot in
+ * the addressed list and may equal its length. */
+export interface CommandAddress {
+  readonly path: CommandListPath;
+  readonly index: number;
+}
+
+export const ROOT_COMMAND_PATH: CommandListPath = Object.freeze([]);
+
+export function commandAddress(path: CommandListPath, index: number): CommandAddress {
+  return { path, index };
+}
+
+export function ifBranchPath(
+  parent: CommandAddress,
+  branch: "then" | "else",
+): CommandListPath {
+  return [...parent.path, { kind: "if", index: parent.index, branch }];
+}
+
+export function choiceBranchPath(
+  parent: CommandAddress,
+  option: number | "cancel",
+): CommandListPath {
+  return option === "cancel"
+    ? [...parent.path, { kind: "choices", index: parent.index, branch: "cancel" }]
+    : [...parent.path, { kind: "choices", index: parent.index, branch: "option", option }];
+}
+
+export function battleBranchPath(
+  parent: CommandAddress,
+  branch: "win" | "lose" | "escape",
+): CommandListPath {
+  return [...parent.path, { kind: "battle", index: parent.index, branch }];
+}
+
+function segmentKey(segment: CommandListPathSegment): string {
+  if (segment.kind === "if") return `i${segment.index}:${segment.branch}`;
+  if (segment.kind === "battle") return `b${segment.index}:${segment.branch}`;
+  return segment.branch === "cancel"
+    ? `c${segment.index}:cancel`
+    : `c${segment.index}:option:${segment.option}`;
+}
+
+/** A stable, human-readable key suitable for keyed UI rows. */
+export function commandPathKey(path: CommandListPath): string {
+  return path.length === 0 ? "root" : path.map(segmentKey).join("/");
+}
+
+export function commandAddressKey(address: CommandAddress): string {
+  return `${commandPathKey(address.path)}#${address.index}`;
+}
+
+export const EDITABLE_COMMAND_OPS = [
+  "text",
+  "choices",
+  "switch",
+  "variable",
+  "selfSwitch",
+  "if",
+  "transfer",
+  "wait",
+  "gold",
+  "item",
+  "se",
+  "erase",
+  "exit",
+  "common",
+  "lockInput",
+  "unlockInput",
+  "place",
+  "moveRoute",
+] as const;
+
+export type EditableCommandOp = (typeof EDITABLE_COMMAND_OPS)[number];
+export type EditableCommand = Extract<Command, { op: EditableCommandOp }>;
+
+const EDITABLE_OP_SET: ReadonlySet<string> = new Set(EDITABLE_COMMAND_OPS);
+
+export function isEditableCommand(command: unknown): command is EditableCommand {
+  return isRecord(command) && typeof command.op === "string" && EDITABLE_OP_SET.has(command.op);
+}
+
+type CommandOf<Op extends EditableCommandOp> = Extract<Command, { op: Op }>;
+
+/** Schema-valid starting values for every command form the editor owns.
+ * Shop, extension, battle and future commands are intentionally absent: they
+ * remain visible and movable but read-only. */
+export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<Op> {
+  let command: EditableCommand;
+  switch (op) {
+    case "text":
+      command = { op, lines: [""] };
+      break;
+    case "choices":
+      command = {
+        op,
+        prompt: "",
+        options: [
+          { text: "Option 1", commands: [] },
+          { text: "Option 2", commands: [] },
+        ],
+      };
+      break;
+    case "switch":
+      command = { op, id: "switch", value: true };
+      break;
+    case "variable":
+      command = { op, id: "variable", set: { op: "set", value: 0 } };
+      break;
+    case "selfSwitch":
+      command = { op, key: "A", value: true };
+      break;
+    case "if":
+      command = { op, if: defaultCondition("switch"), then: [] };
+      break;
+    case "transfer":
+      command = { op, map: "map", x: 0, y: 0, dir: "keep", fade: 0 };
+      break;
+    case "wait":
+      command = { op, seconds: 1 };
+      break;
+    case "gold":
+      command = { op, set: "add", amount: 0 };
+      break;
+    case "item":
+      command = { op, item: "item", set: "add", count: 1 };
+      break;
+    case "se":
+      command = { op, name: "sound", volume: 100, pitch: 100 };
+      break;
+    case "erase":
+    case "exit":
+    case "lockInput":
+    case "unlockInput":
+      command = { op };
+      break;
+    case "common":
+      command = { op, id: "common" };
+      break;
+    case "place":
+      command = { op, target: "this", x: 0, y: 0, dir: "down" };
+      break;
+    case "moveRoute":
+      command = {
+        op,
+        target: "this",
+        wait: true,
+        route: { steps: [], repeat: false, skippable: false },
+      };
+      break;
+  }
+  return command as CommandOf<Op>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function text(value: unknown, fallback = "?"): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function numberText(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "?";
+}
+
+function boolText(value: unknown): string {
+  return value === true ? "ON" : value === false ? "OFF" : "?";
+}
+
+function truncate(value: string, max = 64): string {
+  return value.length <= max ? value : `${value.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function jsonPreview(value: unknown, max = 48): string {
+  try {
+    const encoded = JSON.stringify(value);
+    return truncate(encoded === undefined ? String(value) : encoded, max);
+  } catch {
+    return "[opaque]";
+  }
+}
+
+function signed(set: unknown, amount: unknown): string {
+  const prefix = set === "sub" ? "−" : set === "add" ? "+" : "";
+  return `${prefix}${numberText(amount)}`;
+}
+
+function operandSummary(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (isRecord(value) && typeof value.variable === "string") return `$${value.variable}`;
+  return "?";
+}
+
+function targetSummary(value: unknown): string {
+  if (value === "this" || value === "player") return value;
+  if (isRecord(value) && typeof value.event === "string") return `event ${value.event}`;
+  return "?";
+}
+
+/** A compact single-line display. It is deliberately total over unknown and
+ * malformed data so an editor can still open and preserve newer projects. */
+export function commandSummary(command: unknown): string {
+  if (!isRecord(command)) return "Unknown command";
+  switch (command.op) {
+    case "text": {
+      const lines = Array.isArray(command.lines)
+        ? command.lines.filter((line): line is string => typeof line === "string")
+        : [];
+      return `Text: ${truncate(lines.join(" / ") || "(empty)")}`;
+    }
+    case "choices":
+      return `Choices: ${truncate(text(command.prompt, "(no prompt)"))} (${Array.isArray(command.options) ? command.options.length : 0})`;
+    case "switch":
+      return `Switch ${text(command.id)} = ${boolText(command.value)}`;
+    case "variable": {
+      const set = isRecord(command.set) ? command.set : {};
+      if (set.op === "random") {
+        return `Variable ${text(command.id)} = random ${numberText(set.min)}…${numberText(set.max)}`;
+      }
+      if (typeof set.from === "string") {
+        return `Variable ${text(command.id)} ${text(set.op)} $${set.from}`;
+      }
+      return `Variable ${text(command.id)} ${text(set.op)} ${numberText(set.value)}`;
+    }
+    case "selfSwitch":
+      return `Self switch ${text(command.key)} = ${boolText(command.value)}`;
+    case "if":
+      return `If ${conditionSummary(command.if)}`;
+    case "transfer":
+      return `Transfer ${operandSummary(command.map)} (${operandSummary(command.x)}, ${operandSummary(command.y)})`;
+    case "wait":
+      return `Wait ${numberText(command.seconds)}s`;
+    case "gold":
+      return `Gold ${signed(command.set, command.amount)}`;
+    case "item":
+      return `Item ${text(command.item)} ${signed(command.set, command.count)}`;
+    case "se":
+      return `Sound ${text(command.name)}`;
+    case "erase":
+      return "Erase event";
+    case "exit":
+      return "Exit event";
+    case "common":
+      return `Common event ${text(command.id)}`;
+    case "lockInput":
+      return "Lock input";
+    case "unlockInput":
+      return "Unlock input";
+    case "place":
+      return `Place ${targetSummary(command.target)} at (${numberText(command.x)}, ${numberText(command.y)})`;
+    case "moveRoute": {
+      const route = isRecord(command.route) ? command.route : {};
+      const count = Array.isArray(route.steps) ? route.steps.length : 0;
+      return `Move route ${targetSummary(command.target)} (${count} step${count === 1 ? "" : "s"})`;
+    }
+    case "shop":
+      return `Shop ${text(command.id)} (${Array.isArray(command.goods) ? command.goods.length : 0} goods)`;
+    case "ext":
+      return `Extension ${text(command.call)} ${jsonPreview(command.args)}`;
+    case "extChoice":
+      return `Extension choice ${text(command.call)}: ${text(command.prompt)}`;
+    case "battle":
+      return `Battle ${jsonPreview(command.setup)}`;
+    default:
+      return `Unknown command${typeof command.op === "string" ? ` (${command.op})` : ""}`;
+  }
+}
+
+export interface FlatCommandRow {
+  readonly key: string;
+  readonly address: CommandAddress;
+  readonly path: CommandListPath;
+  readonly index: number;
+  readonly depth: number;
+  /** Label of this command's immediate containing branch. */
+  readonly branch?: string;
+  readonly branchLabel?: string;
+  readonly command: Command;
+  readonly summary: string;
+  readonly editable: boolean;
+  readonly readOnly: boolean;
+}
+
+interface ChildBranch {
+  path: CommandListPath;
+  label: string;
+  commands: readonly Command[];
+}
+
+function childBranches(command: Command, address: CommandAddress): ChildBranch[] {
+  const value = command as Command & Record<string, unknown>;
+  const children: ChildBranch[] = [];
+  if (value.op === "if") {
+    children.push({
+      path: ifBranchPath(address, "then"),
+      label: "Then",
+      commands: Array.isArray(value.then) ? value.then as Command[] : [],
+    });
+    if (Array.isArray(value.else)) {
+      children.push({ path: ifBranchPath(address, "else"), label: "Else", commands: value.else as Command[] });
+    }
+  } else if (value.op === "choices" && Array.isArray(value.options)) {
+    value.options.forEach((option, optionIndex) => {
+      if (!isRecord(option)) return;
+      children.push({
+        path: choiceBranchPath(address, optionIndex),
+        label: `Option ${optionIndex + 1}: ${text(option.text)}`,
+        commands: Array.isArray(option.commands) ? option.commands as Command[] : [],
+      });
+    });
+    if (isRecord(value.cancel) && Array.isArray(value.cancel.commands)) {
+      children.push({ path: choiceBranchPath(address, "cancel"), label: "Cancel", commands: value.cancel.commands as Command[] });
+    }
+  } else if (value.op === "battle") {
+    for (const [branch, property, label] of [
+      ["win", "onWin", "Win"],
+      ["lose", "onLose", "Lose"],
+      ["escape", "onEscape", "Escape"],
+    ] as const) {
+      const commands = value[property];
+      if (Array.isArray(commands)) {
+        children.push({ path: battleBranchPath(address, branch), label, commands: commands as Command[] });
+      }
+    }
+  }
+  return children;
+}
+
+/** Pre-order flattening: a container appears before all of its branches, and
+ * branches appear in authored order (then/else, options/cancel,
+ * win/lose/escape). */
+export function flattenCommands(commands: readonly Command[]): FlatCommandRow[] {
+  const rows: FlatCommandRow[] = [];
+
+  const visit = (list: readonly Command[], path: CommandListPath, branch?: string): void => {
+    list.forEach((command, index) => {
+      const address: CommandAddress = { path, index };
+      const editable = isEditableCommand(command);
+      rows.push({
+        key: commandAddressKey(address),
+        address,
+        path,
+        index,
+        depth: path.length,
+        ...(branch === undefined ? {} : { branch, branchLabel: branch }),
+        command,
+        summary: commandSummary(command),
+        editable,
+        readOnly: !editable,
+      });
+      for (const child of childBranches(command, address)) {
+        visit(child.commands, child.path, child.label);
+      }
+    });
+  };
+
+  visit(commands, ROOT_COMMAND_PATH);
+  return rows;
+}
+
+interface BranchRef {
+  readonly commands: readonly Command[];
+  readonly present: boolean;
+}
+
+const EMPTY_COMMANDS: readonly Command[] = Object.freeze([]);
+
+function validIndex(index: number): boolean {
+  return Number.isInteger(index) && index >= 0;
+}
+
+function branchOf(command: Command, segment: CommandListPathSegment): BranchRef | null {
+  if (!validIndex(segment.index)) return null;
+  if (segment.kind === "if") {
+    if (command.op !== "if") return null;
+    if (segment.branch === "then") return { commands: command.then, present: true };
+    return Array.isArray(command.else)
+      ? { commands: command.else, present: true }
+      : { commands: EMPTY_COMMANDS, present: false };
+  }
+  if (segment.kind === "choices") {
+    if (command.op !== "choices") return null;
+    if (segment.branch === "cancel") {
+      return command.cancel
+        ? { commands: command.cancel.commands, present: true }
+        : { commands: EMPTY_COMMANDS, present: false };
+    }
+    if (!validIndex(segment.option) || segment.option >= command.options.length) return null;
+    return { commands: command.options[segment.option]!.commands, present: true };
+  }
+  if (command.op !== "battle") return null;
+  const property = segment.branch === "win"
+    ? "onWin"
+    : segment.branch === "lose"
+      ? "onLose"
+      : "onEscape";
+  const branch = command[property];
+  return Array.isArray(branch)
+    ? { commands: branch, present: true }
+    : { commands: EMPTY_COMMANDS, present: false };
+}
+
+function replaceBranch(
+  command: Command,
+  segment: CommandListPathSegment,
+  commands: Command[],
+): Command | null {
+  if (segment.kind === "if") {
+    if (command.op !== "if") return null;
+    return segment.branch === "then"
+      ? { ...command, then: commands }
+      : { ...command, else: commands };
+  }
+  if (segment.kind === "choices") {
+    if (command.op !== "choices") return null;
+    if (segment.branch === "cancel") {
+      return { ...command, cancel: { ...(command.cancel ?? {}), commands } };
+    }
+    if (!validIndex(segment.option) || segment.option >= command.options.length) return null;
+    const options = command.options.slice();
+    options[segment.option] = { ...options[segment.option]!, commands };
+    return { ...command, options };
+  }
+  if (command.op !== "battle") return null;
+  if (segment.branch === "win") return { ...command, onWin: commands };
+  if (segment.branch === "lose") return { ...command, onLose: commands };
+  return { ...command, onEscape: commands };
+}
+
+/** Returns null for a structurally invalid path. Optional branches that have
+ * not yet been authored resolve to an empty list and are materialized by the
+ * first successful insertion. */
+export function getCommandList(
+  commands: readonly Command[],
+  path: CommandListPath,
+): readonly Command[] | null {
+  let list = commands;
+  for (const segment of path) {
+    if (!validIndex(segment.index) || segment.index >= list.length) return null;
+    const branch = branchOf(list[segment.index]!, segment);
+    if (!branch) return null;
+    list = branch.commands;
+  }
+  return list;
+}
+
+export function getCommand(
+  commands: readonly Command[],
+  address: CommandAddress,
+): Command | null {
+  const list = getCommandList(commands, address.path);
+  return list && validIndex(address.index) && address.index < list.length
+    ? list[address.index]!
+    : null;
+}
+
+type ListUpdate = (commands: readonly Command[]) => Command[] | null;
+
+/** null means invalid path/update; the original list means a valid no-op. */
+function updateListAtPath(
+  commands: readonly Command[],
+  path: CommandListPath,
+  update: ListUpdate,
+  depth = 0,
+): Command[] | null {
+  if (depth === path.length) return update(commands);
+  const segment = path[depth]!;
+  if (!validIndex(segment.index) || segment.index >= commands.length) return null;
+  const command = commands[segment.index]!;
+  const branch = branchOf(command, segment);
+  if (!branch) return null;
+  const nextBranch = updateListAtPath(branch.commands, path, update, depth + 1);
+  if (!nextBranch) return null;
+  if (nextBranch === branch.commands || (!branch.present && nextBranch.length === 0)) {
+    return commands as Command[];
+  }
+  const nextCommand = replaceBranch(command, segment, nextBranch);
+  if (!nextCommand) return null;
+  const next = commands.slice();
+  next[segment.index] = nextCommand;
+  return next;
+}
+
+export function insertCommand(
+  commands: readonly Command[],
+  address: CommandAddress,
+  command: Command,
+): Command[] {
+  const next = updateListAtPath(commands, address.path, (list) => {
+    if (!validIndex(address.index) || address.index > list.length) return null;
+    const replacement = list.slice();
+    replacement.splice(address.index, 0, command);
+    return replacement;
+  });
+  return next ?? commands as Command[];
+}
+
+export function deleteCommand(
+  commands: readonly Command[],
+  address: CommandAddress,
+): Command[] {
+  const next = updateListAtPath(commands, address.path, (list) => {
+    if (!validIndex(address.index) || address.index >= list.length) return null;
+    return [...list.slice(0, address.index), ...list.slice(address.index + 1)];
+  });
+  return next ?? commands as Command[];
+}
+
+export type CommandUpdater = Command | ((command: EditableCommand) => Command);
+
+/** Only editor-owned commands can be field-updated. Opaque commands may still
+ * be inserted, deleted, copied and reordered as intact values. */
+export function updateCommand(
+  commands: readonly Command[],
+  address: CommandAddress,
+  update: CommandUpdater,
+): Command[] {
+  const next = updateListAtPath(commands, address.path, (list) => {
+    if (!validIndex(address.index) || address.index >= list.length) return null;
+    const before = list[address.index]!;
+    if (!isEditableCommand(before)) return list as Command[];
+    const after = typeof update === "function" ? update(before) : update;
+    if (after === before) return list as Command[];
+    const replacement = list.slice();
+    replacement[address.index] = after;
+    return replacement;
+  });
+  return next ?? commands as Command[];
+}
+
+function samePath(a: CommandListPath, b: CommandListPath): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((segment, index) => segmentKey(segment) === segmentKey(b[index]!));
+}
+
+/** Rebase a destination path after deleting `removed`. null means the
+ * destination was inside the command being moved. */
+function pathAfterDelete(
+  path: CommandListPath,
+  removed: CommandAddress,
+): CommandListPath | null {
+  if (path.length <= removed.path.length) return path;
+  for (let i = 0; i < removed.path.length; i++) {
+    if (segmentKey(path[i]!) !== segmentKey(removed.path[i]!)) return path;
+  }
+  const child = path[removed.path.length]!;
+  if (child.index === removed.index) return null;
+  if (child.index < removed.index) return path;
+  const rebased = path.slice();
+  rebased[removed.path.length] = { ...child, index: child.index - 1 };
+  return rebased;
+}
+
+/** Move to a final index in the same list, or to an insertion address in a
+ * different list. A move into the moved command's own descendant is a no-op. */
+export function moveCommand(
+  commands: readonly Command[],
+  from: CommandAddress,
+  to: number | CommandAddress,
+): Command[] {
+  const command = getCommand(commands, from);
+  if (!command) return commands as Command[];
+  const destination: CommandAddress = typeof to === "number" ? { path: from.path, index: to } : to;
+  const destinationList = getCommandList(commands, destination.path);
+  if (!destinationList || !validIndex(destination.index)) return commands as Command[];
+
+  if (samePath(from.path, destination.path)) {
+    if (destination.index >= destinationList.length || destination.index === from.index) {
+      return commands as Command[];
+    }
+    const next = updateListAtPath(commands, from.path, (list) => {
+      const replacement = list.slice();
+      replacement.splice(from.index, 1);
+      replacement.splice(destination.index, 0, command);
+      return replacement;
+    });
+    return next ?? commands as Command[];
+  }
+
+  if (destination.index > destinationList.length) return commands as Command[];
+  const rebasedPath = pathAfterDelete(destination.path, from);
+  if (!rebasedPath) return commands as Command[];
+  const without = deleteCommand(commands, from);
+  if (without === commands) return commands as Command[];
+  const moved = insertCommand(without, { path: rebasedPath, index: destination.index }, command);
+  return moved === without ? commands as Command[] : moved;
+}
+
+/** Duplicate immediately after the source, or intact at an explicit insertion
+ * address. Immutable updates make sharing the command object safe and keep
+ * opaque payloads byte-for-byte untouched. */
+export function copyCommand(
+  commands: readonly Command[],
+  from: CommandAddress,
+  to: CommandAddress = { path: from.path, index: from.index + 1 },
+): Command[] {
+  const command = getCommand(commands, from);
+  return command ? insertCommand(commands, to, command) : commands as Command[];
+}
+
+export const CONDITION_KINDS = [
+  "switch",
+  "variable",
+  "selfSwitch",
+  "item",
+  "gold",
+  "facing",
+  "worldIdle",
+  "ext",
+] as const;
+
+export type ConditionKind = (typeof CONDITION_KINDS)[number];
+type ConditionOf<Kind extends ConditionKind> = Extract<Condition, { kind: Kind }>;
+
+export function defaultCondition<Kind extends ConditionKind>(kind: Kind): ConditionOf<Kind> {
+  let condition: Condition;
+  switch (kind) {
+    case "switch":
+      condition = { kind, id: "switch", value: true };
+      break;
+    case "variable":
+      condition = { kind, id: "variable", op: ">=", value: 0 };
+      break;
+    case "selfSwitch":
+      condition = { kind, key: "A", value: true };
+      break;
+    case "item":
+      condition = { kind, id: "item", count: 1 };
+      break;
+    case "gold":
+      condition = { kind, amount: 0 };
+      break;
+    case "facing":
+      condition = { kind, dir: "down" };
+      break;
+    case "worldIdle":
+      condition = { kind, negate: false };
+      break;
+    case "ext":
+      condition = { kind, call: "game.condition", args: null };
+      break;
+  }
+  return condition as ConditionOf<Kind>;
+}
+
+/** Extension and future conditions are display/preserve-only in the generic
+ * editor; their game-owned argument schema is unknowable here. */
+export function isEditableCondition(condition: unknown): condition is Exclude<Condition, { kind: "ext" }> {
+  return isRecord(condition) && CONDITION_KINDS.includes(condition.kind as ConditionKind) && condition.kind !== "ext";
+}
+
+export function conditionSummary(condition: unknown): string {
+  if (!isRecord(condition)) return "Unknown condition";
+  switch (condition.kind) {
+    case "switch":
+      return `Switch ${text(condition.id)} is ${condition.value === false ? "OFF" : "ON"}`;
+    case "variable":
+      return `Variable ${text(condition.id)} ${text(condition.op)} ${numberText(condition.value)}`;
+    case "selfSwitch":
+      return `Self switch ${text(condition.key)} is ${condition.value === false ? "OFF" : "ON"}`;
+    case "item":
+      return `Item ${text(condition.id)} ×${numberText(condition.count)}`;
+    case "gold":
+      return `Gold ≥ ${numberText(condition.amount)}`;
+    case "facing":
+      return `Facing ${text(condition.dir)}`;
+    case "worldIdle":
+      return condition.negate === true ? "World is busy" : "World is idle";
+    case "ext":
+      return `Extension ${text(condition.call)} ${jsonPreview(condition.args)}`;
+    default:
+      return `Unknown condition${typeof condition.kind === "string" ? ` (${condition.kind})` : ""}`;
+  }
+}
+
+export interface PageConditionClause {
+  readonly source: "switch" | "selfSwitch" | "variable" | "item" | "all";
+  readonly index?: number;
+  readonly condition: Condition;
+  readonly summary: string;
+  readonly editable: boolean;
+  readonly readOnly: boolean;
+}
+
+/** Expand legacy flat page gates and compound `all` gates in their evaluation
+ * order without mutating or normalizing the authored PageCondition. Entries
+ * from `all` (notably extension conditions) retain their original identity. */
+export function pageConditionClauses(pageCondition?: PageCondition): PageConditionClause[] {
+  if (!pageCondition) return [];
+  const clauses: Array<Omit<PageConditionClause, "summary" | "editable" | "readOnly">> = [];
+  if (pageCondition.switch !== undefined) {
+    clauses.push({ source: "switch", condition: { kind: "switch", id: pageCondition.switch, value: true } });
+  }
+  if (pageCondition.selfSwitch !== undefined) {
+    clauses.push({ source: "selfSwitch", condition: { kind: "selfSwitch", key: pageCondition.selfSwitch, value: true } });
+  }
+  if (pageCondition.variable !== undefined) {
+    clauses.push({ source: "variable", condition: { kind: "variable", ...pageCondition.variable } });
+  }
+  if (pageCondition.item !== undefined) {
+    clauses.push({ source: "item", condition: { kind: "item", id: pageCondition.item, count: 1 } });
+  }
+  for (const [index, condition] of (pageCondition.all ?? []).entries()) {
+    clauses.push({ source: "all", index, condition });
+  }
+  return clauses.map((entry) => {
+    const editable = isEditableCondition(entry.condition);
+    return {
+      ...entry,
+      summary: conditionSummary(entry.condition),
+      editable,
+      readOnly: !editable,
+    };
+  });
+}
+
+export function pageConditionSummary(pageCondition?: PageCondition): string {
+  const summaries = pageConditionClauses(pageCondition).map((entry) => entry.summary);
+  return summaries.length === 0 ? "Always" : summaries.join(" AND ");
+}
+
+/** A page condition containing one default clause. The four legacy kinds use
+ * their compact flat spelling; other kinds use `all`. */
+export function defaultPageCondition(kind: ConditionKind): PageCondition {
+  const condition = defaultCondition(kind);
+  switch (condition.kind) {
+    case "switch": return { switch: condition.id };
+    case "selfSwitch": return { selfSwitch: condition.key };
+    case "variable": return { variable: { id: condition.id, op: condition.op, value: condition.value } };
+    case "item": return { item: condition.id };
+    default: return { all: [condition] };
+  }
+}
+
+export const BASIC_MOVE_STEPS = [
+  "moveDown",
+  "moveLeft",
+  "moveRight",
+  "moveUp",
+  "stepForward",
+  "faceDown",
+  "faceLeft",
+  "faceRight",
+  "faceUp",
+  "wait",
+  "turnRandom",
+  "turnTowardPlayer",
+] as const satisfies readonly MoveStep[];
+
+export type BasicMoveStep = (typeof BASIC_MOVE_STEPS)[number];
+
+export function defaultMoveStep(step: BasicMoveStep = "moveDown"): BasicMoveStep {
+  return step;
+}
+
+const MOVE_STEP_LABELS: Readonly<Record<BasicMoveStep, string>> = {
+  moveDown: "Move down",
+  moveLeft: "Move left",
+  moveRight: "Move right",
+  moveUp: "Move up",
+  stepForward: "Step forward",
+  faceDown: "Face down",
+  faceLeft: "Face left",
+  faceRight: "Face right",
+  faceUp: "Face up",
+  wait: "Wait",
+  turnRandom: "Turn randomly",
+  turnTowardPlayer: "Turn toward player",
+};
+
+export function moveStepSummary(step: unknown): string {
+  if (typeof step === "string") return MOVE_STEP_LABELS[step as BasicMoveStep] ?? `Unknown step (${step})`;
+  if (!isRecord(step)) return "Unknown step";
+  if (isRecord(step.turnToward)) return `Turn toward ${targetSummary(step.turnToward)}`;
+  if (step.turnToward === "player") return "Turn toward player";
+  if (isRecord(step.pathTo)) {
+    return `Path to (${numberText(step.pathTo.x)}, ${numberText(step.pathTo.y)})`;
+  }
+  if (isRecord(step.approach)) {
+    return `Approach ${targetSummary(step.approach.target)}`;
+  }
+  return `Unknown step ${jsonPreview(step)}`;
+}

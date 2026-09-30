@@ -1,0 +1,260 @@
+// Pure event-inspector geometry: every visible control is a real pointer
+// target at both supported editor profiles. No PocketJS host or bundle.
+
+import { describe, expect, test } from "bun:test";
+import {
+  createEventInspectorLayout,
+  hitTestEventInspector,
+  inspectorActionKey,
+  type EventInspectorAction,
+  type InspectorCommandRow,
+  type InspectorConditionRow,
+  type InspectorControl,
+  type InspectorRect,
+} from "../editor/engine/event-layout.ts";
+import { flattenCommands } from "../editor/engine/commands.ts";
+
+const conditions: InspectorConditionRow[] = [
+  {
+    key: "all:0",
+    kind: "variable",
+    summary: "quest >= 2",
+    source: { kind: "all", index: 0 },
+    fields: [
+      { key: "id", label: "ID", value: "quest" },
+      { key: "op", label: "OP", value: ">=" },
+      { key: "value", label: "VALUE", value: 2 },
+    ],
+  },
+];
+
+const commands: InspectorCommandRow[] = [
+  {
+    key: "root:0",
+    depth: 0,
+    op: "switch",
+    summary: "gate = ON",
+    fields: [
+      { key: "id", label: "ID", value: "gate" },
+      { key: "value", label: "VALUE", value: true },
+    ],
+  },
+];
+
+function center(r: InspectorRect): [number, number] {
+  return [r.x + Math.floor(r.w / 2), r.y + Math.floor(r.h / 2)];
+}
+
+function expectHit(
+  layout: ReturnType<typeof createEventInspectorLayout>,
+  control: InspectorControl,
+): void {
+  const [x, y] = center(control.rect);
+  expect(hitTestEventInspector(layout, x, y)).toEqual(control.action);
+}
+
+function expectKinds(
+  actions: readonly EventInspectorAction[],
+  expected: readonly EventInspectorAction["kind"][],
+): void {
+  expect(actions.map((action) => action.kind)).toEqual([...expected]);
+}
+
+for (const [width, height] of [[480, 272], [720, 480]] as const) {
+  describe(`event inspector ${width}x${height}`, () => {
+    const layout = createEventInspectorLayout({
+      width,
+      height,
+      pageCount: 3,
+      activePage: 1,
+      conditions,
+      commands,
+      scroll: { pagesX: 0, conditionsY: 0, commandsY: 0 },
+    });
+
+    test("uses the responsive column and remains inside the viewport", () => {
+      expect(layout.compact).toBe(width === 480);
+      expect(layout.leftWidth).toBe(width === 480 ? 210 : 260);
+      for (const region of layout.hitRegions) {
+        expect(region.rect.x).toBeGreaterThanOrEqual(0);
+        expect(region.rect.y).toBeGreaterThanOrEqual(0);
+        expect(region.rect.x + region.rect.w).toBeLessThanOrEqual(width);
+        expect(region.rect.y + region.rect.h).toBeLessThanOrEqual(height);
+        expect(region.rect.w).toBeGreaterThan(0);
+        expect(region.rect.h).toBeGreaterThan(0);
+      }
+    });
+
+    test("hits back and all event fields", () => {
+      expectHit(layout, layout.close);
+      expect(inspectorActionKey(layout.close.action)).toBe("close");
+      layout.eventFields.forEach((control) => expectHit(layout, control));
+      expectKinds(layout.eventFields.map((control) => control.action), [
+        "event-field",
+        "event-field",
+        "event-field",
+        "event-field",
+        "event-field",
+      ]);
+      expect(layout.eventFields.map((control) => control.action.kind === "event-field" && control.action.field)).toEqual([
+        "name", "x", "y", "w", "h",
+      ]);
+    });
+
+    test("hits page operations, visible tabs, page settings and route controls", () => {
+      layout.pageActions.forEach((control) => expectHit(layout, control));
+      expect(layout.pageActions.map((control) => control.action.kind === "page-action" && control.action.action)).toEqual([
+        "add", "delete", "up", "down", "copy",
+      ]);
+
+      expect(layout.pageTabs).toHaveLength(3);
+      layout.pageTabs.forEach((control) => expectHit(layout, control));
+      expect(layout.pageTabs.map((control) => control.action.kind === "page-select" && control.action.page)).toEqual([0, 1, 2]);
+
+      layout.pageFields.forEach((control) => expectHit(layout, control));
+      expect(layout.pageFields.map((control) => control.action.kind === "page-field" && control.action.field)).toEqual([
+        "trigger", "sprite", "direction", "moveType", "blocks",
+      ]);
+
+      layout.routeFields.forEach((control) => expectHit(layout, control));
+      expect(layout.routeFields.map((control) => control.action.kind === "route-field" && control.action.field)).toEqual([
+        "enabled", "repeat", "skippable", "steps",
+      ]);
+    });
+
+    test("hits condition toolbar, selection row and each field row", () => {
+      layout.conditionActions.forEach((control) => expectHit(layout, control));
+      expect(layout.conditionActions.map((control) => control.action.kind === "condition-action" && control.action.action)).toEqual([
+        "add", "delete",
+      ]);
+      const row = layout.conditionRows[0]!;
+      expectHit(layout, row.header);
+      row.fields.forEach((control) => expectHit(layout, control));
+      expect(row.fields.map((control) => control.action.kind === "condition-field" && control.action.field)).toEqual([
+        "id", "op", "value",
+      ]);
+    });
+
+    test("hits command toolbar, selection row and each field row", () => {
+      layout.commandActions.forEach((control) => expectHit(layout, control));
+      expect(layout.commandActions.map((control) => control.action.kind === "command-action" && control.action.action)).toEqual([
+        "add", "delete", "up", "down", "copy",
+      ]);
+      const row = layout.commandRows[0]!;
+      expectHit(layout, row.header);
+      row.fields.forEach((control) => expectHit(layout, control));
+      expect(row.fields.map((control) => control.action.kind === "command-field" && control.action.field)).toEqual([
+        "id", "value",
+      ]);
+    });
+
+    test("empty chrome and outside coordinates do not hit", () => {
+      expect(hitTestEventInspector(layout, width - 2, 1)).toBeNull();
+      expect(hitTestEventInspector(layout, -1, 10)).toBeNull();
+      expect(hitTestEventInspector(layout, width, height - 1)).toBeNull();
+      expect(hitTestEventInspector(layout, 2, height - 2)).toBeNull();
+    });
+  });
+}
+
+describe("event inspector scrolling and clipping", () => {
+  const manyConditions: InspectorConditionRow[] = Array.from({ length: 5 }, (_, row) => ({
+    key: `all:${row}`,
+    kind: row === 4 ? "ext" : "switch",
+    summary: `condition ${row}`,
+    source: { kind: "all", index: row },
+    fields: [{ key: "id", label: "ID", value: `switch-${row}`, readOnly: row === 4 }],
+    readOnly: row === 4,
+  }));
+  const manyCommands: InspectorCommandRow[] = Array.from({ length: 6 }, (_, row) => ({
+    key: `root:${row}`,
+    depth: row % 3,
+    branch: row === 2 ? "ELSE" : undefined,
+    op: row === 5 ? "ext" : "text",
+    summary: `command ${row}`,
+    fields: [{ key: "value", label: "VALUE", value: row }],
+  }));
+
+  test("scrolled rows retain semantic indices and cannot hit through list clips", () => {
+    const layout = createEventInspectorLayout({
+      width: 480,
+      height: 272,
+      pageCount: 12,
+      activePage: 9,
+      conditions: manyConditions,
+      commands: manyCommands,
+      scroll: { pagesX: 180, conditionsY: 84, commandsY: 96 },
+    });
+
+    // Raw geometry is allowed above the clip; only its intersection is in
+    // hitRegions, so the fixed toolbars remain clickable.
+    expect(layout.conditionRows[0]!.rect.y).toBeLessThan(layout.conditionClip.y);
+    expect(layout.commandRows[0]!.rect.y).toBeLessThan(layout.commandClip.y);
+    expectHit(layout, layout.conditionActions[0]!);
+    expectHit(layout, layout.commandActions[0]!);
+
+    const visibleCondition = layout.hitRegions.find((control) =>
+      control.action.kind === "condition-select" && control.action.row > 0
+    );
+    const visibleCommand = layout.hitRegions.find((control) =>
+      control.action.kind === "command-select" && control.action.row > 0
+    );
+    expect(visibleCondition).toBeDefined();
+    expect(visibleCommand).toBeDefined();
+    expectHit(layout, visibleCondition!);
+    expectHit(layout, visibleCommand!);
+
+    // Horizontal page scrolling retains original page indices.
+    expect(layout.pageTabs.length).toBeGreaterThan(0);
+    expect(layout.pageTabs[0]!.action).toMatchObject({ kind: "page-select", page: 4 });
+  });
+
+  test("ext rows are marked read-only down through field actions", () => {
+    const layout = createEventInspectorLayout({
+      width: 720,
+      height: 480,
+      pageCount: 1,
+      activePage: 0,
+      conditions: manyConditions.slice(4),
+      commands: manyCommands.slice(5),
+    });
+    expect(layout.conditionRows[0]!.readOnly).toBe(true);
+    expect(layout.conditionRows[0]!.fields[0]!.action).toMatchObject({
+      kind: "condition-field",
+      readOnly: true,
+    });
+    expect(layout.commandRows[0]!.readOnly).toBe(true);
+    expect(layout.commandRows[0]!.fields[0]!.action).toMatchObject({
+      kind: "command-field",
+      readOnly: true,
+    });
+  });
+
+  test("accepts command-tree rows directly and derives semantic field rows", () => {
+    const rows = flattenCommands([
+      { op: "switch", id: "gate", value: true },
+      { op: "if", if: { kind: "switch", id: "branch" }, then: [
+        { op: "wait", seconds: 0.5 },
+      ] },
+      { op: "ext", call: "game.custom", args: { mode: 2 } },
+    ]);
+    const layout = createEventInspectorLayout({
+      width: 720,
+      height: 480,
+      pageCount: 1,
+      activePage: 0,
+      conditions: [],
+      commands: rows,
+    });
+    expect(layout.commandRows.map((row) => row.fields.map((entry) =>
+      entry.action.kind === "command-field" ? entry.action.field : ""
+    ))).toEqual([
+      ["id", "value"],
+      ["if"],
+      ["seconds"],
+      ["payload"],
+    ]);
+    expect(layout.commandRows[2]!.rect.x).toBeGreaterThan(layout.commandRows[1]!.rect.x);
+    expect(layout.commandRows[3]!.readOnly).toBe(true);
+  });
+});

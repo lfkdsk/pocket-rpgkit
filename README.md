@@ -33,8 +33,9 @@ the parts an RPG-Maker-style game needs without any specific game:
   `src/data/CHANGELOG.md`);
 - **four examples** (`examples/`), each a PocketJS app with its own art
   and tests on the wasm sim host (below);
-- **a tile-map editor, in preview** (`editor/`): paints the examples'
-  documents on the desktop host ([below](#editor-preview)).
+- **a map/event editor, in preview** (`editor/`): paints tiles and edits
+  event footprints, pages, conditions and command trees on the desktop host
+  ([below](#editor-preview)).
 
 ## Examples
 
@@ -186,28 +187,36 @@ reproduce the committed PNGs byte for byte.
 
 ## Editor (preview)
 
-`editor/` is a tile-map editor for `rpgkit-project/v1` documents, a
+`editor/` is a map/event editor for `rpgkit-project/v1` documents, a
 PocketJS app on the desktop host. It opens the Sunstone and Meadow
 documents (`examples/*/data/*.json`) and paints them with those examples'
 own Kenney tile sheets.
 
 What it does today:
 
-- paint ground tiles by click or drag; a **LAYER** toggle paints the
-  sparse upper (star) layer instead; right click or shift+click erases;
-- undo/redo, one step per stroke, 64 steps deep (header buttons or
+- paint ground tiles by click or drag; the first header button cycles
+  ground, sparse upper (star), and event modes; right click or shift+click
+  erases tiles;
+- select and drag full multi-cell event footprints; create, copy, delete,
+  resize and name events;
+- add, delete, copy and reorder pages; edit triggers, sprites, facing,
+  blocking, autonomous/basic route motion, and flat/compound conditions;
+- inspect recursive command trees with visible `if`, choices and battle
+  branches; structurally edit the built-in authoring commands while
+  preserving `shop`, `ext`, `battle`, and advanced route payloads read-only;
+- undo/redo, one step per tile stroke or event transaction, 64 steps deep (header buttons or
   Cmd+Z / Cmd+Shift+Z);
 - switch between a document's maps; the palette shows the sheets the
   current map declares;
 - save through the schema validator (`src/data/schema.json`): an invalid
   export is refused with its first error, an unedited one saves back byte
-  for byte;
-- draw every event as a marker on its cell.
+  for byte, and an edit reuses untouched event/source spans without a
+  whole-file reformat.
 
-Not yet: editing events (placing, moving, pages, commands), passage
-overrides, map properties, or creating maps. The grow example's generated
-settlement is not wired in: its sheet is synthesized by its cooker rather
-than cut from a source PNG.
+Not yet: passage overrides, map properties, creating maps, common-event
+lists, asset import, or a visual transfer destination picker. The grow
+example's generated settlement is not wired in: its sheet is synthesized by
+its cooker rather than cut from a source PNG.
 
 ```sh
 bun run editor                    # Sunstone, on a working copy in dist/editor/
@@ -223,8 +232,9 @@ file, by default a working copy in `dist/editor/` seeded from the
 example (the example games build their documents from code, and
 `bun run gen-assets` rewrites `data/*.json`). Without the companion (the wasm sim,
 a browser) the editor runs from buttons behind a visible banner.
-`bun run build:editor` builds the sim bundle alone; the editor's tests are
-`tests/editor-model.test.ts` and `tests/editor-sim.test.ts`. More in
+`bun run build:editor` builds the sim bundle alone; the editor's tests include
+`tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, and the two-size
+event inspector/runtime round trip in `tests/editor-event-sim.test.ts`. More in
 [`editor/README.md`](editor/README.md); the tile art's licenses are in the
 examples' `ATTRIBUTION.md` files.
 
@@ -917,7 +927,7 @@ examples/        meadow (minimal), sunstone (game + attract), grow (demo),
                  wander (endless streamed world);
                  each has its entry, data, assets/src, gen-assets.ts,
                  images.json, pocket.json and ATTRIBUTION.md
-editor/          tile-map editor (preview): app, engine/, ui/, its cooker
+editor/          map/event editor (preview): app, engine/, ui/, its cooker
                  and the tile cells it bakes from the examples' sheets
 tests/           unit suites, sim suites, goldens/, fixtures/ (small
                  apps the sim suites boot, built by build:example)

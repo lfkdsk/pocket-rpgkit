@@ -3,7 +3,7 @@
 // pixels (filled rects + text), never an invisible hot zone.
 
 import { Image, Text, View } from "@pocketjs/framework/components";
-import { createMemo, Index } from "solid-js";
+import { createMemo, For, Index } from "solid-js";
 import {
   BANNER_H,
   HEADER_H,
@@ -13,6 +13,7 @@ import {
   PAL_PITCH,
   PAL_THUMB,
   PAL_W,
+  eventToolButtons,
 } from "../engine/layout.ts";
 
 export const INK = "#e6e9f0";
@@ -132,6 +133,60 @@ export function PalettePanel(props: {
           </View>
         )}
       </Index>
+    </View>
+  );
+}
+
+export function EventPanel(props: {
+  selected: { id: string; name?: string; x: number; y: number; w?: number; h?: number } | null;
+  cursorTool: number;
+  panelH: number;
+}): JSX.Element {
+  const labels = { new: "NEW", edit: "EDIT", copy: "COPY", delete: "DELETE" } as const;
+  return (
+    <View
+      class="absolute"
+      style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: PAL_W, height: props.panelH, bgColor: PANEL, overflow: 1 }}
+      debugName="editor-event-tools"
+    >
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 5, textColor: ACCENT, height: 12, lineHeight: 12 }}>
+        EVENTS
+      </Text>
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 22, width: PAL_W - 12, textColor: INK, height: 12, lineHeight: 12 }}>
+        {props.selected ? props.selected.id : "NO SELECTION"}
+      </Text>
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 39, width: PAL_W - 12, textColor: DIM, height: 12, lineHeight: 12 }}>
+        {props.selected ? `${props.selected.x},${props.selected.y}  ${props.selected.w ?? 1}x${props.selected.h ?? 1}` : "CLICK MAP, THEN NEW"}
+      </Text>
+      <For each={eventToolButtons()}>
+        {(button, index) => {
+          const enabled = () => button.id === "new" || props.selected !== null;
+          return (
+            <View
+              class="absolute flex-row items-center justify-center"
+              style={{
+                posType: 1,
+                insetL: button.x,
+                insetT: button.y,
+                width: button.w,
+                height: button.h,
+                bgColor: props.cursorTool === index() ? BUTTON_ON : BUTTON,
+                borderWidth: props.cursorTool === index() ? 1 : 0,
+                borderColor: ACCENT,
+                opacity: enabled() ? 1 : 0.4,
+              }}
+              debugName={`editor-event-tool-${button.id}`}
+            >
+              <Text class="text-xs" style={{ textColor: enabled() ? INK : DIM, height: 12, lineHeight: 12 }}>
+                {labels[button.id]}
+              </Text>
+            </View>
+          );
+        }}
+      </For>
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 176, width: PAL_W - 12, textColor: DIM, height: 24, lineHeight: 11 }}>
+        DRAG TO MOVE{"\n"}MODE BUTTON: TILES
+      </Text>
     </View>
   );
 }
