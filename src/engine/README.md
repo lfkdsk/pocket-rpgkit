@@ -40,7 +40,8 @@ state.
   save envelope/codecs, structural validation, the map-aware restore gate,
   and the save-menu navigation reducer.
 - `attract.ts`, `tape.ts` — the attract/takeover/rewind controller over
-  one unified u16 input stream, and RLE/devtools tape helpers.
+  one unified u16 input stream, bounded runtime keyframes, and RLE/devtools
+  tape helpers.
 - `journey-search.ts` — A* over real reducer frames, for deterministic
   journey drivers on hosts whose frame spans several reference ticks.
 - `types.ts` — the `rpgkit-project/v1` vocabulary (normative schema:
@@ -285,7 +286,24 @@ registered game-code contract failures and intentionally still throw.
 
 An active scene or a non-empty battle queue is not a save point. Scene and
 queue state still live in the ordinary reducer snapshot used by attract
-rewind, so a refold may cross map/queue/battle boundaries byte-for-byte. An
-old v1 snapshot with `pendingBattle: null` hydrates to an empty queue; a
+rewind, so a refold may cross map/queue/battle boundaries byte-for-byte. The
+controller takes a full `SessionState` keyframe after each such boundary and
+every 3,600 reducer/source frames by default. A keyframe also carries the held
+mask, tape/divergence cursors, display stage and type/read-hold clocks needed to
+restore the controller exactly; display-only ticks do not move the periodic
+counter. Consequently capture positions depend on the source stream, not the
+host's 60/30/20/4 Hz paint rate.
+
+Rewind chooses the newest retained keyframe at or before its target and folds
+only subsequent reducer inputs. `keyframeIntervalFrames` changes the interval;
+`keyframeMaxBytes` defaults to 8 MiB and evicts oldest snapshots first. A zero
+budget disables snapshots, and a target older than the retained window falls
+back to the clean frame-zero replay. `keyframeStats()`,
+`keyframeEstimatedBytes`, and `rewindHistoryEstimatedBytes` expose the bounded
+serialized-payload estimate and last suffix length for tests/devtools. Actual
+JS object overhead is host-specific. These snapshots are transient controller
+state and are not written to save envelopes.
+
+An old v1 snapshot with `pendingBattle: null` hydrates to an empty queue; a
 populated legacy slot is explicitly rejected because it represents queued
 external work, which has never been a legal save point.

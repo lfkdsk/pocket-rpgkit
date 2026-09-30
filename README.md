@@ -21,7 +21,8 @@ the parts an RPG-Maker-style game needs without any specific game:
   recorded playthrough replays from a clean world; any button takes over
   on that very frame, **L** rewinds 3 virtual seconds, **SELECT** hands
   the session back to the demo. Demo and player input are one u16 stream,
-  so rewind undoes the player's moves exactly like the tape's;
+  so rewind undoes the player's moves exactly like the tape's. Runtime-only,
+  bounded keyframes make a long-tape rewind fold only a short suffix;
 - **host adapters** (`src/host/`) — the `data.fs` save slot store and the
   attract-tape override loader;
 - **build-time asset pipelines** (`tools/lib/`) — tile sheets to baked
@@ -561,7 +562,8 @@ palette):
 
 Because every widget is this kind of pure function, a battle scene inherits
 the kit's L-key rewind and 60/30/20/4 Hz determinism for free, the same way
-the map layer does (`engine/attract.ts` folds from frame 0). A game that
+the map layer does (`engine/attract.ts` restores a canonical keyframe and
+folds its suffix). A game that
 never registers `battle`/`battleScene` never imports `src/ui/battle/` (it is
 its own `pocket-rpgkit/ui/battle` export, separate from `pocket-rpgkit/ui`),
 so the module never reaches that game's bundle — proved for the sunstone
@@ -616,6 +618,25 @@ write a deterministic journey driver (`examples/sunstone/journey.ts`;
 slower than 60 Hz), freeze its 60 Hz masks as an RLE tape, and pass the
 tape to `GameView`. On a host with `data.fs`, an `attract-tape.json` at
 the app's data root replaces the built-in tape without a rebuild.
+
+`AttractController` captures a complete runtime keyframe every 3,600 reducer
+inputs by default, and immediately after map changes and battle entry/exit.
+Display-only pacing ticks do not advance that interval, so one tape produces
+the same capture frames at 60/30/20/4 Hz. Rewind restores the nearest retained
+keyframe and folds only the suffix through the ordinary reducer. Configure the
+policy with `keyframeIntervalFrames` and `keyframeMaxBytes`; zero bytes disables
+keyframes and uses the exact from-frame-zero fallback.
+
+The default 8 MiB cap applies to the deterministic serialized-payload estimate
+reported by `keyframeEstimatedBytes` and `keyframeStats()`. Oldest snapshots are
+evicted first; a target older than the oldest retained snapshot falls back to
+frame zero. `rewindHistoryEstimatedBytes` adds that payload to the u16 input and
+u8 controller-timeline allocations. JS-engine object overhead is host-specific
+and intentionally excluded. Keyframes are process-local acceleration data:
+they never enter the `rpgkit-save/v1` envelope, so the save format is unchanged.
+Run `tools/kr2-quickjs-bench.sh` to measure short/100k-frame rewind latency and
+the periodic-capture spike in PocketJS's desktop QuickJS guest; scratch files
+default to `${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/kr2-quickjs`.
 
 Saves are FNV-checksummed envelopes over a safe-point snapshot (mover on a
 tile boundary, no modal, no parked request, no active scene). Hosts with `data.fs` write

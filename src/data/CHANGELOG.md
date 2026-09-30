@@ -303,5 +303,18 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   packages a `ProjectShell` must call this in its build or test pipeline
   after writing the shell. `splitProjectMaps` self-checks its own output.
 
+## v1 runtime note — 2026-09-30 (bounded rewind keyframes)
+
+- `AttractController` now retains process-local full-state keyframes every
+  3,600 reducer/source frames and at map/battle boundaries. Rewind restores the
+  newest retained snapshot and folds only its suffix; capture positions remain
+  independent of the 60/30/20/4 Hz host rate.
+- `keyframeIntervalFrames` and `keyframeMaxBytes` configure the interval and
+  default 8 MiB estimated-payload cap. Oldest snapshots are evicted first, with
+  a frame-zero fallback outside the retained window. Diagnostics expose the
+  current estimate and most recent suffix length.
+- Keyframes are runtime acceleration data only. Neither `rpgkit-project/v1`
+  nor the `rpgkit-save/v1` envelope changed.
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

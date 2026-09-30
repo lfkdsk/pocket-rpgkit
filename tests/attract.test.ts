@@ -7,16 +7,16 @@
 //   2. TAKE OVER    taking over at frame k leaves state[k] field-equal to a
 //                   run that never took over; takeover changes only the
 //                   input source from k+1.
-//   3. REWIND       rewinding at frame k to k-3s yields the state of a
-//                   from-frame-0 replay of the unified input stream, and
-//                   the distance is 3 virtual seconds at 60/30/20/4 Hz.
+//   3. REWIND       rewinding at frame k to k-3s yields the state of the
+//                   from-frame-0 oracle while production restores the nearest
+//                   keyframe; distance is 3 seconds at 60/30/20/4 Hz.
 //   4. PLAYER INPUT frames the player adds after takeover are part of the
 //                   same stream: rewinding walks back through them too.
 //   5. RESUME       SELECT after a rewind into the tape prefix resumes the
 //                   demo at the rewound frame.
 //   6. IDLE/RESET   N seconds without input enters attract; SELECT in
 //                   attract restarts from frame 0.
-//   7. COST         worst-case re-fold wall time and input-log memory.
+//   7. COST         bounded suffix wall time and rewind-history memory.
 //
 // The journey tapes are generated at the test's hz by examples/sunstone/journey.ts;
 // the shipped frozen tape is 60 Hz (desktop/web run at 60 Hz).
@@ -416,34 +416,36 @@ describe("D2 — rewind is a from-zero replay of the unified input stream", () =
   });
 });
 
-describe("D2 — rewind cost (option a: pure re-fold from frame 0)", () => {
-  test("worst case at a long session: wall time and input-log memory bounded", () => {
-    // A 3-second rewind at frame 2000 (~33 s of play) re-folds 1820 frames
-    // from frame 0. The shipped attract tape is 539 frames, so the real
-    // product maximum (rewind near the victory end) re-folds 359 frames.
-    const longTape = Array<number>(2000).fill(0);
+describe("D2 — rewind cost is a bounded keyframe suffix", () => {
+  test("a long session restores the nearest minute keyframe", () => {
+    // Frame 7,820 restores the frame-7,200 keyframe and folds 620 reducer
+    // inputs, rather than rebuilding all 7,820 from the initial state.
+    const longTape = Array<number>(8000).fill(0);
     const c = new AttractController(project, longTape, {
-      hz: 60, idleFrames: 6000, endHoldFrames: 6000, rewindSeconds: 3,
+      hz: 60, idleFrames: 60_000, endHoldFrames: 60_000, rewindSeconds: 3,
     });
     c.startAttract();
-    for (let i = 0; i < 2000; i++) c.step(0);
+    for (let i = 0; i < 8000; i++) c.step(0);
     const t0 = performance.now();
-    c.step(BTN_LTRIGGER); // frame 2000 -> 1820: 1820 frames re-folded
+    c.step(BTN_LTRIGGER); // frame 8000 -> 7820
     const ms = performance.now() - t0;
-    expect(c.inputLog).toHaveLength(1820);
+    const keyframes = c.keyframeStats();
+    expect(c.inputLog).toHaveLength(7820);
+    expect(keyframes.lastRefoldStart).toBe(7200);
+    expect(keyframes.lastRefoldFrames).toBe(620);
     // The u16 payload reserves exactly ten minutes at 60 Hz. Controller
     // metadata packs display state into one flag byte per timeline tick.
     expect(c.inputLogAllocatedBytes).toBe(ATTRACT_INPUT_LOG_FRAMES * Uint16Array.BYTES_PER_ELEMENT);
     expect(c.historyAllocatedBytes).toBe(ATTRACT_INPUT_LOG_FRAMES * 3);
-    // Loose threshold for CI noise: ~40 ms here, ~200 ms on a machine with
-    // every core busy, so this still catches an order-of-magnitude
-    // regression. The measured number lands in the claim.
+    expect(c.keyframeEstimatedBytes).toBeGreaterThan(0);
+    expect(c.rewindHistoryEstimatedBytes).toBe(c.historyAllocatedBytes + c.keyframeEstimatedBytes);
+    // Loose Bun threshold for CI noise; QuickJS has a dedicated host bench.
     expect(ms).toBeLessThan(400);
     console.log(
-      `attract rewind: 1820-frame re-fold at frame 2000 = ${ms.toFixed(2)} ms ` +
-      `(${(ms / 1820).toFixed(4)} ms/frame); input log allocation = ` +
+      `attract rewind: ${keyframes.lastRefoldFrames}-frame suffix at frame 8000 = ${ms.toFixed(2)} ms ` +
+      `(${(ms / keyframes.lastRefoldFrames).toFixed(4)} ms/frame); input log allocation = ` +
       `${c.inputLogAllocatedBytes} bytes (${c.inputLogAllocatedBytes / 1024} KiB), ` +
-      `controller history ${c.historyAllocatedBytes} bytes (${c.historyAllocatedBytes / 1024} KiB)`,
+      `keyframes ${c.keyframeEstimatedBytes} estimated bytes`,
     );
   });
 });

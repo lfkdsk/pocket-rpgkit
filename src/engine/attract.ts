@@ -19,21 +19,21 @@
 //            the NEXT frame the live buttons drive; a "YOU HAVE CONTROL"
 //            notice shows for two seconds
 //   L (LTRIGGER)                             -> rewind 3 virtual seconds:
-//            re-fold inputLog[0..target) from a fresh session
+//            restore a retained keyframe and re-fold only the suffix
 //   SELECT in play                           -> while the current frame is
 //            still inside the tape prefix (or was rewound into it), the
 //            demo resumes from exactly this frame; otherwise it restarts
 //
-// Rewind path: pure re-fold from frame 0 (option a in the D2 spec). At the
-// shipped tape length it costs a handful of milliseconds (measured in
-// tests/attract.test.ts), needs no keyframe memory, and shares the
-// exact reducer path of a normal boot, so a rewound frame is definitionally
-// the same state as a freshly played one.
+// Rewind path: restore the nearest retained keyframe at or before the target,
+// then run the ordinary reducer over only the suffix. Keyframes contain the
+// complete JSON-shaped SessionState plus the controller's source/display
+// cursors. A no-keyframe replay remains the reference path used by tests.
 
 import type { MapRepository, ProjectSource } from "./types.ts";
 import type { Modal } from "./interpreter.ts";
 import type { ExtensionOptions } from "./extensions.ts";
 import type { BattleRules } from "./battle.ts";
+import { deepClone } from "./clone.ts";
 import {
   acquireSessionMap,
   createSession,
@@ -76,6 +76,15 @@ export const ATTRACT_READ_HOLD_CHARS_PER_SECOND = 120;
 /** Ten minutes of 60 Hz input, exactly one u16 per folded source frame. */
 export const ATTRACT_INPUT_LOG_FRAMES = ATTRACT_TAPE_HZ * 60 * 10;
 
+/** One minute of the canonical 60 Hz source timeline. Display-only pacing
+ * ticks do not advance this counter, so captures land on the same reducer
+ * frame at every host rate. */
+export const ATTRACT_KEYFRAME_INTERVAL_FRAMES = ATTRACT_TAPE_HZ * 60;
+
+/** Default cap for the deterministic serialized-payload estimate retained by
+ * rewind keyframes. Oldest keyframes are evicted first. */
+export const ATTRACT_KEYFRAME_MAX_BYTES = 8 * 1024 * 1024;
+
 const ALL_BUTTONS =
   BTN_SELECT | BTN_START | BTN_UP | BTN_RIGHT | BTN_DOWN | BTN_LEFT |
   BTN_LTRIGGER | BTN_RTRIGGER | BTN_ZL | BTN_ZR |
@@ -117,6 +126,13 @@ export interface AttractOptions {
   endHoldFrames?: number;
   /** Rewind distance in virtual seconds. Default 3. */
   rewindSeconds?: number;
+  /** Reducer/source frames between periodic rewind keyframes. Defaults to
+   *  3,600 (one minute at 60 Hz). Zero disables periodic captures; map and
+   *  battle boundaries are still captured when the byte budget is nonzero. */
+  keyframeIntervalFrames?: number;
+  /** Maximum estimated payload bytes retained by rewind keyframes. Defaults
+   *  to 8 MiB. Zero disables all keyframes and keeps the from-zero fallback. */
+  keyframeMaxBytes?: number;
   /** Grown-world play (examples/grow): never auto-enter attract from
    *  idle (the world was the demo itself; there is no tape to play).
    *  SELECT then invokes onSelect instead of handing control to a tape. */
@@ -160,6 +176,67 @@ export interface FoldResult {
   status: AttractStatus;
 }
 
+export interface AttractKeyframeEntry {
+  /** Position in the unified source/display timeline. */
+  timelineFrame: number;
+  /** Number of reducer inputs folded at this point. */
+  sourceFrame: number;
+  estimatedBytes: number;
+  interval: boolean;
+  mapBoundary: boolean;
+  battleBoundary: boolean;
+}
+
+export interface AttractKeyframeStats {
+  count: number;
+  estimatedBytes: number;
+  maxBytes: number;
+  intervalFrames: number;
+  evicted: number;
+  /** Reducer inputs evaluated by the most recent rewind refold. */
+  lastRefoldFrames: number;
+  /** Unified timeline position from which that suffix refold started. */
+  lastRefoldStart: number;
+  entries: AttractKeyframeEntry[];
+}
+
+interface AttractKeyframe extends AttractKeyframeEntry {
+  state: SessionState;
+  lastFolded: number;
+  firstDivergence: number;
+  demoFrame: number;
+  endHold: number;
+  readHold: number;
+  displayTicks: number;
+  pacingTicks: number;
+  stage: PresentationStage;
+}
+
+function optionInteger(name: string, value: number | undefined, fallback: number): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 0) {
+    throw new RangeError(`attract: ${name} must be a non-negative safe integer`);
+  }
+  return resolved;
+}
+
+/** QuickJS has no TextEncoder. Count UTF-8 bytes without allocating a second
+ * byte array; keyframe payload accounting is therefore host-independent. */
+function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.codePointAt(i)!;
+    if (code < 0x80) bytes++;
+    else if (code < 0x800) bytes += 2;
+    else if (code < 0x10000) bytes += 3;
+    else {
+      bytes += 4;
+      i++;
+    }
+  }
+  return bytes;
+}
+
 export class AttractController {
   private readonly session: Session;
   private readonly project: ProjectSource;
@@ -168,6 +245,8 @@ export class AttractController {
   private readonly idleFrames: number;
   private readonly endHoldFrames: number;
   private readonly rewindFrames: number;
+  private readonly keyframeIntervalFrames: number;
+  private readonly keyframeMaxBytes: number;
   private readonly attractEnabled: boolean;
   private readonly onSelect?: () => void;
 
@@ -194,6 +273,9 @@ export class AttractController {
   /** Display-clock ticks spent revealing the current text. These ticks never
    *  advance SessionState; presentedModal() applies them as a view overlay. */
   private displayTicks = 0;
+  /** Display-hold ticks since the current modal started. This is retained
+   * separately from readHold so a suffix scan can reconstruct the latter. */
+  private pacingTicks = 0;
   private stage: PresentationStage = 0;
   /** Numerator for mapping one host frame onto the 60 Hz tape timeline. */
   private carry = 0;
@@ -204,6 +286,14 @@ export class AttractController {
   private lastFolded = 0;
   /** Previous LIVE mask — press-edge detection for transport/takeover. */
   private lastLive = 0;
+  /** Number of reducer inputs in the retained timeline. Display-only entries
+   * deliberately do not advance it. */
+  private sourceFrame = 0;
+  private keyframes: AttractKeyframe[] = [];
+  private keyframeBytes = 0;
+  private keyframeEvictions = 0;
+  private lastRefoldFrames = 0;
+  private lastRefoldStart = 0;
   loopReset = false;
   rewound = false;
 
@@ -221,6 +311,16 @@ export class AttractController {
     this.idleFrames = opts.idleFrames ?? this.hz * 10;
     this.endHoldFrames = opts.endHoldFrames ?? this.timelineHz * 2;
     this.rewindFrames = Math.max(1, Math.round((opts.rewindSeconds ?? 3) * this.timelineHz));
+    this.keyframeIntervalFrames = optionInteger(
+      "keyframeIntervalFrames",
+      opts.keyframeIntervalFrames,
+      ATTRACT_KEYFRAME_INTERVAL_FRAMES,
+    );
+    this.keyframeMaxBytes = optionInteger(
+      "keyframeMaxBytes",
+      opts.keyframeMaxBytes,
+      ATTRACT_KEYFRAME_MAX_BYTES,
+    );
     const initialFrames = this.attractEnabled
       ? ATTRACT_INPUT_LOG_FRAMES
       : Math.max(1, this.timelineHz * 60 * 10);
@@ -255,6 +355,39 @@ export class AttractController {
    *  pacing and end-hold on rewind. */
   get historyAllocatedBytes(): number {
     return this.logBuf.byteLength + this.timelineBuf.byteLength;
+  }
+
+  /** Deterministic serialized-payload estimate for retained keyframes. This
+   * is the quantity governed by keyframeMaxBytes; JS object overhead varies
+   * by host and is intentionally not presented as portable byte accounting. */
+  get keyframeEstimatedBytes(): number {
+    return this.keyframeBytes;
+  }
+
+  /** Input/timeline typed-array allocation plus retained keyframe payload. */
+  get rewindHistoryEstimatedBytes(): number {
+    return this.historyAllocatedBytes + this.keyframeBytes;
+  }
+
+  /** Copy-only diagnostics for tests, profilers and an eventual devtools UI. */
+  keyframeStats(): AttractKeyframeStats {
+    return {
+      count: this.keyframes.length,
+      estimatedBytes: this.keyframeBytes,
+      maxBytes: this.keyframeMaxBytes,
+      intervalFrames: this.keyframeIntervalFrames,
+      evicted: this.keyframeEvictions,
+      lastRefoldFrames: this.lastRefoldFrames,
+      lastRefoldStart: this.lastRefoldStart,
+      entries: this.keyframes.map((keyframe) => ({
+        timelineFrame: keyframe.timelineFrame,
+        sourceFrame: keyframe.sourceFrame,
+        estimatedBytes: keyframe.estimatedBytes,
+        interval: keyframe.interval,
+        mapBoundary: keyframe.mapBoundary,
+        battleBoundary: keyframe.battleBoundary,
+      })),
+    };
   }
 
   /** Mask folded on the previous reducer step. Display-only ticks do not
@@ -301,6 +434,7 @@ export class AttractController {
   private resetDisplay(): void {
     this.readHold = 0;
     this.displayTicks = 0;
+    this.pacingTicks = 0;
     this.stage = 0;
   }
 
@@ -320,6 +454,12 @@ export class AttractController {
     this.resetDisplay();
     this.carry = 0;
     this.firstDivergence = Infinity;
+    this.sourceFrame = 0;
+    this.keyframes = [];
+    this.keyframeBytes = 0;
+    this.keyframeEvictions = 0;
+    this.lastRefoldFrames = 0;
+    this.lastRefoldStart = 0;
   }
 
   /** Begin live play immediately from the current clean world (D3: the
@@ -343,6 +483,8 @@ export class AttractController {
     this.logBuf[index] = mask >>> 0;
     this.timelineBuf[index] = timelineFlags | (this.stage << 5);
     this.logLength++;
+    if (timelineFlags & T_MODAL) this.pacingTicks = 0;
+    else if (timelineFlags & T_HOLD) this.pacingTicks++;
   }
 
   private reduce(state: SessionState, mask: number, previous: number): SessionState {
@@ -357,6 +499,8 @@ export class AttractController {
   }
 
   private fold(mask: number, timelineFlags = 0): SessionState {
+    const beforeMap = this.state.mapId;
+    const beforeBattle = this.state.scene?.kind === "battle";
     const beforeModal = this.state.interp.modal;
     const beforeModalInstance = this.modalKey(this.state);
     this.state = this.reduce(this.state, mask, this.lastFolded);
@@ -380,16 +524,84 @@ export class AttractController {
       this.resetDisplay();
     }
     this.append(mask, timelineFlags);
+    this.sourceFrame++;
+    this.captureKeyframe(
+      beforeMap !== this.state.mapId,
+      beforeBattle !== (this.state.scene?.kind === "battle"),
+    );
     return this.state;
+  }
+
+  private captureKeyframe(mapBoundary: boolean, battleBoundary: boolean): void {
+    const interval = this.keyframeIntervalFrames > 0 &&
+      this.sourceFrame % this.keyframeIntervalFrames === 0;
+    if ((!interval && !mapBoundary && !battleBoundary) || this.keyframeMaxBytes === 0) return;
+
+    const state = deepClone(this.state);
+    const payload = {
+      state,
+      timelineFrame: this.logLength,
+      sourceFrame: this.sourceFrame,
+      lastFolded: this.lastFolded,
+      firstDivergence: this.firstDivergence,
+      demoFrame: this.demoFrame,
+      endHold: this.endHold,
+      readHold: this.readHold,
+      displayTicks: this.displayTicks,
+      pacingTicks: this.pacingTicks,
+      stage: this.stage,
+      interval,
+      mapBoundary,
+      battleBoundary,
+    };
+    const estimatedBytes = utf8ByteLength(JSON.stringify(payload));
+    if (estimatedBytes > this.keyframeMaxBytes) return;
+
+    const keyframe: AttractKeyframe = { ...payload, estimatedBytes };
+    let next = [...this.keyframes, keyframe];
+    let bytes = this.keyframeBytes + estimatedBytes;
+    let evicted = 0;
+    while (bytes > this.keyframeMaxBytes && evicted < next.length) {
+      bytes -= next[evicted]!.estimatedBytes;
+      evicted++;
+    }
+    if (evicted > 0) {
+      next = next.slice(evicted);
+      this.keyframeEvictions += evicted;
+    }
+    this.keyframes = next;
+    this.keyframeBytes = bytes;
+  }
+
+  private keyframeAtOrBefore(target: number): AttractKeyframe | undefined {
+    for (let i = this.keyframes.length - 1; i >= 0; i--) {
+      const keyframe = this.keyframes[i]!;
+      if (keyframe.timelineFrame <= target) return keyframe;
+    }
+    return undefined;
   }
 
   /** Re-fold the reducer entries in the first `target` timeline ticks from a
    *  fresh session. Display ticks are skipped: they presented the same world
    *  again and were never reducer input in the original run. */
   private refold(target: number, masks: ArrayLike<number> = this.logBuf): SessionState {
-    let state = startSession(this.project, this.session);
-    let previous = 0;
-    for (let i = 0; i < target; i++) {
+    const keyframe = masks === this.logBuf ? this.keyframeAtOrBefore(target) : undefined;
+    let state: SessionState;
+    let previous: number;
+    let start: number;
+    if (keyframe) {
+      acquireSessionMap(this.session, keyframe.state.mapId);
+      releaseSessionMapsExcept(this.session, [keyframe.state.mapId]);
+      state = deepClone(keyframe.state);
+      previous = keyframe.lastFolded;
+      start = keyframe.timelineFrame;
+    } else {
+      state = startSession(this.project, this.session);
+      previous = 0;
+      start = 0;
+    }
+    let folded = 0;
+    for (let i = start; i < target; i++) {
       if (masks === this.logBuf) {
         const flags = this.timelineBuf[i]!;
         if (!(flags & T_SOURCE) && (flags & T_DISPLAY)) continue;
@@ -397,6 +609,11 @@ export class AttractController {
       const mask = masks[i]!;
       state = this.reduce(state, mask, previous);
       previous = mask;
+      folded++;
+    }
+    if (masks === this.logBuf) {
+      this.lastRefoldStart = start;
+      this.lastRefoldFrames = folded;
     }
     return state;
   }
@@ -411,46 +628,58 @@ export class AttractController {
    *  world itself is rebuilt by refold(); these flags rebuild where the tape
    *  cursor and the two kinds of inserted idle time stood at that frame. */
   private restoreTimeline(target: number): void {
-    let sourceFrames = 0;
-    let endHold = 0;
-    let presentationTicks = 0;
-    let pacingTicks = 0;
-    this.lastFolded = 0;
-    this.firstDivergence = Infinity;
-    for (let i = 0; i < target; i++) {
+    const keyframe = this.keyframeAtOrBefore(target);
+    const start = keyframe?.timelineFrame ?? 0;
+    this.sourceFrame = keyframe?.sourceFrame ?? 0;
+    this.demoFrame = keyframe?.demoFrame ?? 0;
+    this.endHold = keyframe?.endHold ?? 0;
+    this.displayTicks = keyframe?.displayTicks ?? 0;
+    this.pacingTicks = keyframe?.pacingTicks ?? 0;
+    this.stage = keyframe?.stage ?? 0;
+    this.lastFolded = keyframe?.lastFolded ?? 0;
+    this.firstDivergence = keyframe?.firstDivergence ?? Infinity;
+    let exactReadHold = keyframe?.readHold ?? 0;
+    for (let i = start; i < target; i++) {
       const flags = this.timelineBuf[i]!;
       if (flags & T_MODAL) {
-        presentationTicks = 0;
-        pacingTicks = 0;
+        this.displayTicks = 0;
+        this.pacingTicks = 0;
       } else {
-        if (flags & T_TYPE) presentationTicks++;
-        if (flags & T_HOLD) pacingTicks++;
+        if (flags & T_TYPE) this.displayTicks++;
+        if (flags & T_HOLD) this.pacingTicks++;
       }
       if (flags & T_SOURCE) {
-        if (this.logBuf[i] !== this.tape[sourceFrames] && this.firstDivergence === Infinity) {
+        if (this.logBuf[i] !== this.tape[this.demoFrame] && this.firstDivergence === Infinity) {
           this.firstDivergence = i;
         }
-        sourceFrames++;
-        endHold = 0;
+        this.demoFrame++;
+        this.endHold = 0;
       } else if (!(flags & T_DISPLAY) && this.firstDivergence === Infinity) {
         this.firstDivergence = i;
       }
-      if ((flags & T_SOURCE) || !(flags & T_DISPLAY)) this.lastFolded = this.logBuf[i]!;
-      if (flags & T_END) {
-        endHold++;
+      if ((flags & T_SOURCE) || !(flags & T_DISPLAY)) {
+        this.lastFolded = this.logBuf[i]!;
+        this.sourceFrame++;
       }
+      if (flags & T_END) this.endHold++;
+      this.stage = (flags >>> 5) as PresentationStage;
+      exactReadHold = -1;
     }
-    this.demoFrame = Math.min(sourceFrames, this.tape.length);
-    this.endHold = endHold;
-    this.stage = target > 0
-      ? (this.timelineBuf[target - 1]! >>> 5) as PresentationStage
-      : 0;
-    this.displayTicks = this.modalPaced ? presentationTicks : 0;
-    if (this.stage === 3) {
-      this.readHold = Math.max(0, this.holdFrames() - pacingTicks);
-    } else {
-      this.readHold = 0;
-    }
+    this.demoFrame = Math.min(this.demoFrame, this.tape.length);
+    if (!this.modalPaced) this.displayTicks = 0;
+    this.readHold = exactReadHold >= 0
+      ? exactReadHold
+      : this.stage === 3
+        ? Math.max(0, this.holdFrames() - this.pacingTicks)
+        : 0;
+  }
+
+  private truncateKeyframes(target: number): void {
+    const firstRemoved = this.keyframes.findIndex((keyframe) => keyframe.timelineFrame > target);
+    if (firstRemoved < 0) return;
+    const removed = this.keyframes.slice(firstRemoved);
+    this.keyframes = this.keyframes.slice(0, firstRemoved);
+    for (const keyframe of removed) this.keyframeBytes -= keyframe.estimatedBytes;
   }
 
   /** Rewind `rewindFrames` (or to frame 0). */
@@ -458,10 +687,11 @@ export class AttractController {
     this.rewound = true;
     const target = Math.max(0, this.logLength - this.rewindFrames);
     this.state = this.refold(target);
-    this.logLength = target;
     this.rewindNotice = this.hz;
     this.controlNotice = 0;
     this.restoreTimeline(target);
+    this.logLength = target;
+    this.truncateKeyframes(target);
     this.carry = Math.ceil(target * this.hz / this.timelineHz) * this.timelineHz - target * this.hz;
     this.idle = 0;
   }
@@ -490,6 +720,13 @@ export class AttractController {
       idle: this.idle,
       lastFolded: this.lastFolded,
       lastLive: this.lastLive,
+      sourceFrame: this.sourceFrame,
+      pacingTicks: this.pacingTicks,
+      keyframes: this.keyframes,
+      keyframeBytes: this.keyframeBytes,
+      keyframeEvictions: this.keyframeEvictions,
+      lastRefoldFrames: this.lastRefoldFrames,
+      lastRefoldStart: this.lastRefoldStart,
       loopReset: this.loopReset,
       rewound: this.rewound,
       residentMaps: [...this.session.maps.keys()],
@@ -514,6 +751,13 @@ export class AttractController {
       this.idle = checkpoint.idle;
       this.lastFolded = checkpoint.lastFolded;
       this.lastLive = checkpoint.lastLive;
+      this.sourceFrame = checkpoint.sourceFrame;
+      this.pacingTicks = checkpoint.pacingTicks;
+      this.keyframes = checkpoint.keyframes;
+      this.keyframeBytes = checkpoint.keyframeBytes;
+      this.keyframeEvictions = checkpoint.keyframeEvictions;
+      this.lastRefoldFrames = checkpoint.lastRefoldFrames;
+      this.lastRefoldStart = checkpoint.lastRefoldStart;
       this.loopReset = checkpoint.loopReset;
       this.rewound = checkpoint.rewound;
       for (const id of checkpoint.residentMaps) acquireSessionMap(this.session, id);

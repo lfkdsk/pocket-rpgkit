@@ -417,10 +417,10 @@ simDescribe("sunstone — render budget", () => {
     // registries with the battle lifecycle and scene host, and K4 (T2-10
     // shop command/UI, T2-9 scrolling >4-option choices, T2-16
     // variable-operand arithmetic, and fix 3's construction/restore/ext/
-    // battle finite-state normalization): 424,830 B measured after merging
-    // main (4e5d880) into K4. The bound keeps a few percent of headroom so
-    // an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(434_000);
+    // battle finite-state normalization), plus the shared bounded-keyframe
+    // rewind path: 438,550 B measured after that addition. The bound keeps a
+    // narrow margin so an accidental bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(445_000);
   });
 });
 
