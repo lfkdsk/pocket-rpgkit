@@ -43,6 +43,7 @@ import {
   createWorld,
   fiberIsExternal,
   isBusy,
+  isWorldIdle,
   keyedEventsOf,
   messageHoldsPlayer,
   ownRecord,
@@ -53,11 +54,13 @@ import {
   shareInterp,
   stepInterpWithExtensionsInPlace,
   type ExtensionScope,
+  type ConditionContext,
   type InterpInput,
   type InterpState,
   type PendingBattle,
   type PendingMoveRoute,
   type SwitchState,
+  type WorldIdleBlockers,
   type WorldOptions,
 } from "./interpreter.ts";
 import {
@@ -178,6 +181,25 @@ export interface SessionState {
   ext: JsonValue;
   /** Active full-screen scene. null is the backwards-compatible default. */
   scene: SceneSlot | null;
+}
+
+function sessionWorldIdleBlockers(
+  state: SessionState,
+  menuOpen = false,
+): WorldIdleBlockers {
+  return {
+    sceneActive: state.scene !== null,
+    fadeActive: state.fade !== null,
+    playerRouteActive: state.playerRoute !== null,
+    menuOpen,
+  };
+}
+
+/** Public session-level view of the derived `worldIdle` condition. Save-menu
+ * state is host-owned rather than serialized, so a host querying while its
+ * menu is open supplies `menuOpen=true`; a normal reducer tick omits it. */
+export function isSessionWorldIdle(state: SessionState, menuOpen = false): boolean {
+  return isWorldIdle(state.interp, sessionWorldIdleBlockers(state, menuOpen));
 }
 
 export interface SessionInput extends BattleInput {}
@@ -636,10 +658,11 @@ function motionOf(
   sw: SwitchState,
   facing: Facing,
   extension: ExtensionScope,
+  conditionContext?: ConditionContext,
 ): Record<string, MotionType> {
   const out = keyedRecord<MotionType>();
   for (const ev of map.events ?? []) {
-    const active = activePage(ev, sw, map.id, facing, extension);
+    const active = activePage(ev, sw, map.id, facing, extension, conditionContext);
     if (active) out[ev.id] = active.page.moveType ?? "static";
   }
   return out;
@@ -1015,6 +1038,7 @@ function stepReferenceTick(
   const erased = s.interp.erased;
   const world = sess.worlds.get(s.mapId)!;
   const extension: ExtensionScope = { runtime: sess.extensions, ext: s.ext };
+  const conditionContext: ConditionContext = { worldIdle: isSessionWorldIdle(s) };
   const syncFacing = s.move.facing;
   const syncMotion = keyedRecord<MotionType>();
   const keyed = keyedEventsOf(world);
@@ -1030,6 +1054,7 @@ function stepReferenceTick(
     extension,
     syncMotion,
     true,
+    conditionContext,
   );
   for (const waiter of synced.abortedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
@@ -1071,7 +1096,7 @@ function stepReferenceTick(
     locked,
     s.move.facing === syncFacing
       ? syncMotion
-      : motionOf(map, s.sw, s.move.facing, extension),
+      : motionOf(map, s.sw, s.move.facing, extension, conditionContext),
   );
   for (const waiter of finishedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
@@ -1098,6 +1123,7 @@ function stepReferenceTick(
     facing: s.move.facing,
     prevFacing,
     eventCells,
+    worldIdleBlockers: sessionWorldIdleBlockers(s),
   };
   s.ext = stepInterpWithExtensionsInPlace(
     world,

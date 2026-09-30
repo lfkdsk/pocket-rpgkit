@@ -35,6 +35,7 @@ import {
   activeIndexAt,
   eventKey,
   randInt,
+  type ConditionContext,
   type ExtensionScope,
   type KeyedEvent,
   type SwitchState,
@@ -246,6 +247,7 @@ export function syncPages(
   placements: Readonly<Record<string, Placement>> = keyedRecord(),
   facing?: Facing,
   extension?: ExtensionScope,
+  conditionContext?: ConditionContext,
 ): { state: CharsState; result: SyncResult } {
   const s = cloneChars(s0);
   const events: KeyedEvent[] = [];
@@ -264,6 +266,9 @@ export function syncPages(
     placements,
     facing,
     extension,
+    undefined,
+    true,
+    conditionContext,
   );
   return { state: s, result };
 }
@@ -289,12 +294,13 @@ export function syncPagesInPlace(
   extension?: ExtensionScope,
   motion?: Record<string, MotionType>,
   detachPatrol = true,
+  conditionContext?: ConditionContext,
 ): SyncResult {
   const abortedWaiters: string[] = [];
   const liveSlot = new Array<boolean>(events.length);
 
   for (const { ev, key, index: slot } of events) {
-    const index = activeIndexAt(ev, sw, key, facing, extension);
+    const index = activeIndexAt(ev, sw, key, facing, extension, conditionContext);
     if (motion && index >= 0) motion[ev.id] = ev.pages[index]!.moveType ?? "static";
     liveSlot[slot] = index >= 0 && !isErased(key);
     if (!liveSlot[slot]) continue;

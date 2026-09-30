@@ -303,6 +303,22 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   packages a `ProjectShell` must call this in its build or test pipeline
   after writing the shell. `splitProjectMaps` self-checks its own output.
 
+## v1 amendment — 2026-09-30 (derived world-idle condition)
+
+- `{ "kind": "worldIdle", "negate"?: boolean }` is available in both an
+  event page's `condition.all` and an `if` command. It is true only in the
+  freely controllable map state: no blocking main event, input lock, modal,
+  player route, transfer/fade, pending or active scene, fatal overlay, or
+  host-owned menu. Parallel fibers and NPC routes alone do not block it.
+- Evaluation is point-in-time. Page gates sample before that reference tick's
+  fibers run; an `if` reads the live working state, including locks, modals,
+  transfers and battle requests published by an earlier fiber in the tick.
+  `negate:true` inverts the sampled result.
+- The value is derived from existing reducer/session fields. It adds no project
+  defaults or save fields, so existing v1 project documents and save payload
+  shapes do not change. The normative schema identity is refreshed as usual;
+  attract replay/rewind re-derives the value from restored state.
+
 ## v1 runtime note — 2026-09-30 (bounded rewind keyframes)
 
 - `AttractController` now retains process-local full-state keyframes every

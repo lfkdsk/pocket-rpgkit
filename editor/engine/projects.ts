@@ -795,6 +795,16 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "worldIdle" },
+            "negate": { "type": "boolean", "description": "Invert the derived world-idle result." }
+          },
+          "description": "True only while the map world is the unobstructed top-level state: no blocking event, input lock, modal, player route, transfer/fade, queued or active scene, fatal overlay, or host menu. Derived at the exact condition evaluation point and never saved."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "call", "args"],
           "properties": {
             "kind": { "const": "ext" },

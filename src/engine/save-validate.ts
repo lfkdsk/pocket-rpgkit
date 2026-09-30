@@ -97,6 +97,11 @@ function validateCondition(v: unknown, path: string): string | null {
         return fail(`${path}.dir`, "bad direction");
       }
       return null;
+    case "worldIdle":
+      if (v.negate !== undefined && typeof v.negate !== "boolean") {
+        return fail(`${path}.negate`, "boolean required");
+      }
+      return null;
     case "ext":
       if (typeof v.call !== "string" || !extensionCallNameValid(v.call)) {
         return fail(`${path}.call`, "namespaced extension call required");

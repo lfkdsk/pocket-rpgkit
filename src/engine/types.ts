@@ -106,12 +106,15 @@ export interface MoveRoute {
   skippable: boolean;
 }
 
-/** A condition inside an `if` command (compare against live switch state).
+/** A condition inside an `if` command (compare against live reducer state).
  *  The same union backs PageCondition.all: a switch clause
  *  there may demand either value, unlike the bare page-condition `switch`
  *  field which only asks for ON. `facing` reads the live player facing and
  *  is meaningful only where a facing context exists (the trigger scan, an
- *  `if` folded on the map); elsewhere it evaluates false. */
+ *  `if` folded on the map); elsewhere it evaluates false. `worldIdle` is
+ *  likewise a runtime-only derived value: it is never stored in a project
+ *  save, and low-level callers without a world-activity context cannot
+ *  prove it true. */
 export type Condition =
   | { kind: "switch"; id: string; value?: boolean }
   | { kind: "variable"; id: string; op: ">=" | "<=" | "==" | "!="; value: number }
@@ -119,6 +122,9 @@ export type Condition =
   | { kind: "item"; id: string; count: number }
   | { kind: "gold"; amount: number }
   | { kind: "facing"; dir: Dir }
+  /** True only while the map world is the unobstructed top-level state.
+   *  `negate` asks for any blocking world state instead. */
+  | { kind: "worldIdle"; negate?: boolean }
   /** Game-owned pure condition handler, registered on createSession(). */
   | { kind: "ext"; call: string; args: JsonValue };
 

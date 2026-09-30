@@ -338,7 +338,7 @@ earlier resident map within the same host frame.
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
-| `if` | condition over switch/variable/selfSwitch/item/gold/facing or a registered `ext` predicate, with `else` |
+| `if` | condition over switch/variable/selfSwitch/item/gold/facing, derived `worldIdle`, or a registered `ext` predicate, with `else` |
 | `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }` |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
 | `wait` | virtual-time pause (seconds, compiled against `simulationHz`) |
@@ -374,15 +374,24 @@ occupy a rectangle (`w`/`h`, default 1×1): touch fires on entry into any
 cell and action fires when the faced or occupied cell is inside it. A page
 condition may use the flat fields or `all: Condition[]` (AND); a
 `{kind:"facing", dir}` clause gates by the player's facing and makes a
-touch page re-fire on a turn in place. Switch/variable ids prefixed
-`local.` reset on every map entry; a page `dir` sets the character's
-initial facing. Conditions compile to forward jumps; no command can
-express a loop, and the runtime backstops a hand-crafted cyclic program
-with a fatal interpreter error instead of hanging the frame loop.
+touch page re-fire on a turn in place. `{kind:"worldIdle", negate?}` is
+true only at a freely controllable map safe point: there is no blocking
+event, input lock, modal, player route, pending transfer/battle, fade, active
+scene, fatal overlay, or host-owned menu. It is derived when the condition is
+read and adds no save field; `negate:true` inverts it. Parallel fibers and
+attract/demo input ownership alone do not make the world busy.
+Switch/variable ids prefixed `local.` reset on every map entry; a page `dir`
+sets the character's initial facing. Conditions compile to forward jumps; no
+command can express a loop, and the runtime backstops a hand-crafted cyclic
+program with a fatal interpreter error instead of hanging the frame loop.
 Within one reference tick, parallel fibers run in ascending event-key order
 before the blocking main fiber. Main can therefore observe an earlier
 parallel write, while a parallel cannot observe a main write made later in
-that tick.
+that tick. `worldIdle` follows the same point-in-time rule: page gates are
+sampled during trigger scanning, while an `if` reads the live state at its
+instruction. An unlock performed after the scan can therefore enable a page
+on the next reference tick, and a later condition branch in the same tick
+already sees the unlock.
 
 ### Game extensions and Battle Processing
 

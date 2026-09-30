@@ -153,12 +153,20 @@ function keyedValue<T>(record: Readonly<Record<string, T>>, key: string): T | un
 
 // --- conditions and page selection ------------------------------------------
 
+/** Runtime facts supplied alongside the saveable switch bank when a
+ * condition is evaluated. They are derived from the current reducer state
+ * and deliberately never serialized. */
+export interface ConditionContext {
+  worldIdle: boolean;
+}
+
 export function evalCondition(
   c: Condition,
   s: SwitchState,
   eventKey: string,
   facing?: Facing,
   extension?: ExtensionScope,
+  context?: ConditionContext,
 ): boolean {
   switch (c.kind) {
     case "switch":
@@ -184,6 +192,13 @@ export function evalCondition(
       // A facing condition needs a live player direction. Callers that do
       // not have one cannot prove the condition and therefore fail it.
       return facing !== undefined && facing === FACING_OF_DIR[c.dir];
+    case "worldIdle": {
+      // Like facing, a low-level caller without the live runtime context
+      // cannot prove this derived condition. Negation applies after that
+      // conservative false result.
+      const idle = context?.worldIdle ?? false;
+      return c.negate === true ? !idle : idle;
+    }
     case "ext": {
       // Map acquisition validates registration. Missing handlers and
       // non-boolean results are game-programming contract violations, not
@@ -224,9 +239,10 @@ function allClausesHold(
   eventKey: string,
   facing?: Facing,
   extension?: ExtensionScope,
+  context?: ConditionContext,
 ): boolean {
   for (const c of clauses) {
-    if (!evalCondition(c, s, eventKey, facing, extension)) return false;
+    if (!evalCondition(c, s, eventKey, facing, extension, context)) return false;
   }
   return true;
 }
@@ -246,6 +262,7 @@ export function conditionHolds(
   eventKey: string,
   facing?: Facing,
   extension?: ExtensionScope,
+  context?: ConditionContext,
 ): boolean {
   if (!c) return true;
   if (c.switch !== undefined && !(keyedValue(s.switches, c.switch) ?? false)) return false;
@@ -260,7 +277,7 @@ export function conditionHolds(
     if (op === "!=" && !(v !== value)) return false;
   }
   if (c.item !== undefined && (keyedValue(s.items, c.item) ?? 0) < 1) return false;
-  if (c.all && !allClausesHold(c.all, s, eventKey, facing, extension)) return false;
+  if (c.all && !allClausesHold(c.all, s, eventKey, facing, extension, context)) return false;
   return true;
 }
 
@@ -270,8 +287,9 @@ export function pageConditionHolds(
   eventKey: string,
   facing?: Facing,
   extension?: ExtensionScope,
+  context?: ConditionContext,
 ): boolean {
-  return conditionHolds(p.condition, s, eventKey, facing, extension);
+  return conditionHolds(p.condition, s, eventKey, facing, extension, context);
 }
 
 /** Highest-index page whose condition holds (R2 §2); null when none do.
@@ -282,8 +300,9 @@ export function activePage(
   mapId: string,
   facing?: Facing,
   extension?: ExtensionScope,
+  context?: ConditionContext,
 ): { page: Page; index: number } | null {
-  const index = activeIndexAt(ev, s, eventKey(mapId, ev.id), facing, extension);
+  const index = activeIndexAt(ev, s, eventKey(mapId, ev.id), facing, extension, context);
   return index < 0 ? null : { page: ev.pages[index]!, index };
 }
 
@@ -295,9 +314,10 @@ export function activeIndexAt(
   key: string,
   facing?: Facing,
   extension?: ExtensionScope,
+  context?: ConditionContext,
 ): number {
   for (let i = ev.pages.length - 1; i >= 0; i--) {
-    if (pageConditionHolds(ev.pages[i]!, s, key, facing, extension)) return i;
+    if (pageConditionHolds(ev.pages[i]!, s, key, facing, extension, context)) return i;
   }
   return -1;
 }
@@ -515,6 +535,10 @@ export interface InterpInput {
   /** Live cells of map characters this frame (P1④ NPC motion); event id ->
    *  cell. Events absent from the record stand on their authored x/y. */
   eventCells?: Record<string, Cell>;
+  /** Session/host state that lives outside InterpState but participates in
+   *  the derived worldIdle condition. Low-level interpreter users may omit
+   *  it when they have no scene, fade, player route, or menu. */
+  worldIdleBlockers?: WorldIdleBlockers;
 }
 
 export interface TextModal {
@@ -841,6 +865,46 @@ export function createInterpState(sw: SwitchState = createSwitchState()): Interp
   };
 }
 
+/** Non-interpreter reasons the player is not in the freely controllable map
+ * state. These facts belong to session orchestration or a host-owned menu,
+ * so they are sampled for condition evaluation rather than added to saves. */
+export interface WorldIdleBlockers {
+  sceneActive?: boolean;
+  fadeActive?: boolean;
+  playerRouteActive?: boolean;
+  menuOpen?: boolean;
+}
+
+/** Pure, point-in-time world-idle predicate. Parallel fibers do not make the
+ * world busy by themselves: only the blocking main fiber does. Pending
+ * player routes/transfers/battles count immediately, so a later fiber in the
+ * same tick observes work an earlier fiber just published. */
+export function isWorldIdle(
+  s: InterpState,
+  blockers: Readonly<WorldIdleBlockers> = {},
+): boolean {
+  return (
+    s.main === null &&
+    s.inputLocked === false &&
+    s.modal === null &&
+    s.error === undefined &&
+    s.pendingTransfer === null &&
+    !s.pendingMoveRoutes.some((request) => request.target === "player") &&
+    s.pendingBattles.length === 0 &&
+    blockers.sceneActive !== true &&
+    blockers.fadeActive !== true &&
+    blockers.playerRouteActive !== true &&
+    blockers.menuOpen !== true
+  );
+}
+
+function liveConditionContext(
+  s: InterpState,
+  blockers: Readonly<WorldIdleBlockers> | undefined,
+): ConditionContext {
+  return { worldIdle: isWorldIdle(s, blockers) };
+}
+
 export function createWorld(
   map: MapDef,
   common: CommonEvent[] = [],
@@ -1150,11 +1214,14 @@ function cancelStaleParallels(
   w: World,
   facing: Facing,
   extension: ExtensionScope,
+  blockers?: Readonly<WorldIdleBlockers>,
 ): void {
   for (const key of Object.keys(s.parallels)) {
     const f = s.parallels[key]!;
     const ev = worldEventById(w, key.slice(w.map.id.length + 1));
-    const active = ev && !s.erased[key] ? activePage(ev, s.sw, w.map.id, facing, extension) : null;
+    const active = ev && !s.erased[key]
+      ? activePage(ev, s.sw, w.map.id, facing, extension, liveConditionContext(s, blockers))
+      : null;
     // Same page still active: keep running. A page change (index differs)
     // cancels; scanTriggers restarts a fiber for the new page on this step.
     if (active && active.index === f.pageIndex) continue;
@@ -1194,7 +1261,14 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
     if (s.erased[key]) continue;
     // Page selection sees the live player facing, so a `facing` clause
     // gates the page by direction.
-    const active = activePage(ev, s.sw, w.map.id, input.facing, extension);
+    const active = activePage(
+      ev,
+      s.sw,
+      w.map.id,
+      input.facing,
+      extension,
+      liveConditionContext(s, input.worldIdleBlockers),
+    );
     if (!active) continue;
     const { page, index } = active;
     // A page with no commands has no fiber: an opened gate's touch page and
@@ -1471,16 +1545,26 @@ function shopRows(
   stage: "buy" | "sell",
   ins: Extract<Instr, { op: "shop" }>,
   w: World,
-  sw: SwitchState,
+  state: InterpState,
   eventKey: string,
+  extension: ExtensionScope,
+  blockers?: Readonly<WorldIdleBlockers>,
 ): ShopRow[] {
+  const sw = state.sw;
   if (stage === "buy") {
     const maxPerItem = w.inventory?.maxPerItem ?? SHOP_ITEM_CAP;
     const maxKinds = w.inventory?.maxKinds;
     const heldKinds = maxKinds !== undefined ? kindsHeld(sw.items) : 0;
     const rows: ShopRow[] = [];
     for (const g of ins.goods) {
-      if (g.condition && !conditionHolds(g.condition, sw, eventKey)) continue;
+      if (g.condition && !conditionHolds(
+        g.condition,
+        sw,
+        eventKey,
+        undefined,
+        extension,
+        liveConditionContext(state, blockers),
+      )) continue;
       const price = resolveGoodsPrice(g, w.items);
       const owned = keyedValue(sw.items, g.item) ?? 0;
       const stock = goodsStock(g, ins.id, sw);
@@ -1759,7 +1843,7 @@ function runFiber(
       const prev = s.modal && s.modal.kind === "shop" ? s.modal : null;
       let stage: "buy" | "sell" = prev?.stage ?? "buy";
       let index = prev?.index ?? 0;
-      let rows = shopRows(stage, ins, w, s.sw, f.key);
+      let rows = shopRows(stage, ins, w, s, f.key, extension, input.worldIdleBlockers);
       if (rows.length > 0) {
         if (input.upEdge) index = (index + rows.length - 1) % rows.length;
         if (input.downEdge) index = (index + 1) % rows.length;
@@ -1813,7 +1897,7 @@ function runFiber(
         // fall through into the run loop below: the shop closes and the
         // fiber continues past it on the SAME frame (text/choices parity).
       } else {
-        rows = shopRows(stage, ins, w, s.sw, f.key);
+        rows = shopRows(stage, ins, w, s, f.key, extension, input.worldIdleBlockers);
         index = rows.length > 0 ? Math.min(index, rows.length - 1) : 0;
         s.modal = { kind: "shop", fiber: f.key, gold: s.sw.gold, sell: ins.sell, stage, index, rows };
         return;
@@ -1843,7 +1927,14 @@ function runFiber(
     const ins = top.prog[top.pc]!;
     switch (ins.op) {
       case "if":
-        top.pc = evalCondition(ins.cond, s.sw, f.key, input.facing, extension) ? top.pc + 1 : ins.onFalse;
+        top.pc = evalCondition(
+          ins.cond,
+          s.sw,
+          f.key,
+          input.facing,
+          extension,
+          liveConditionContext(s, input.worldIdleBlockers),
+        ) ? top.pc + 1 : ins.onFalse;
         break;
       case "jmp":
         top.pc = ins.to;
@@ -1923,7 +2014,7 @@ function runFiber(
         // Same single-slot rule as text/choices.
         if (s.modal) return;
         f.mode = "shop";
-        const rows = shopRows("buy", ins, w, s.sw, f.key);
+        const rows = shopRows("buy", ins, w, s, f.key, extension, input.worldIdleBlockers);
         s.modal = { kind: "shop", fiber: f.key, gold: s.sw.gold, sell: ins.sell, stage: "buy", index: 0, rows };
         return;
       }
@@ -2046,7 +2137,7 @@ export function stepInterpWithExtensionsInPlace(
   s.pendingPlacements = [];
   s.abortedRoutes = [];
 
-  cancelStaleParallels(s, w, input.facing, extension);
+  cancelStaleParallels(s, w, input.facing, extension, input.worldIdleBlockers);
   scanTriggers(s, w, input, extension);
   const budget: StepBudget = { remaining: RUNAWAY_STEP_LIMIT };
   const queuedBattleCount = s.pendingBattles.length;

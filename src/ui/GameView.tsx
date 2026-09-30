@@ -42,6 +42,7 @@ import { centerOffset } from "../engine/viewport.ts";
 import {
   createSession,
   fadeOpacity,
+  isSessionWorldIdle,
   prepareSessionMap,
   startSession,
   stepSession,
@@ -123,7 +124,7 @@ function npcFrame(
   const active = activePage(event, state.sw, state.mapId, state.move.facing, {
     runtime: extensions,
     ext: state.ext,
-  });
+  }, { worldIdle: isSessionWorldIdle(state) });
   const name = active?.page.sprite;
   const art: NpcArt | "" = name && spritePaints(sprites[name]) ? (npcSrc[name] ?? "") : "";
   const ch = state.chars.chars[event.id];

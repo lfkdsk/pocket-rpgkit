@@ -105,6 +105,15 @@ Conventions:
   up" does not open when crossed sideways. Character synchronization,
   parallel-fiber cancellation, trigger arbitration, and the UI all select
   pages against the same live facing.
+- **World-idle conditions:** `{kind:"worldIdle", negate?}` is shared by
+  `condition.all` and `if`. It is true only when the current map has no
+  blocking main fiber, `inputLocked`, modal, fatal error, player route,
+  pending transfer/battle, fade, active scene, or host-owned menu. A
+  PARALLEL fiber or NPC route alone does not remove player control and does
+  not block it. The value is derived at each read and is absent from saves.
+  Trigger/page selection samples it before fibers run; an `if` instruction
+  recomputes it from the live working state, so later fibers see locks,
+  modals and external requests published earlier in that same tick.
 - **Per-visit locals:** a switch or variable id prefixed `local.`
   is reset on every map entry; it never survives a transfer.
 - **Place and initial facing:** the `place` command relocates
@@ -303,6 +312,17 @@ back to the clean frame-zero replay. `keyframeStats()`,
 serialized-payload estimate and last suffix length for tests/devtools. Actual
 JS object overhead is host-specific. These snapshots are transient controller
 state and are not written to save envelopes.
+
+`worldIdle` treats any non-null scene as busy even when
+`scene.worldContinues:true` lets map fibers keep folding. Transfer fades and
+the session's player route are likewise supplied to condition evaluation as
+derived blockers. The save menu remains host-owned: while it is displayed the
+host pauses the session fold, and `isSessionWorldIdle(state, true)` reports the
+same state as busy without adding menu data to `SessionState`. Attract mode is
+an input/presentation controller rather than another game scene, so the phase
+itself is not a blocker; source frames evaluate ordinary session state, while
+display-only read/end holds do not fold conditions at all. Rewind restores a
+snapshot and re-derives the value, preserving byte-identical replay.
 
 An old v1 snapshot with `pendingBattle: null` hydrates to an empty queue; a
 populated legacy slot is explicitly rejected because it represents queued

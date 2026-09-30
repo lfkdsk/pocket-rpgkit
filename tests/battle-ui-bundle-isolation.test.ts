@@ -43,7 +43,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Bounded rewind keyframes add 6,488 bytes of shared AttractController code;
 // the distinctive-identifier assertion still proves the opt-in battle UI is
 // absent.
-const EXPECTED_BYTES = 438_550;
+// The worldIdle condition adds 1,820 bytes of shared session/interpreter code;
+// it remains independent of the opt-in battle UI identifiers checked below.
+const EXPECTED_BYTES = 440_370;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {
