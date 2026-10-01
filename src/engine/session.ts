@@ -1449,11 +1449,15 @@ function advanceBattleScene(
   const rules = sess.battle;
   if (!scene || scene.kind !== "battle" || !rules) return;
   if (ticks > 0) {
-    const stepped = rules.step(deepClone(scene.state), input, ticks);
+    // stepSession already cloned the scene for this frame, so the rules own
+    // an isolated working value even if an implementation mutates its input
+    // despite the pure-reducer contract. Cloning again before and after the
+    // call only traversed large battle payloads without adding isolation.
+    const stepped = rules.step(scene.state, input, ticks);
     assertJsonValue(stepped, "battle step state");
-    scene.state = deepClone(stepped);
+    scene.state = stepped;
   }
-  const completion = rules.done(deepClone(scene.state));
+  const completion = rules.done(scene.state);
   if (completion === null) return;
   if (typeof completion !== "object" || Array.isArray(completion)) {
     throw new Error("battle done: BattleCompletion object or null required");

@@ -1105,7 +1105,10 @@ export function GameView(props: GameViewProps) {
       }
       const shownModal = attract ? attract.presentedModal() : state.interp.modal;
       setModal((m) => (modalChanged(m, shownModal) ? deepClone(shownModal) : m));
-      const nextScene = state.scene ? cloneScene(state.scene) : null;
+      // stepSession publishes a fresh scene value for every frame. The
+      // injected renderers are read-only, so cloning the complete scene state
+      // again here only adds a second presentation-boundary traversal.
+      const nextScene = state.scene;
       if (nextScene?.kind === "battle") {
         setBattleViewState(nextScene.state);
         setBattleMounted(true);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AttractController } from "../src/engine/attract.ts";
+import type { BattleRules } from "../src/engine/battle.ts";
 import { canonicalJson, createSessionSnapshot, fnv1aText } from "../src/engine/save.ts";
 import {
   createSession,
@@ -145,6 +146,29 @@ describe("KB2 battle processing", () => {
     const second = step(session, entered, CIRCLE);
     expect(second).toEqual(first);
     expect(entered).toEqual(retained);
+  });
+
+  test("the frame-owned battle copy isolates retained state from mutating rules", () => {
+    const p = project({ enemyHp: 99 });
+    const mutatingRules: BattleRules = {
+      ...toyBattleRules,
+      step(rawState) {
+        const owned = rawState as unknown as { enemyHp: number };
+        owned.enemyHp = 0;
+        return rawState;
+      },
+      done() {
+        return null;
+      },
+    };
+    const session = createSession(p, 60, { battle: mutatingRules });
+    const entered = step(session, startSession(p, session));
+    const retained = structuredClone(entered);
+
+    const advanced = step(session, entered);
+
+    expect(entered).toEqual(retained);
+    expect((advanced.scene?.state as unknown as { enemyHp: number }).enemyHp).toBe(0);
   });
 
   test("a project with Battle Processing requires registered rules; start null resumes immediately", () => {
