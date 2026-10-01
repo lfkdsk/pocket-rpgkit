@@ -6,6 +6,7 @@
 
 import type {
   Command,
+  Dir,
   GameEvent,
   MapDef,
   Page,
@@ -41,9 +42,16 @@ import {
   canPaint,
   createEditorState,
   createEventAt,
+  deleteMap,
   deletePage,
   deleteSelectedEvent,
+  duplicateMap,
+  edgePaintCell,
+  edgeStrokeEnd,
+  edgeStrokeStart,
   exportProject,
+  mapReferences,
+  newMap,
   paintCell,
   renameMap,
   resizeMap,
@@ -61,8 +69,10 @@ import {
   updateSelectedEvent,
   updateSelectedPage,
   movePage,
+  type EdgeBrush,
   type EditorState,
   type Layer,
+  type NewMapOptions,
 } from "../engine/model.ts";
 import {
   loadProject,
@@ -85,10 +95,15 @@ import {
 const COMMAND_SET: ReadonlySet<string> = new Set(EDIT_COMMANDS);
 const WRITE_COMMANDS: ReadonlySet<EditCommandName> = new Set([
   "update-map",
+  "add-map",
+  "duplicate-map",
+  "delete-map",
   "paint-tile",
   "paint-rect",
   "fill-region",
   "paint-passage",
+  "paint-cells",
+  "paint-edges",
   "add-event",
   "update-event",
   "delete-event",
@@ -108,10 +123,15 @@ const ARGUMENT_KEYS: Record<EditCommandName, readonly string[]> = {
   "list-pages": ["map", "event"],
   "list-commands": ["map", "event", "page"],
   "update-map": ["map", "changes"],
+  "add-map": ["map", "name", "width", "height", "sheets", "fill", "after"],
+  "duplicate-map": ["map"],
+  "delete-map": ["map"],
   "paint-tile": ["map", "layer", "x", "y", "tile"],
   "paint-rect": ["map", "layer", "x", "y", "width", "height", "tile"],
   "fill-region": ["map", "layer", "x", "y", "tile"],
   "paint-passage": ["map", "x", "y", "value"],
+  "paint-cells": ["map", "layer", "cells", "value"],
+  "paint-edges": ["map", "cells", "brush"],
   "add-event": ["map", "event"],
   "update-event": ["map", "event", "changes"],
   "delete-event": ["map", "event"],
@@ -806,16 +826,20 @@ export function validateEditedProject(project: Project): void {
   }
 }
 
-function selectTileBrush(state: EditorState, tile: unknown): { state: EditorState; tile: TileId } {
+function selectTileBrush(
+  state: EditorState,
+  tile: unknown,
+  key = "tile",
+): { state: EditorState; tile: TileId } {
   if (tile !== null && typeof tile !== "string") {
-    throw new EditApiError("INVALID_ARGUMENT", "tile must be a tile id such as town.43, or null to erase", "$.tile", "tile id or null", tile);
+    throw new EditApiError("INVALID_ARGUMENT", `${key} must be a tile id such as town.43, or null to erase`, `$.${key}`, "tile id or null", tile);
   }
   if (tile !== null && !canPaint(state, tile)) {
     const map = state.project.maps[state.mapIndex]!;
     throw new EditApiError(
       "INVALID_TILE",
       `tile ${JSON.stringify(tile)} is not paintable on map ${map.id}; it must name a declared sheet and an in-range cell`,
-      "$.tile",
+      `$.${key}`,
       map.sheets ?? [],
       tile,
     );
@@ -829,15 +853,144 @@ function paintIndices(
   layer: Layer,
   tile: unknown,
   indices: readonly number[],
+  key = "tile",
 ): Project {
   let state = editorAt(project, mapIndex);
   state = selectLayer(state, layer);
-  const brush = selectTileBrush(state, tile);
+  const brush = selectTileBrush(state, tile, key);
   state = brush.state;
   state = strokeStart(state, brush.tile === null);
   for (const index of indices) state = paintCell(state, index);
   state = strokeEnd(state);
   return exportProject(state);
+}
+
+function passageValueArg(args: Record<string, unknown>): "pass" | "block" | null {
+  if (!own(args, "value")) {
+    throw new EditApiError("INVALID_ARGUMENT", "value is required; pass null explicitly to clear", "$.value", "pass, block, or null");
+  }
+  const value = args.value;
+  if (value !== null && value !== "pass" && value !== "block") {
+    throw new EditApiError("INVALID_ARGUMENT", "value must be pass, block, or null", "$.value", ["pass", "block", null], value);
+  }
+  return value;
+}
+
+/** One passage stroke: a null value is the eraser (clears overrides). */
+function paintPassageIndices(
+  project: Project,
+  mapIndex: number,
+  value: "pass" | "block" | null,
+  indices: readonly number[],
+): Project {
+  let state = editorAt(project, mapIndex);
+  state = selectLayer(state, "passage");
+  if (value !== null) state = selectPassageBrush(state, value);
+  state = strokeStart(state, value === null);
+  for (const index of indices) state = paintCell(state, index);
+  state = strokeEnd(state);
+  return exportProject(state);
+}
+
+interface CellList {
+  /** Row-major indexes in request order; duplicates are kept (harmless). */
+  indices: number[];
+  /** Distinct cells in first-seen order, for addresses and counts. */
+  distinct: { x: number; y: number }[];
+}
+
+/** Parse a free-form `[[x, y], ...]` brush path. Every cell must be in
+ * bounds; the list is capped at one entry per map cell. */
+function cellsArg(args: Record<string, unknown>, map: MapDef): CellList {
+  const value = args.cells;
+  const limit = map.width * map.height;
+  if (!Array.isArray(value) || value.length === 0 || value.length > limit) {
+    throw new EditApiError(
+      "INVALID_ARGUMENT",
+      `cells must be a non-empty array of at most ${limit} [x, y] pairs`,
+      "$.cells",
+      `1..${limit} [x, y] integer pairs`,
+      Array.isArray(value) ? value.length : value,
+    );
+  }
+  const indices: number[] = [];
+  const distinct: { x: number; y: number }[] = [];
+  const seen = new Uint8Array(limit);
+  value.forEach((cell, at) => {
+    const path = `$.cells[${at}]`;
+    if (!Array.isArray(cell) || cell.length !== 2 || !Number.isInteger(cell[0]) || !Number.isInteger(cell[1])) {
+      throw new EditApiError("INVALID_ARGUMENT", "each cell must be an [x, y] integer pair", path, "[x, y]", cell);
+    }
+    const [x, y] = cell as [number, number];
+    if (x < 0 || y < 0 || x >= map.width || y >= map.height) {
+      throw new EditApiError(
+        "OUT_OF_BOUNDS",
+        `cell (${x},${y}) is outside map ${map.id} ${map.width}x${map.height}`,
+        path,
+        { x: `0..${map.width - 1}`, y: `0..${map.height - 1}` },
+        cell,
+      );
+    }
+    const index = y * map.width + x;
+    indices.push(index);
+    if (!seen[index]) {
+      seen[index] = 1;
+      distinct.push({ x, y });
+    }
+  });
+  return { indices, distinct };
+}
+
+const EDGE_DIRS: readonly Dir[] = ["up", "down", "left", "right"];
+
+function edgeBrushArg(args: Record<string, unknown>): EdgeBrush {
+  const brush = objectArg(args, "brush");
+  const kinds = ["enter", "exit", "clear"] as const;
+  const kind = brush.kind as (typeof kinds)[number];
+  if (!kinds.includes(kind)) {
+    throw new EditApiError("INVALID_ARGUMENT", `brush.kind must be one of ${kinds.join(", ")}`, "$.brush.kind", kinds, brush.kind);
+  }
+  const allowed = kind === "clear" ? ["kind"] : ["kind", "dir"];
+  const unknown = Object.keys(brush).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) {
+    throw new EditApiError("INVALID_ARGUMENT", `unsupported ${kind} brush field(s): ${unknown.join(", ")}`, "$.brush", allowed, unknown);
+  }
+  if (kind === "clear") return { kind };
+  if (typeof brush.dir !== "string" || !EDGE_DIRS.includes(brush.dir as Dir)) {
+    throw new EditApiError("INVALID_ARGUMENT", `brush.dir must be one of ${EDGE_DIRS.join(", ")}`, "$.brush.dir", EDGE_DIRS, brush.dir);
+  }
+  return { kind, dir: brush.dir as Dir };
+}
+
+function sheetAddress(sheetId: string, cell: string): string {
+  return `sheet:${sheetId}/cell:${cell}`;
+}
+
+/** Sheet dirEdges entries whose value differs between two projects. */
+function changedEdgeEntries(
+  before: Project,
+  after: Project,
+): { sheet: string; cell: string; edges: JsonValue }[] {
+  const changed: { sheet: string; cell: string; edges: JsonValue }[] = [];
+  after.sheets.forEach((sheet, index) => {
+    const old = before.sheets[index]?.dirEdges ?? {};
+    const next = sheet.dirEdges ?? {};
+    const cells = [...new Set([...Object.keys(old), ...Object.keys(next)])]
+      .sort((a, b) => Number(a) - Number(b));
+    for (const cell of cells) {
+      if (semanticEqual(old[cell], next[cell])) continue;
+      changed.push({ sheet: sheet.id, cell, edges: cloneJson((next[cell] ?? null) as JsonValue) });
+    }
+  });
+  return changed;
+}
+
+/** Map a newMap refusal to the argument that caused it. */
+function newMapErrorPath(error: string): string {
+  if (error.startsWith("fill")) return "$.fill";
+  if (error.includes("sheet")) return "$.sheets";
+  if (error.startsWith("name")) return "$.name";
+  return "$";
 }
 
 function pageArgs(project: Project, args: Record<string, unknown>): {
@@ -937,28 +1090,137 @@ function mutate(command: EditCommandName, project: Project, args: Record<string,
     };
   }
 
+  if (command === "add-map") {
+    const options: NewMapOptions = {};
+    if (args.map !== undefined) options.id = stringArg(args, "map");
+    if (args.name !== undefined) {
+      if (typeof args.name !== "string") {
+        throw new EditApiError("INVALID_ARGUMENT", "name must be a string", "$.name", "string", args.name);
+      }
+      options.name = args.name;
+    }
+    const width = integerArg(args, "width", { min: 1, max: 256, optional: true });
+    const height = integerArg(args, "height", { min: 1, max: 256, optional: true });
+    if (width !== undefined) options.width = width;
+    if (height !== undefined) options.height = height;
+    if (args.sheets !== undefined) {
+      if (!Array.isArray(args.sheets) || args.sheets.length === 0 ||
+        args.sheets.some((id) => typeof id !== "string" || id.length === 0)) {
+        throw new EditApiError("INVALID_ARGUMENT", "sheets must be a non-empty array of non-empty strings", "$.sheets", "non-empty string array", args.sheets);
+      }
+      options.sheets = args.sheets as string[];
+    }
+    if (args.fill !== undefined) {
+      if (args.fill !== null && typeof args.fill !== "string") {
+        throw new EditApiError("INVALID_ARGUMENT", "fill must be a tile id such as town.0, or null for void", "$.fill", "tile id or null", args.fill);
+      }
+      options.fill = args.fill;
+    }
+    // newMap inserts after the active map, so select the anchor first.
+    const after = args.after === undefined
+      ? project.maps.length - 1
+      : findMap(project, stringArg(args, "after")).index;
+    const result = newMap(editorAt(project, after), options);
+    if (!result.ok) modelFailure(result.error, newMapErrorPath(result.error));
+    const created = result.state.project.maps[result.state.mapIndex]!;
+    return {
+      project: exportProject(result.state),
+      addresses: [mapAddress(created.id)],
+      result: cloneJson(created),
+    };
+  }
+
+  if (command === "duplicate-map") {
+    const mapId = stringArg(args, "map");
+    const { index: mapIndex } = findMap(project, mapId);
+    const result = duplicateMap(editorAt(project, mapIndex));
+    if (!result.ok) modelFailure(result.error, "$.map");
+    const copy = result.state.project.maps[result.state.mapIndex]!;
+    return {
+      project: exportProject(result.state),
+      addresses: [mapAddress(copy.id)],
+      result: cloneJson(copy),
+    };
+  }
+
+  if (command === "delete-map") {
+    const mapId = stringArg(args, "map");
+    const { map, index: mapIndex } = findMap(project, mapId);
+    // Literal transfers into the deleted map are left in place (the visual
+    // editor confirms the same way); report them so callers can retarget.
+    const references = mapReferences(project, mapId);
+    const result = deleteMap(editorAt(project, mapIndex), true);
+    if (!result.ok) {
+      throw new EditApiError(
+        "MAP_DELETE_REFUSED",
+        `map ${mapId} cannot be deleted: ${result.error}`,
+        "$.map",
+        "a map other than the start map, in a project with two or more maps",
+        mapId,
+        { references: result.references },
+      );
+    }
+    return {
+      project: exportProject(result.state),
+      addresses: [mapAddress(mapId)],
+      result: { deleted: cloneJson(map), references },
+    };
+  }
+
   if (command === "paint-passage") {
     const mapId = stringArg(args, "map");
     const { map, index: mapIndex } = findMap(project, mapId);
     const x = integerArg(args, "x", { min: 0, max: map.width - 1 })!;
     const y = integerArg(args, "y", { min: 0, max: map.height - 1 })!;
-    if (!own(args, "value")) {
-      throw new EditApiError("INVALID_ARGUMENT", "value is required; pass null explicitly to clear", "$.value", "pass, block, or null");
-    }
-    const value = args.value;
-    if (value !== null && value !== "pass" && value !== "block") {
-      throw new EditApiError("INVALID_ARGUMENT", "value must be pass, block, or null", "$.value", ["pass", "block", null], value);
-    }
-    let state = editorAt(project, mapIndex);
-    state = selectLayer(state, "passage");
-    if (value !== null) state = selectPassageBrush(state, value);
-    state = strokeStart(state, value === null);
-    state = paintCell(state, y * map.width + x);
-    state = strokeEnd(state);
+    const value = passageValueArg(args);
     return {
-      project: exportProject(state),
+      project: paintPassageIndices(project, mapIndex, value, [y * map.width + x]),
       addresses: [tileAddress(mapId, "passage", x, y)],
       result: { map: mapId, x, y, value },
+    };
+  }
+
+  if (command === "paint-cells") {
+    const mapId = stringArg(args, "map");
+    const { map, index: mapIndex } = findMap(project, mapId);
+    const layer = enumArg(args, "layer", ["ground", "upper", "passage"] as const, "ground");
+    const cells = cellsArg(args, map);
+    let edited: Project;
+    let value: unknown;
+    if (layer === "passage") {
+      value = passageValueArg(args);
+      edited = paintPassageIndices(project, mapIndex, value as "pass" | "block" | null, cells.indices);
+    } else {
+      if (!own(args, "value")) {
+        throw new EditApiError("INVALID_ARGUMENT", "value is required; pass null explicitly to erase", "$.value", "tile id or null");
+      }
+      value = args.value;
+      edited = paintIndices(project, mapIndex, layer, value, cells.indices, "value");
+    }
+    return {
+      project: edited,
+      addresses: cells.distinct.map((cell) => tileAddress(mapId, layer, cell.x, cell.y)),
+      result: { map: mapId, layer, value, cells: cells.distinct.length },
+    };
+  }
+
+  if (command === "paint-edges") {
+    const mapId = stringArg(args, "map");
+    const { map, index: mapIndex } = findMap(project, mapId);
+    const cells = cellsArg(args, map);
+    const brush = edgeBrushArg(args);
+    // dirEdges are sheet-level: each cell edits the entry of its ground
+    // tile's sheet cell, and one stroke touches each sheet cell at most once.
+    let state = editorAt(project, mapIndex);
+    state = edgeStrokeStart(state, brush);
+    for (const index of cells.indices) state = edgePaintCell(state, index);
+    state = edgeStrokeEnd(state);
+    const edited = exportProject(state);
+    const changed = changedEdgeEntries(project, edited);
+    return {
+      project: edited,
+      addresses: changed.map((entry) => sheetAddress(entry.sheet, entry.cell)),
+      result: { map: mapId, brush, cells: cells.distinct.length, changed },
     };
   }
 

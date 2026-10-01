@@ -94,43 +94,9 @@ export function loadProjectFile(path: string): LoadedProject {
   return { project: doc as Project, schemaErrors: errors, shell };
 }
 
-/** Structural sanity that is cheaper to assert once than in every check:
- *  duplicate map ids and duplicate event ids. Returns findings (empty when
- *  the document is clean). */
-export function structuralFindings(project: Project): Finding[] {
-  const findings: Finding[] = [];
-  const mapIds = new Set<string>();
-  for (const map of project.maps) {
-    if (mapIds.has(map.id)) {
-      findings.push(
-        makeFinding(
-          "lint/map-id-duplicate",
-          "error",
-          `duplicate map id ${JSON.stringify(map.id)}`,
-          "map ids must be unique; the engine keys worlds and transfers by them",
-          { map: map.id },
-        ),
-      );
-    }
-    mapIds.add(map.id);
-    const eventIds = new Set<string>();
-    for (const event of map.events ?? []) {
-      if (eventIds.has(event.id)) {
-        findings.push(
-          makeFinding(
-            "lint/event-id-duplicate",
-            "error",
-            `event ${JSON.stringify(event.id)} appears twice on map ${JSON.stringify(map.id)}`,
-            "event ids must be unique within a map; the engine keys characters and self-switches by them",
-            { map: map.id, event: event.id },
-          ),
-        );
-      }
-      eventIds.add(event.id);
-    }
-  }
-  return findings;
-}
+// structuralFindings lives in structure.ts (no Node imports) so browser
+// front-ends can run the lint checks; re-exported for existing callers.
+export { structuralFindings } from "./structure.ts";
 
 export function isInlineProject(source: ProjectSource): source is Project {
   return !isProjectShell(source);

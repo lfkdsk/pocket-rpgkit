@@ -21,6 +21,7 @@ import {
   validateMapIndex,
 } from "../../src/engine/map-repository.ts";
 import { loadProject, semanticEqual } from "../engine/document.ts";
+import { eventCountProblem, MAX_SHARD_BYTES, shardProblem, utf8Bytes } from "./limits.ts";
 import {
   EditApiError,
   applyEditPatchValue,
@@ -42,6 +43,31 @@ import type {
 export const SHARDED_DOCUMENT_KIND = "rpgkit-edit/sharded-document-v1" as const;
 
 const NO_SHARD_COMMANDS = new Set(["open", "list-maps"]);
+
+/** Commands that cannot be expressed over a shell in patch-v1. Map
+ * add/duplicate/delete would add or remove mapIndex entries, which patch-v1
+ * keeps stable so a reverse patch can reacquire the same physical shards.
+ * Sheet dirEdges are project-global shell data, while a single-map edit
+ * only writes back its shard and index metadata, so edge strokes fail closed
+ * instead of silently dropping the sheet change. */
+const SHELL_UNSUPPORTED_COMMANDS: ReadonlyMap<string, string> = new Map([
+  ["add-map", "adding a map would add a mapIndex entry; patch-v1 keeps ProjectShell mapIndex entries stable"],
+  ["duplicate-map", "duplicating a map would add a mapIndex entry; patch-v1 keeps ProjectShell mapIndex entries stable"],
+  ["delete-map", "deleting a map would remove a mapIndex entry; patch-v1 keeps ProjectShell mapIndex entries stable"],
+  ["paint-edges", "sheet dirEdges are project-global; edit them in an inline project"],
+]);
+
+function assertShellSupported(command: string): void {
+  const reason = SHELL_UNSUPPORTED_COMMANDS.get(command);
+  if (reason === undefined) return;
+  throw new EditApiError(
+    "UNSUPPORTED_FOR_SHELL",
+    `${command} is not supported for a sharded ProjectShell: ${reason}`,
+    "$.command",
+    "an inline project with $.maps",
+    command,
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -150,6 +176,8 @@ export function shardEntriesForOperation(
   rawArgs: unknown = {},
 ): string[] {
   const { args } = validateEditOperationInput(command, rawArgs);
+  // Refuse before any shard selection: add-map has no map argument at all.
+  assertShellSupported(command);
   if (NO_SHARD_COMMANDS.has(command)) return [];
   if (command === "validate") return shell.mapIndex.map((meta) => meta.entry);
   if (command === "save") {
@@ -215,12 +243,19 @@ function validateMapSemantics(map: MapDef, fail: (message: string) => never): vo
 export function loadValidatedMapShard(shell: ProjectShell, entry: string, source: string): MapDef {
   const meta = shell.mapIndex.find((item) => item.entry === entry);
   if (!meta) shardError(entry, "entry is absent from mapIndex");
+  const path = `$.shards[${JSON.stringify(entry)}]`;
+  const tooBig = shardProblem(entry, utf8Bytes(source, MAX_SHARD_BYTES));
+  if (tooBig !== null) throw new EditApiError("TOO_LARGE", tooBig, path);
   if (sha256Text(source) !== meta.sha256) shardError(entry, `checksum mismatch for ${meta.id}`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
   } catch (error) {
     shardError(entry, `invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (isRecord(parsed) && Array.isArray(parsed.events)) {
+    const tooMany = eventCountProblem(meta.id, parsed.events.length);
+    if (tooMany !== null) throw new EditApiError("TOO_LARGE", tooMany, `${path}.events`);
   }
   try {
     validateMapDef(parsed);

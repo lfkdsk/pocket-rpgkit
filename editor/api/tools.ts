@@ -35,6 +35,45 @@ const mapChanges = {
   },
 };
 const passage = { type: ["string", "null"], enum: ["pass", "block", null], description: "Per-cell passage override, or null to clear it." };
+const cells = {
+  type: "array",
+  minItems: 1,
+  description: "Free-form brush path of [x, y] cells, painted in order as one stroke. Every cell must be in bounds; duplicates are harmless; at most width*height entries.",
+  items: {
+    type: "array",
+    minItems: 2,
+    maxItems: 2,
+    prefixItems: [
+      { type: "integer", minimum: 0, description: "Column." },
+      { type: "integer", minimum: 0, description: "Row." },
+    ],
+    items: { type: "integer", minimum: 0 },
+  },
+};
+const paintLayer = { type: "string", enum: ["ground", "upper", "passage"], default: "ground" };
+const paintValue = {
+  type: ["string", "null"],
+  description: "For ground/upper: a tile id such as town.43 declared by the map, or null to erase. For passage: pass, block, or null to clear the override.",
+};
+const edgeBrush = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "dir"],
+      properties: {
+        kind: { enum: ["enter", "exit"], description: "Toggle a one-way enter/exit edge on each touched sheet cell." },
+        dir: { enum: ["up", "down", "left", "right"] },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: { kind: { const: "clear", description: "Remove each touched sheet cell's dirEdges entry." } },
+    },
+  ],
+};
 const dryRun = { type: "boolean", default: false, description: "Compute and validate the edit, diff and reversible patch without writing the file." };
 const address = {
   type: "object",
@@ -160,10 +199,15 @@ export const EDIT_TOOLS: readonly EditToolDefinition[] = [
   tool("rpgkit_pages_list", "List event pages", "list-pages", "List pages in priority order with stable map/event/page addresses, conditions, triggers and command counts. A shell loads only the selected map's shard.", { map, event }, ["map", "event"]),
   tool("rpgkit_commands_list", "List command tree", "list-commands", "Flatten one page's recursive command tree. Each row includes a reusable structured commandAddress, stable text address, branch, summary and read-only flag. A shell loads only the selected map's shard.", { map, event, page }, ["map", "event", "page"]),
   tool("rpgkit_map_update", "Update map properties", "update-map", "Rename a map or update its display name, size and sheet list through the editor model. For a shell, ordinary changes load one shard; an id rename scans all shards to rewrite literal transfers but writes only changed shards.", { map, changes: mapChanges }, ["map", "changes"], true),
+  tool("rpgkit_map_add", "Add map", "add-map", "Create an empty map through the editor model, inserted after `after` (default: the last map). `map` is a preferred id; a taken or unsafe id is made unique, so read the created MapDef from the result. Sheets default to the anchor map's sheets; fill defaults to void. Inline projects only.", { map: { type: "string", minLength: 1, description: "Preferred new map id; the model makes it schema-safe and unique." }, name: { type: "string", maxLength: 40 }, width: { type: "integer", minimum: 1, maximum: 256, default: 20 }, height: { type: "integer", minimum: 1, maximum: 256, default: 14 }, sheets: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, fill: { type: ["string", "null"], description: "Ground tile for every cell, such as town.0, or null for void." }, after: { type: "string", minLength: 1, description: "Existing map id to insert after." } }, [], true),
+  tool("rpgkit_map_duplicate", "Duplicate map", "duplicate-map", "Copy a map (events keep their map-local ids) directly after it under a unique <id>-copy id. Inline projects only.", { map }, ["map"], true),
+  tool("rpgkit_map_delete", "Delete map", "delete-map", "Delete a map. Refuses the only map and the start map with MAP_DELETE_REFUSED. Literal transfers into the map are kept and listed in result.references. Inline projects only.", { map }, ["map"], true),
   tool("rpgkit_tile_paint", "Paint one tile", "paint-tile", "Paint or erase one ground/upper cell using the editor stroke model. The tile must belong to a sheet declared by the map.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
   tool("rpgkit_tile_rect", "Paint tile rectangle", "paint-rect", "Paint or erase a complete in-bounds rectangle as one editor stroke and one reversible patch.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 }, tile }, ["map", "x", "y", "width", "height", "tile"], true),
   tool("rpgkit_tile_fill", "Flood-fill tile region", "fill-region", "Four-way flood-fill the contiguous region containing x,y on ground or upper. null erases the region.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
   tool("rpgkit_passage_paint", "Paint passage override", "paint-passage", "Set one map cell's passage override to pass or block, or clear it with null, through the editor stroke model.", { map, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, value: passage }, ["map", "x", "y", "value"], true),
+  tool("rpgkit_cells_paint", "Paint brush stroke", "paint-cells", "Paint an arbitrary list of cells on the ground, upper or passage layer as one editor stroke and one reversible patch. Ground/upper take a tile id or null; passage takes pass, block or null.", { map, layer: paintLayer, cells, value: paintValue }, ["map", "cells", "value"], true),
+  tool("rpgkit_edges_paint", "Paint sheet edges", "paint-edges", "Toggle or clear one-way passage edges (sheet dirEdges) for the ground tiles under the given cells, as one stroke. Edges are project-global: every map using that tile is affected, void cells are skipped, and each sheet cell toggles at most once per call. Inline projects only.", { map, cells, brush: edgeBrush }, ["map", "cells", "brush"], true),
   tool("rpgkit_event_add", "Add event", "add-event", "Add a complete schema-shaped event through the editor event transaction model. IDs must be unique on the map and the footprint must fit.", { map, event: eventValue }, ["map", "event"], true),
   tool("rpgkit_event_update", "Update event fields", "update-event", "Update event id/name/x/y/w/h. Use null to remove optional name/w/h; page content is edited with page tools.", { map, event, changes: { type: "object", additionalProperties: false, properties: { id: { type: "string", pattern: "^[A-Za-z0-9_-]+$" }, name: { type: ["string", "null"] }, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, w: { type: ["integer", "null"], minimum: 1 }, h: { type: ["integer", "null"], minimum: 1 } } } }, ["map", "event", "changes"], true),
   tool("rpgkit_event_delete", "Delete event", "delete-event", "Delete one map-local event and return its old value in the structured result.", { map, event }, ["map", "event"], true),

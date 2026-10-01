@@ -18,8 +18,9 @@ bun run rpgkit-edit <command> --file <project.json> [--json '<args>'] [--dry-run
 ```
 
 The commands are `open`, `list-maps`, `list-events`, `list-pages`,
-`list-commands`, `update-map`, `paint-tile`, `paint-rect`, `fill-region`,
-`paint-passage`, `add-event`, `update-event`, `delete-event`, `add-page`,
+`list-commands`, `update-map`, `add-map`, `duplicate-map`, `delete-map`,
+`paint-tile`, `paint-rect`, `fill-region`, `paint-passage`, `paint-cells`,
+`paint-edges`, `add-event`, `update-event`, `delete-event`, `add-page`,
 `update-page`, `delete-page`, `insert-command`, `delete-command`,
 `update-command`, `validate`, `save`, `propose`, `list-proposals`,
 `show-proposal`, and `withdraw-proposal`.
@@ -81,8 +82,9 @@ codes include `READ_FAILED`, `WRITE_FAILED`, `WRITE_CONFLICT`,
 `PATH_OUTSIDE_ROOT` (file layer), `UNKNOWN_COMMAND`, `INVALID_ARGUMENT`,
 `INVALID_DOCUMENT`, `MAP_NOT_FOUND`,
 `EVENT_NOT_FOUND`, `PAGE_NOT_FOUND`, `OUT_OF_BOUNDS`, `INVALID_TILE`,
-`DUPLICATE_EVENT`, `LAST_PAGE`, `COMMAND_ADDRESS_NOT_FOUND`,
-`READ_ONLY_COMMAND`, `READ_ONLY_PROJECT_SHELL`, `INVALID_COMMAND_FIELD`, `INVALID_PATCH`,
+`DUPLICATE_EVENT`, `LAST_PAGE`, `MAP_DELETE_REFUSED`, `COMMAND_ADDRESS_NOT_FOUND`,
+`READ_ONLY_COMMAND`, `READ_ONLY_PROJECT_SHELL`, `UNSUPPORTED_FOR_SHELL`,
+`INVALID_COMMAND_FIELD`, `INVALID_PATCH`,
 `PATCH_BASE_MISMATCH`, `PATCH_CHANGE_MISMATCH`, `INVALID_JSON_VALUE`,
 `INVALID_EDIT`, and `INTERNAL_ERROR`.
 
@@ -111,7 +113,11 @@ map:<id>/layer:<ground|upper|passage>/tile:<x>,<y>
 map:<id>/event:<eid>
 map:<id>/event:<eid>/page:<i>
 map:<id>/event:<eid>/page:<i>/command:<key>
+sheet:<sheet>/cell:<n>
 ```
+
+`sheet:<sheet>/cell:<n>` names a project-global sheet `dirEdges` entry, as
+changed by `paint-edges`.
 
 Command keys address the recursive command tree:
 
@@ -136,14 +142,20 @@ For inserts, `index` may equal the addressed list's length.
 ## Sharded `ProjectShell` documents
 
 The CLI and MCP tools accept the same commands for an inline document and a
-`ProjectShell`. The shell remains the catalog and content-identity record;
-map payloads stay in the files named by `mapIndex[].entry`.
+`ProjectShell`, except the four structural commands listed below. The shell
+remains the catalog and content-identity record; map payloads stay in the
+files named by `mapIndex[].entry`.
 
 - `open` and `list-maps` read no shard files.
 - A map read or ordinary mutation loads and validates only the addressed
   shard. Its raw SHA-256, id and dimensions must match the index entry.
 - `validate` loads every shard. Renaming a map id also loads every shard so
   literal transfers in other maps can follow the rename.
+- `add-map`, `duplicate-map`, `delete-map`, and `paint-edges` fail with
+  `UNSUPPORTED_FOR_SHELL` before any shard is read. Patch-v1 keeps every
+  `mapIndex` entry stable (so a reverse patch can reacquire the same files),
+  and sheet `dirEdges` are project-global shell data. `paint-cells` loads only
+  its target shard, like `paint-tile`.
 - An effective mutation canonicalizes only byte-changed map payloads, updates
   their index metadata/checksums, refreshes `mapSchemaHash` and
   `mapManifestHash`, and writes only those shards plus the shell.
@@ -278,6 +290,52 @@ $ bun run rpgkit-edit update-map --file examples/sunstone/data/sunstone.json --d
 {"ok":true,"changed":true,"addresses":["map:village"],"patch":{…},"result":{"map":{"id":"village","name":"Bramble Hollow Village",…},"croppedEvents":[]}}
 ```
 
+### `add-map`
+
+Args (all optional): `map` (preferred new id), `name` (at most 40
+characters; default `Map <n>`), `width`, `height` (1–256; default 20×14),
+`sheets` (non-empty list of project sheet ids; default the anchor map's
+sheets), `fill` (ground tile for every cell, or `null`/omitted for void),
+`after` (existing map id to insert after; default the last map). The model
+makes the preferred id schema-safe and unique (`market`, `market-2`, …), so
+read the created id from `result`, which is the new `MapDef`.
+
+```sh
+$ bun run rpgkit-edit add-map --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"market","name":"Market","width":10,"height":8,"fill":"town.0","after":"village"}'
+{"ok":true,"changed":true,"addresses":["map:market"],"patch":{…},"result":{"id":"market","name":"Market","width":10,"height":8,"sheets":["town"],"ground":[…],"events":[]}}
+```
+
+### `duplicate-map`
+
+Args: `map` (required). Inserts a copy directly after the source with a
+unique `<id>-copy` id. Event ids are map-local and kept verbatim. `result`
+is the new `MapDef`.
+
+```sh
+$ bun run rpgkit-edit duplicate-map --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"forest"}'
+{"ok":true,"changed":true,"addresses":["map:forest-copy"],"patch":{…},"result":{"id":"forest-copy","name":"Whispering Wood",…}}
+```
+
+### `delete-map`
+
+Args: `map` (required). The only map and the start map are refused with
+`MAP_DELETE_REFUSED` (`details.references` is the model's reference list).
+Otherwise the map is deleted; literal transfer commands that targeted it are
+kept, exactly as in the visual editor's confirmed delete, and listed in
+`result.references` as `{ mapId, eventId, page, command }` rows
+(`mapId` is `(common)` for common events) so they can be retargeted.
+
+```sh
+$ bun run rpgkit-edit delete-map --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"forest"}'
+{"ok":true,"changed":true,"addresses":["map:forest"],"patch":{…},"result":{"deleted":{"id":"forest",…},"references":[{"mapId":"village","eventId":"north-gate","page":0,"command":"root#0"},{"mapId":"cave","eventId":"cave-return","page":0,"command":"root#0"}]}}
+$ bun run rpgkit-edit delete-map --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"village"}'
+{"ok":false,"command":"delete-map","error":{"code":"MAP_DELETE_REFUSED","message":"map village cannot be deleted: cannot delete the start map","path":"$.map",…}}
+```
+
 ### `paint-tile`
 
 Args: `map` (required), `x`, `y` (required, in bounds), `tile` (required: a
@@ -327,6 +385,43 @@ Args: `map`, `x`, `y` (required, in bounds), `value` (required: `"pass"`,
 $ bun run rpgkit-edit paint-passage --file examples/sunstone/data/sunstone.json --dry-run \
     --json '{"map":"village","x":0,"y":0,"value":"pass"}'
 {"ok":true,"changed":true,"addresses":["map:village/layer:passage/tile:0,0"],"result":{"map":"village","x":0,"y":0,"value":"pass"}}
+```
+
+### `paint-cells`
+
+Args: `map` (required), `cells` (required: non-empty array of in-bounds
+`[x, y]` integer pairs, at most `width * height` entries; duplicates are
+harmless), `value` (required), `layer` (`"ground"`, `"upper"`, or
+`"passage"`, default `"ground"`). For ground/upper `value` is a tile id
+declared by the map (`INVALID_TILE` otherwise) or `null` to erase; for
+passage it is `"pass"`, `"block"`, or `null` to clear. The cells are one
+free-form brush stroke: one operation, one patch. An out-of-bounds cell
+fails with `OUT_OF_BOUNDS` at `$.cells[i]`. `result.cells` and `addresses`
+count distinct cells.
+
+```sh
+$ bun run rpgkit-edit paint-cells --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"village","cells":[[2,2],[3,2],[3,3]],"value":"town.1"}'
+{"ok":true,"changed":true,"addresses":["map:village/layer:ground/tile:2,2","map:village/layer:ground/tile:3,2","map:village/layer:ground/tile:3,3"],"result":{"map":"village","layer":"ground","value":"town.1","cells":3}}
+```
+
+### `paint-edges`
+
+Args: `map`, `cells` (as for `paint-cells`), `brush` (required:
+`{ "kind": "enter" | "exit", "dir": "up" | "down" | "left" | "right" }` or
+`{ "kind": "clear" }`). One-way edges live on the sheet (`sheets[].dirEdges`),
+keyed by the tile cell, so each painted map cell edits the entry for its
+ground tile and the change applies wherever that tile is used. `enter`/`exit`
+toggle the direction; `clear` removes the entry. Void cells are skipped and
+each sheet cell is toggled at most once per call, even if several painted
+cells share a tile. `result` is `{ map, brush, cells, changed }`, where
+`changed` lists `{ sheet, cell, edges }` (the new entry, or `null` when
+removed); `addresses` are the matching `sheet:<sheet>/cell:<n>` entries.
+
+```sh
+$ bun run rpgkit-edit paint-edges --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"village","cells":[[2,2]],"brush":{"kind":"exit","dir":"left"}}'
+{"ok":true,"changed":true,"addresses":["sheet:town/cell:0"],"result":{"map":"village","brush":{"kind":"exit","dir":"left"},"cells":1,"changed":[{"sheet":"town","cell":"0","edges":{"exit":["left"]}}]}}
 ```
 
 ## Event and page editing
@@ -803,10 +898,15 @@ that root after symlink resolution. Mutating tools also take `dryRun`.
 | `rpgkit_pages_list` | `list-pages` | `file`, `map`, `event` | — |
 | `rpgkit_commands_list` | `list-commands` | `file`, `map`, `event`, `page` | — |
 | `rpgkit_map_update` | `update-map` | `file`, `map`, `changes` | `dryRun` |
+| `rpgkit_map_add` | `add-map` | `file` | `map`, `name`, `width`, `height`, `sheets`, `fill`, `after`, `dryRun` |
+| `rpgkit_map_duplicate` | `duplicate-map` | `file`, `map` | `dryRun` |
+| `rpgkit_map_delete` | `delete-map` | `file`, `map` | `dryRun` |
 | `rpgkit_tile_paint` | `paint-tile` | `file`, `map`, `x`, `y`, `tile` | `layer`, `dryRun` |
 | `rpgkit_tile_rect` | `paint-rect` | `file`, `map`, `x`, `y`, `width`, `height`, `tile` | `layer`, `dryRun` |
 | `rpgkit_tile_fill` | `fill-region` | `file`, `map`, `x`, `y`, `tile` | `layer`, `dryRun` |
 | `rpgkit_passage_paint` | `paint-passage` | `file`, `map`, `x`, `y`, `value` | `dryRun` |
+| `rpgkit_cells_paint` | `paint-cells` | `file`, `map`, `cells`, `value` | `layer`, `dryRun` |
+| `rpgkit_edges_paint` | `paint-edges` | `file`, `map`, `cells`, `brush` | `dryRun` |
 | `rpgkit_event_add` | `add-event` | `file`, `map`, `event` | `dryRun` |
 | `rpgkit_event_update` | `update-event` | `file`, `map`, `event`, `changes` | `dryRun` |
 | `rpgkit_event_delete` | `delete-event` | `file`, `map`, `event` | `dryRun` |

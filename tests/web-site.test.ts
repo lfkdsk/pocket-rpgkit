@@ -268,6 +268,42 @@ describe("pages", () => {
     expect(parse({ showcase: [{ title: "x", url: entry.url, controls: [{ button: "NOPE", action: "x" }] }] })).toThrow(/known button/);
   });
 
+  test("the studio entry is validated", () => {
+    const parse = (value: unknown) => () => parseSiteConfig(value, "web.json");
+    const studio = { title: "Studio", description: "Edit in the browser.", preview: "docs/screenshots/studio/a.png" };
+    expect(parse({ studio })()).toEqual({ studio });
+    expect(parse({ studio: { title: "Studio", description: "" } })).not.toThrow();
+    expect(parse({ studio: [] })).toThrow(/"studio" is an object/);
+    expect(parse({ studio: null })).toThrow(/"studio" is an object/);
+    expect(parse({ studio: { description: "x" } })).toThrow(/studio\.title must be non-empty text/);
+    expect(parse({ studio: { title: " ", description: "x" } })).toThrow(/studio\.title must be non-empty text/);
+    expect(parse({ studio: { title: "Studio" } })).toThrow(/studio\.description is text/);
+    expect(parse({ studio: { ...studio, preview: "../a.png" } })).toThrow(/studio\.preview must be a relative PNG path/);
+    expect(parse({ studio: { ...studio, preview: "https://example.org/a.png" } })).toThrow(/relative PNG path/);
+    expect(parse({ studio: { ...studio, preview: "a.jpg" } })).toThrow(/relative PNG path/);
+    expect(config.studio?.title).toBe("Pocket RPG Kit Studio");
+  });
+
+  test("the landing page has a Studio card and tells the two editors apart", () => {
+    const studio = { title: config.studio!.title, description: config.studio!.description };
+    const cards = games.map((game) => ({ game }));
+    const html = renderLanding({ ...site, studio }, cards);
+    expect(html).toContain('<article class="game-card studio-card" id="studio">');
+    expect(html).toContain('<h2><a href="studio/">Pocket RPG Kit Studio</a></h2>');
+    expect(html).toContain('<a class="play" href="studio/">Open Studio</a>');
+    expect(html).toContain('<span class="no-preview">Pocket RPG Kit Studio</span>');
+    expect(html).not.toContain("studio/preview.png");
+    // One sentence on each card says what sets it apart.
+    expect(html).toContain("Runs on PocketJS, so the same editor also runs on the desktop and on devices.");
+    expect(html).toContain("A full map and event editor for the browser:");
+    expect(html.indexOf('id="editor"')).toBeLessThan(html.indexOf('id="studio"'));
+    for (const url of urls(html)) expect(url.startsWith("/")).toBe(false);
+
+    const pictured = renderLanding({ ...site, studio: { ...studio, preview: [960, 600] } }, cards);
+    expect(pictured).toContain('<img src="studio/preview.png" width="960" height="600" alt="" loading="lazy">');
+    expect(renderLanding(site, cards)).not.toContain("studio-card");
+  });
+
   test("the site lists the featured game first, then the external showcase, regular games, and editor", () => {
     const html = renderLanding(
       { ...site, showcase: config.showcase },

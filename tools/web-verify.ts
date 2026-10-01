@@ -32,7 +32,9 @@
 //   sizing    every raster sample occupies whole device pixels, the backing
 //             canvas matches logical size × configured density, at 1x, 2x
 //             and 1.25x, fixed and dynamic; touch buttons appear on a phone
-//   subpath   the landing page and every game run under /pocket-rpgkit/
+//   subpath   the landing page and every game run under /pocket-rpgkit/;
+//             Studio opens its default example there (tools/studio-verify.ts
+//             drives Studio itself)
 //   preview   the preview-demo page loads a pasted document into the host
 //             over postMessage, starts at a tile, reads state, injects
 //             walking input, refuses bad JSON, and ignores a non-allowlisted
@@ -58,6 +60,7 @@ import {
   TILE,
 } from "../editor/engine/layout.ts";
 import { playtestStopRect } from "../editor/engine/playtest-layout.ts";
+import { Cdp, launchChrome as launchChromeWith } from "./lib/cdp.ts";
 import { PREVIEW_LIMITS, previewMessageBytes } from "./preview/protocol.ts";
 import { createSession, startSession } from "../src/engine/session.ts";
 import { createSwitchState } from "../src/engine/interpreter.ts";
@@ -127,75 +130,7 @@ function serveStatic(prefix: string) {
 
 // ---- Chrome over CDP -----------------------------------------------------------
 
-class Cdp {
-  private id = 0;
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-  private listeners = new Map<string, ((params: any) => void)[]>();
-  constructor(private ws: WebSocket) {
-    ws.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data));
-      if (message.id !== undefined) {
-        const waiter = this.pending.get(message.id);
-        this.pending.delete(message.id);
-        if (message.error) waiter?.reject(new Error(`${message.error.message} (${message.error.code})`));
-        else waiter?.resolve(message.result);
-      } else {
-        for (const listener of this.listeners.get(message.method) ?? []) listener(message.params);
-      }
-    });
-  }
-  static async connect(url: string): Promise<Cdp> {
-    const ws = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener("open", resolve, { once: true });
-      ws.addEventListener("error", () => reject(new Error(`cannot connect to ${url}`)), { once: true });
-    });
-    return new Cdp(ws);
-  }
-  send(method: string, params: Record<string, unknown> = {}): Promise<any> {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  on(method: string, listener: (params: any) => void): void {
-    this.listeners.set(method, [...(this.listeners.get(method) ?? []), listener]);
-  }
-  close(): void {
-    this.ws.close();
-  }
-}
-
-async function launchChrome(profile: string): Promise<{ proc: ReturnType<typeof Bun.spawn>; ws: string }> {
-  const proc = Bun.spawn(
-    [
-      CHROME, "--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--remote-debugging-port=0",
-      `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
-      "--disable-background-networking", "--disable-component-update", "--hide-scrollbars",
-      "--window-size=1440,1000", "--force-device-scale-factor=1", "about:blank",
-    ],
-    { stdout: "ignore", stderr: "pipe" },
-  );
-  const reader = proc.stderr.getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    text += decoder.decode(value);
-    const match = /DevTools listening on (ws:\/\/\S+)/.exec(text);
-    if (match) {
-      reader.releaseLock();
-      const port = new URL(match[1]!).port;
-      const targets = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as any[];
-      const page = targets.find((t) => t.type === "page");
-      if (!page) throw new Error("Chrome started without a page target");
-      return { proc, ws: page.webSocketDebuggerUrl };
-    }
-  }
-  proc.kill();
-  throw new Error(`Chrome did not start: ${text.slice(-2000)}`);
-}
+const launchChrome = (profile: string) => launchChromeWith(CHROME, profile);
 
 // ---- checks ----------------------------------------------------------------------
 
@@ -511,9 +446,10 @@ async function main(): Promise<void> {
     // Local cards use lazy previews. Visit each one so this remains reliable
     // when a featured card or a narrow viewport makes the page much taller.
     await loadCardPreviews("landing");
-    const landing = await evaluate<{ cards: string[]; previews: number[]; links: string[] }>(`({
+    const landing = await evaluate<{ cards: string[]; studio: boolean; previews: number[]; links: string[] }>(`({
       // Showcase cards link projects hosted elsewhere; only this site's games count.
-      cards: [...document.querySelectorAll(".game-card:not(.showcase-card) h2")].map((h) => h.textContent),
+      cards: [...document.querySelectorAll(".game-card:not(.showcase-card):not(.studio-card) h2")].map((h) => h.textContent),
+      studio: document.querySelector(".studio-card a[href='studio/']") !== null,
       previews: [...document.querySelectorAll(".game-card:not(.showcase-card) img")].map((i) => i.naturalWidth),
       links: [...document.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")),
     })`);
@@ -526,6 +462,9 @@ async function main(): Promise<void> {
       games.map((game) => `${game.id}=${game.rasterDensity}x`).join(", "),
     );
     expect("landing: one card per game", landing.cards.length === games.length, landing.cards.join(" | "));
+    if (existsSync(join(SITE, "studio", "index.html"))) {
+      expect("landing: the Studio card links to studio/", landing.studio, String(landing.studio));
+    }
     expect("landing: previews load", landing.previews.every((w) => w > 0), `widths ${landing.previews.join(", ")}`);
     const absolute = landing.links.filter((h) => h.startsWith("/"));
     expect("landing: relative links", absolute.length === 0, absolute.length ? absolute.join(", ") : `${landing.links.length} links`);
@@ -1468,6 +1407,17 @@ async function main(): Promise<void> {
         state === "running" && f1 > f0,
         `${state}, frames ${f0} -> ${f1}, ${(stats.nonBlack * 100).toFixed(1)}% non-black`,
       );
+    }
+    // Studio is static pages, not a game: it must open its default example
+    // under the sub-path too, with every request staying under the prefix.
+    if (existsSync(join(SITE, "studio", "index.html"))) {
+      await navigate(`${subBase}studio/`);
+      const studio = await waitFor<{ maps: number; kind: string } | null>(
+        "Studio ready",
+        `document.documentElement.dataset.ready === "1" && __studio.app.session ? { maps: __studio.app.session.maps().length, kind: __studio.app.session.kind } : null`,
+      );
+      expect(`subpath: Studio opens an example under ${PREFIX}`, !!studio && studio.maps > 0, JSON.stringify(studio));
+      await screenshot("subpath-studio");
     }
     await screenshot("subpath-last-game");
     const outside = requests.slice(before).filter((r) => r.status === 404);

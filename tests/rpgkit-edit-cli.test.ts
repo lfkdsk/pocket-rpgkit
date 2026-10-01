@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { runFileEdit } from "../editor/api/file.ts";
 import { buildAndVerifySunstoneAgentTask } from "../tools/rpgkit-edit/example-sunstone.ts";
-import type { FileEditResponse } from "../editor/api/types.ts";
+import type { EditPatch, FileEditResponse } from "../editor/api/types.ts";
+import type { MapDef, Project } from "../src/engine/types.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const TEMP = join(import.meta.dir, `.rpgkit-edit-tmp-${process.pid}`);
@@ -19,6 +20,90 @@ function tempFile(name: string, source = readFileSync(SUNSTONE, "utf8")): string
   writeFileSync(path, source);
   return path;
 }
+
+function runCliJson(command: string, file: string, args: unknown, dryRun = false): { exitCode: number; stderr: string; body: any } {
+  const argsFile = join(TEMP, `args-${randomUUID()}.json`);
+  writeFileSync(argsFile, JSON.stringify(args));
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, CLI, command, "--file", file, "--json", `@${argsFile}`, ...(dryRun ? ["--dry-run"] : [])],
+    cwd: ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = result.stdout.toString();
+  expect(stdout.trim().split("\n")).toHaveLength(1);
+  return { exitCode: result.exitCode, stderr: result.stderr.toString(), body: JSON.parse(stdout) };
+}
+
+function mapById(project: Project, id: string): MapDef | undefined {
+  return project.maps.find((map) => map.id === id);
+}
+
+const ORIGINAL = JSON.parse(readFileSync(SUNSTONE, "utf8")) as Project;
+const VILLAGE = mapById(ORIGINAL, "village")!;
+const EDGE_TILE = VILLAGE.ground[2 * VILLAGE.width + 2] as string;
+
+interface CliMutationCase {
+  command: string;
+  args: Record<string, unknown>;
+  /** Assert the change is present in the file written by a real CLI run. */
+  check: (edited: Project) => void;
+  /** Bad arguments that the CLI must reject with exit 1 and this error. */
+  bad: { args: Record<string, unknown>; error: Record<string, unknown> };
+}
+
+const CLI_MUTATIONS: CliMutationCase[] = [
+  {
+    command: "paint-cells",
+    args: { map: "village", cells: [[2, 2], [3, 2], [10, 7]], value: "town.1" },
+    check: (edited) => {
+      const village = mapById(edited, "village")!;
+      for (const [x, y] of [[2, 2], [3, 2], [10, 7]] as const) expect(village.ground[y * village.width + x]).toBe("town.1");
+      expect([[2, 2], [3, 2], [10, 7]].some(([x, y]) => VILLAGE.ground[y! * VILLAGE.width + x!] !== "town.1")).toBe(true);
+    },
+    bad: { args: { map: "village", cells: [[0, 0], [20, 0]], value: "town.1" }, error: { code: "OUT_OF_BOUNDS", path: "$.cells[1]" } },
+  },
+  {
+    command: "paint-edges",
+    args: { map: "village", cells: [[2, 2]], brush: { kind: "exit", dir: "left" } },
+    check: (edited) => {
+      const [sheet, cell] = EDGE_TILE.split(".");
+      expect(ORIGINAL.sheets.find((item) => item.id === sheet)!.dirEdges?.[String(Number(cell))]).toBeUndefined();
+      expect(edited.sheets.find((item) => item.id === sheet)!.dirEdges?.[String(Number(cell))]).toEqual({ exit: ["left"] });
+    },
+    bad: { args: { map: "village", cells: [[0, 0]], brush: { kind: "enter" } }, error: { code: "INVALID_ARGUMENT", path: "$.brush.dir" } },
+  },
+  {
+    command: "add-map",
+    args: { map: "market", name: "Market", width: 6, height: 5, fill: "town.0", after: "village" },
+    check: (edited) => {
+      expect(edited.maps.map((map) => map.id)).toEqual(["village", "market", "forest", "cave"]);
+      expect(mapById(edited, "market")).toMatchObject({ id: "market", name: "Market", width: 6, height: 5, sheets: ["town"], events: [] });
+      expect(mapById(edited, "market")!.ground).toEqual(new Array(30).fill("town.0"));
+    },
+    bad: { args: { width: 0 }, error: { code: "INVALID_ARGUMENT", path: "$.width" } },
+  },
+  {
+    command: "duplicate-map",
+    args: { map: "forest" },
+    check: (edited) => {
+      expect(edited.maps.map((map) => map.id)).toEqual(["village", "forest", "forest-copy", "cave"]);
+      const source = mapById(ORIGINAL, "forest")!;
+      expect({ ...mapById(edited, "forest-copy")!, id: source.id, name: source.name }).toEqual(source);
+      expect(mapById(edited, "forest")).toEqual(source);
+    },
+    bad: { args: { map: "nowhere" }, error: { code: "MAP_NOT_FOUND" } },
+  },
+  {
+    command: "delete-map",
+    args: { map: "forest" },
+    check: (edited) => {
+      expect(edited.maps.map((map) => map.id)).toEqual(["village", "cave"]);
+      expect(mapById(edited, "forest")).toBeUndefined();
+    },
+    bad: { args: { map: "village" }, error: { code: "MAP_DELETE_REFUSED", path: "$.map" } },
+  },
+];
 
 describe("rpgkit-edit file and CLI adapter", () => {
   test("dry-run computes a patch without changing one source byte", () => {
@@ -129,6 +214,53 @@ describe("rpgkit-edit file and CLI adapter", () => {
     expect(JSON.parse(bad.stdout.toString())).toMatchObject({ ok: false, error: { code: "MAP_NOT_FOUND", path: "$.map" } });
     expect(readFileSync(file, "utf8")).toBe(before);
   });
+
+  for (const entry of CLI_MUTATIONS) {
+    describe(`CLI ${entry.command}`, () => {
+      test("--dry-run returns a patch-v1 patch and leaves the file bytes unchanged", () => {
+        const file = tempFile(`cli-${entry.command}-dry`);
+        const before = readFileSync(file);
+        const { exitCode, stderr, body } = runCliJson(entry.command, file, entry.args, true);
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe("");
+        expect(body).toMatchObject({ ok: true, command: entry.command, changed: true, dryRun: true, written: false });
+        expect(body.patch.format).toBe("rpgkit-edit/patch-v1");
+        expect(body.patch.changes.length).toBeGreaterThan(0);
+        expect(readFileSync(file).equals(before)).toBe(true);
+      });
+
+      test("a real write persists the change, validates, and a reverse save restores the exact bytes", () => {
+        const file = tempFile(`cli-${entry.command}-write`);
+        const before = readFileSync(file);
+        const edit = runCliJson(entry.command, file, entry.args);
+        expect(edit.exitCode).toBe(0);
+        expect(edit.body).toMatchObject({ ok: true, command: entry.command, changed: true, dryRun: false, written: true });
+        const patch = edit.body.patch as EditPatch;
+        expect(patch.format).toBe("rpgkit-edit/patch-v1");
+        expect(readFileSync(file).equals(before)).toBe(false);
+        entry.check(JSON.parse(readFileSync(file, "utf8")) as Project);
+
+        const validated = runCliJson("validate", file, {});
+        expect(validated.exitCode).toBe(0);
+        expect(validated.body).toMatchObject({ ok: true, result: { valid: true, errors: [] } });
+
+        const undo = runCliJson("save", file, { patch, direction: "reverse" });
+        expect(undo.exitCode).toBe(0);
+        expect(undo.body).toMatchObject({ ok: true, command: "save", changed: true, written: true });
+        expect(undo.body.project.revision).toBe(patch.beforeHash);
+        expect(readFileSync(file).equals(before)).toBe(true);
+      });
+
+      test("bad arguments exit nonzero and leave the file unchanged", () => {
+        const file = tempFile(`cli-${entry.command}-bad`);
+        const before = readFileSync(file);
+        const { exitCode, body } = runCliJson(entry.command, file, entry.bad.args);
+        expect(exitCode).toBe(1);
+        expect(body).toMatchObject({ ok: false, error: entry.bad.error });
+        expect(readFileSync(file).equals(before)).toBe(true);
+      });
+    });
+  }
 
   test("example authors a three-line, ten-gold, self-switch NPC through seven CLI edits", () => {
     const output = join(TEMP, "sunstone-agent-task.json");

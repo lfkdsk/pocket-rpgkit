@@ -56,6 +56,9 @@ import { rpgkitBootFromSearch } from "./boot.ts";
 import { fitViewport } from "./fit.ts";
 import { BTN } from "./keys.ts";
 import { createMasterAudioHost } from "./audio-control.ts";
+// The pack format (kind tag, entry-key rule, envelope check, byte spelling)
+// is shared with the TypeScript edit API; this file only adds plain Errors.
+import { packEntryProblem, packText, readPackEnvelope, SHARDED_PACK_KIND } from "../../editor/api/pack-format.ts";
 
 const STEP_MS = 1000 / 60;
 const MAX_ELAPSED_MS = 250;
@@ -74,7 +77,7 @@ const EDITOR_REQUEST_TIMEOUT = 300;
 /** Room under the screen for the caption line. */
 const RESERVE_PX = 56;
 const EDITOR_COMPANION = "rpgkit-editor";
-export const SHARDED_PACK_KIND = "rpgkit-edit/sharded-pack-v1";
+export { SHARDED_PACK_KIND };
 export const EDITOR_CHUNK_MAX_COUNT = 8192;
 export const EDITOR_CHUNK_MAX_CODE_UNITS = 1024;
 export const EDITOR_TRANSFER_MAX_CODE_UNITS = 8 * 1024 * 1024;
@@ -263,13 +266,8 @@ export class BrowserMessageReassembler {
  * path. Rejecting traversal and alternate separators keeps imported packs
  * portable and makes keys such as "__proto__" harmless inside the Map. */
 function packEntry(value) {
-  if (typeof value !== "string" || value.length === 0 || value.includes("\\") || /[\x00-\x1f\x7f]/.test(value)) {
-    throw new Error("shard entries must be non-empty portable path keys");
-  }
-  const parts = value.split("/");
-  if (value.startsWith("/") || /^[a-zA-Z]:/.test(value) || parts.some((part) => part === "" || part === "." || part === "..")) {
-    throw new Error(`unsafe shard entry ${JSON.stringify(value)}`);
-  }
+  const problem = packEntryProblem(value);
+  if (problem !== null) throw new Error(problem);
   return value;
 }
 
@@ -325,23 +323,16 @@ export class BrowserProjectPack {
   }
 
   static parse(text) {
-    let value;
-    try {
-      value = JSON.parse(text);
-    } catch (error) {
-      throw new Error(`pack is not valid JSON: ${error instanceof Error ? error.message : error}`);
-    }
-    if (!record(value) || value.kind !== SHARDED_PACK_KIND || typeof value.shell !== "string" || !record(value.shards)) {
-      throw new Error(`not a ${SHARDED_PACK_KIND} document`);
-    }
+    const envelope = readPackEnvelope(text);
+    if (envelope.problem !== null) throw new Error(envelope.message);
     const shards = new Map();
-    for (const entry of Object.keys(value.shards)) {
+    for (const entry of Object.keys(envelope.shards)) {
       packEntry(entry);
-      const shard = value.shards[entry];
+      const shard = envelope.shards[entry];
       if (typeof shard !== "string") throw new Error(`pack shard ${JSON.stringify(entry)} is not text`);
       shards.set(entry, shard);
     }
-    return new BrowserProjectPack(value.shell, shards);
+    return new BrowserProjectPack(envelope.shell, shards);
   }
 
   projectMessage(request) {
@@ -412,9 +403,7 @@ export class BrowserProjectPack {
   }
 
   serialize() {
-    const shards = Object.create(null);
-    for (const entry of this.catalog.keys()) shards[entry] = this.shards.get(entry);
-    return `${JSON.stringify({ kind: SHARDED_PACK_KIND, shell: this.shellText, shards }, null, 2)}\n`;
+    return packText(this.shellText, [...this.catalog.keys()].map((entry) => [entry, this.shards.get(entry)]));
   }
 }
 

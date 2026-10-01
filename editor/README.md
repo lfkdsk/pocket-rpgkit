@@ -8,6 +8,16 @@ sharded `ProjectShell` projects. The editor can render only tile and sprite
 art already baked into its bundle; opening a project does not import new
 assets.
 
+Working in a browser? [Studio](../docs/studio.md) is a browser-native editor
+(DOM + canvas) with a zoomable canvas, inspector forms and a history panel;
+this PocketJS editor is the one that also runs on the desktop host and
+devices. Studio edits through the `editor/api` operations; this editor does
+not use `editor/api` yet and edits with its own reducers and undo/redo in
+`engine/model.ts` (moving it onto `editor/api` is planned). The two share
+the file formats, schema validation and the save serializer, and a test in
+`tests/studio-session.test.ts` checks that the same edits save to identical
+bytes in both.
+
 New to the editor? [`docs/editor-tutorial.md`](../docs/editor-tutorial.md)
 follows one small scenario — a villager NPC with branching dialog and a
 one-time reward, a second map with two-way portals, and a play-test with

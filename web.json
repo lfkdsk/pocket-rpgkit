@@ -210,7 +210,7 @@
     },
     "editor": {
       "title": "Pocket RPG Kit Editor",
-      "description": "Edit maps and events with the mouse and keyboard, then play-test them immediately. Open a local project or start from Sunstone or Meadow; saves stay in this browser until you download the JSON.",
+      "description": "Runs on PocketJS, so the same editor also runs on the desktop and on devices. Edit maps and events with the mouse and keyboard, then play-test them immediately. Open a local project or start from Sunstone or Meadow; saves stay in this browser until you download the JSON.",
       "preview": "tests/goldens/editor-events.720x480.png",
       "controls": [
         {
@@ -241,6 +241,11 @@
         }
       ]
     }
+  },
+  "studio": {
+    "title": "Pocket RPG Kit Studio",
+    "description": "A full map and event editor for the browser: zoom and pan large maps, paint with brush, rectangle and fill, edit event pages and command trees with forms, undo with history, and save to this browser or download. It edits the same files with the same operations as rpgkit-edit.",
+    "preview": "docs/screenshots/studio/studio-dark.png"
   },
   "showcase": [
     {

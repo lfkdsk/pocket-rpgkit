@@ -52,7 +52,7 @@ import type {
   Project,
 } from "../../../src/engine/types.ts";
 import type { SelfKey } from "../../../src/engine/interpreter.ts";
-import { structuralFindings } from "./doc.ts";
+import { structuralFindings } from "./structure.ts";
 import { makeFinding, type CheckReport, type Finding, type FindingLocation } from "./finding.ts";
 import {
   conditionContradiction,

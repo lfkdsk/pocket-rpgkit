@@ -260,6 +260,18 @@ those examples' own Kenney tile sheets. The browser can also **Open** a local
 inline project; **Save** keeps it in that browser, **Download** exports JSON,
 and a refresh restores the locally saved copy. Nothing is uploaded.
 
+For editing in a browser there is also **Studio**
+([`docs/studio.md`](docs/studio.md),
+[hosted](https://lfkdsk.github.io/pocketjs-rpgkit/studio/)): a DOM + canvas
+editor with a zoomable canvas, tile palette, inspector forms and a history
+panel. Studio edits through the `editor/api` operations that `rpgkit-edit`
+runs; this PocketJS editor still uses its own reducers and undo/redo in
+`editor/engine/model.ts` (moving it onto `editor/api` is planned). The two
+share the file formats, schema validation and the save serializer, and a
+test in `tests/studio-session.test.ts` checks that the same edits save to
+identical bytes in both. This PocketJS editor is the one that also runs on
+devices.
+
 What it does today:
 
 - paint ground tiles by click or drag; the first header button cycles
@@ -475,15 +487,17 @@ If bridge initialization fails after publishing the capability, managed SAVE
 fails closed; companions without that marker retain their legacy save channel.
 
 The command set is `open`, `list-maps`, `list-events`, `list-pages`,
-`list-commands`, `update-map`, `paint-tile`, `paint-rect`, `fill-region`,
-`paint-passage`, `add-event`,
+`list-commands`, `update-map`, `add-map`, `duplicate-map`, `delete-map`,
+`paint-tile`, `paint-rect`, `fill-region`, `paint-passage`, `paint-cells`,
+`paint-edges`, `add-event`,
 `update-event`, `delete-event`, `add-page`, `update-page`, `delete-page`,
 `insert-command`, `delete-command`, `update-command`, `validate`, `save`,
 `propose`, `list-proposals`, `show-proposal`, and `withdraw-proposal`.
 Mutations use the same tile strokes, event/page transactions, recursive
 command addresses and field parsers as the visual editor. Project read/edit
 commands through `save` support inline documents and sharded `ProjectShell`
-projects. Proposal creation, assessment, and editor review currently require
+projects, except that `add-map`, `duplicate-map`, `delete-map`, and
+`paint-edges` refuse a shell with `UNSUPPORTED_FOR_SHELL`. Proposal creation, assessment, and editor review currently require
 an inline project; a shell receives a clear `READ_ONLY_PROJECT_SHELL` error.
 Shell-only
 discovery reads no map payloads; ordinary map operations load and validate

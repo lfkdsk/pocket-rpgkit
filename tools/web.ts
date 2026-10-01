@@ -46,6 +46,11 @@
 //
 // Keys: tools/web/keys.ts. An entry's "keys" rebinds keys for a game whose
 // own prompts name other keys; the page's controls follow.
+//
+// Studio: a "studio" entry in web.json ({ title, description, preview? })
+// also builds Studio, the browser-native editor, into <outdir>/studio
+// (tools/studio-build.ts: static files, no wasm) and adds its landing card.
+// Without the entry nothing of it is built.
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -161,6 +166,17 @@ export interface WebSiteConfig {
   /** Projects built with the kit that live on their own sites: linked from
    *  the landing page, not built or hosted here. */
   showcase?: ShowcaseEntry[];
+  /** Studio, the browser-native editor (editor/studio): built into
+   *  <outdir>/studio by tools/studio-build.ts and given a landing card. */
+  studio?: WebStudioConfig;
+}
+
+export interface WebStudioConfig {
+  title: string;
+  description: string;
+  /** Preview image (PNG), relative to the project root. A missing file
+   *  leaves the card without a picture. */
+  preview?: string;
 }
 
 export interface ShowcaseEntry {
@@ -270,6 +286,19 @@ export function parseSiteConfig(value: unknown, source: string): WebSiteConfig {
       }
       validateEntry(`showcase-${i}`, { controls: entry.controls }, source);
     });
+  }
+  if (config.studio !== undefined) {
+    const studio = config.studio;
+    if (!studio || typeof studio !== "object" || Array.isArray(studio)) {
+      throw new Error(`web: ${source}: "studio" is an object`);
+    }
+    if (typeof studio.title !== "string" || studio.title.trim().length === 0) {
+      throw new Error(`web: ${source}: studio.title must be non-empty text`);
+    }
+    if (typeof studio.description !== "string") throw new Error(`web: ${source}: studio.description is text`);
+    if (studio.preview !== undefined && (typeof studio.preview !== "string" || !isRelativePngPath(studio.preview))) {
+      throw new Error(`web: ${source}: studio.preview must be a relative PNG path`);
+    }
   }
   return config;
 }
@@ -631,6 +660,33 @@ export interface SiteInfo {
   intro: string;
   source?: string;
   showcase?: readonly ShowcaseEntry[];
+  /** Studio's landing card, when the site builds it. */
+  studio?: StudioCard;
+}
+
+export interface StudioCard {
+  title: string;
+  description: string;
+  /** Preview dimensions, when studio/preview.png exists. */
+  preview?: Size;
+}
+
+/** Studio's landing card: the site-relative studio/ directory. */
+function studioCard(studio: StudioCard): string {
+  const href = "studio/";
+  const shot = studio.preview
+    ? `<img src="studio/preview.png" width="${studio.preview[0]}" height="${studio.preview[1]}" alt="" loading="lazy">`
+    : `<span class="no-preview">${escapeHtml(studio.title)}</span>`;
+  return [
+    '<article class="game-card studio-card" id="studio">',
+    `<a class="shot" href="${href}" tabindex="-1" aria-hidden="true">${shot}</a>`,
+    '<div class="card-body">',
+    `<h2><a href="${href}">${escapeHtml(studio.title)}</a></h2>`,
+    ...(studio.description ? [`<p class="description">${escapeHtml(studio.description)}</p>`] : []),
+    `<p><a class="play" href="${href}">Open Studio</a></p>`,
+    "</div>",
+    "</article>",
+  ].join("\n");
 }
 
 export interface Card {
@@ -735,6 +791,7 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
     ...featured,
     ...showcase,
     ...regular,
+    ...(site.studio ? [studioCard(site.studio)] : []),
     "</main>",
     '<footer class="site-footer">',
     `<p>${previewDemo}Runs on <a href="https://github.com/pocket-stack/pocketjs">PocketJS</a>, compiled to WebAssembly. ` +
@@ -867,6 +924,28 @@ export function copyChapterPreviews(projectRoot: string, game: WebGame, outputDi
   }
 }
 
+const STUDIO_ID = "studio";
+
+/** Build Studio into <outdir>/studio and copy its configured preview. Loaded
+ *  on demand: a site without a "studio" entry never touches editor/. */
+async function buildStudioSite(projectRoot: string, outdir: string, config: WebStudioConfig): Promise<StudioCard> {
+  const { buildStudio } = await import("./studio-build.ts");
+  const { files } = await buildStudio({ outdir, kitRoot: KIT_ROOT });
+  console.log(`web: ${STUDIO_ID}: ${files.length} file(s)`);
+  let preview: Size | undefined;
+  if (config.preview) {
+    const source = resolve(projectRoot, config.preview);
+    if (isInside(projectRoot, source) && existsSync(source) && statSync(source).isFile()) {
+      const target = join(outdir, STUDIO_ID, "preview.png");
+      copyFileSync(source, target);
+      preview = pngSize(target);
+    } else {
+      console.warn(`web: ${STUDIO_ID}: preview ${config.preview} not found; the card has no picture`);
+    }
+  }
+  return { title: config.title, description: config.description, ...(preview ? { preview } : {}) };
+}
+
 export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
   const projectRoot = resolve(options.projectRoot);
   const outdir = resolve(options.outdir);
@@ -883,6 +962,9 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
   const ids = options.games.length > 0 ? [...new Set(options.games)] : defaultGameIds(projectRoot);
   if (ids.length === 0) throw new Error(`web: no games found under ${projectRoot}`);
   const games = cardOrder(ids, config).map((id) => resolveGame(projectRoot, config, id));
+  if (config.studio && games.some((game) => game.id === STUDIO_ID)) {
+    throw new Error(`web: a game named "${STUDIO_ID}" would share Studio's directory`);
+  }
   const packageJson = join(projectRoot, "package.json");
   const site: SiteInfo = {
     title:
@@ -999,7 +1081,8 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
     throw new Error("web: bundling tools/web/player.js failed");
   }
   await Bun.write(join(outdir, "player.js"), player.outputs[0]!);
-  await Bun.write(join(outdir, "index.html"), renderLanding(site, cards));
+  const studio = config.studio ? await buildStudioSite(projectRoot, outdir, config.studio) : undefined;
+  await Bun.write(join(outdir, "index.html"), renderLanding({ ...site, ...(studio ? { studio } : {}) }, cards));
   await Bun.write(
     join(outdir, "games.json"),
     JSON.stringify(

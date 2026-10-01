@@ -1,0 +1,295 @@
+# Studio
+
+Studio is a map and event editor for `rpgkit-project/v1` projects that runs
+as an ordinary web page (DOM and canvas). It has no PocketJS bundle budget,
+so it can afford a full desktop-style layout: zoomable canvas, tile palette,
+inspector forms, history panel and a problems list.
+
+Studio edits through the [`editor/api`](edit-api.md) operations — the same
+ones `rpgkit-edit` and its MCP tools run — so every change Studio makes is a
+reversible `rpgkit-edit/patch-v1` patch. The
+[PocketJS editor](../editor/README.md) does not use `editor/api` yet: it
+edits with its own reducers and undo/redo in `editor/engine/model.ts`. The
+two editors share the file formats (`rpgkit-project/v1` and the sharded
+shell, shard and pack formats), schema validation and the save serializer.
+The test "export matches the PocketJS editor's save bytes for the same
+edits" in `tests/studio-session.test.ts` checks that the same edits on the
+same input save to identical bytes in both. Moving the PocketJS editor onto
+`editor/api` is planned. The PocketJS editor is the one to use on the
+desktop host or a device; Studio is the one to use in a browser.
+
+![Studio, dark theme](screenshots/studio/studio-dark.png)
+
+## Opening Studio
+
+- Hosted: <https://lfkdsk.github.io/pocketjs-rpgkit/studio/> (the site's
+  landing page links to it).
+- Locally:
+
+  ```sh
+  bun run web                              # builds dist/web, including dist/web/studio
+  python3 -m http.server -d dist/web 8000  # open http://localhost:8000/studio/
+  ```
+
+  `bun tools/studio-build.ts --outdir <dir>` builds only Studio into
+  `<dir>/studio` (no WebAssembly core needed).
+
+Add `?example=sunstone`, `?example=meadow` or `?example=sunstone-pack` to
+the URL to open a bundled example directly.
+
+## Files
+
+| Action | How |
+| --- | --- |
+| Open a local file | **Open → Open file…** (Ctrl/⌘+O). Accepts inline `rpgkit-project/v1` JSON and `rpgkit-edit/sharded-pack-v1` packs. |
+| Open a project folder | **Open → Open folder…** (Chrome and Edge). Picks a folder holding a `ProjectShell` (usually `project.json`) and its map files; see [Project folders](#project-folders). Other browsers show the item disabled, with the reason as its tooltip. |
+| Open an example | **Open → Example: …** — Sunstone, Meadow, and Sunstone as a sharded pack. |
+| Save | **Save** (Ctrl/⌘+S) validates the document, then writes it back into its folder if it was opened from one; otherwise it stores it in this browser's `localStorage`. If storage is unavailable or full, a red notice says so and nothing is marked saved. |
+| Restore | Reloading the page reopens the saved document. |
+| Download | **Download** (Ctrl/⌘+Shift+E) saves the exact export bytes: the project JSON, or a complete replacement pack. |
+
+Nothing is uploaded. Inline documents keep the bytes of everything you did
+not change: the export is produced by the same source-preserving serializer
+as the PocketJS editor's Save. For the same edits the two editors write
+identical bytes; `tests/studio-session.test.ts` ("export matches the
+PocketJS editor's save bytes for the same edits") checks this for a paint,
+a new event and a text command.
+
+### Sharded packs
+
+A pack is one JSON file that carries a `ProjectShell` and the text of every
+map shard it indexes (the same format the PocketJS editor's web page reads).
+Studio opens the catalog first and parses (and checksum-verifies) a shard
+only when you open that map. Edits run the sharded protocol operations, so
+the downloaded replacement pack differs from the original only in the shell
+and the shards you changed; the map list marks changed maps with ●.
+
+### Project folders
+
+In Chrome and Edge, **Open folder…** uses the browser's directory picker
+(File System Access) and asks for read and write access once. Studio finds
+the folder's `ProjectShell` by reading one file: `project.json`, else
+`game.json`, else the folder's only top-level JSON file (with several
+top-level JSON files and neither name, it asks you to name the shell
+`project.json`). It then checks the map count and every map file's size,
+reads each map file listed in the shell's `mapIndex` relative to the shell,
+and edits the project as a pack. No map file is read before its size has
+been checked, wherever it sits in the folder. **Save** then
+writes only the map files whose text changed, followed by the shell:
+
+1. It re-reads each of those files and refuses, writing nothing, if any
+   changed on disk since it was opened.
+2. It writes every new file as a temporary sibling
+   (`<name>.rpgkit-save-<id>.tmp`) and reads it back. If one of these
+   writes fails, the temporaries are removed and nothing was replaced.
+3. It replaces the map files, then the shell, one at a time (moving the
+   temporary onto the file where the browser supports it). If a
+   replacement fails, the files already replaced get their previous text
+   back, the temporaries are removed, and the red notice says so. If even
+   that restore fails, the notice names the files that may now hold the
+   new version; saving again finishes the save.
+
+This is **not crash-atomic**: a browser has no way to replace several files
+at once, so a crash, power loss or a closed tab between two replacements
+can still leave new map files next to an old shell. What it guarantees is
+that a failed write does not leave a half-saved project. Saves into one
+folder never overlap: Ctrl/Cmd+S pressed while a save is running queues
+another one, which starts when the first has finished, compares against
+what the first wrote, and saves the document as it is by then. The Save
+button is disabled ("Saving to <folder>…") and the status bar shows
+"saving…" meanwhile. A save belongs to the document that was open when it
+was started: if you open another project while it runs, it still writes
+the first folder, its notice names that folder, and the project now open
+is not marked as saved. Download still produces a complete pack.
+
+Sharded packs keep their map catalog fixed: Studio disables adding,
+duplicating, deleting, renaming and resizing maps, and editing one-way edges
+(they live on project-wide tile sheets), each with a note saying why. Use
+the inline project or `rpgkit-edit` for those. Schema validation of a whole
+pack reads every shard, so it runs when you press **Validate all shards**
+in the problems list.
+
+## Layout
+
+- **Toolbar**: file actions, undo/redo, tools, layer switch, overlays, zoom,
+  **Art…**, theme, shortcuts. Every button has a tooltip with its shortcut.
+- **Maps** (left): every map, with a filter box. The list is virtualized, so
+  packs with hundreds of maps scroll smoothly.
+- **Tiles** (left): the sheets the current map declares, with a recently-used
+  strip and a size control. With the passage or edges layer active this
+  panel shows those brushes instead.
+- **Canvas** (center): wheel or pinch to zoom around the pointer; Space+drag,
+  middle-drag or Shift+wheel to pan; `0` fits the map. The status bar shows
+  the hovered cell and its tiles.
+- **Inspector** (right): map properties, or the selected event with its pages,
+  conditions and command tree. **History** lists every step.
+- **Status bar**: map, hovered cell, selection, protocol time of the last
+  edit, save state, and the problem count. Click the count to open the
+  problems list; click a problem to jump to its map, event and page.
+
+Light and dark themes follow the system setting until you pick one with the
+theme button. Below 900 px the panels stack under the canvas.
+
+## Map editing
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| Select | V | Select an event (drag to move it) or a cell |
+| Brush | B | Paint a free-form stroke; right-drag erases |
+| Rectangle | R | Paint a rectangle |
+| Fill | F | Flood-fill a region of equal tiles (ground and upper) |
+| Eraser | E | Erase a free-form stroke |
+| Eyedropper | I | Pick the tile under the pointer, then return to the brush |
+| Events | N | Click an empty cell to create an event; click an event to select it |
+
+Layers: **1** ground, **2** upper (drawn above characters at run time),
+**3** passage (per-cell PASS / BLOCK / CLEAR overrides on this map), **4**
+one-way edges (enter/exit rules on the tile sheet cell under the stroke).
+**G** toggles the grid and **P** the passage overlay, which tints tiles the
+sheet blocks, marks overrides, and draws edge arrows (blue: no entry from
+that side, orange: no exit).
+
+A whole stroke is one operation (`paint-cells`, `paint-rect`, `fill-region`
+or `paint-edges`) and one undo step. While you drag, Studio previews the
+stroke in its cached layer image; on release the protocol validates and
+applies it, and an invalid stroke is reverted with a notice.
+
+## Events
+
+Select an event to edit its id, name, position and size; copy or delete it
+(Delete key, Ctrl/⌘+D duplicates). Pages appear as tabs: add, copy, delete
+and reorder them, and set trigger, sprite, facing, movement type, blocking
+and the movement route. Conditions list every clause of the page condition
+with its own fields; any schema condition kind can be added.
+
+The command tree shows the page's commands indented by branch, with a colour
+bar per kind (flow, message, state, movement, presentation, audio) and
+collapsible branches. Select a command to edit its fields in a form; the
+field rules are the same ones the PocketJS editor and `update-command` use
+([`editor/engine/event-fields.ts`](../editor/engine/event-fields.ts)), so
+every command and condition in the current schema is editable. **Add
+command** opens a searchable list of every command kind and inserts after
+the selection or into a chosen branch.
+
+## Art
+
+Projects name tile sheets and sprites by id; the pixels are not in the JSON.
+Studio uses the bundled Sunstone and Meadow art for ids those examples
+define. For other ids, **Art…** lists every sheet and sprite with its status
+and lets you choose a local PNG for it. The file is used only in this page:
+it is not uploaded, not saved, and does not change the project. Ids without
+art draw as hatched, numbered placeholders in a colour derived from the id,
+so tiles stay distinguishable.
+
+## Problems
+
+The problems list combines the protocol's schema validation (`validate`)
+with `rpgkit-check`'s static lint (unknown transfer targets, missing items
+or sprites, unreachable pages, unused switches and so on). It refreshes
+after every edit for inline projects.
+
+**Run engine checks** (rpgkit-check's dynamic checks, which run the game
+engine) and the agent button in the toolbar are disabled on the web page;
+their tooltips say why. They are reserved for the desktop app.
+
+## Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| Ctrl/⌘+Z, Ctrl/⌘+Shift+Z or Ctrl/⌘+Y | Undo, redo |
+| Ctrl/⌘+S, Ctrl/⌘+O, Ctrl/⌘+Shift+E | Save (in the browser, or back into the opened folder), open file, download |
+| V B R F E I N | Select, brush, rectangle, fill, eraser, eyedropper, events |
+| 1 2 3 4 | Ground, upper, passage, edges layer |
+| G, P | Grid, passage overlay |
+| = and -, 0 | Zoom in and out, fit |
+| Space+drag, middle-drag, Shift+wheel | Pan |
+| Delete, Ctrl/⌘+D | Delete or duplicate the selected event |
+| Esc | Clear the selection |
+| ? | Show the shortcuts |
+
+## Limits
+
+- No play-test yet. The next phase embeds the real game through the preview
+  protocol (an iframe plus `postMessage`) and starts it from the selected
+  cell; the toolbar's play button is the reserved place for it.
+- Walker sprites without a chosen PNG show a placeholder badge.
+- Sharded packs: see [Sharded packs](#sharded-packs).
+- Browser storage holds one saved document per site origin; download a copy
+  for backups.
+- Saving a single file in place, and saving a folder after adding or
+  removing maps, are not available in the browser.
+- Folder saves are not crash-atomic; see [Project folders](#project-folders).
+
+### Import limits
+
+Studio checks the size of what it opens and refuses oversized input with a
+red notice instead of loading it. Most checks run on file sizes, before
+reading; a picked file between 32 and 64 MiB is read first (it may be a
+pack) and then refused if it is a project file rather than a pack. The numbers live in
+[`editor/api/limits.ts`](../editor/api/limits.ts); `EditSession`, the pack
+reader and shard loading enforce them too, so the CLI and MCP tools share
+them.
+
+| What | Limit | Checked |
+| --- | --- | --- |
+| One inline project JSON file (also a shell file) | 32 MiB | file size before reading; text size before parsing |
+| One sharded pack file | 64 MiB | file size before reading; text size before parsing |
+| One map shard | 8 MiB | pack reader, shard loading; a folder's file sizes before reading |
+| Map shards in a pack or folder | 1,024 | before the shell is validated; before any map file is read |
+| A project folder, as the pack Studio edits | 64 MiB | the files' total from their sizes, before any map file is read; the pack's size after reading |
+| Maps in an inline project | 1,024 | after parsing, before schema validation |
+| Events on one map | 4,096 | inline maps after parsing; shards when loaded |
+| Cells on one map | 256 × 256 | the project schema's width/height maximum |
+| Local PNG file | 16 MiB | file size before reading |
+| Local PNG dimensions | 8,192 px per side, 16,777,216 pixels | from the 24-byte PNG header, before decoding |
+
+Sizes are UTF-8 bytes. A folder's shell is the only file read before the
+limits are checked, and it too is refused unread over 32 MiB. Studio edits a
+folder as one pack (the shell and every map file's text as JSON strings in
+one file), so a folder's 64 MiB limit is the size of that pack. The pack is
+a little larger than the files themselves: keys and indentation, plus one
+extra byte for every quote, backslash or newline inside a file, which JSON
+escapes. Studio refuses a folder whose files alone total more than 64 MiB
+before reading any map file, and one whose pack comes out larger after
+reading them; a folder it accepts always opens. The largest real project we know of
+(about 17 MB of inline JSON, 263 maps, at most 502 events on a map) fits
+comfortably. `tests/studio-import-limits.test.ts` checks each limit exactly
+at the limit and one over.
+
+## How it is built
+
+Studio is plain TypeScript with no UI framework (`editor/studio/`).
+
+Everything that depends on where Studio runs goes through one interface,
+`StudioHost` ([`editor/studio/host.ts`](../editor/studio/host.ts)): opening
+files and folders, save and restore, export, picking local art, running
+checks, starting an agent, confirmations, closing with unsaved edits, and the
+theme preference. Each host also reports which of these it can do, with a
+reason, and the UI enables or disables its controls from that. The web page
+uses the browser host (`host-browser.ts`). Tests use an in-memory host
+(`host-memory.ts`). A desktop shell would implement the same interface
+with native files and processes. Opening and saving project folders is
+host-neutral code (`project-directory.ts`) written against a small
+directory interface. `tests/studio-host.test.ts` scans `editor/studio/`
+(every script and page) so that storage, download, fetch, file-picker,
+dialog and media-query calls appear only in the browser host. That includes
+the page shell: `index.html` only marks a slot (`<!-- studio:host-boot -->`),
+and the build puts the browser host's pre-paint theme script
+(`host-browser-boot.ts`) there; a desktop shell would use its own page.
+
+The document lives in an `EditSession` ([`editor/api/session.ts`](../editor/api/session.ts)),
+which only calls `executeEditOperation` / `executeShardedEditOperation` and
+replays history patches through the protocol's `save` operation. The
+canvas caches each layer as a 16-px-per-cell bitmap and redraws only when
+the document, map or art changes, so zoom and pan cost two scaled image
+draws plus overlays for the visible cells.
+
+Tests: `tests/studio-session.test.ts` (every edit kind is one reversible
+protocol step, packs only rewrite touched shards, export matches the
+PocketJS editor), `tests/studio-host.test.ts` (the host boundary; open, save,
+restore, export and folder saves on the in-memory host),
+`tests/studio-directory-save.test.ts` (folder saves with injected write
+failures leave the old version), `tests/studio-import-limits.test.ts`,
+`tests/studio-inspector-model.test.ts`, `tests/studio-build.test.ts`
+and the browser run `bun tools/studio-verify.ts`, which also regenerates the
+screenshots in `docs/screenshots/studio/`.
