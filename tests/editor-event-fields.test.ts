@@ -45,12 +45,13 @@ describe("event inspector command fields", () => {
     const opaque: Command[] = [
       { op: "shop", id: "s", goods: [{ item: "potion" }] },
       { op: "ext", call: "game.test", args: { untouched: true } },
+      { op: "moveControl", target: "player", control: { kind: "speed", value: 6 } },
       { op: "battle", setup: { enemy: "slime" } },
     ];
     const rows = commandInspectorRows([...editable, ...opaque]);
     expect(rows.slice(0, editable.length).every((row) => row.supported && !row.readOnly)).toBe(true);
     expect(rows.slice(editable.length).map((row) => [row.command.op, row.supported, row.fields.length])).toEqual([
-      ["shop", false, 0], ["ext", false, 0], ["battle", false, 0],
+      ["shop", false, 0], ["ext", false, 0], ["moveControl", false, 0], ["battle", false, 0],
     ]);
     expect(commandFields(defaultCommand("choices")).map((entry) => entry.key)).toEqual([
       "prompt", "optionCount", "option:0", "option:1", "cancel",

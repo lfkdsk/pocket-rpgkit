@@ -1,0 +1,29 @@
+{
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json",
+  "pocket": 2,
+  "id": "dev.lfkdsk.pocket-rpgkit-km1-move-control-fixture",
+  "name": "pocket-rpgkit-km1-move-control-fixture",
+  "title": "Pocket RPG Kit — Runtime movement controls fixture",
+  "version": "0.1.0",
+  "engine": {
+    "capabilities": {
+      "requires": [
+        "input.buttons"
+      ]
+    }
+  },
+  "app": {
+    "entry": "tests/fixtures/km1-move-control/km1-move-control.tsx",
+    "output": "km1-move-control",
+    "framework": "solid",
+    "viewport": {
+      "fixed": {
+        "logical": [
+          480,
+          272
+        ],
+        "presentation": "integer-fit"
+      }
+    }
+  }
+}

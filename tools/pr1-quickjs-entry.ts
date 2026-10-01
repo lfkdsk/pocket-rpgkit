@@ -7,19 +7,34 @@ import { createSession, startSession, stepSession } from "../src/engine/session.
 import { battleEvent, MAP, MAP_ID } from "../tests/fixtures/kb4-battle/fixture-data.ts";
 import { kb4BattleRules } from "../tests/fixtures/kb4-battle/rules.ts";
 
-type BenchName = "sunstoneIdle" | "sunstoneWalk" | "wanderAuto" | "battleScene";
+type BenchName =
+  | "sunstoneIdle"
+  | "sunstoneWalk"
+  | "sunstoneControlWalk"
+  | "wanderAuto"
+  | "battleScene";
 
 const sunstone = buildGame().project;
+// Grade 5 is the legacy/default speed, so this page remains behaviorally
+// neutral while opting the compiled world into KM1's controlled path.
+const controlledSunstone = buildGame().project;
+const controlledPage = controlledSunstone.maps[0]?.events?.[0]?.pages[0];
+if (!controlledPage) throw new Error("sunstone control benchmark needs one event page");
+controlledPage.moveSpeed = 5;
 const idleSession = createSession(sunstone, 60);
 const walkSession = createSession(sunstone, 60);
+const controlWalkSession = createSession(controlledSunstone, 60);
 let idleState = startSession(sunstone, idleSession);
 let walkState = startSession(sunstone, walkSession);
+let controlWalkState = startSession(controlledSunstone, controlWalkSession);
 let walkFrame = 0;
+let controlWalkFrame = 0;
 
 for (let frame = 0; frame < 180; frame++) {
   idleState = stepSession(idleSession, idleState, { buttons: 0 });
   const buttons = frame % 64 < 32 ? 0x0020 : 0x0080;
   walkState = stepSession(walkSession, walkState, { buttons });
+  controlWalkState = stepSession(controlWalkSession, controlWalkState, { buttons });
 }
 
 const wander = new WanderSim({ seed: 0x5eed0001, hz: 60, viewW: 480, viewH: 272 });
@@ -47,6 +62,11 @@ const benches: Record<BenchName, () => number> = {
     const buttons = walkFrame++ % 64 < 32 ? 0x0020 : 0x0080;
     walkState = stepSession(walkSession, walkState, { buttons });
     return walkState.frame;
+  },
+  sunstoneControlWalk: () => {
+    const buttons = controlWalkFrame++ % 64 < 32 ? 0x0020 : 0x0080;
+    controlWalkState = stepSession(controlWalkSession, controlWalkState, { buttons });
+    return controlWalkState.frame;
   },
   wanderAuto: () => {
     wander.step(0);

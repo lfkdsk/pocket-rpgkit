@@ -263,6 +263,22 @@ describe("rpgkit edit command operations and patches", () => {
     expect(commands[0]).toEqual(opaque);
     expect(executeEditOperation(inserted.output, "update-command", { ...selection, field: "call", value: "other" }).response)
       .toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+
+    const movement: Command = {
+      op: "moveControl",
+      target: { event: "npc" },
+      control: { kind: "wander", bounds: { x: 1, y: 2, width: 3, height: 4 }, frequency: 2 },
+    };
+    const moved = success(executeEditOperation(source, "insert-command", {
+      ...selection,
+      command: movement,
+    }));
+    expect((JSON.parse(moved.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0]).toEqual(movement);
+    expect(executeEditOperation(moved.output, "update-command", {
+      ...selection,
+      field: "control",
+      value: "{}",
+    }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
   });
 
   test("command field errors identify the field and legal alternatives", () => {

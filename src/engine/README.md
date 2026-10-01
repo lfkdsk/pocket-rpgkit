@@ -21,10 +21,11 @@ state.
   `approach` move steps (fixed neighbour order, respects all edge guards
   and bodies; the search is sliced across reference ticks to bound QuickJS
   frame cost).
-- `interpreter.ts` — event pages, triggers, the 25-command interpreter
+- `interpreter.ts` — event pages, triggers, the 26-command interpreter
   (the v1 15 plus `lockInput` / `unlockInput` / `place` / `shop` / `ext` /
-  `extChoice` / `battle` / `appearance` / `layer` / `tileProperty`), the
-  typewriter clock, the seeded RNG, saveable switch state.
+  `extChoice` / `battle` / `moveControl` / `appearance` / `layer` /
+  `tileProperty`), the typewriter clock, the seeded RNG, saveable switch
+  state.
 - `extensions.ts` — namespaced pure command/condition/dynamic-choice handlers,
   the opaque JSON extension slot, validation and save codecs.
 - `battle.ts` — game-owned battle reducer and scene contracts.
@@ -132,10 +133,35 @@ Conventions:
   should call `withTilePropertyOverrides(authored, interp.tileProperties)`.
   The corresponding condition compares explicit override fields; `null`
   means that field is absent.
-- **Place and initial facing:** the `place` command relocates
-  `"this"` or `{event}` to a tile (and optional facing); a page `dir` sets
+- **Place and initial facing:** the `place` command relocates the player,
+  `"this"`, or `{event}` to a tile (and optional facing); a page `dir` sets
   the facing the character shows when that page spawns it or on a page
   switch.
+- **Movement controls:** page defaults are `moveSpeed:5` (MV grade 1-6),
+  `moveFrequency:5` (MV grade 1-5 on the fixed reference-tick clock),
+  `directionFix:false`, `through:false`, and
+  `facingMode:"followMovement"`. A `moveControl` command targets the player,
+  `"this"`, or `{event}`; a `{control: MoveControl}` route step applies the
+  same change to its route actor. Controls select bounded random `wander`,
+  page/static/approach autonomous motion, `stop`, speed, run, frequency,
+  direction fix, through, or facing mode. `run` raises the effective speed
+  grade by one, capped at 6. Frequency grade `n` waits `30 × (5 - n)`
+  reference ticks between autonomous decisions.
+- **Control lifetime and priority:** settings and `stop` persist for the map
+  visit and round-trip through saves. An NPC page switch clears all of that
+  actor's overrides; a map transfer clears both player and NPC overrides.
+  Forced routes win over a runtime autonomous override, which wins over page
+  patrol, which wins over page autonomous motion. `stop` cancels the active
+  route and suppresses page patrol until another route or motion-mode control;
+  `moveType:"static"` is the explicit way to stop wandering.
+- **Control collision and facing:** `through` ignores terrain and body
+  collision but not map bounds; player-touch checks still observe the
+  resulting steps. `directionFix` blocks all facing changes. Both `locked`
+  and `scripted` use the Tuxemon behavior of blocking movement-driven turns
+  while allowing an explicit face step; `followMovement` turns with a step.
+- **Wander holds:** player wander makes `worldIdle` false, while NPC wander
+  does not. Input lock or any dialog pauses player wander. Any dialog pauses
+  runtime NPC wander, independently of `system.messageBlocksPlayer`.
 - **Input lock:** `lockInput`/`unlockInput` are a cross-event lock:
   while held the mover ignores the d-pad and confirm starts no action
   event, but `autorun`/`parallel` fibers still fold. The lock is per map

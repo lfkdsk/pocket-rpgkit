@@ -182,6 +182,9 @@ export interface PathSearchState {
   /** 1 on cells the search may not enter (bodies baked at creation), else 0;
    *  null when the only blockers are the table's own solid/edge opinions. */
   blockedMask: Uint8Array | null;
+  /** KM1 through routes ignore cooked passage/body masks while preserving
+   *  the same rectangular map bounds and deterministic neighbour order. */
+  through?: true;
 }
 
 function copyInt32FromCheckpoint(value: Int32Array, length: number): Int32Array {
@@ -227,6 +230,7 @@ export function createPathSearch(
   gx: number,
   gy: number,
   blockedCells?: ReadonlySet<number>,
+  through = false,
 ): PathSearchState | null {
   const W = table.width;
   const H = table.height;
@@ -247,7 +251,10 @@ export function createPathSearch(
       if (idx >= 0 && idx < N) blockedMask[idx] = 1;
     }
   }
-  return { W, N, start, goal, parent, queue, qh: 0, qt, blockedMask };
+  return {
+    W, N, start, goal, parent, queue, qh: 0, qt, blockedMask,
+    ...(through ? { through: true as const } : {}),
+  };
 }
 
 /** Result of one incremental slice: still searching (call again next tick)
@@ -265,6 +272,7 @@ export function advancePathSearch(st: PathSearchState, table: PassageTable, cell
   const entry = table.entryMask;
   const exit = table.exitMask;
   const body = table.bodyBlocks;
+  const through = st.through === true;
   let budget = cellBudget;
 
   while (st.qh < st.qt && budget > 0) {
@@ -274,33 +282,33 @@ export function advancePathSearch(st: PathSearchState, table: PassageTable, cell
     let ni: number;
 
     ni = cur + W;
-    if (ni < N && parent[ni] === -1 &&
+    if (ni < N && parent[ni] === -1 && (through || (
         (exit[cur]! & 1) === 0 && solid[ni] === 0 && (entry[ni]! & 4) === 0 &&
-        (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)) {
+        (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)))) {
       parent[ni] = (cur << 2) | 0; queue[st.qt++] = ni;
       if (ni === st.goal) return { done: true, path: backtrack(st) };
     }
     if (cx > 0) {
       ni = cur - 1;
-      if (parent[ni] === -1 &&
+      if (parent[ni] === -1 && (through || (
           (exit[cur]! & 2) === 0 && solid[ni] === 0 && (entry[ni]! & 8) === 0 &&
-          (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)) {
+          (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)))) {
         parent[ni] = (cur << 2) | 1; queue[st.qt++] = ni;
         if (ni === st.goal) return { done: true, path: backtrack(st) };
       }
     }
     ni = cur - W;
-    if (ni >= 0 && parent[ni] === -1 &&
+    if (ni >= 0 && parent[ni] === -1 && (through || (
         (exit[cur]! & 4) === 0 && solid[ni] === 0 && (entry[ni]! & 1) === 0 &&
-        (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)) {
+        (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)))) {
       parent[ni] = (cur << 2) | 2; queue[st.qt++] = ni;
       if (ni === st.goal) return { done: true, path: backtrack(st) };
     }
     if (cx + 1 < W) {
       ni = cur + 1;
-      if (parent[ni] === -1 &&
+      if (parent[ni] === -1 && (through || (
           (exit[cur]! & 8) === 0 && solid[ni] === 0 && (entry[ni]! & 2) === 0 &&
-          (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)) {
+          (body === undefined || !body.has(ni)) && (blockedMask === null || blockedMask[ni] === 0)))) {
         parent[ni] = (cur << 2) | 3; queue[st.qt++] = ni;
         if (ni === st.goal) return { done: true, path: backtrack(st) };
       }

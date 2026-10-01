@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-stack/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 25 commands), map-character motion,
+  event interpreter (pages, triggers, 26 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -318,8 +318,9 @@ array of `"sheet.cell"` tile ids (`null` is a blocking void), a sparse
 `events`. Each event owns ordered **pages**; the active page is the
 highest-index page whose condition holds. A page names one trigger, an
 optional sprite, motion (`moveType` or an authored `moveRoute`), and a
-command list. `src/data/schema.json` is normative and
-`src/engine/types.ts` carries the matching TypeScript types.
+command list. Optional `moveSpeed`, `moveFrequency`, `directionFix`,
+`through`, and `facingMode` fields tune that motion. `src/data/schema.json`
+is normative and `src/engine/types.ts` carries the matching TypeScript types.
 
 ### Large projects: maps as on-demand entries
 
@@ -412,7 +413,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 25 commands
+### The 26 commands
 
 | op | purpose |
 | --- | --- |
@@ -424,6 +425,7 @@ earlier resident map within the same host frame.
 | `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, or a registered `ext` predicate, with `else` |
 | `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }` |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
+| `moveControl` | change a target's autonomous mode, stop it, start bounded wandering, or override speed/run/frequency/collision/facing settings |
 | `appearance` | change a player's/event's walking sprite, opacity, or visibility; optionally save a new player reset baseline |
 | `layer` | show/hide a named visual layer or select one of its prepackaged variants for this map visit |
 | `tileProperty` | replace one cell's passage and/or one-sided entry/exit edge masks for this map visit |
@@ -435,11 +437,37 @@ earlier resident map within the same host frame.
 | `exit` | end this fiber |
 | `common` | run a common event's command list |
 | `lockInput` / `unlockInput` | cross-event input lock; freezes the mover and action but not autorun/parallel |
-| `place` | relocate `"this"` or a named event to a tile, optionally facing a direction |
+| `place` | relocate the player, `"this"`, or a named event to a tile, optionally facing a direction |
 | `shop` | MV-style buy/sell over gold and item counts, from an `id`-namespaced goods list with per-good price/sellPrice/stock/condition overrides |
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
+
+`moveControl` takes the same `"player"` / `"this"` / `{event:id}` target as
+`moveRoute`; a route can apply the same `MoveControl` inline with a
+`{control: ...}` step. Page movement defaults are speed grade 5, frequency
+grade 5, `directionFix:false`, `through:false`, and
+`facingMode:"followMovement"`. Speed uses RPG Maker MV's 1-6 grades; `run`
+adds one effective grade capped at 6. Frequency uses MV's 1-5 cadence grades
+on the fixed reference-tick clock: grade `n` waits `30 × (5 - n)` reference
+ticks between autonomous decisions.
+
+Control settings (including `stop`) persist for the current map visit and
+round-trip through saves. An NPC page switch clears all of that NPC's
+overrides; a map transfer clears player and NPC overrides. Motion priority is
+forced route, runtime autonomous override, page patrol, then page autonomous
+motion. `stop` cancels the active route and suppresses its page patrol until a
+new route or motion-mode control resumes it; use `moveType:"static"` to stop
+wandering. `wander` may constrain its random steps to an optional non-empty
+tile rectangle. Player wander makes `worldIdle` false; NPC wander does not.
+Input lock or any open dialog pauses player wander, and any open dialog pauses
+runtime NPC wander.
+
+`through` bypasses terrain and character bodies, but never map bounds, and
+touch triggers still fire. `directionFix` prevents every facing change.
+`facingMode:"locked"` and `"scripted"` intentionally share Tuxemon's runtime
+behavior here: movement does not turn the actor, while explicit face steps
+still do; `"followMovement"` turns with movement.
 
 `appearance` uses the same targets as `moveRoute`: `"player"`, `"this"`, or
 `{ "event": "id" }`. A string `sprite` resolves through the project's

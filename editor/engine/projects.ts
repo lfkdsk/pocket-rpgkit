@@ -319,6 +319,11 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         "sprite": { "type": ["string", "null"], "description": "Key in project.sprites; null = no character (touch trigger tile only)." },
         "blocks": { "type": "boolean", "description": "true = the event body blocks movement (closed gates); default false = below-characters, walkable, touch fires on entry (MV priorityType 0 semantics)." },
         "moveType": { "enum": ["static", "random", "approach"] },
+        "moveSpeed": { "type": "integer", "minimum": 1, "maximum": 6, "description": "MV movement speed grade; default 5." },
+        "moveFrequency": { "type": "integer", "minimum": 1, "maximum": 5, "description": "Autonomous movement frequency grade on the fixed reference clock; default 5." },
+        "directionFix": { "type": "boolean", "description": "Prevent all facing changes while true; default false." },
+        "through": { "type": "boolean", "description": "Pass terrain and character bodies while remaining inside the map; touch triggers still fire. Default false." },
+        "facingMode": { "enum": ["followMovement", "locked", "scripted"], "description": "Facing policy; default followMovement. locked and scripted prevent movement-driven turns but still allow explicit face steps." },
         "dir": { "enum": ["down", "left", "right", "up"], "description": "Initial facing the character shows when this page spawns it; default down." },
         "moveRoute": {
           "type": "object",
@@ -492,6 +497,16 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "target", "control"],
+          "properties": {
+            "op": { "const": "moveControl" },
+            "target": { "$ref": "#/$defs/routeTarget" },
+            "control": { "$ref": "#/$defs/moveControl" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "target"],
           "anyOf": [
             { "required": ["sprite"] },
@@ -612,22 +627,12 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
           "required": ["op", "target", "x", "y"],
           "properties": {
             "op": { "const": "place" },
-            "target": {
-              "oneOf": [
-                { "enum": ["this"] },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["event"],
-                  "properties": { "event": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" } }
-                }
-              ]
-            },
+            "target": { "$ref": "#/$defs/routeTarget" },
             "x": { "type": "integer", "minimum": 0 },
             "y": { "type": "integer", "minimum": 0 },
             "dir": { "enum": ["down", "left", "right", "up"] }
           },
-          "description": "Set Event Location: move this (or named) event to a tile, optionally facing a direction."
+          "description": "Set character location: move the player, this event, or a named event to a tile, optionally facing a direction."
         },
         {
           "type": "object",
@@ -754,6 +759,100 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
       ],
       "description": "Who a forced route drives: the player, the running event, or another map event."
     },
+    "moveControl": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "wander" },
+            "bounds": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "width", "height"],
+              "properties": {
+                "x": { "type": "integer", "minimum": 0 },
+                "y": { "type": "integer", "minimum": 0 },
+                "width": { "type": "integer", "minimum": 1 },
+                "height": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "frequency": { "type": "integer", "minimum": 1, "maximum": 5 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "moveType" },
+            "value": { "enum": ["page", "static", "approach"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "stop" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "speed" },
+            "value": { "type": "integer", "minimum": 1, "maximum": 6 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "run" },
+            "value": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "frequency" },
+            "value": { "type": "integer", "minimum": 1, "maximum": 5 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "directionFix" },
+            "value": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "through" },
+            "value": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "facingMode" },
+            "value": { "enum": ["followMovement", "locked", "scripted"] }
+          }
+        }
+      ],
+      "description": "A movement override or wander request for a player/event target. It persists for the map visit; an event page switch clears that event's overrides."
+    },
     "moveStep": {
       "oneOf": [
         {
@@ -807,9 +906,17 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
               }
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["control"],
+          "properties": {
+            "control": { "$ref": "#/$defs/moveControl" }
+          }
         }
       ],
-      "description": "A move-route command. turnTowardPlayer faces the live player; {turnToward} faces a character; {pathTo} expands at the step start with a deterministic 4-way BFS, waits a bounded interval when unreachable or blocked, and allows 'retries' full replans (default 10) before continuing the route; {approach} pathfinds to the adjacent tile on the target's side (the side a step to the target enters from) and faces the target on arrival."
+      "description": "A move-route command. turnTowardPlayer faces the live player; {turnToward} faces a character; {pathTo} expands at the step start with a deterministic 4-way BFS, waits a bounded interval when unreachable or blocked, and allows 'retries' full replans (default 10) before continuing the route; {approach} pathfinds to the adjacent tile on the target's side (the side a step to the target enters from) and faces the target on arrival; {control} applies a persistent per-map-visit movement override."
     },
     "condition": {
       "oneOf": [

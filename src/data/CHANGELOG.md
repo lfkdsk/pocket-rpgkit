@@ -322,6 +322,38 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   shapes do not change. The normative schema identity is refreshed as usual;
   attract replay/rewind re-derives the value from restored state.
 
+## v1 amendment — 2026-09-30 (runtime movement controls)
+
+- Pages gain optional movement defaults: `moveSpeed` (MV grade 1-6, default
+  5), `moveFrequency` (MV grade 1-5, default 5), `directionFix` (default
+  false), `through` (default false), and `facingMode` (`followMovement`,
+  `locked`, or `scripted`; default `followMovement`). `run` raises the
+  effective speed grade by one, capped at 6. Frequency cadence is measured on
+  the fixed reference-tick clock using the MV grade: grade `n` waits
+  `30 × (5 - n)` reference ticks between autonomous decisions.
+- The new `MoveControl` union selects bounded random `wander` (optional
+  non-empty `{x,y,width,height}` bounds and frequency), page/static/approach
+  autonomous motion, `stop`, speed, run, frequency, direction fix, through,
+  or facing mode. `{ op: "moveControl", target, control }` applies one to the
+  player, the running event, or a named event. A move route may apply the same
+  control to its actor with a `{ control }` step.
+- All runtime settings, including `stop`, persist for the current map visit
+  and round-trip through saves. An NPC page switch clears every movement
+  override for that actor; a map transfer clears overrides for the player and
+  every NPC. Motion priority is forced route, runtime autonomous override,
+  page patrol, then page autonomous motion. `stop` cancels the active route
+  and suppresses page patrol; `moveType:"static"` stops wandering.
+- `through` crosses terrain and character bodies, but never map bounds, and
+  touch triggers still fire. `directionFix` prevents all facing changes.
+  Tuxemon's `locked` and `scripted` facing modes both prevent only automatic
+  movement turns here; explicit face steps remain effective.
+- Player wander makes the derived `worldIdle` condition false; NPC wander does
+  not. Input lock or any dialog pauses player wander, and any dialog pauses
+  runtime NPC wander. This dialog rule does not depend on the optional
+  `system.messageBlocksPlayer` setting.
+- `place.target` now reuses `RouteTarget`, so Set Location can relocate the
+  player as well as `"this"` or a named event.
+
 ## v1 amendment — 2026-09-30 (extension-provided dynamic choices)
 
 - **Dynamic extension choices:** `{ "op": "extChoice", "call":

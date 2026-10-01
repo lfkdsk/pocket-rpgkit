@@ -43,7 +43,21 @@ import {
   type SwitchState,
 } from "./interpreter.ts";
 import { keyedRecord } from "./clone.ts";
-import { stepPixels, stepFrames, type MovementConfig } from "./movement.ts";
+import {
+  activeStepConfig,
+  stepPixels,
+  stepFrames,
+  type MovementConfig,
+} from "./movement.ts";
+import {
+  canFace,
+  DEFAULT_MOVE_SETTINGS,
+  frequencyDelay,
+  inMapBounds,
+  inWanderBounds,
+  movementConfigFor,
+  type ResolvedMoveSettings,
+} from "./move-control.ts";
 import type { Dir4, PassageTable } from "./passability.ts";
 import { canStepFrom } from "./passability.ts";
 import {
@@ -55,7 +69,15 @@ import {
   facingToward,
   type PathSearchState,
 } from "./pathfind.ts";
-import type { Dir, Facing, GameEvent, MapDef, MoveRoute, MoveStep } from "./types.ts";
+import type {
+  Dir,
+  Facing,
+  GameEvent,
+  MapDef,
+  MoveControl,
+  MoveRoute,
+  MoveStep,
+} from "./types.ts";
 
 const DX = [0, -1, 0, 1] as const; // down, left, up, right
 const DY = [1, 0, -1, 0] as const;
@@ -476,6 +498,23 @@ export function installRoute(
   return { state: s, displacedWaiter };
 }
 
+/** Stop the active route without cutting a committed tile in half. The
+ *  character finishes that tile from its already-latched interpolation;
+ *  no remaining route command runs. */
+export function stopCharRoute(
+  s0: CharsState,
+  eventId: string,
+): { state: CharsState; displacedWaiter: string | null } {
+  const s = cloneChars(s0);
+  const ch = s.chars[eventId];
+  const displacedWaiter = ch?.route?.waiter ?? null;
+  if (ch) {
+    ch.route = null;
+    ch.thinkIn = 0;
+  }
+  return { state: s, displacedWaiter };
+}
+
 const FACE: Record<string, Dir4> = {
   faceDown: 0,
   faceLeft: 1,
@@ -495,7 +534,26 @@ export interface PlayerPlace {
   /** Tile the player is stepping INTO this tick (same as tx,ty at rest). */
   destX: number;
   destY: number;
+  /** A through player is not an obstacle to NPC motion. */
+  through?: boolean;
 }
+
+export interface CharStepOptions {
+  /** Fully resolved page defaults + runtime overrides, keyed by event id. */
+  settings?: Readonly<Record<string, ResolvedMoveSettings>>;
+  /** Called by a {control} route step at its tile boundary. */
+  applyControl?: (eventId: string, control: MoveControl) => void;
+  /** Saveable project RNG used only by command-started random wandering. */
+  runtimeRng?: { rng: number };
+  /** Tuxemon runtime wander pauses while any dialog/choice/shop is open. */
+  modalOpen?: boolean;
+}
+
+const LEGACY_SETTINGS: Record<MotionType, ResolvedMoveSettings> = {
+  static: DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings,
+  random: { ...DEFAULT_MOVE_SETTINGS, moveType: "random" },
+  approach: { ...DEFAULT_MOVE_SETTINGS, moveType: "approach" },
+};
 
 function occupantBlocks(
   ch: CharState,
@@ -505,20 +563,23 @@ function occupantBlocks(
   table: PassageTable,
   player: PlayerPlace,
   others: ReadonlyMap<string, CharState>,
+  settings: ResolvedMoveSettings,
+  allSettings?: Readonly<Record<string, ResolvedMoveSettings>>,
 ): boolean {
   // The exit direction is the direction of THIS candidate step; the
   // character's current facing is its pre-turn orientation and must not be
   // used to look up the target cell's directional block. canStepFrom checks
   // BOTH edges of the crossing: the source cell's exit mask and the target
   // cell's reverse-entry mask (task-1206 dual-edge contract).
+  if (settings.through) return !inMapBounds(table.width, table.height, tx, ty);
   if (!canStepFrom(table, ch.tx, ch.ty, exit)) return true;
-  if (tx === player.tx && ty === player.ty) return true;
-  if (tx === player.destX && ty === player.destY) return true;
+  if (!player.through && tx === player.tx && ty === player.ty) return true;
+  if (!player.through && tx === player.destX && ty === player.destY) return true;
   for (const [id, o] of others) {
     // Only a body stops a character, the rule the player mover follows
     // (tableWithBodies): a blocks:false page — a sprite-less trigger
     // marker, a sign drawn below characters — is walked over.
-    if (id === ch.id || !o.blocks) continue;
+    if (id === ch.id || !o.blocks || allSettings?.[id]?.through === true) continue;
     if (tx === o.tx && ty === o.ty) return true;
     if (o.moving && tx === o.tx + DX[o.stepDir] && ty === o.ty + DY[o.stepDir]) return true;
   }
@@ -527,8 +588,8 @@ function occupantBlocks(
 
 /** True when a character's body keeps the PLAYER out of (tx,ty): the
  *  active page must opt in with blocks:true. */
-export function charBlocksPlayer(ch: CharState, tx: number, ty: number): boolean {
-  if (!ch.blocks) return false;
+export function charBlocksPlayer(ch: CharState, tx: number, ty: number, through = false): boolean {
+  if (!ch.blocks || through) return false;
   if (tx === ch.tx && ty === ch.ty) return true;
   if (ch.moving && tx === ch.tx + DX[ch.stepDir] && ty === ch.ty + DY[ch.stepDir]) return true;
   return false;
@@ -536,13 +597,21 @@ export function charBlocksPlayer(ch: CharState, tx: number, ty: number): boolean
 
 /** Build the per-tick collision predicate the player mover consults
  *  alongside its PassageTable. */
-export function playerBlockedBy(s: CharsState): (tx: number, ty: number) => boolean {
+export function playerBlockedBy(
+  s: CharsState,
+  settings?: Readonly<Record<string, ResolvedMoveSettings>>,
+): (tx: number, ty: number) => boolean {
   const chars = Object.values(s.chars);
-  return (tx, ty) => chars.some((ch) => charBlocksPlayer(ch, tx, ty));
+  return (tx, ty) => chars.some((ch) => charBlocksPlayer(ch, tx, ty, settings?.[ch.id]?.through));
 }
 
-function commitStep(ch: CharState, dir: Dir4, cfg: MovementConfig): void {
-  ch.facing = dir;
+function commitStep(
+  ch: CharState,
+  dir: Dir4,
+  cfg: MovementConfig,
+  settings: ResolvedMoveSettings,
+): void {
+  if (canFace(settings, false)) ch.facing = dir;
   ch.stepDir = dir;
   ch.moving = true;
   ch.phase = 1;
@@ -579,9 +648,15 @@ export function stepChars(
   cfg: MovementConfig,
   locked: ReadonlySet<string>,
   motion: Readonly<Record<string, MotionType>>,
+  options?: CharStepOptions,
 ): { state: CharsState; finishedWaiters: string[] } {
   const s = cloneChars(s0);
-  return { state: s, finishedWaiters: stepCharsInPlace(s, table, player, cfg, locked, motion) };
+  return {
+    state: s,
+    finishedWaiters: options === undefined
+      ? stepCharsInPlaceLegacy(s, table, player, cfg, locked, motion)
+      : stepCharsInPlace(s, table, player, cfg, locked, motion, options),
+  };
 }
 
 /** stepChars on a working copy the caller owns; returns finishedWaiters. */
@@ -592,28 +667,55 @@ export function stepCharsInPlace(
   cfg: MovementConfig,
   locked: ReadonlySet<string>,
   motion: Readonly<Record<string, MotionType>>,
+  options: CharStepOptions,
 ): string[] {
-  const frames = stepFrames(cfg);
   const finishedWaiters: string[] = [];
   const others = new Map(Object.entries(s.chars));
 
   for (const id of Object.keys(s.chars).sort()) {
     const shared = s.chars[id]!;
+    const settings = options.settings?.[id] ?? LEGACY_SETTINGS[motion[id] ?? "static"];
+    const pageRouteNeedsSync =
+      (shared.route?.patrol === true && (settings.runtimeMoveType || settings.routeStopped)) ||
+      (shared.route === null && shared.patrol !== null && !settings.runtimeMoveType && !settings.routeStopped);
     // Characters the branches below leave untouched stay shared: a locked
     // one, and an idle one with no route, no pause and a static page.
     if (!shared.moving) {
-      if (locked.has(shared.id) && !(shared.route && !shared.route.patrol)) continue;
-      if (!shared.route && shared.thinkIn === 0 && (motion[id] ?? "static") === "static") continue;
+      if (locked.has(shared.id) && !(shared.route && !shared.route.patrol) && !pageRouteNeedsSync) continue;
+      if (
+        !shared.route && shared.thinkIn === 0 &&
+        settings.moveType === "static" && !settings.routeStopped && !pageRouteNeedsSync
+      ) continue;
     }
     const ch = ownChar(s, id);
     others.set(id, ch);
 
+    // A stop command lets an already-committed tile finish, then suppresses
+    // the remaining forced/page route. A waiter is released exactly once.
+    if (!ch.moving && settings.routeStopped && ch.route) {
+      if (ch.route.waiter) finishedWaiters.push(ch.route.waiter);
+      ch.route = null;
+      ch.thinkIn = 0;
+      continue;
+    }
+    if (!ch.moving && ch.route?.patrol && settings.runtimeMoveType) ch.route = null;
+    if (
+      !ch.moving && ch.route === null && ch.patrol !== null &&
+      !settings.runtimeMoveType && !settings.routeStopped
+    ) {
+      ch.route = cloneRoute(ch.patrol);
+    }
+
+    const desiredCfg = movementConfigFor(cfg, settings);
+
     // Mid-step: interpolate. Nothing interrupts a step once committed
     // (locks and page changes snap at boundaries via syncPages).
     if (ch.moving) {
+      const stepCfg = activeStepConfig(ch, desiredCfg);
+      const frames = stepFrames(stepCfg);
       const phase = ch.phase + 1;
       if (phase < frames) {
-        const { px, py } = stepPixels(ch.tx * cfg.tile, ch.ty * cfg.tile, ch.stepDir, phase, cfg);
+        const { px, py } = stepPixels(ch.tx * cfg.tile, ch.ty * cfg.tile, ch.stepDir, phase, stepCfg);
         ch.phase = phase;
         ch.px = px;
         ch.py = py;
@@ -634,7 +736,7 @@ export function stepCharsInPlace(
           const tc = resolveTargetCell(ap.target, player, others);
           if (tc) {
             const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
-            if (f !== null) { ch.facing = f; ch.stepDir = f; }
+            if (f !== null && canFace(settings, true)) { ch.facing = f; ch.stepDir = f; }
           }
         }
         advanceRouteStep(ch, finishedWaiters);
@@ -655,7 +757,7 @@ export function stepCharsInPlace(
     }
 
     if (ch.route) {
-      stepRoute(s, ch, table, player, others, cfg, finishedWaiters);
+      stepRoute(s, ch, table, player, others, desiredCfg, settings, options, finishedWaiters);
       continue;
     }
 
@@ -663,9 +765,12 @@ export function stepCharsInPlace(
       ch.thinkIn--;
       if (ch.thinkIn > 0) continue; // decide on the tick the pause ends
     }
-    const kind = motion[id] ?? "static";
-    if (kind === "random") randomStep(s, ch, table, player, others, cfg);
-    else if (kind === "approach") approachStep(ch, table, player, others, cfg);
+    if (settings.runtimeWander && options.modalOpen) continue;
+    if (settings.moveType === "random") {
+      randomStep(s, ch, table, player, others, desiredCfg, settings, options);
+    } else if (settings.moveType === "approach") {
+      approachStep(ch, table, player, others, desiredCfg, settings, options.settings);
+    }
   }
 
   return finishedWaiters;
@@ -738,6 +843,8 @@ function stepPath(
   player: PlayerPlace,
   others: ReadonlyMap<string, CharState>,
   cfg: MovementConfig,
+  settings: ResolvedMoveSettings,
+  allSettings: Readonly<Record<string, ResolvedMoveSettings>> | undefined,
   step: Extract<MoveStep, { pathTo: unknown }> | Extract<MoveStep, { approach: unknown }>,
   finishedWaiters: string[],
 ): void {
@@ -763,7 +870,10 @@ function stepPath(
       const resolved = resolveApproach(ch, step, player, others);
       if (resolved.kind === "noTarget") { releaseRoute(ch, finishedWaiters); return; }
       if (resolved.kind === "finish") {
-        if (resolved.turn !== null) { ch.facing = resolved.turn; ch.stepDir = resolved.turn; }
+        if (resolved.turn !== null && canFace(settings, true)) {
+          ch.facing = resolved.turn;
+          ch.stepDir = resolved.turn;
+        }
         advanceRouteStep(ch, finishedWaiters);
         return;
       }
@@ -773,14 +883,18 @@ function stepPath(
     }
 
     const blocked = new Set<number>();
-    blocked.add(player.tx + player.ty * W);
-    blocked.add(player.destX + player.destY * W);
-    for (const [id, o] of others) {
-      if (id === ch.id || !o.blocks) continue;
-      blocked.add(o.tx + o.ty * W);
-      if (o.moving) blocked.add(o.tx + DX[o.stepDir] + (o.ty + DY[o.stepDir]) * W);
+    if (!settings.through) {
+      if (!player.through) {
+        blocked.add(player.tx + player.ty * W);
+        blocked.add(player.destX + player.destY * W);
+      }
+      for (const [id, o] of others) {
+        if (id === ch.id || !o.blocks || allSettings?.[id]?.through === true) continue;
+        blocked.add(o.tx + o.ty * W);
+        if (o.moving) blocked.add(o.tx + DX[o.stepDir] + (o.ty + DY[o.stepDir]) * W);
+      }
     }
-    const search = createPathSearch(table, ch.tx, ch.ty, gx, gy, blocked);
+    const search = createPathSearch(table, ch.tx, ch.ty, gx, gy, blocked, settings.through);
     if (search === null) {
       releaseRoute(ch, finishedWaiters);
       return;
@@ -808,7 +922,7 @@ function stepPath(
         const tc = resolveTargetCell(plan.approach.target, player, others);
         if (tc) {
           const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
-          if (f !== null) { ch.facing = f; ch.stepDir = f; }
+          if (f !== null && canFace(settings, true)) { ch.facing = f; ch.stepDir = f; }
         }
       }
       advanceRouteStep(ch, finishedWaiters);
@@ -837,8 +951,8 @@ function stepPath(
   }
   const tx = ch.tx + DX[dir];
   const ty = ch.ty + DY[dir];
-  if (occupantBlocks(ch, tx, ty, dir, table, player, others)) {
-    ch.facing = dir;
+  if (occupantBlocks(ch, tx, ty, dir, table, player, others, settings, allSettings)) {
+    if (canFace(settings, false)) ch.facing = dir;
     ch.stepDir = dir;
     plan.blockedTicks++;
     if (plan.blockedTicks < PATH_REPLAN_TICKS) return; // wait, keep the plan
@@ -852,7 +966,7 @@ function stepPath(
   }
   // Commit the next planned tile step; the SAME authored route step stays
   // current until the whole plan is consumed.
-  commitStep(ch, dir, cfg);
+  commitStep(ch, dir, cfg, settings);
   plan.dirs.shift();
   if (plan.dirs.length === 0) {
     // Last internal step is now interpolating; the landing boundary tick
@@ -871,6 +985,8 @@ function stepRoute(
   player: PlayerPlace,
   others: ReadonlyMap<string, CharState>,
   cfg: MovementConfig,
+  settings: ResolvedMoveSettings,
+  options: CharStepOptions,
   finishedWaiters: string[],
 ): void {
   const route = ch.route!;
@@ -885,7 +1001,17 @@ function stepRoute(
     if ("pathTo" in step || "approach" in step) {
       // The final internal step lands in the moving branch (plan.done);
       // here we only expand/walk the plan at a boundary.
-      stepPath(ch, table, player, others, cfg, step, finishedWaiters);
+      stepPath(ch, table, player, others, cfg, settings, options.settings, step, finishedWaiters);
+      return;
+    }
+    if ("control" in step) {
+      if (step.control.kind === "stop") {
+        options.applyControl?.(ch.id, step.control);
+        releaseRoute(ch, finishedWaiters);
+        return;
+      }
+      options.applyControl?.(ch.id, step.control);
+      advanceRouteStep(ch, finishedWaiters);
       return;
     }
     if ("turnToward" in step) {
@@ -896,7 +1022,7 @@ function stepRoute(
       );
       if (tc) {
         const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
-        if (f !== null) { ch.facing = f; ch.stepDir = f; }
+        if (f !== null && canFace(settings, true)) { ch.facing = f; ch.stepDir = f; }
       }
       advanceRouteStep(ch, finishedWaiters);
       return;
@@ -908,15 +1034,17 @@ function stepRoute(
 
   if (step === "turnTowardPlayer") {
     const f = facingToward(ch.tx, ch.ty, player.tx, player.ty);
-    if (f !== null) { ch.facing = f; ch.stepDir = f; }
+    if (f !== null && canFace(settings, true)) { ch.facing = f; ch.stepDir = f; }
     advanceRouteStep(ch, finishedWaiters);
     return;
   }
 
   const faceDir = FACE[step];
   if (faceDir !== undefined) {
-    ch.facing = faceDir;
-    ch.stepDir = faceDir;
+    if (canFace(settings, true)) {
+      ch.facing = faceDir;
+      ch.stepDir = faceDir;
+    }
     route.pc++;
     if (route.pc >= route.steps.length && !route.repeat) releaseRoute(ch, finishedWaiters);
     else if (route.pc >= route.steps.length) route.pc = 0;
@@ -925,8 +1053,10 @@ function stepRoute(
   if (step === "turnRandom") {
     const r = randInt(s.rng, 0, 3);
     s.rng = r.next;
-    ch.facing = r.value as Dir4;
-    ch.stepDir = ch.facing;
+    if (canFace(settings, true)) {
+      ch.facing = r.value as Dir4;
+      ch.stepDir = ch.facing;
+    }
     route.pc++;
     if (route.pc >= route.steps.length && !route.repeat) releaseRoute(ch, finishedWaiters);
     else if (route.pc >= route.steps.length) route.pc = 0;
@@ -948,13 +1078,13 @@ function stepRoute(
   }
   const tx = ch.tx + DX[dir];
   const ty = ch.ty + DY[dir];
-  if (occupantBlocks(ch, tx, ty, dir, table, player, others)) {
-    ch.facing = dir;
+  if (occupantBlocks(ch, tx, ty, dir, table, player, others, settings, options.settings)) {
+    if (canFace(settings, false)) ch.facing = dir;
     ch.stepDir = dir;
     if (route.skippable) releaseRoute(ch, finishedWaiters);
     return; // retry on the next boundary tick
   }
-  commitStep(ch, dir, cfg);
+  commitStep(ch, dir, cfg, settings);
   route.pc++;
   if (route.pc >= route.steps.length && route.repeat) route.pc = 0;
 }
@@ -966,24 +1096,49 @@ function randomStep(
   player: PlayerPlace,
   others: ReadonlyMap<string, CharState>,
   cfg: MovementConfig,
+  settings: ResolvedMoveSettings,
+  options: CharStepOptions,
 ): void {
+  const delay = frequencyDelay(settings.frequency);
+  if (settings.runtimeWander) {
+    // Tuxemon chooses uniformly from the currently valid exits. It neither
+    // consumes RNG nor invents an idle result when no exit exists.
+    const exits: Dir4[] = [];
+    for (const dir of [0, 1, 2, 3] as const) {
+      const tx = ch.tx + DX[dir];
+      const ty = ch.ty + DY[dir];
+      if (!inWanderBounds(settings.bounds, tx, ty)) continue;
+      if (!occupantBlocks(ch, tx, ty, dir, table, player, others, settings, options.settings)) {
+        exits.push(dir);
+      }
+    }
+    ch.thinkIn = delay;
+    if (exits.length === 0) return;
+    const cursor = options.runtimeRng ?? s;
+    const r = randInt(cursor.rng, 0, exits.length - 1);
+    cursor.rng = r.next;
+    commitStep(ch, exits[r.value]!, cfg, settings);
+    return;
+  }
+
   const r = randInt(s.rng, 0, 4);
   s.rng = r.next;
   if (r.value === 4) {
-    ch.thinkIn = IDLE_BEATS; // one-in-five amble pauses
+    ch.thinkIn = Math.max(IDLE_BEATS, delay); // one-in-five amble pauses
     return;
   }
   const dir = r.value as Dir4;
-  ch.facing = dir;
+  if (canFace(settings, false)) ch.facing = dir;
   ch.stepDir = dir;
   const tx = ch.tx + DX[dir];
   const ty = ch.ty + DY[dir];
-  if (!occupantBlocks(ch, tx, ty, dir, table, player, others)) {
-    commitStep(ch, dir, cfg);
+  if (!occupantBlocks(ch, tx, ty, dir, table, player, others, settings, options.settings)) {
+    commitStep(ch, dir, cfg, settings);
+    ch.thinkIn = delay;
     // The 8-tick step is its own pacing; no extra think delay on a move.
     return;
   }
-  ch.thinkIn = THINK_BEATS; // blocked: re-roll later
+  ch.thinkIn = Math.max(THINK_BEATS, delay); // blocked: re-roll later
 }
 
 function approachStep(
@@ -992,6 +1147,8 @@ function approachStep(
   player: PlayerPlace,
   others: ReadonlyMap<string, CharState>,
   cfg: MovementConfig,
+  settings: ResolvedMoveSettings,
+  allSettings?: Readonly<Record<string, ResolvedMoveSettings>>,
 ): void {
   const dx = player.tx - ch.tx;
   const dy = player.ty - ch.ty;
@@ -1004,8 +1161,251 @@ function approachStep(
   for (const dir of order) {
     const tx = ch.tx + DX[dir];
     const ty = ch.ty + DY[dir];
-    if (!occupantBlocks(ch, tx, ty, dir, table, player, others)) {
-      commitStep(ch, dir, cfg); // chained approach steps at the step cadence
+    if (!occupantBlocks(ch, tx, ty, dir, table, player, others, settings, allSettings)) {
+      commitStep(ch, dir, cfg, settings); // chained approach steps at the step cadence
+      ch.thinkIn = frequencyDelay(settings.frequency);
+      return;
+    }
+  }
+  if (order[0] !== undefined) {
+    if (canFace(settings, false)) ch.facing = order[0];
+    ch.stepDir = order[0];
+  }
+  ch.thinkIn = Math.max(THINK_BEATS, frequencyDelay(settings.frequency));
+}
+
+/** Pre-KM1 character fold used when the compiled world has no page movement
+ * defaults and no route control steps. This deliberately keeps the original
+ * loop separate: the common case performs no settings lookup, allocation, or
+ * control-specific branch for each character. */
+export function stepCharsInPlaceLegacy(
+  s: CharsState,
+  table: PassageTable,
+  player: PlayerPlace,
+  cfg: MovementConfig,
+  locked: ReadonlySet<string>,
+  motion: Readonly<Record<string, MotionType>>,
+): string[] {
+  const frames = stepFrames(cfg);
+  const finishedWaiters: string[] = [];
+  const others = new Map(Object.entries(s.chars));
+
+  for (const id of Object.keys(s.chars).sort()) {
+    const shared = s.chars[id]!;
+    if (!shared.moving) {
+      if (locked.has(shared.id) && !(shared.route && !shared.route.patrol)) continue;
+      if (!shared.route && shared.thinkIn === 0 && (motion[id] ?? "static") === "static") continue;
+    }
+    const ch = ownChar(s, id);
+    others.set(id, ch);
+
+    if (ch.moving) {
+      const phase = ch.phase + 1;
+      if (phase < frames) {
+        const { px, py } = stepPixels(ch.tx * cfg.tile, ch.ty * cfg.tile, ch.stepDir, phase, cfg);
+        ch.phase = phase;
+        ch.px = px;
+        ch.py = py;
+        continue;
+      }
+      ch.tx += DX[ch.stepDir];
+      ch.ty += DY[ch.stepDir];
+      ch.px = ch.tx * cfg.tile;
+      ch.py = ch.ty * cfg.tile;
+      ch.phase = 0;
+      ch.moving = false;
+      if (ch.route?.plan?.done) {
+        const ap = ch.route.plan.approach;
+        if (ap) {
+          const tc = resolveTargetCell(ap.target, player, others);
+          if (tc) {
+            const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
+            if (f !== null) { ch.facing = f; ch.stepDir = f; }
+          }
+        }
+        advanceRouteStep(ch, finishedWaiters);
+      } else if (ch.route && ch.route.pc >= ch.route.steps.length && !ch.route.repeat) {
+        releaseRoute(ch, finishedWaiters);
+      }
+      continue;
+    }
+
+    if (locked.has(ch.id) && !(ch.route && !ch.route.patrol)) continue;
+    if (ch.route && ch.route.waitLeft > 0) {
+      ch.route.waitLeft--;
+      if (ch.route.waitLeft > 0) continue;
+    }
+    if (ch.route) {
+      stepRouteLegacy(s, ch, table, player, others, cfg, finishedWaiters);
+      continue;
+    }
+    if (ch.thinkIn > 0) {
+      ch.thinkIn--;
+      if (ch.thinkIn > 0) continue;
+    }
+    const kind = motion[id] ?? "static";
+    if (kind === "random") randomStepLegacy(s, ch, table, player, others, cfg);
+    else if (kind === "approach") approachStepLegacy(ch, table, player, others, cfg);
+  }
+  return finishedWaiters;
+}
+
+function occupantBlocksLegacy(
+  ch: CharState,
+  tx: number,
+  ty: number,
+  exit: Dir4,
+  table: PassageTable,
+  player: PlayerPlace,
+  others: ReadonlyMap<string, CharState>,
+): boolean {
+  if (!canStepFrom(table, ch.tx, ch.ty, exit)) return true;
+  if (tx === player.tx && ty === player.ty) return true;
+  if (tx === player.destX && ty === player.destY) return true;
+  for (const [id, other] of others) {
+    if (id === ch.id || !other.blocks) continue;
+    if (tx === other.tx && ty === other.ty) return true;
+    if (other.moving && tx === other.tx + DX[other.stepDir] && ty === other.ty + DY[other.stepDir]) return true;
+  }
+  return false;
+}
+
+function commitStepLegacy(ch: CharState, dir: Dir4, cfg: MovementConfig): void {
+  ch.facing = dir;
+  ch.stepDir = dir;
+  ch.moving = true;
+  ch.phase = 1;
+  const { px, py } = stepPixels(ch.tx * cfg.tile, ch.ty * cfg.tile, dir, 1, cfg);
+  ch.px = px;
+  ch.py = py;
+}
+
+function stepRouteLegacy(
+  s: CharsState,
+  ch: CharState,
+  table: PassageTable,
+  player: PlayerPlace,
+  others: ReadonlyMap<string, CharState>,
+  cfg: MovementConfig,
+  finishedWaiters: string[],
+): void {
+  const route = ch.route!;
+  const step: MoveStep | undefined = route.steps[route.pc];
+  if (step === undefined) {
+    releaseRoute(ch, finishedWaiters);
+    return;
+  }
+  if (typeof step === "object") {
+    if ("pathTo" in step || "approach" in step) {
+      stepPath(ch, table, player, others, cfg, LEGACY_SETTINGS.static, undefined, step, finishedWaiters);
+      return;
+    }
+    if ("turnToward" in step) {
+      const tc = resolveTargetCell(step.turnToward === "player" ? "player" : step.turnToward, player, others);
+      if (tc) {
+        const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
+        if (f !== null) { ch.facing = f; ch.stepDir = f; }
+      }
+      advanceRouteStep(ch, finishedWaiters);
+      return;
+    }
+    advanceRouteStep(ch, finishedWaiters);
+    return;
+  }
+  if (step === "turnTowardPlayer") {
+    const f = facingToward(ch.tx, ch.ty, player.tx, player.ty);
+    if (f !== null) { ch.facing = f; ch.stepDir = f; }
+    advanceRouteStep(ch, finishedWaiters);
+    return;
+  }
+  const faceDir = FACE[step];
+  if (faceDir !== undefined) {
+    ch.facing = faceDir;
+    ch.stepDir = faceDir;
+    route.pc++;
+    if (route.pc >= route.steps.length && !route.repeat) releaseRoute(ch, finishedWaiters);
+    else if (route.pc >= route.steps.length) route.pc = 0;
+    return;
+  }
+  if (step === "turnRandom") {
+    const random = randInt(s.rng, 0, 3);
+    s.rng = random.next;
+    ch.facing = random.value as Dir4;
+    ch.stepDir = ch.facing;
+    route.pc++;
+    if (route.pc >= route.steps.length && !route.repeat) releaseRoute(ch, finishedWaiters);
+    else if (route.pc >= route.steps.length) route.pc = 0;
+    return;
+  }
+  if (step === "wait") {
+    route.waitLeft = stepFrames(cfg);
+    route.pc++;
+    if (route.pc >= route.steps.length && route.repeat) route.pc = 0;
+    return;
+  }
+  const dir = step === "stepForward" ? ch.facing : MOVE[step];
+  if (dir === undefined) {
+    route.pc++;
+    return;
+  }
+  const tx = ch.tx + DX[dir];
+  const ty = ch.ty + DY[dir];
+  if (occupantBlocksLegacy(ch, tx, ty, dir, table, player, others)) {
+    ch.facing = dir;
+    ch.stepDir = dir;
+    if (route.skippable) releaseRoute(ch, finishedWaiters);
+    return;
+  }
+  commitStepLegacy(ch, dir, cfg);
+  route.pc++;
+  if (route.pc >= route.steps.length && route.repeat) route.pc = 0;
+}
+
+function randomStepLegacy(
+  s: CharsState,
+  ch: CharState,
+  table: PassageTable,
+  player: PlayerPlace,
+  others: ReadonlyMap<string, CharState>,
+  cfg: MovementConfig,
+): void {
+  const random = randInt(s.rng, 0, 4);
+  s.rng = random.next;
+  if (random.value === 4) {
+    ch.thinkIn = IDLE_BEATS;
+    return;
+  }
+  const dir = random.value as Dir4;
+  ch.facing = dir;
+  ch.stepDir = dir;
+  const tx = ch.tx + DX[dir];
+  const ty = ch.ty + DY[dir];
+  if (!occupantBlocksLegacy(ch, tx, ty, dir, table, player, others)) {
+    commitStepLegacy(ch, dir, cfg);
+    return;
+  }
+  ch.thinkIn = THINK_BEATS;
+}
+
+function approachStepLegacy(
+  ch: CharState,
+  table: PassageTable,
+  player: PlayerPlace,
+  others: ReadonlyMap<string, CharState>,
+  cfg: MovementConfig,
+): void {
+  const dx = player.tx - ch.tx;
+  const dy = player.ty - ch.ty;
+  if (dx === 0 && dy === 0) return;
+  if (Math.abs(dx) + Math.abs(dy) > APPROACH_SIGHT) return;
+  const order: Dir4[] = Math.abs(dy) >= Math.abs(dx)
+    ? [dy > 0 ? 0 : 2, dx > 0 ? 3 : 1]
+    : [dx > 0 ? 3 : 1, dy > 0 ? 0 : 2];
+  for (const dir of order) {
+    const tx = ch.tx + DX[dir];
+    const ty = ch.ty + DY[dir];
+    if (!occupantBlocksLegacy(ch, tx, ty, dir, table, player, others)) {
+      commitStepLegacy(ch, dir, cfg);
       return;
     }
   }
@@ -1013,7 +1413,7 @@ function approachStep(
     ch.facing = order[0];
     ch.stepDir = order[0];
   }
-  ch.thinkIn = THINK_BEATS; // boxed in: pause before retrying
+  ch.thinkIn = THINK_BEATS;
 }
 
 /** Resolve a character's current cell (authored position if it has no

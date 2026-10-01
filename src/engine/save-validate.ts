@@ -20,7 +20,7 @@ import { extensionCallNameValid, jsonValueProblem } from "./extensions.ts";
 const INTEGER_OPS = new Set([
   "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp",
   "wait", "gold", "item", "se", "erase", "exit", "transfer",
-  "moveRoute", "common", "lockInput", "unlockInput", "place", "shop",
+  "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
   "appearance", "layer", "tileProperty", "ext", "extChoice", "battle",
 ]);
 
@@ -196,6 +196,50 @@ const MOVE_STEPS = new Set([
 
 const MOVE_DIRS = new Set(["down", "left", "right", "up"]);
 
+function validateMoveControl(v: unknown, path: string): string | null {
+  if (!isRecord(v) || typeof v.kind !== "string") {
+    return fail(path, "movement control object required");
+  }
+  switch (v.kind) {
+    case "wander":
+      if (v.bounds !== undefined) {
+        const b = v.bounds;
+        if (!isRecord(b) || !isNonNegInt(b.x) || !isNonNegInt(b.y) ||
+          !isNonNegInt(b.width) || b.width < 1 || !isNonNegInt(b.height) || b.height < 1) {
+          return fail(`${path}.bounds`, "non-empty {x,y,width,height} tile rectangle required");
+        }
+      }
+      if (v.frequency !== undefined && (!isNonNegInt(v.frequency) || v.frequency < 1 || v.frequency > 5)) {
+        return fail(`${path}.frequency`, "movement frequency grade 1..5 required");
+      }
+      return null;
+    case "moveType":
+      return ["page", "static", "approach"].includes(v.value as string)
+        ? null
+        : fail(`${path}.value`, "page|static|approach required");
+    case "stop":
+      return null;
+    case "speed":
+      return isNonNegInt(v.value) && v.value >= 1 && v.value <= 6
+        ? null
+        : fail(`${path}.value`, "movement speed grade 1..6 required");
+    case "frequency":
+      return isNonNegInt(v.value) && v.value >= 1 && v.value <= 5
+        ? null
+        : fail(`${path}.value`, "movement frequency grade 1..5 required");
+    case "run":
+    case "directionFix":
+    case "through":
+      return typeof v.value === "boolean" ? null : fail(`${path}.value`, "boolean required");
+    case "facingMode":
+      return ["followMovement", "locked", "scripted"].includes(v.value as string)
+        ? null
+        : fail(`${path}.value`, "followMovement|locked|scripted required");
+    default:
+      return fail(`${path}.kind`, "unknown movement control kind");
+  }
+}
+
 /** One route step: a legacy verb string or an object step
  *  ({turnToward}/{pathTo}/{approach}). */
 function validateMoveStep(step: unknown, path: string): string | null {
@@ -237,6 +281,7 @@ function validateMoveStep(step: unknown, path: string): string | null {
     }
     return null;
   }
+  if ("control" in step) return validateMoveControl(step.control, `${path}.control`);
   return fail(path, "unknown move-step object");
 }
 
@@ -398,8 +443,9 @@ function validateProg(prog: unknown, path: string): string | null {
       case "unlockInput":
         break;
       case "place": {
-        if (ins.target !== "this" && !(isRecord(ins.target) && typeof ins.target.event === "string")) {
-          return fail(`${here}.target`, '"this" or {event: id} required');
+        if (ins.target !== "player" && ins.target !== "this" &&
+          !(isRecord(ins.target) && typeof ins.target.event === "string")) {
+          return fail(`${here}.target`, '"player", "this", or {event: id} required');
         }
         if (!isNonNegInt(ins.x) || !isNonNegInt(ins.y)) {
           return fail(`${here}`, "x/y non-negative integers required");
@@ -440,6 +486,17 @@ function validateProg(prog: unknown, path: string): string | null {
         const e = validateMoveRoute(ins.route, `${here}.route`);
         if (e) return e;
         if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "moveControl": {
+        if (
+          ins.target !== "player" && ins.target !== "this" &&
+          !(isRecord(ins.target) && typeof ins.target.event === "string" && ins.target.event.length > 0)
+        ) {
+          return fail(`${here}.target`, "player|this|{event: id} required");
+        }
+        const e = validateMoveControl(ins.control, `${here}.control`);
+        if (e) return e;
         break;
       }
       case "appearance": {
@@ -755,6 +812,51 @@ function validatePlacements(v: unknown, path: string): string | null {
   return null;
 }
 
+const MOVE_OVERRIDE_KEYS = new Set([
+  "moveType", "bounds", "speed", "frequency", "running",
+  "directionFix", "through", "facingMode", "routeStopped", "cooldown",
+]);
+
+function validateMoveOverride(v: unknown, path: string, event: boolean): string | null {
+  if (!isRecord(v)) return fail(path, "movement override object required");
+  for (const key of Object.keys(v)) {
+    if (key === "pageIndex" && event) continue;
+    if (!MOVE_OVERRIDE_KEYS.has(key)) return fail(`${path}.${key}`, "unknown movement override field");
+  }
+  if (event && !isNonNegInt(v.pageIndex)) {
+    return fail(`${path}.pageIndex`, "non-negative integer required");
+  }
+  if (v.moveType !== undefined && !["static", "random", "approach"].includes(v.moveType as string)) {
+    return fail(`${path}.moveType`, "static|random|approach required");
+  }
+  if (v.bounds !== undefined) {
+    const b = v.bounds;
+    if (!isRecord(b) || !isNonNegInt(b.x) || !isNonNegInt(b.y) ||
+      !isNonNegInt(b.width) || b.width < 1 || !isNonNegInt(b.height) || b.height < 1) {
+      return fail(`${path}.bounds`, "non-empty {x,y,width,height} tile rectangle required");
+    }
+  }
+  if (v.speed !== undefined && (!isNonNegInt(v.speed) || v.speed < 1 || v.speed > 6)) {
+    return fail(`${path}.speed`, "movement speed grade 1..6 required");
+  }
+  if (v.frequency !== undefined && (!isNonNegInt(v.frequency) || v.frequency < 1 || v.frequency > 5)) {
+    return fail(`${path}.frequency`, "movement frequency grade 1..5 required");
+  }
+  for (const key of ["running", "directionFix", "through", "routeStopped"] as const) {
+    if (v[key] !== undefined && typeof v[key] !== "boolean") {
+      return fail(`${path}.${key}`, "boolean required");
+    }
+  }
+  if (v.facingMode !== undefined &&
+    !["followMovement", "locked", "scripted"].includes(v.facingMode as string)) {
+    return fail(`${path}.facingMode`, "followMovement|locked|scripted required");
+  }
+  if (v.cooldown !== undefined && !isNonNegInt(v.cooldown)) {
+    return fail(`${path}.cooldown`, "non-negative integer required");
+  }
+  return null;
+}
+
 function validateEventAppearances(v: unknown, path: string): string | null {
   if (!isRecord(v)) return fail(path, "record required");
   for (const [id, appearance] of Object.entries(v)) {
@@ -773,6 +875,19 @@ function validateEventAppearances(v: unknown, path: string): string | null {
     if (appearance.visible !== undefined && typeof appearance.visible !== "boolean") {
       return fail(`${at}.visible`, "boolean required");
     }
+  }
+  return null;
+}
+
+function validateMoveControls(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "movement control state required");
+  const player = validateMoveOverride(v.player, `${path}.player`, false);
+  if (player) return player;
+  if (!isRecord(v.events)) return fail(`${path}.events`, "record required");
+  for (const [id, override] of Object.entries(v.events)) {
+    if (id.length === 0) return fail(`${path}.events`, "event ids must be non-empty");
+    const problem = validateMoveOverride(override, `${path}.events.${id}`, true);
+    if (problem) return problem;
   }
   return null;
 }
@@ -979,6 +1094,10 @@ export function validateSnapshot(snap: unknown): string | null {
   }
   const pl = validatePlacements(it.placements, "state.interp.placements");
   if (pl) return pl;
+  if (it.moveControls !== undefined) {
+    const mc = validateMoveControls(it.moveControls, "state.interp.moveControls");
+    if (mc) return mc;
+  }
   if (it.eventAppearances !== undefined) {
     const appearances = validateEventAppearances(it.eventAppearances, "state.interp.eventAppearances");
     if (appearances) return appearances;

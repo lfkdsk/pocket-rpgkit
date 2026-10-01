@@ -36,6 +36,10 @@ import {
   type ExtensionRuntime,
 } from "./extensions.ts";
 import { DEFAULT_PLAYER_NAME, substituteLines, substitutePlayerName } from "./player-name.ts";
+import {
+  cloneMoveControlState,
+  type MoveControlState,
+} from "./move-control.ts";
 import type {
   Command,
   CommonEvent,
@@ -47,6 +51,7 @@ import type {
   Item,
   JsonValue,
   MapDef,
+  MoveControl,
   MoveRoute,
   Page,
   PageCondition,
@@ -501,7 +506,7 @@ export type Instr =
   | { op: "exit" }
   | { op: "lockInput" }
   | { op: "unlockInput" }
-  | { op: "place"; target: "this" | { event: string }; x: number; y: number; dir: Dir | null }
+  | { op: "place"; target: RouteTarget; x: number; y: number; dir: Dir | null }
   | {
       op: "transfer";
       map: TransferMap;
@@ -511,6 +516,7 @@ export type Instr =
       fadeFrames: number;
     }
   | { op: "moveRoute"; target: RouteTarget; wait: boolean; route: MoveRoute }
+  | { op: "moveControl"; target: RouteTarget; control: MoveControl }
   | {
       op: "appearance";
       target: RouteTarget;
@@ -638,6 +644,9 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
           break;
         case "moveRoute":
           emit({ op: "moveRoute", target: c.target, wait: c.wait ?? true, route: c.route });
+          break;
+        case "moveControl":
+          emit({ op: "moveControl", target: c.target, control: c.control });
           break;
         case "appearance":
           emit({
@@ -904,6 +913,15 @@ export interface PendingMoveRoute {
   wait: boolean;
 }
 
+export interface PendingMoveControl {
+  fiber: string;
+  target: "player" | { event: string };
+  eventId: string;
+  control: MoveControl;
+}
+
+export type PendingMoveOperation = PendingMoveRoute | PendingMoveControl;
+
 /** Battle Processing request published on the tick that parks its fiber. */
 export interface PendingBattle {
   fiber: string;
@@ -914,13 +932,18 @@ export interface PendingBattle {
  *  relocates the matching CharState after the fold; the durable position
  *  also lands in InterpState.placements so a later-created character (a
  *  page that only becomes active afterwards) spawns at the new cell. */
-export interface PendingPlacement {
+export type PendingPlacement = {
+  /** Existing event placement spelling is retained for old reducer traces. */
   eventId: string;
   x: number;
   y: number;
-  /** Facing to show after the move, or keep the current one. */
   dir: Dir | null;
-}
+} | {
+  target: "player";
+  x: number;
+  y: number;
+  dir: Dir | null;
+};
 
 interface Fiber {
   key: string;
@@ -955,6 +978,9 @@ export interface World {
    * per-tick event-page records or tile metadata. */
   needsEventPages?: boolean;
   needsTilePropertyContext?: boolean;
+  /** True when a page default or route control step needs the KM1 movement
+   * path before a standalone moveControl command has created sparse state. */
+  needsMovementControlPath?: boolean;
   /** Project item catalog (id -> Item), for a shop's price fallback
    *  (goods entries without their own `price` use the item's own) and its
    *  sell price fallback (floor(item.price / 2) when a shop has no
@@ -1036,6 +1062,11 @@ export interface InterpState {
    *  commands: event id -> tile + facing. syncPages spawns a later-created
    *  character here instead of the authored x/y. Cleared on map entry. */
   placements: Record<string, { x: number; y: number; dir: Dir | null }>;
+  /** Page/map-scoped movement overrides. Unlike routes and interpolation,
+   *  these character settings are durable and included in v1 saves. The
+   *  field is allocated lazily so an old project that never uses a control
+   *  retains its byte-for-byte reducer/save shape. */
+  moveControls?: MoveControlState;
   /** MV Change Image-style event overrides for this map visit. Each entry
    * is tied to its issuing page and is discarded on the next page change. */
   eventAppearances?: Record<string, EventAppearanceState>;
@@ -1049,7 +1080,7 @@ export interface InterpState {
   /** Move routes published on THIS step, in command order. A fiber can
    *  publish more than one before it parks (a fire-and-forget player turn
    *  immediately followed by a waited self-route); the session drains all. */
-  pendingMoveRoutes: PendingMoveRoute[];
+  pendingMoveRoutes: PendingMoveOperation[];
   /** Battle requests waiting for the scene host, in deterministic fiber
    *  order. Unlike the other pending fields this queue survives interpreter
    *  steps until the session consumes each request. */
@@ -1099,6 +1130,7 @@ export interface WorldIdleBlockers {
   sceneActive?: boolean;
   fadeActive?: boolean;
   playerRouteActive?: boolean;
+  playerWanderActive?: boolean;
   menuOpen?: boolean;
 }
 
@@ -1121,6 +1153,7 @@ export function isWorldIdle(
     blockers.sceneActive !== true &&
     blockers.fadeActive !== true &&
     blockers.playerRouteActive !== true &&
+    blockers.playerWanderActive !== true &&
     blockers.menuOpen !== true
   );
 }
@@ -1181,6 +1214,25 @@ function programContextFlags(program: readonly Instr[]): number {
   return flags;
 }
 
+function routeUsesMovementControl(route: MoveRoute): boolean {
+  return route.steps.some((step) => typeof step === "object" && "control" in step);
+}
+
+function programNeedsMovementControlPath(program: readonly Instr[]): boolean {
+  for (const instruction of program) {
+    if (instruction.op === "moveRoute" && routeUsesMovementControl(instruction.route)) return true;
+    if (instruction.op === "choices") {
+      if (instruction.branches.some(programNeedsMovementControlPath)) return true;
+      if (instruction.cancel && programNeedsMovementControlPath(instruction.cancel)) return true;
+    } else if (instruction.op === "battle") {
+      if (instruction.onWin && programNeedsMovementControlPath(instruction.onWin)) return true;
+      if (instruction.onLose && programNeedsMovementControlPath(instruction.onLose)) return true;
+      if (instruction.onEscape && programNeedsMovementControlPath(instruction.onEscape)) return true;
+    }
+  }
+  return false;
+}
+
 export function createWorld(
   map: MapDef,
   common: CommonEvent[] = [],
@@ -1189,18 +1241,27 @@ export function createWorld(
 ): World {
   const commonPrograms = new Map<string, Prog>();
   let contextFlags = 0;
+  let needsMovementControlPath = false;
   for (const event of common) {
     const program = compile(event.commands, hz);
     commonPrograms.set(event.id, program);
     contextFlags |= programContextFlags(program);
+    needsMovementControlPath ||= programNeedsMovementControlPath(program);
   }
   const pagePrograms = new Map<string, readonly Prog[]>();
   for (const event of map.events ?? []) {
     const programs = event.pages.map((page) => compile(page.commands, hz));
     pagePrograms.set(eventKey(map.id, event.id), programs);
     for (let index = 0; index < event.pages.length; index++) {
-      contextFlags |= pageConditionContextFlags(event.pages[index]!.condition);
+      const page = event.pages[index]!;
+      contextFlags |= pageConditionContextFlags(page.condition);
       contextFlags |= programContextFlags(programs[index]!);
+      needsMovementControlPath ||=
+        page.moveSpeed !== undefined || page.moveFrequency !== undefined ||
+        page.directionFix !== undefined || page.through !== undefined ||
+        page.facingMode !== undefined ||
+        (page.moveRoute !== undefined && routeUsesMovementControl(page.moveRoute)) ||
+        programNeedsMovementControlPath(programs[index]!);
     }
   }
   const orderedEvents = [...(map.events ?? [])]
@@ -1246,6 +1307,7 @@ export function createWorld(
     slotsById: keyed.slotsById,
     needsEventPages: (contextFlags & CONTEXT_EVENT_PAGES) !== 0,
     needsTilePropertyContext: (contextFlags & CONTEXT_TILE_PROPERTIES) !== 0,
+    needsMovementControlPath,
     items: itemsById,
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
@@ -1406,10 +1468,9 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
     } : {}),
     cues: s0.cues.map((cue) => ({ ...cue })),
     pendingTransfer: s0.pendingTransfer ? { ...s0.pendingTransfer } : null,
-    pendingMoveRoutes: s0.pendingMoveRoutes.map((r) => ({
-      ...r,
-      route: cloneMoveRoute(r.route),
-    })),
+    pendingMoveRoutes: s0.pendingMoveRoutes.map((r) => "control" in r
+      ? { ...r, control: deepClone(r.control) as MoveControl }
+      : { ...r, route: cloneMoveRoute(r.route) }),
     pendingBattles: s0.pendingBattles.map((request) => ({
       fiber: request.fiber,
       setup: deepClone(request.setup),
@@ -1417,6 +1478,7 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
     pendingPlacements: s0.pendingPlacements.map((p) => ({ ...p })),
     abortedRoutes: [...s0.abortedRoutes],
   };
+  if (s0.moveControls) s.moveControls = cloneMoveControlState(s0.moveControls);
   if (s0.error) s.error = { ...s0.error };
   return s;
 }
@@ -2680,10 +2742,14 @@ function runFiber(
         top.pc++;
         break;
       case "place": {
-        const eventId = ins.target === "this" ? f.key.split("/").pop()! : ins.target.event;
         const p = { x: ins.x, y: ins.y, dir: ins.dir };
-        s.placements[eventId] = p;
-        s.pendingPlacements.push({ eventId, ...p });
+        if (ins.target === "player") {
+          s.pendingPlacements.push({ target: "player", ...p });
+        } else {
+          const eventId = ins.target === "this" ? f.key.split("/").pop()! : ins.target.event;
+          s.placements[eventId] = p;
+          s.pendingPlacements.push({ eventId, ...p });
+        }
         top.pc++;
         break;
       }
@@ -2805,6 +2871,21 @@ function runFiber(
           wait: true,
         });
         return;
+      }
+      case "moveControl": {
+        const ownEventId = f.key.split("/").pop()!;
+        const target: "player" | { event: string } =
+          ins.target === "player" ? "player"
+          : ins.target === "this" ? { event: ownEventId }
+          : ins.target;
+        s.pendingMoveRoutes.push({
+          fiber: f.key,
+          target,
+          eventId: target === "player" ? ownEventId : target.event,
+          control: ins.control,
+        });
+        top.pc++;
+        break;
       }
       case "common": {
         const prog = w.commonPrograms.get(ins.id);

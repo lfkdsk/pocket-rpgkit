@@ -14,6 +14,7 @@ export * from "./start.ts";
 export * from "./passability.ts";
 export * from "./motion-clock.ts";
 export * from "./movement.ts";
+export * from "./move-control.ts";
 export * from "./player-name.ts";
 export * from "./interpreter.ts";
 export * from "./extensions.ts";

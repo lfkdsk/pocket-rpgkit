@@ -54,7 +54,13 @@ mod pr1_quickjs_bench {
         let guest = Guest::new().unwrap();
         guest.eval("pr1-quickjs-entry", &source).unwrap();
 
-        for name in ["sunstoneIdle", "sunstoneWalk", "wanderAuto", "battleScene"] {
+        for name in [
+            "sunstoneIdle",
+            "sunstoneWalk",
+            "sunstoneControlWalk",
+            "wanderAuto",
+            "battleScene",
+        ] {
             run_case(&guest, &label, name, iterations, rounds);
         }
     }

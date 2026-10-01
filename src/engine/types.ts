@@ -88,6 +88,36 @@ export interface TilePropertyOverride {
 /** Target of a turn-toward / approach step: the player or a named event. */
 export type CharTarget = "player" | { event: string };
 
+/** RPG Maker-style per-character movement settings. Speed is the MV 1..6
+ *  exponential level (5 is this runtime's legacy eight-tick step); running
+ *  adds one effective level, capped at 6. Frequency is the MV 1..5
+ *  autonomous-decision level. */
+export type MoveSpeed = 1 | 2 | 3 | 4 | 5 | 6;
+export type MoveFrequency = 1 | 2 | 3 | 4 | 5;
+export type FacingMode = "followMovement" | "locked" | "scripted";
+
+/** Inclusive tile rectangle used by runtime random wandering. */
+export interface WanderBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A persistent (for the current map/page visit) movement-setting change.
+ *  A route step wraps one of these as `{control}` and applies it to its own
+ *  actor; the standalone moveControl command names any actor. */
+export type MoveControl =
+  | { kind: "wander"; bounds?: WanderBounds; frequency?: MoveFrequency }
+  | { kind: "moveType"; value: "page" | "static" | "approach" }
+  | { kind: "stop" }
+  | { kind: "speed"; value: MoveSpeed }
+  | { kind: "run"; value: boolean }
+  | { kind: "frequency"; value: MoveFrequency }
+  | { kind: "directionFix"; value: boolean }
+  | { kind: "through"; value: boolean }
+  | { kind: "facingMode"; value: FacingMode };
+
 /** A deterministic-path step. The expansion runs when the step
  *  STARTS, once:
  *  - turnTowardPlayer / {turnToward} — face a live character in place.
@@ -110,7 +140,8 @@ export type MoveStep =
   | "stepForward"
   | "faceDown" | "faceLeft" | "faceRight" | "faceUp"
   | "wait" | "turnRandom"
-  | PathStep;
+  | PathStep
+  | { control: MoveControl };
 
 export interface MoveRoute {
   steps: MoveStep[];
@@ -221,6 +252,7 @@ export type Command =
       fade?: number;
     }
   | { op: "moveRoute"; target: RouteTarget; wait?: boolean; route: MoveRoute }
+  | { op: "moveControl"; target: RouteTarget; control: MoveControl }
   /** Change a walking character's image/opacity/visibility. null resets one
    *  field. Event changes last until that event changes page; player changes
    *  cross maps. `saveDefault` makes a player sprite the reset baseline. */
@@ -267,11 +299,10 @@ export type Command =
    *  and parallel fibers keep folding. MV lock_controls/unlock_controls. */
   | { op: "lockInput" }
   | { op: "unlockInput" }
-  /** Relocate an event to a tile (MV Set Event Location),
-   *  optionally facing a direction there. "this" moves the running event;
-   *  { event } moves another map event. Applied on the next character
-   *  sync, so a page with blocks:true occupies the new cell. */
-  | { op: "place"; target: "this" | { event: string }; x: number; y: number; dir?: Dir }
+  /** Relocate the player or an event to a tile (MV Set Event Location).
+   *  Event placement is durable for this map visit; player placement takes
+   *  effect at the same end-of-tick session boundary. */
+  | { op: "place"; target: RouteTarget; x: number; y: number; dir?: Dir }
   /** Game-owned pure command handler, registered on createSession(). */
   | { op: "ext"; call: string; args: JsonValue }
   /** A choice list supplied from live state by a registered pure extension.
@@ -317,6 +348,13 @@ export interface Page {
    *  wanders on the seeded RNG, "approach" takes one step toward the
    *  player on a timer. An explicit moveRoute overrides all three. */
   moveType?: "static" | "random" | "approach";
+  /** MV page defaults. Runtime overrides reset when this event changes
+   *  page, and all overrides reset on map entry. */
+  moveSpeed?: MoveSpeed;
+  moveFrequency?: MoveFrequency;
+  directionFix?: boolean;
+  through?: boolean;
+  facingMode?: FacingMode;
   moveRoute?: MoveRoute;
   /** Facing the character shows when the page spawns it (the
    *  first page that creates the CharState, and again after a page

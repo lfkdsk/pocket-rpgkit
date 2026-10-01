@@ -212,6 +212,7 @@ export function commandFields(command: Command): EditableField[] {
     case "shop":
     case "ext":
     case "extChoice":
+    case "moveControl":
     case "appearance":
     case "layer":
     case "tileProperty":

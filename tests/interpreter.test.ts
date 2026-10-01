@@ -753,7 +753,8 @@ describe("transfer and move routes park the fiber for P1④", () => {
       { op: "switch", id: "done", value: true },
     ])]));
     let s = confirmAt(createInterpState(), w);
-    expect(s.pendingMoveRoutes[0]?.route.steps).toEqual(["moveRight", "moveUp"]);
+    const pending = s.pendingMoveRoutes[0];
+    expect(pending && "route" in pending ? pending.route.steps : null).toEqual(["moveRight", "moveUp"]);
     s = idle(s, w, 1);
     expect(s.sw.switches["done"]).toBeUndefined();
     s = continueExternal(idle(s, w, 1), s.main?.key ?? "");

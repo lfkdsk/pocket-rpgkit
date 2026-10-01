@@ -60,7 +60,6 @@ import {
   type InterpInput,
   type InterpState,
   type PendingBattle,
-  type PendingMoveRoute,
   type SwitchState,
   type WorldIdleBlockers,
   type WorldOptions,
@@ -84,7 +83,9 @@ import {
   installRoute,
   placeChar,
   shareChars,
+  stopCharRoute,
   stepCharsInPlace,
+  stepCharsInPlaceLegacy,
   syncPagesInPlace,
   BFS_CELLS_PER_TICK,
   DEFAULT_PATH_RETRIES,
@@ -102,15 +103,34 @@ import {
   facingToward,
 } from "./pathfind.ts";
 import {
+  activeStepConfig,
   dirFromButtons,
   initialMovement,
   stepFrames,
   stepMovement,
+  stepMovementLegacy,
   stepPixels,
   type MovementConfig,
   type MovementState,
 } from "./movement.ts";
+import {
+  applyMoveControl,
+  canFace,
+  createMoveControlState,
+  DEFAULT_MOVE_SETTINGS,
+  frequencyDelay,
+  inMapBounds,
+  inWanderBounds,
+  movementConfigFor,
+  resolveMoveSettings,
+  resumeMoveRoute,
+  type EventMoveOverride,
+  type MoveOverride,
+  type MoveControlState,
+  type ResolvedMoveSettings,
+} from "./move-control.ts";
 import { MOTION_HZ, motionTicksPerFrame } from "./motion-clock.ts";
+import { BTN_BITS } from "./camera.ts";
 import type { Dir4, PassageTable } from "./passability.ts";
 import { buildPassage, canStepFrom, stampBlockedCells, withTilePropertyOverrides } from "./passability.ts";
 import {
@@ -127,6 +147,7 @@ import type {
   MapDef,
   MapIndexEntry,
   MapRepository,
+  MoveControl,
   MoveStep,
   ProjectSource,
   Command,
@@ -189,12 +210,19 @@ function sessionWorldIdleBlockers(
   state: SessionState,
   menuOpen = false,
 ): WorldIdleBlockers {
-  return {
+  const blockers: WorldIdleBlockers = {
     sceneActive: state.scene !== null,
     fadeActive: state.fade !== null,
     playerRouteActive: state.playerRoute !== null,
     menuOpen,
   };
+  // `stop` is route-only: a still-configured runtime wander remains an
+  // idle blocker until a motion-mode control changes it to static/page.
+  // Keep the legacy object shape when no player wander override exists.
+  if (state.interp.moveControls?.player.moveType === "random") {
+    blockers.playerWanderActive = true;
+  }
+  return blockers;
 }
 
 /** Public session-level view of the derived `worldIdle` condition. Save-menu
@@ -700,7 +728,28 @@ function sessionConditionContext(
  *  blocks regardless of the terrain opinion under it: a map.passage
  *  "pass" override reopens terrain (a gate through a fence), it never
  *  lets the mover walk through a blocks:true character standing there. */
-export function tableWithBodies(base: PassageTable, chars: CharsState): PassageTable {
+export function tableWithBodies(
+  base: PassageTable,
+  chars: CharsState,
+  settings?: Readonly<Record<string, ResolvedMoveSettings>>,
+): PassageTable {
+  if (settings === undefined) return tableWithBodiesLegacy(base, chars);
+  const cells: number[] = [];
+  const add = (x: number, y: number): void => {
+    if (x >= 0 && y >= 0 && x < base.width && y < base.height) {
+      cells.push(y * base.width + x);
+    }
+  };
+  for (const ch of Object.values(chars.chars)) {
+    if (!ch.blocks || settings?.[ch.id]?.through === true) continue;
+    add(ch.tx, ch.ty);
+    if (ch.moving) add(ch.tx + DX[ch.stepDir], ch.ty + DY[ch.stepDir]);
+  }
+  return stampBlockedCells(base, cells);
+}
+
+/** Original body-overlay loop for worlds without KM1 settings. */
+function tableWithBodiesLegacy(base: PassageTable, chars: CharsState): PassageTable {
   const cells: number[] = [];
   const add = (x: number, y: number): void => {
     if (x >= 0 && y >= 0 && x < base.width && y < base.height) {
@@ -730,9 +779,164 @@ function motionOf(
   return out;
 }
 
+function moveSettingsOf(
+  map: MapDef,
+  sw: SwitchState,
+  facing: Facing,
+  extension: ExtensionScope,
+  overrides: Readonly<Record<string, EventMoveOverride>> | undefined,
+  conditionContext?: ConditionContext,
+): Record<string, ResolvedMoveSettings> {
+  const out = keyedRecord<ResolvedMoveSettings>();
+  for (const ev of map.events ?? []) {
+    const active = activePage(ev, sw, map.id, facing, extension, conditionContext);
+    if (!active) continue;
+    const override = overrides?.[ev.id];
+    out[ev.id] = resolveMoveSettings(
+      active.page,
+      override?.pageIndex === active.index ? override : undefined,
+    );
+  }
+  return out;
+}
+
+/** Resolve settings from the page indexes syncPagesInPlace just committed,
+ * avoiding a second activePage evaluation over the whole map. */
+function moveSettingsFromSyncedChars(
+  map: MapDef,
+  chars: CharsState,
+  overrides: Readonly<Record<string, EventMoveOverride>> | undefined,
+): Record<string, ResolvedMoveSettings> {
+  const out = keyedRecord<ResolvedMoveSettings>();
+  for (const ev of map.events ?? []) {
+    const pageIndex = chars.chars[ev.id]?.pageIndex;
+    if (pageIndex === undefined) continue;
+    const page = ev.pages[pageIndex];
+    if (!page) continue;
+    const override = overrides?.[ev.id];
+    out[ev.id] = resolveMoveSettings(
+      page,
+      override?.pageIndex === pageIndex ? override : undefined,
+    );
+  }
+  return out;
+}
+
+/** Drop stale overrides only after page sync has materialized the active
+ *  page. A restored save begins with no CharState; its matching page-tagged
+ *  override therefore survives the first reconciliation. */
+function pruneEventMoveControls(s: SessionState): void {
+  const controls = s.interp.moveControls;
+  if (!controls) return;
+  for (const id of Object.keys(controls.events)) {
+    const ch = s.chars.chars[id];
+    if (!ch || ch.pageIndex !== controls.events[id]!.pageIndex) {
+      delete controls.events[id];
+    }
+  }
+}
+
+function ensureMoveControls(s: SessionState): MoveControlState {
+  if (!s.interp.moveControls) s.interp.moveControls = createMoveControlState();
+  return s.interp.moveControls;
+}
+
+const BUTTON_FOR_DIR = [BTN_BITS.DOWN, BTN_BITS.LEFT, BTN_BITS.UP, BTN_BITS.RIGHT] as const;
+
+function stepPlayerWander(
+  s: SessionState,
+  base: PassageTable,
+  cfg: MovementConfig,
+  settings: ResolvedMoveSettings,
+  eventSettings: Readonly<Record<string, ResolvedMoveSettings>>,
+): void {
+  const override = ensureMoveControls(s).player;
+  const moveCfg = movementConfigFor(cfg, settings);
+  const table = tableWithBodies(base, s.chars, eventSettings);
+  if (s.move.moving) {
+    Object.assign(s.move, stepMovement(s.move, 0, table, moveCfg, {
+      through: settings.through,
+      faceMovement: canFace(settings, false),
+    }));
+    return;
+  }
+  if ((override.cooldown ?? 0) > 0) {
+    override.cooldown = override.cooldown! - 1;
+    return;
+  }
+  const exits: Dir4[] = [];
+  for (const dir of [0, 1, 2, 3] as const) {
+    const tx = s.move.tx + DX[dir];
+    const ty = s.move.ty + DY[dir];
+    if (!inWanderBounds(settings.bounds, tx, ty)) continue;
+    const open = settings.through
+      ? inMapBounds(base.width, base.height, tx, ty)
+      : canStepFrom(table, s.move.tx, s.move.ty, dir);
+    if (open) exits.push(dir);
+  }
+  override.cooldown = frequencyDelay(settings.frequency);
+  if (exits.length === 0) return;
+  const roll = randInt(s.sw.rng, 0, exits.length - 1);
+  s.sw.rng = roll.next;
+  Object.assign(s.move, stepMovement(s.move, BUTTON_FOR_DIR[exits[roll.value]!]!, table, moveCfg, {
+    through: settings.through,
+    faceMovement: canFace(settings, false),
+  }));
+}
+
 function eventIdOf(key: string, mapId: string): string {
   const prefix = `${mapId}/`;
   return key.startsWith(prefix) ? key.slice(prefix.length) : key;
+}
+
+function eventMoveOverride(s: SessionState, eventId: string): EventMoveOverride | null {
+  const ch = s.chars.chars[eventId];
+  if (!ch) return null;
+  const controls = ensureMoveControls(s);
+  let override = controls.events[eventId];
+  if (!override || override.pageIndex !== ch.pageIndex) {
+    override = { pageIndex: ch.pageIndex };
+    controls.events[eventId] = override;
+  }
+  return override;
+}
+
+function stopPlayerRoute(s: SessionState): void {
+  const route = s.playerRoute;
+  if (route && route.phase > 0) {
+    // Player routes keep interpolation phase on the route. Hand the
+    // committed step back to the ordinary mover so stop finishes this tile
+    // without a pixel jump, just like the NPC route path.
+    s.move.phase = route.phase;
+    s.move.stepDir = route.dir;
+    s.move.moving = true;
+  }
+  if (route?.waiter) s.interp = continueExternal(s.interp, route.waiter);
+  s.playerRoute = null;
+  s.move.walking = false;
+}
+
+/** Apply one command/route control at the session boundary. Missing map
+ *  events are a no-op, matching moveRoute target resolution. */
+function applyTargetMoveControl(
+  s: SessionState,
+  target: "player" | { event: string },
+  control: MoveControl,
+): void {
+  if (target === "player") {
+    applyMoveControl(ensureMoveControls(s).player, control);
+    if (control.kind === "stop") stopPlayerRoute(s);
+    return;
+  }
+  const override = eventMoveOverride(s, target.event);
+  if (!override) return;
+  applyMoveControl(override, control);
+  if (control.kind !== "stop") return;
+  const stopped = stopCharRoute(s.chars, target.event);
+  s.chars = stopped.state;
+  if (stopped.displacedWaiter) {
+    s.interp = continueExternal(s.interp, stopped.displacedWaiter);
+  }
 }
 
 /** Opacity the UI overlay shows on the current fade frame: 1 fully black. */
@@ -1099,6 +1303,8 @@ function stepReferenceTick(
   //    external fiber cannot deadlock.
   const erased = s.interp.erased;
   const world = sess.worlds.get(s.mapId)!;
+  const needsMovementControlPath =
+    world.needsMovementControlPath === true || s.interp.moveControls !== undefined;
   const extension: ExtensionScope = { runtime: sess.extensions, ext: s.ext };
   const needsEventPages = world.needsEventPages === true || s.interp.eventAppearances !== undefined;
   const previousEventPages = needsEventPages ? eventPagesOf(map, s.chars) : undefined;
@@ -1127,7 +1333,6 @@ function stepReferenceTick(
   for (const waiter of synced.abortedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
   }
-
   const passage = sessionPassageTable(sess, s);
 
   // 2. Mover — frozen while a blocking fiber runs, the player's own forced
@@ -1140,39 +1345,120 @@ function stepReferenceTick(
   const busy = isBusy(s.interp);
   const capturesDpad = s.interp.modal?.kind === "choices" || s.interp.modal?.kind === "shop";
   const held = messageHoldsPlayer(world, s.interp);
-  if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
-    // stepMovement consults the table only for a held direction.
-    const table = dirFromButtons(input.buttons) === null ? passage : tableWithBodies(passage, s.chars);
-    Object.assign(s.move, stepMovement(s.move, input.buttons, table, sess.cfg));
-  }
+  let finishedWaiters: string[];
+  let playerRouteSettings = DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings;
+  let playerRouteEventSettings: Readonly<Record<string, ResolvedMoveSettings>> | undefined;
+  if (!needsMovementControlPath) {
+    if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
+      // stepMovement consults the table only for a held direction.
+      const table = dirFromButtons(input.buttons) === null
+        ? passage
+        : tableWithBodiesLegacy(passage, s.chars);
+      Object.assign(s.move, stepMovementLegacy(s.move, input.buttons, table, sess.cfg));
+    }
+    const playerPlace = {
+      tx: s.move.tx,
+      ty: s.move.ty,
+      destX: s.move.moving ? s.move.tx + DX[s.move.stepDir] : s.move.tx,
+      destY: s.move.moving ? s.move.ty + DY[s.move.stepDir] : s.move.ty,
+    };
+    const locked = new Set<string>();
+    if (s.interp.main) locked.add(eventIdOf(s.interp.main.key, s.mapId));
+    finishedWaiters = stepCharsInPlaceLegacy(
+      s.chars,
+      passage,
+      playerPlace,
+      sess.cfg,
+      locked,
+      s.move.facing === syncFacing
+        ? syncMotion
+        : motionOf(map, s.sw, s.move.facing, extension, conditionContext),
+    );
+  } else {
+    // continueExternal may have replaced the interpreter clone. Refresh the
+    // aliases before movement reads/writes runtime overrides and saved RNG.
+    s.sw = s.interp.sw;
+    pruneEventMoveControls(s);
+    let eventSettings = moveSettingsFromSyncedChars(
+      map,
+      s.chars,
+      s.interp.moveControls?.events,
+    );
+    const playerSettings = s.interp.moveControls?.player
+      ? resolveMoveSettings(null, s.interp.moveControls.player)
+      : DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings;
+    playerRouteSettings = playerSettings;
 
-  // 3. Characters.
-  const playerPlace = {
-    tx: s.move.tx,
-    ty: s.move.ty,
-    destX: s.move.moving ? s.move.tx + DX[s.move.stepDir] : s.move.tx,
-    destY: s.move.moving ? s.move.ty + DY[s.move.stepDir] : s.move.ty,
-  };
-  const locked = new Set<string>();
-  if (s.interp.main) locked.add(eventIdOf(s.interp.main.key, s.mapId));
-  // The page sync already read every active page at its facing; a turn in
-  // between can flip facing conditions, so only then are they read again.
-  const finishedWaiters = stepCharsInPlace(
-    s.chars,
-    passage,
-    playerPlace,
-    sess.cfg,
-    locked,
-    s.move.facing === syncFacing
-      ? syncMotion
-      : motionOf(map, s.sw, s.move.facing, extension, conditionContext),
-  );
+    if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
+      if (playerSettings.runtimeWander) {
+        if (s.interp.modal === null) {
+          stepPlayerWander(s, passage, sess.cfg, playerSettings, eventSettings);
+        }
+      } else {
+        const table = dirFromButtons(input.buttons) === null
+          ? passage
+          : tableWithBodies(passage, s.chars, eventSettings);
+        Object.assign(s.move, stepMovement(
+          s.move,
+          input.buttons,
+          table,
+          movementConfigFor(sess.cfg, playerSettings),
+          {
+            through: playerSettings.through,
+            faceMovement: canFace(playerSettings, false),
+          },
+        ));
+      }
+    }
+
+    const playerPlace = {
+      tx: s.move.tx,
+      ty: s.move.ty,
+      destX: s.move.moving ? s.move.tx + DX[s.move.stepDir] : s.move.tx,
+      destY: s.move.moving ? s.move.ty + DY[s.move.stepDir] : s.move.ty,
+      through: playerSettings.through,
+    };
+    const locked = new Set<string>();
+    if (s.interp.main) locked.add(eventIdOf(s.interp.main.key, s.mapId));
+    if (s.move.facing !== syncFacing) {
+      eventSettings = moveSettingsOf(
+        map,
+        s.sw,
+        s.move.facing,
+        extension,
+        s.interp.moveControls?.events,
+        conditionContext,
+      );
+    }
+    finishedWaiters = stepCharsInPlace(
+      s.chars,
+      passage,
+      playerPlace,
+      sess.cfg,
+      locked,
+      s.move.facing === syncFacing
+        ? syncMotion
+        : motionOf(map, s.sw, s.move.facing, extension, conditionContext),
+      {
+        settings: eventSettings,
+        applyControl: (eventId, control) => {
+          const override = eventMoveOverride(s, eventId);
+          if (override) applyMoveControl(override, control);
+        },
+        runtimeRng: s.sw,
+        modalOpen: s.interp.modal !== null,
+      },
+    );
+    playerRouteEventSettings = eventSettings;
+    s.sw = s.interp.sw;
+  }
   for (const waiter of finishedWaiters) {
     s.interp = continueExternal(s.interp, waiter);
   }
-
-  // Player forced route (moveRoute target:"player").
-  if (s.playerRoute) stepPlayerRoute(s, sess);
+  s.sw = s.interp.sw;
+  if (s.playerRoute) {
+    stepPlayerRoute(s, sess, playerRouteSettings, playerRouteEventSettings);
+  }
 
   // 4. Interpreter — only displaced NPC cells need to supplement the
   // world's authored spatial index. Static characters resolve from the
@@ -1228,6 +1514,10 @@ function stepReferenceTick(
   //    so the fire-and-forget player turn installs before the waited
   //    self-route parks the fiber.
   for (const req of s.interp.pendingMoveRoutes) {
+    if ("control" in req) {
+      applyTargetMoveControl(s, req.target, req.control);
+      continue;
+    }
     if (req.target === "player") {
       // A route replacing one still running releases the parked waiter
       // instead of orphaning it, and takes over at a tile boundary: a
@@ -1236,6 +1526,7 @@ function stepReferenceTick(
       if (s.playerRoute?.waiter) {
         s.interp = continueExternal(s.interp, s.playerRoute.waiter);
       }
+      if (s.interp.moveControls) resumeMoveRoute(s.interp.moveControls.player);
       s.playerRoute = {
         steps: req.route.steps,
         pc: 0,
@@ -1257,6 +1548,8 @@ function stepReferenceTick(
         if (req.wait) s.interp = continueExternal(s.interp, req.fiber);
         continue;
       }
+      const override = s.interp.moveControls?.events[req.eventId];
+      if (override) resumeMoveRoute(override);
       const installed = installRoute(
         s.chars,
         req.eventId,
@@ -1274,12 +1567,21 @@ function stepReferenceTick(
   //     durable placement record the interpreter already holds makes a
   //     later-created character spawn at the new tile on the next sync.
   for (const p of s.interp.pendingPlacements) {
+    if ("target" in p) {
+      if (!inMapBounds(map.width, map.height, p.x, p.y)) continue;
+      stopPlayerRoute(s);
+      const facing = p.dir === null ? s.move.facing : DIR_INDEX[p.dir];
+      s.move = initialMovement(p.x, p.y, facing, sess.cfg);
+      continue;
+    }
+    if (!inMapBounds(map.width, map.height, p.x, p.y)) continue;
     const placed = placeChar(s.chars, p.eventId, p.x, p.y, p.dir, sess.cfg);
     s.chars = placed.state;
     if (placed.displacedWaiter) {
       s.interp = continueExternal(s.interp, placed.displacedWaiter);
     }
   }
+  s.sw = s.interp.sw;
   if (s.scene === null && s.interp.pendingBattles.length > 0) {
     startNextBattleScene(sess, s);
   }
@@ -1363,11 +1665,20 @@ function cancelCommittedStep(m: MovementState, cfg: MovementConfig): void {
   m.py = m.ty * cfg.tile;
 }
 
-function stepPlayerRoute(s: SessionState, sess: Session): void {
+function stepPlayerRoute(
+  s: SessionState,
+  sess: Session,
+  settings: ResolvedMoveSettings,
+  eventSettings: Readonly<Record<string, ResolvedMoveSettings>> | undefined,
+): void {
   const r = s.playerRoute!;
   const cfg = sess.cfg;
-  const frames = stepFrames(cfg);
   const m = s.move;
+  const desiredCfg = movementConfigFor(cfg, settings);
+  const stepCfg = r.phase > 0
+    ? activeStepConfig({ tx: m.tx, ty: m.ty, px: m.px, py: m.py, phase: r.phase }, desiredCfg)
+    : desiredCfg;
+  const frames = stepFrames(stepCfg);
 
   // First tick owning a route installed mid-step: cancel the inherited
   // interpolation and resume from its origin boundary.
@@ -1383,7 +1694,7 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
   if (r.phase > 0) {
     r.phase++;
     if (r.phase < frames) {
-      const { px, py } = stepPixels(m.tx * cfg.tile, m.ty * cfg.tile, r.dir, r.phase, cfg);
+      const { px, py } = stepPixels(m.tx * cfg.tile, m.ty * cfg.tile, r.dir, r.phase, stepCfg);
       m.px = px;
       m.py = py;
       m.moving = true;
@@ -1393,7 +1704,7 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
     m.ty += DY[r.dir];
     m.px = m.tx * cfg.tile;
     m.py = m.ty * cfg.tile;
-    m.facing = r.dir;
+    if (canFace(settings, false)) m.facing = r.dir;
     m.stepDir = r.dir;
     m.moving = false;
     r.phase = 0;
@@ -1405,7 +1716,7 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
         const tc = resolvePlayerTarget(ap.target, s);
         if (tc) {
           const f = facingToward(m.tx, m.ty, tc.x, tc.y);
-          if (f !== null) { m.facing = f; m.stepDir = f; }
+          if (f !== null && canFace(settings, true)) { m.facing = f; m.stepDir = f; r.dir = f; }
         }
       }
       advance();
@@ -1414,7 +1725,7 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
     // fall through to the next command on this landing tick
   }
 
-  const table = tableWithBodies(sessionPassageTable(sess, s), s.chars);
+  const table = tableWithBodies(sessionPassageTable(sess, s), s.chars, eventSettings);
   // MV advances a move list at most once per stop tick: consume exactly
   // ONE route command on this reference tick (matching chars.stepRoute).
   // Instant-only routes (a repeat face route) therefore take one command
@@ -1439,17 +1750,23 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
 
   // --- turn / path steps ---------------------------------------------------
   if (typeof step === "object") {
+    if ("control" in step) {
+      applyMoveControl(ensureMoveControls(s).player, step.control);
+      if (step.control.kind === "stop") endPlayerRoute(s);
+      else advance();
+      return;
+    }
     if ("turnToward" in step) {
       const tc = resolvePlayerTarget(step.turnToward, s);
       if (tc) {
         const f = facingToward(m.tx, m.ty, tc.x, tc.y);
-        if (f !== null) { r.dir = f; m.facing = f; m.stepDir = f; }
+        if (f !== null && canFace(settings, true)) { r.dir = f; m.facing = f; m.stepDir = f; }
       }
       advance();
       return;
     }
     if ("pathTo" in step || "approach" in step) {
-      stepPlayerPath(s, sess, table, step, advance);
+      stepPlayerPath(s, sess, table, settings, step, advance);
       return;
     }
     advance(); // unknown object step: skip defensively
@@ -1463,9 +1780,11 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
 
   const faceDir = FACE[step];
   if (faceDir !== undefined) {
-    r.dir = faceDir;
-    m.facing = faceDir;
-    m.stepDir = faceDir;
+    if (canFace(settings, true)) {
+      r.dir = faceDir;
+      m.facing = faceDir;
+      m.stepDir = faceDir;
+    }
     advance();
     return;
   }
@@ -1475,9 +1794,11 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
     const roll = randInt(s.sw.rng, 0, 3);
     s.sw.rng = roll.next;
     const dir = roll.value as Dir4;
-    r.dir = dir;
-    m.facing = dir;
-    m.stepDir = dir;
+    if (canFace(settings, true)) {
+      r.dir = dir;
+      m.facing = dir;
+      m.stepDir = dir;
+    }
     advance();
     return;
   }
@@ -1495,9 +1816,14 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
     return;
   }
   r.dir = dir;
-  m.facing = dir;
+  if (canFace(settings, false)) m.facing = dir;
   m.stepDir = dir;
-  if (!canStepFrom(table, m.tx, m.ty, dir)) {
+  const tx = m.tx + DX[dir];
+  const ty = m.ty + DY[dir];
+  const blocked = settings.through
+    ? !inMapBounds(table.width, table.height, tx, ty)
+    : !canStepFrom(table, m.tx, m.ty, dir);
+  if (blocked) {
     // Blocked: the source cell's exit or the target's reverse entry is
     // dirBlocked, or the target terrain is unenterable. Retry on the next
     // reference tick, unless the route is skippable (MV MoveRoute
@@ -1508,7 +1834,7 @@ function stepPlayerRoute(s: SessionState, sess: Session): void {
   r.phase = 1;
   r.pc++;
   m.moving = true;
-  const { px, py } = stepPixels(m.tx * cfg.tile, m.ty * cfg.tile, dir, 1, cfg);
+  const { px, py } = stepPixels(m.tx * cfg.tile, m.ty * cfg.tile, dir, 1, desiredCfg);
   m.px = px;
   m.py = py;
   if (r.repeat && r.pc >= r.steps.length) r.pc = 0;
@@ -1535,12 +1861,14 @@ function stepPlayerPath(
   s: SessionState,
   sess: Session,
   table: PassageTable,
+  settings: ResolvedMoveSettings,
   step: Extract<MoveStep, { pathTo: unknown }> | Extract<MoveStep, { approach: unknown }>,
   advance: () => boolean,
 ): void {
   const r = s.playerRoute!;
   const m = s.move;
   const cfg = sess.cfg;
+  const moveCfg = movementConfigFor(cfg, settings);
 
   if (r.plan === null) {
     let gx: number;
@@ -1574,7 +1902,7 @@ function stepPlayerPath(
         const tc = resolvePlayerTarget(approach.target, s);
         if (tc) {
           const f = facingToward(m.tx, m.ty, tc.x, tc.y);
-          if (f !== null) { r.dir = f; m.facing = f; m.stepDir = f; }
+          if (f !== null && canFace(settings, true)) { r.dir = f; m.facing = f; m.stepDir = f; }
         }
       }
       advance();
@@ -1589,7 +1917,7 @@ function stepPlayerPath(
     // cell it is stepping into). A blocks:false event is walked over by the
     // mover, so the search crosses it too, the way a character route does.
     // Begin a frame-split BFS (one slice per reference tick).
-    const search = createPathSearch(table, m.tx, m.ty, gx, gy);
+    const search = createPathSearch(table, m.tx, m.ty, gx, gy, undefined, settings.through);
     if (search === null) { endPlayerRoute(s); return; }
     r.plan = { search, dirs: [], blockedTicks: 0, done: false, approach };
   }
@@ -1608,7 +1936,7 @@ function stepPlayerPath(
         const tc = resolvePlayerTarget(plan.approach.target, s);
         if (tc) {
           const f = facingToward(m.tx, m.ty, tc.x, tc.y);
-          if (f !== null) { r.dir = f; m.facing = f; m.stepDir = f; }
+          if (f !== null && canFace(settings, true)) { r.dir = f; m.facing = f; m.stepDir = f; }
         }
       }
       advance();
@@ -1629,9 +1957,14 @@ function stepPlayerPath(
     return;
   }
   r.dir = dir;
-  m.facing = dir;
+  if (canFace(settings, false)) m.facing = dir;
   m.stepDir = dir;
-  if (!canStepFrom(table, m.tx, m.ty, dir)) {
+  const tx = m.tx + DX[dir];
+  const ty = m.ty + DY[dir];
+  const blocked = settings.through
+    ? !inMapBounds(table.width, table.height, tx, ty)
+    : !canStepFrom(table, m.tx, m.ty, dir);
+  if (blocked) {
     plan.blockedTicks++;
     if (plan.blockedTicks < PATH_REPLAN_TICKS) return;
     if (r.pathRetriesLeft! <= 0) { endPlayerRoute(s); return; }
@@ -1641,7 +1974,7 @@ function stepPlayerPath(
   }
   r.phase = 1;
   m.moving = true;
-  const { px, py } = stepPixels(m.tx * cfg.tile, m.ty * cfg.tile, dir, 1, cfg);
+  const { px, py } = stepPixels(m.tx * cfg.tile, m.ty * cfg.tile, dir, 1, moveCfg);
   m.px = px;
   m.py = py;
   plan.dirs.shift();

@@ -46,11 +46,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The worldIdle condition adds 1,820 bytes of shared session/interpreter code;
 // it remains independent of the opt-in battle UI identifiers checked below.
 // Extension-driven choices and KV1's generic runtime appearance, named-layer
-// and tile-property paths are shared GameView/session/interpreter code; moving
-// src/ui/battle/ out still produces this exact bundle while the distinctive
-// battle identifiers remain absent. The optional native FS text-read fast path
-// adds 525 bytes to the shared PocketJS filesystem SDK.
-const EXPECTED_BYTES = 483_048;
+// and tile-property paths plus KM1 runtime movement controls are shared
+// GameView/session/interpreter code. KM1 adds a separately compiled legacy
+// movement loop (12,980 bytes) so projects without controls avoid the
+// controlled path's per-frame work, and the optional native FS text-read fast
+// path adds 525 bytes to the shared PocketJS filesystem SDK. The distinctive
+// battle identifiers below remain absent.
+const EXPECTED_BYTES = 512_923;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {
