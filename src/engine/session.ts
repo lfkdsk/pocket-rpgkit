@@ -130,6 +130,7 @@ import {
   type ResolvedMoveSettings,
 } from "./move-control.ts";
 import { MOTION_HZ, motionTicksPerFrame } from "./motion-clock.ts";
+import { advanceScreenEffects, screenEffectsAfterTransfer } from "./screen.ts";
 import { BTN_BITS } from "./camera.ts";
 import type { Dir4, PassageTable } from "./passability.ts";
 import { buildPassage, canStepFrom, stampBlockedCells, withTilePropertyOverrides } from "./passability.ts";
@@ -673,11 +674,13 @@ function enterMap(
   facing: Facing,
   cfg: MovementConfig,
 ): void {
+  const screen = screenEffectsAfterTransfer(s.interp.screen);
   clearLocalBank(s.sw);
   s.mapId = mapId;
   s.move = initialMovement(x, y, facing, cfg);
   s.chars = createChars();
   s.interp = createInterpState(s.sw);
+  if (screen) s.interp.screen = screen;
   s.sw = s.interp.sw;
   s.playerRoute = null;
 }
@@ -1169,7 +1172,8 @@ function advanceBattleScene(
       if (
         fiber?.mode === "wait" ||
         fiber?.mode === "text" ||
-        fiber?.mode === "animWait"
+        fiber?.mode === "animWait" ||
+        fiber?.mode === "screenWait"
       ) {
         fiber.since += scene.pausedTicks;
       }
@@ -1317,6 +1321,12 @@ function stepReferenceTick(
   // cyclic program cannot consume steps or keep throwing tick after tick.
   if (s.interp.error) return { x: s.move.tx, y: s.move.ty };
 
+  // Presentation descriptors advance on the same fixed reference clock as
+  // movement and event waits. Transfer fades and default-frozen scenes take
+  // the early-return paths above, so hidden map presentation pauses with the
+  // map; worldContinues scenes deliberately reach this path.
+  if (s.interp.screen) s.interp.screen = advanceScreenEffects(s.interp.screen);
+
   // 1. Reconcile NPC pages. A page switch (or an event that went away)
   //    aborts any forced route parked on it; resume the waiter so the
   //    external fiber cannot deadlock.
@@ -1368,7 +1378,8 @@ function stepReferenceTick(
   let playerRouteSettings = DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings;
   let playerRouteEventSettings: Readonly<Record<string, ResolvedMoveSettings>> | undefined;
   if (!needsMovementControlPath) {
-    if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
+    if (!busy && !capturesDpad && !held && s.playerRoute === null &&
+        !s.interp.inputLocked && s.interp.screen?.backdrop === undefined) {
       // stepMovement consults the table only for a held direction.
       const table = dirFromButtons(input.buttons) === null
         ? passage
@@ -1408,7 +1419,8 @@ function stepReferenceTick(
       : DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings;
     playerRouteSettings = playerSettings;
 
-    if (!busy && !capturesDpad && !held && s.playerRoute === null && !s.interp.inputLocked) {
+    if (!busy && !capturesDpad && !held && s.playerRoute === null &&
+        !s.interp.inputLocked && s.interp.screen?.backdrop === undefined) {
       if (playerSettings.runtimeWander) {
         if (s.interp.modal === null) {
           stepPlayerWander(s, passage, sess.cfg, playerSettings, eventSettings);

@@ -331,6 +331,33 @@ describe("rpgkit edit command operations and patches", () => {
     }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
   });
 
+  test("AI read and validation operations preserve every screen command as read-only", () => {
+    const project = fixture();
+    const screen: Command[] = [
+      { op: "screenFade", direction: "out", duration: 0.5, wait: true },
+      { op: "screenTint", layer: "night", color: { r: 4, g: 8, b: 16, a: 96 }, duration: 1 },
+      { op: "screenFlash", color: { r: 255, g: 255, b: 255, a: 255 }, intensity: 160, duration: 0.2 },
+      { op: "screenShake", strength: 5, speed: 3, duration: 0.4 },
+      { op: "camera", target: { event: "npc" }, duration: 1 },
+      { op: "balloon", target: "player" },
+      { op: "screenBackdrop", layer: "cutscene", variant: "blue" },
+    ];
+    project.maps[0]!.events![0]!.pages[0]!.commands = screen;
+    const source = serializeProject(project);
+
+    expect(readSuccess(executeEditOperation(source, "validate")).result).toEqual({ valid: true, errors: [] });
+    const listed = readSuccess(executeEditOperation(source, "list-commands", {
+      map: "map", event: "npc", page: 0,
+    })).result as Array<{ readOnly: boolean; command: Command }>;
+    expect(listed.map((row) => row.readOnly)).toEqual(new Array(screen.length).fill(true));
+    expect(listed.map((row) => row.command)).toEqual(screen);
+
+    expect(executeEditOperation(source, "update-command", {
+      map: "map", event: "npc", page: 0,
+      address: { path: [], index: 0 }, field: "duration", value: "2",
+    }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+  });
+
   test("command field errors identify the field and legal alternatives", () => {
     const rejected = executeEditOperation(serializeProject(fixture()), "update-command", {
       map: "map", event: "npc", page: 0, address: { path: [], index: 0 }, field: "cps", value: "0",

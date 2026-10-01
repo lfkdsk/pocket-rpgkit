@@ -9,6 +9,8 @@ state.
 
 - `camera.ts` — free-scroll camera reducer, the follow camera, and the BTN
   mask mirror.
+- `screen.ts` — sparse deterministic fade, named tint, flash, shake, scripted
+  camera, character-balloon, and full-screen backdrop presentation state.
 - `viewport.ts` — centering offset for maps smaller than the host viewport.
 - `start.ts` — camera placement derived from a project's start tile.
 - `tiles.ts` — tile ids and the baked-chunk constants.
@@ -21,11 +23,11 @@ state.
   `approach` move steps (fixed neighbour order, respects all edge guards
   and bodies; the search is sliced across reference ticks to bound QuickJS
   frame cost).
-- `interpreter.ts` — event pages, triggers, the 28-command interpreter
+- `interpreter.ts` — event pages, triggers, the 35-command interpreter
   (the v1 15 plus `lockInput` / `unlockInput` / `place` / `shop` / `ext` /
   `extChoice` / `battle` / `moveControl` / `appearance` / `layer` /
-  `tileProperty` / `mapAnim` / `stopAnim`), the typewriter clock, the seeded
-  RNG, saveable switch state.
+  `tileProperty` / `mapAnim` / `stopAnim` and seven screen-presentation
+  commands), the typewriter clock, the seeded RNG, saveable switch state.
 - `extensions.ts` — namespaced pure command/condition/dynamic-choice handlers,
   the opaque JSON extension slot, validation and save codecs.
 - `battle.ts` — game-owned battle reducer and scene contracts.
@@ -173,6 +175,35 @@ Conventions:
   and the trigger scan starts no action or playerTouch page, so the
   confirm that advances the box never also starts the faced event.
   `autorun`/`parallel` pages keep running. Off by default (v1).
+- **Screen presentation:** `screenFade`, `screenTint`, `screenFlash`,
+  `screenShake`, `camera`, `balloon`, and `screenBackdrop` write sparse state
+  in `InterpState.screen`. All durations are authored in virtual seconds and
+  compile to the fixed 60 Hz reference clock; optional `wait:true` parks only
+  the issuing fiber. A completed fade-out stays opaque until a fade-in;
+  tint layers are keyed by stable game-chosen ids and composited in sorted-id
+  order, so daylight/weather/custom layers can be driven independently.
+  Flash decays to transparent. Shake is a deterministic horizontal triangle
+  wave (no RNG) applied after viewport clamp to the world plane only.
+- **Camera and balloons:** camera targets are an absolute tile, the player,
+  `"this"`, or `{event:id}`. The reducer stores resolution-independent world
+  focus; `GameView` clamps it for the live viewport. Targeting the player
+  returns smoothly to live follow. A balloon targets the same character forms
+  and names a `project.animations` entry; it loops above the live character
+  anchor for a finite duration or until a command with no `icon` clears it.
+  A waited balloon must name an icon and a positive finite duration.
+- **Backdrop, layering, and lifetime:** `screenBackdrop` selects a
+  `GameAssets.layers` entry with `placement:"screen"`; omitting/nulling its
+  variant closes it. Backdrop, tint, and flash render over the map but below
+  dialogs; independent fade renders above dialogs. A backdrop prevents free
+  movement/action and keeps `worldIdle` false, while autorun/parallel fibers
+  still run. Transfer retains fade, tints, and backdrop, but clears transient
+  flash/shake, scripted camera, and balloons. Default-frozen battles pause all
+  screen-effect clocks and hide the map presentation; `worldContinues:true`
+  advances it behind the battle scene.
+- **Persistence:** in-flight tween endpoints and remaining reference ticks,
+  camera focus, balloon frame age, and persistent layers all round-trip in
+  saves and attract rewind. Older saves omit `screen` and retain the zero-cost
+  path: `session.ts` skips screen advancement entirely while it is absent.
 - `isBusy(state)` is true while a blocking (action / playerTouch / autorun)
   fiber runs. The mover freezes for its whole duration. PARALLEL pages run
   concurrently and never set busy (only the message hold above can make

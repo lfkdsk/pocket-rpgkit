@@ -561,6 +561,103 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "direction", "duration"],
+          "properties": {
+            "op": { "const": "screenFade" },
+            "direction": { "enum": ["out", "in"] },
+            "duration": { "type": "number", "minimum": 0 },
+            "color": { "$ref": "#/$defs/screenColor" },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Fade the complete presentation independently of transfer. Fade-out holds its final colour until a later fade-in."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "layer", "color", "duration"],
+          "properties": {
+            "op": { "const": "screenTint" },
+            "layer": { "type": "string", "minLength": 1 },
+            "color": { "$ref": "#/$defs/screenColor" },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Tween a named composable full-screen colour layer. A zero-alpha target removes the layer when complete."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "color", "intensity", "duration"],
+          "properties": {
+            "op": { "const": "screenFlash" },
+            "color": { "$ref": "#/$defs/screenColor" },
+            "intensity": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Flash a colour over the map presentation; intensity scales the authored alpha."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "strength", "speed", "duration"],
+          "properties": {
+            "op": { "const": "screenShake" },
+            "strength": { "type": "number", "minimum": 0 },
+            "speed": { "type": "number", "minimum": 0 },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Deterministic horizontal shake; strength is pixels and speed is cycles per virtual second."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "target", "duration"],
+          "properties": {
+            "op": { "const": "camera" },
+            "target": { "$ref": "#/$defs/cameraTarget" },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Scroll viewport focus to a tile or character, or return it to live player follow."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "target"],
+          "properties": {
+            "op": { "const": "balloon" },
+            "target": { "$ref": "#/$defs/routeTarget" },
+            "icon": { "type": "string", "minLength": 1 },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "wait": { "const": true } }, "required": ["wait"] },
+              "then": {
+                "required": ["icon", "duration"],
+                "properties": { "duration": { "type": "number", "exclusiveMinimum": 0 } }
+              }
+            }
+          ],
+          "description": "Show an animation over a character. Omitting icon clears it; omitting duration makes it persistent."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "layer"],
+          "properties": {
+            "op": { "const": "screenBackdrop" },
+            "layer": { "type": "string", "minLength": 1 },
+            "variant": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
+          },
+          "description": "Select a persistent full-screen cutscene backdrop. Omitting or nulling variant closes it."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "seconds"],
           "properties": {
             "op": { "const": "wait" },
@@ -803,6 +900,39 @@
         }
       ],
       "description": "Who a forced route drives: the player, the running event, or another map event."
+    },
+    "screenColor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r", "g", "b", "a"],
+      "properties": {
+        "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "b": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "a": { "type": "integer", "minimum": 0, "maximum": 255 }
+      },
+      "description": "Unpremultiplied 8-bit RGBA used by full-screen presentation effects."
+    },
+    "cameraTarget": {
+      "oneOf": [
+        { "enum": ["player", "this"] },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event"],
+          "properties": { "event": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "integer", "minimum": 0 },
+            "y": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ],
+      "description": "Viewport focus: live player/event, the running event, or an absolute tile coordinate."
     },
     "moveControl": {
       "oneOf": [

@@ -23,6 +23,18 @@ export {
 export { AnimatedTiles, type AnimatedTilesProps, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
 export { MapAnimLayer, type MapAnimLayerProps, type MapAnimStats } from "./MapAnimLayer.tsx";
 export {
+  BalloonLayer,
+  balloonFrameIndex,
+  type BalloonAnchor,
+  type BalloonLayerProps,
+} from "./BalloonLayer.tsx";
+export {
+  ScreenEffectsLayer,
+  ScreenFadeLayer,
+  screenColorHex,
+  type ScreenEffectsLayerProps,
+} from "./ScreenEffectsLayer.tsx";
+export {
   GameView,
   type BattleSceneComponent,
   type BattleSceneViewProps,

@@ -49,10 +49,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // and tile-property paths, KM1 runtime movement controls (with a separately
 // compiled 12,980-byte legacy movement loop so projects without controls skip
 // the controlled per-frame path), KA1's state-driven map animation layer and
-// its interpreter support, and the 525-byte optional native FS text read are
-// shared GameView/session/interpreter code. The distinctive battle identifiers
-// below remain absent.
-const EXPECTED_BYTES = 525_552;
+// its interpreter support, the 525-byte optional native FS text read, and
+// KS1's shared screen-effect/camera/balloon presentation path are shared
+// GameView/session/interpreter code. KS1 adds 28,383 bytes to the previously
+// measured 525,552-byte bundle. The distinctive battle identifiers below
+// remain absent.
+const EXPECTED_BYTES = 553_935;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

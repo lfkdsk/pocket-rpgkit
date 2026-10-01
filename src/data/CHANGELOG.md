@@ -456,5 +456,33 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   the same visual frame. Frames taller than one tile shift up by half their
   height, matching Tuxemon's map view anchor.
 
+## v1 amendment — 2026-09-30 (screen presentation commands)
+
+- `screenFade` independently fades the complete presentation out to an
+  optional RGBA colour or back in. Durations are virtual seconds, `wait:true`
+  parks only the issuing fiber, and a completed fade-out persists until a
+  fade-in clears it.
+- `screenTint` tweens one named RGBA overlay. Named layers coexist and compose
+  in stable lexical order; reaching alpha zero removes that layer. This keeps
+  daylight, weather, and game extensions independent without prescribing
+  their policy. `screenFlash` applies a transient colour/intensity overlay,
+  and `screenShake` applies a deterministic horizontal triangle wave with
+  pixel strength and cycles-per-second speed. Neither uses host time or RNG.
+- `camera` scrolls world focus to a tile, player, running event, or named event;
+  targeting the player restores live follow. The reducer stores world focus,
+  while the renderer clamps against its current resolution before adding
+  shake. `balloon` shows a `project.animations` entry over a character, either
+  for a finite duration or persistently until cleared by omitting `icon`.
+- `screenBackdrop` selects or closes a named `placement:"screen"` layer
+  variant. Backdrop/tint/flash are below dialogs and independent fade is above
+  dialogs. A backdrop blocks player movement and action (`worldIdle` is false)
+  while autorun and parallel events continue, allowing scripted closure.
+- Fade, tint, and backdrop survive transfer; flash, shake, camera, and balloons
+  are scoped to the current map visit. All state is saveable and rewound by the
+  ordinary pure reducer history. Default-frozen battle scenes pause these
+  clocks and own the visible frame; `scene.worldContinues:true` keeps them
+  advancing in the hidden background. Existing documents and saves omit the
+  new commands/state and retain their prior behavior.
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

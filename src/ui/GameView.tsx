@@ -34,7 +34,7 @@ import { useActions } from "@pocketjs/framework/actions";
 import { simulationHz } from "@pocketjs/framework/clock";
 import { BTN } from "@pocketjs/framework/input";
 import { getOps, hostViewport } from "@pocketjs/framework/host";
-import { followCamera } from "../engine/camera.ts";
+import { clampCamera, followCamera } from "../engine/camera.ts";
 import { deepClone } from "../engine/clone.ts";
 import type { ExtensionOptions, ExtensionRuntime } from "../engine/extensions.ts";
 import { cloneScene, type BattleRules, type SceneSlot } from "../engine/battle.ts";
@@ -74,6 +74,11 @@ import type {
 import { PlayerSprite, playerImageKey } from "./PlayerSprite.tsx";
 import { walkPose, type WalkPose } from "../engine/movement.ts";
 import { TILE } from "../engine/tiles.ts";
+import {
+  cameraFocusAt,
+  screenShakeOffset,
+  type BalloonEffectState,
+} from "../engine/screen.ts";
 import { DialogBox } from "./DialogBox.tsx";
 import type { UiTheme } from "./theme.ts";
 import type { Modal } from "../engine/interpreter.ts";
@@ -87,6 +92,8 @@ import type {
 } from "./game-assets.ts";
 import { AnimatedTiles, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import { MapAnimLayer, type MapAnimStats } from "./MapAnimLayer.tsx";
+import { BalloonLayer, type BalloonAnchor } from "./BalloonLayer.tsx";
+import { ScreenEffectsLayer, ScreenFadeLayer } from "./ScreenEffectsLayer.tsx";
 import { ChunkLayer } from "./ChunkLayer.tsx";
 import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
@@ -646,6 +653,7 @@ export function GameView(props: GameViewProps) {
   const screenLayers = Object.entries(layerAssets).filter(
     (entry): entry is [string, GameScreenLayerAssets] => entry[1].placement === "screen",
   );
+  const screenLayerAssets = Object.fromEntries(screenLayers) as Record<string, GameScreenLayerAssets>;
   // The host rate selects how many fixed 60 Hz reference ticks each frame
   // folds. Time-bearing commands compile against that fixed reference.
   const hz = simulationHz();
@@ -745,12 +753,27 @@ export function GameView(props: GameViewProps) {
   const cameraFor = (st: SessionState): CameraState => {
     const vp = viewport();
     const size = mapSize(st.mapId);
-    return followCamera(st.move.px, st.move.py, project.tileSize, st.move.facing, {
+    const effect = st.interp.screen;
+    if (!effect?.camera && !effect?.shake) {
+      return followCamera(st.move.px, st.move.py, project.tileSize, st.move.facing, {
+        worldW: size.w,
+        worldH: size.h,
+        viewportW: vp.w,
+        viewportH: vp.h,
+      });
+    }
+    const focus = cameraFocusAt(effect.camera, {
+      x: st.move.px + project.tileSize / 2,
+      y: st.move.py + project.tileSize / 2,
+    });
+    const clamped = clampCamera(focus.x - vp.w / 2, focus.y - vp.h / 2, {
       worldW: size.w,
       worldH: size.h,
       viewportW: vp.w,
       viewportH: vp.h,
     });
+    const shake = screenShakeOffset(effect.shake);
+    return { x: clamped.x - shake.x, y: clamped.y - shake.y, facing: st.move.facing };
   };
   let camera = cameraFor(state);
   globalThis.__rpgGameCamera = camera;
@@ -759,6 +782,18 @@ export function GameView(props: GameViewProps) {
     value.interp.layers ? JSON.stringify(value.interp.layers) : "";
   let paintedLayers = layerFingerprint(state);
   const [layerRevision, setLayerRevision] = createSignal(0);
+  const screenFingerprint = (value: SessionState): string => {
+    const screen = value.interp.screen;
+    return screen && (screen.fade || screen.tints || screen.flash || screen.backdrop)
+      ? JSON.stringify([screen.fade, screen.tints, screen.flash, screen.backdrop])
+      : "";
+  };
+  let paintedScreen = screenFingerprint(state);
+  const [screenRevision, setScreenRevision] = createSignal(0);
+  const presentedScreen = () => {
+    screenRevision();
+    return state.interp.screen;
+  };
   const builtInLayer = (
     id: "ground" | "upper",
     definition: GameMapLayerAssets | undefined,
@@ -908,6 +943,7 @@ export function GameView(props: GameViewProps) {
 
     const op = fadeOpacity(state.fade);
     const nextLayers = layerFingerprint(state);
+    const nextScreen = screenFingerprint(state);
     batch(() => {
       if (state.mapId !== prev.mapId || mapId() !== state.mapId) setMapId(state.mapId);
       // The walker pose is a pure function of the saved mover phase, so a
@@ -919,6 +955,10 @@ export function GameView(props: GameViewProps) {
       if (nextLayers !== paintedLayers) {
         paintedLayers = nextLayers;
         setLayerRevision((revision) => revision + 1);
+      }
+      if (nextScreen !== paintedScreen) {
+        paintedScreen = nextScreen;
+        setScreenRevision((revision) => revision + 1);
       }
       const shownModal = attract ? attract.presentedModal() : state.interp.modal;
       setModal((m) => (modalChanged(m, shownModal) ? deepClone(shownModal) : m));
@@ -1089,6 +1129,33 @@ export function GameView(props: GameViewProps) {
               onStats={(stats) => props.onMapAnimStats?.("above", stats)}
             />
           ) : null}
+          {assets.anims ? (
+            <BalloonLayer
+              state={() => state}
+              anims={worldAnims}
+              assets={assets}
+              anchor={(balloon: Readonly<BalloonEffectState>): BalloonAnchor => {
+                if (balloon.target === "player") {
+                  const art = playerFrame(
+                    state,
+                    sprites,
+                    assets.npcSrc,
+                    assets.player,
+                    assets.playerHeight ?? 16,
+                  );
+                  return { x: state.move.px, y: state.move.py, height: art.height };
+                }
+                const eventId = balloon.target.event;
+                const ch = state.chars.chars[eventId];
+                const event = currentSlots().find((candidate) => candidate.id === eventId);
+                if (!ch || !event) {
+                  return { x: balloon.x * TILE, y: balloon.y * TILE, height: TILE };
+                }
+                const frame = npcFrame(state, event, sprites, assets.npcSrc, session.extensions);
+                return { x: frame[0], y: frame[1], height: frame[3] };
+              }}
+            />
+          ) : null}
             </View>
           </View>
 
@@ -1101,6 +1168,8 @@ export function GameView(props: GameViewProps) {
             />
           ))}
 
+          <ScreenEffectsLayer screen={presentedScreen} layers={screenLayerAssets} />
+
           <DialogBox
             modal={modal}
             legend={actions.legend}
@@ -1109,6 +1178,7 @@ export function GameView(props: GameViewProps) {
             faceWidth={props.faceWidth}
             items={itemNames}
           />
+          <ScreenFadeLayer screen={presentedScreen} />
         </>
       </Show>
 

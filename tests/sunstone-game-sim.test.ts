@@ -423,10 +423,11 @@ simDescribe("sunstone — render budget", () => {
     // battle finite-state normalization), plus the shared bounded-keyframe
     // rewind path, the extension-driven dynamic-choice provider/resolver path,
     // the generic runtime appearance/layer render path, KM1's runtime movement
-    // controls with their separately compiled legacy loop, and KA1's
-    // state-driven map animation layer: 525,552 B measured. The bound keeps a
-    // narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(533_000);
+    // controls with their separately compiled legacy loop, KA1's state-driven
+    // map animation layer, and KS1's shared screen effect, scripted camera,
+    // backdrop and pooled balloon renderer: 553,935 B measured. The bound
+    // keeps a narrow margin so an accidental bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(562_000);
   });
 });
 

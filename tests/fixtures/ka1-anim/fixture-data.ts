@@ -172,3 +172,72 @@ export const KA1_PROJECT: Project = {
   ],
   maps: [KA1_MAP],
 };
+
+/** Opt-in KS1 fixture. It reuses the deterministic KA1 art but replaces the
+ * event set with a staged controller for camera, balloon and screen layers. */
+export const KS1_PROJECT: Project = {
+  ...KA1_PROJECT,
+  title: "KS1 screen presentation fixture",
+  maps: [{
+    ...KA1_MAP,
+    events: [{
+      id: "screen-controller",
+      x: PLAYER_START.x,
+      y: PLAYER_START.y + 1,
+      pages: [
+        {
+          trigger: "action",
+          commands: [
+            { op: "balloon", target: "player", icon: "pulse" },
+            { op: "camera", target: { x: 35, y: PLAYER_START.y }, duration: 0 },
+            { op: "screenTint", layer: "night", color: { r: 0, g: 64, b: 192, a: 96 }, duration: 0 },
+            { op: "switch", id: "ks1.stage.1", value: true },
+          ],
+        },
+        {
+          condition: { switch: "ks1.stage.1" },
+          trigger: "action",
+          commands: [
+            { op: "screenFlash", color: { r: 255, g: 64, b: 32, a: 220 }, intensity: 200, duration: 1 },
+            { op: "screenShake", strength: 7, speed: 15, duration: 1 },
+            { op: "switch", id: "ks1.stage.2", value: true },
+          ],
+        },
+        {
+          condition: { switch: "ks1.stage.2" },
+          trigger: "action",
+          commands: [
+            { op: "screenBackdrop", layer: "cutscene", variant: "blue" },
+            { op: "text", lines: ["Backdrop keeps dialogue readable."], cps: 120 },
+            { op: "switch", id: "ks1.stage.3", value: true },
+          ],
+        },
+        {
+          condition: { switch: "ks1.stage.3" },
+          trigger: "autorun",
+          commands: [
+            { op: "screenBackdrop", layer: "cutscene", variant: null },
+            { op: "screenFade", direction: "out", duration: 1, wait: true },
+            { op: "switch", id: "ks1.stage.4", value: true },
+          ],
+        },
+        {
+          condition: { switch: "ks1.stage.4" },
+          trigger: "action",
+          commands: [
+            { op: "screenFade", direction: "in", duration: 1, wait: true },
+            { op: "balloon", target: "player" },
+            { op: "screenTint", layer: "night", color: { r: 0, g: 64, b: 192, a: 0 }, duration: 0 },
+            { op: "camera", target: "player", duration: 0 },
+            { op: "switch", id: "ks1.stage.5", value: true },
+          ],
+        },
+        {
+          condition: { switch: "ks1.stage.5" },
+          trigger: "action",
+          commands: [],
+        },
+      ],
+    }],
+  }],
+};

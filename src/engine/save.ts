@@ -11,7 +11,8 @@
 //              their compiled stacks), modal, erased/touch latches
 //
 // Nothing here is host-derived: a save point is a SAFE POINT — mover at a
-// tile boundary, no blocking fiber, no modal, no parked external request —
+// tile boundary, no blocking fiber except a resumable waited screen effect,
+// no modal, no parked external request —
 // so the restored state folds the same future tape into the same states
 // and the same pixels (docs/SIMULATION.md). The envelope carries a format
 // id, a version number and an FNV-1a checksum over canonicalized JSON;
@@ -56,13 +57,15 @@ export interface SaveSnapshot {
 }
 
 /** A save is only valid at a safe point: the mover rests on a tile and no
- *  blocking fiber / modal / queued external request / scene owns the
- *  session. Parallel fibers serialize in their running state. */
+ *  modal / queued external request / scene owns the session. A main fiber
+ *  parked on `screenWait` is safe because both its clock and presentation
+ *  descriptor are reducer state; every other blocking mode remains barred.
+ *  Parallel fibers serialize in their running state. */
 export function canSave(player: MovementState, interp: InterpState, scene: unknown = null): boolean {
   return (
     !player.moving &&
     player.phase === 0 &&
-    !isBusy(interp) &&
+    (!isBusy(interp) || interp.main?.mode === "screenWait") &&
     interp.error === undefined &&
     interp.modal === null &&
     interp.pendingTransfer === null &&

@@ -223,6 +223,18 @@ function targetSummary(value: unknown): string {
   return "?";
 }
 
+function cameraTargetSummary(value: unknown): string {
+  if (isRecord(value) && typeof value.x === "number" && typeof value.y === "number") {
+    return `tile (${numberText(value.x)}, ${numberText(value.y)})`;
+  }
+  return targetSummary(value);
+}
+
+function colorSummary(value: unknown): string {
+  if (!isRecord(value)) return "rgba(?)";
+  return `rgba(${numberText(value.r)},${numberText(value.g)},${numberText(value.b)},${numberText(value.a)})`;
+}
+
 /** A compact single-line display. It is deliberately total over unknown and
  * malformed data so an editor can still open and preserve newer projects. */
 export function commandSummary(command: unknown): string {
@@ -291,6 +303,24 @@ export function commandSummary(command: unknown): string {
       return `Layer ${text(command.layer)} ${jsonPreview({ visible: command.visible, variant: command.variant })}`;
     case "tileProperty":
       return `Tile property (${numberText(command.x)}, ${numberText(command.y)}) ${jsonPreview({ passage: command.passage, enter: command.enter, exit: command.exit })}`;
+    case "screenFade":
+      return `Screen fade ${text(command.direction)} ${numberText(command.duration)}s${command.color === undefined ? "" : ` ${colorSummary(command.color)}`}`;
+    case "screenTint":
+      return `Screen tint ${text(command.layer)} ${colorSummary(command.color)} ${numberText(command.duration)}s`;
+    case "screenFlash":
+      return `Screen flash ${colorSummary(command.color)} ×${numberText(command.intensity)} ${numberText(command.duration)}s`;
+    case "screenShake":
+      return `Screen shake ${numberText(command.strength)}px @ ${numberText(command.speed)}Hz for ${numberText(command.duration)}s`;
+    case "camera":
+      return `Camera ${cameraTargetSummary(command.target)} ${numberText(command.duration)}s`;
+    case "balloon":
+      return command.icon === undefined
+        ? `Clear balloon on ${targetSummary(command.target)}`
+        : `Balloon ${text(command.icon)} on ${targetSummary(command.target)}${command.duration === undefined ? "" : ` for ${numberText(command.duration)}s`}`;
+    case "screenBackdrop":
+      return command.variant === undefined || command.variant === null
+        ? `Close backdrop ${text(command.layer)}`
+        : `Backdrop ${text(command.layer)} = ${text(command.variant)}`;
     case "battle":
       return `Battle ${jsonPreview(command.setup)}`;
     default:

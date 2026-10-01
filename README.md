@@ -11,7 +11,8 @@ the parts an RPG-Maker-style game needs without any specific game:
   wall clock, no `Math.random`: a session is one pure fold per virtual
   frame, so a button tape replays byte-for-byte on every host;
 - **Solid UI components** (`src/ui/`) — `GameView`, a complete game screen
-  for a project (chunked maps, follow camera, NPCs, dialog, fades, and
+  for a project (chunked maps, scripted/follow camera, NPCs, dialog, screen
+  fades/tints/flashes/shakes, character balloons, cutscene backdrops, and
   optional attract mode), plus the blocks it is made of: `DialogBox`,
   `PlayerSprite`, `ChunkLayer`, `StreamedChunkLayer`, `AnimatedTiles`,
   `SaveMenu`, `Panel`.
@@ -423,7 +424,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 28 commands
+### The 35 commands
 
 | op | purpose |
 | --- | --- |
@@ -439,6 +440,13 @@ earlier resident map within the same host frame.
 | `appearance` | change a player's/event's walking sprite, opacity, or visibility; optionally save a new player reset baseline |
 | `layer` | show/hide a named visual layer or select one of its prepackaged variants for this map visit |
 | `tileProperty` | replace one cell's passage and/or one-sided entry/exit edge masks for this map visit |
+| `screenFade` | fade the complete presentation out to a colour or back in, independently of transfer |
+| `screenTint` | tween a named composable RGBA screen-tint layer (a zero-alpha target removes it) |
+| `screenFlash` | flash an RGBA colour at 0..255 intensity, then decay to transparent |
+| `screenShake` | deterministic horizontal shake with pixel strength, cycles/second speed, and duration |
+| `camera` | scroll focus to an absolute tile, the player, this event, or a named event; targeting the player restores live follow |
+| `balloon` | show a project animation above the player/event for a duration or until explicitly cleared |
+| `screenBackdrop` | show or close a named full-screen layer variant for cutscenes and menus |
 | `wait` | virtual-time pause (seconds, compiled against `simulationHz`) |
 | `gold` | add/sub gold |
 | `item` | add/remove an item count |
@@ -454,6 +462,26 @@ earlier resident map within the same host frame.
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
+
+Every timed screen command uses virtual seconds and has optional `wait`.
+Waiting parks only the issuing fiber while other event fibers and the map keep
+running. `screenFade` holds a completed fade-out until a later fade-in;
+`screenTint.layer` lets daylight, weather, and game-specific effects coexist
+without sharing state. A `balloon.icon` names a `project.animations` entry;
+omitting the icon clears that target, while omitting duration makes the icon
+persistent. `screenBackdrop` resolves a `GameAssets.layers` entry whose
+placement is `screen` and sits above the map but below dialogs. Tint and flash
+also sit below dialogs; the independent fade sits above them.
+
+Screen state is part of saves and attract rewind. Transfer retains fade,
+named tints, and backdrop, but clears flash, shake, scripted camera, and
+character balloons. A backdrop blocks player movement/action and makes
+`worldIdle` false while autorun/parallel fibers can close it. A default-frozen
+battle pauses map presentation clocks and owns the visible scene; with
+`scene.worldContinues:true` those clocks advance in the background. Camera
+focus is saved in world pixels, clamped against the current viewport at
+render time, then shake offsets only the map/world plane, never HUD/dialogs or
+screen overlays.
 
 `moveControl` takes the same `"player"` / `"this"` / `{event:id}` target as
 `moveRoute`; a route can apply the same `MoveControl` inline with a

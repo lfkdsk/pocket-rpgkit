@@ -36,12 +36,27 @@ import {
   type ExtensionRuntime,
 } from "./extensions.ts";
 import { DEFAULT_PLAYER_NAME, substituteLines, substitutePlayerName } from "./player-name.ts";
+import { TILE } from "./tiles.ts";
 import {
   cloneMoveControlState,
   type MoveControlState,
 } from "./move-control.ts";
+import {
+  balloonTargetKey,
+  cameraFocusAt,
+  cloneScreenEffects,
+  screenEffectsEmpty,
+  startCameraEffect,
+  startScreenFade,
+  startScreenFlash,
+  startScreenShake,
+  startScreenTint,
+  OPAQUE_BLACK,
+  type ScreenEffectsState,
+} from "./screen.ts";
 import type {
   AnimationDef,
+  CameraTarget,
   Command,
   CommonEvent,
   Condition,
@@ -57,6 +72,7 @@ import type {
   Page,
   PageCondition,
   RouteTarget,
+  ScreenColor,
   ShopGood,
   TilePropertyOverride,
   TransferCoordinate,
@@ -535,6 +551,25 @@ export type Instr =
       enter?: Dir[] | null;
       exit?: Dir[] | null;
     }
+  | {
+      op: "screenFade";
+      direction: "out" | "in";
+      color: ScreenColor;
+      frames: number;
+      wait: boolean;
+    }
+  | { op: "screenTint"; layer: string; color: ScreenColor; frames: number; wait: boolean }
+  | { op: "screenFlash"; color: ScreenColor; intensity: number; frames: number; wait: boolean }
+  | { op: "screenShake"; strength: number; speed: number; frames: number; wait: boolean }
+  | { op: "camera"; target: CameraTarget; frames: number; wait: boolean }
+  | {
+      op: "balloon";
+      target: RouteTarget;
+      icon: string | null;
+      frames: number | null;
+      wait: boolean;
+    }
+  | { op: "screenBackdrop"; layer: string; variant: string | null }
   | { op: "common"; id: string }
   | { op: "shop"; id: string; goods: readonly ShopGood[]; sell: boolean; sellList: "disable" | "hide" }
   | {
@@ -694,6 +729,62 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
             ...(c.enter === undefined ? {} : { enter: c.enter === null ? null : [...c.enter] }),
             ...(c.exit === undefined ? {} : { exit: c.exit === null ? null : [...c.exit] }),
           });
+          break;
+        case "screenFade":
+          emit({
+            op: "screenFade",
+            direction: c.direction,
+            color: { ...(c.color ?? OPAQUE_BLACK) },
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "screenTint":
+          emit({
+            op: "screenTint",
+            layer: c.layer,
+            color: { ...c.color },
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "screenFlash":
+          emit({
+            op: "screenFlash",
+            color: { ...c.color },
+            intensity: c.intensity,
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "screenShake":
+          emit({
+            op: "screenShake",
+            strength: c.strength,
+            speed: c.speed,
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "camera":
+          emit({
+            op: "camera",
+            target: typeof c.target === "object" ? { ...c.target } : c.target,
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "balloon":
+          emit({
+            op: "balloon",
+            target: typeof c.target === "object" ? { ...c.target } : c.target,
+            icon: c.icon ?? null,
+            frames: c.duration === undefined ? null : secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "screenBackdrop":
+          emit({ op: "screenBackdrop", layer: c.layer, variant: c.variant ?? null });
           break;
         case "common":
           emit({ op: "common", id: c.id });
@@ -993,7 +1084,7 @@ interface Fiber {
   pageIndex: number;
   parallel: boolean;
   stack: { prog: Prog; pc: number }[];
-  mode: "run" | "text" | "choices" | "shop" | "wait" | "animWait" | "external";
+  mode: "run" | "text" | "choices" | "shop" | "wait" | "animWait" | "screenWait" | "external";
   /** Frame on which the current wait/text started. */
   since: number;
   erase: boolean;
@@ -1209,6 +1300,10 @@ export interface InterpState {
   layers?: Record<string, LayerState>;
   /** Row-major cell index -> runtime passage/edge replacement. */
   tileProperties?: Record<string, TilePropertyOverride>;
+  /** Sparse, deterministic screen/camera/balloon presentation. Global
+   * overlays are retained explicitly across map entry by Session; camera
+   * and character balloons are scoped to the current map visit. */
+  screen?: ScreenEffectsState;
   /** Sound cues emitted on this frame; the host drains them after step. */
   cues: SoundCue[];
   pendingTransfer: PendingTransfer | null;
@@ -1280,6 +1375,7 @@ export function isWorldIdle(
   return (
     s.main === null &&
     s.inputLocked === false &&
+    s.screen?.backdrop === undefined &&
     s.modal === null &&
     s.error === undefined &&
     s.pendingTransfer === null &&
@@ -1353,6 +1449,14 @@ function programContextFlags(program: readonly Instr[]): number {
       instruction.target !== null &&
       typeof instruction.target === "object"
     ) {
+      flags |= CONTEXT_MAP_ANIM_TARGET;
+    } else if (
+      instruction.op === "camera" &&
+      instruction.target !== "player" &&
+      (instruction.target === "this" || "event" in instruction.target)
+    ) {
+      flags |= CONTEXT_MAP_ANIM_TARGET;
+    } else if (instruction.op === "balloon" && instruction.target !== "player") {
       flags |= CONTEXT_MAP_ANIM_TARGET;
     }
   }
@@ -1622,6 +1726,7 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
     ...(s0.tileProperties ? {
       tileProperties: shareTileProperties ? s0.tileProperties : cloneTileProperties(s0.tileProperties),
     } : {}),
+    ...(s0.screen ? { screen: cloneScreenEffects(s0.screen) } : {}),
     cues: s0.cues.map((cue) => ({ ...cue })),
     pendingTransfer: s0.pendingTransfer ? { ...s0.pendingTransfer } : null,
     pendingMoveRoutes: s0.pendingMoveRoutes.map((r) => "control" in r
@@ -1696,7 +1801,7 @@ function pruneMapAnims(s: InterpState, w: World): void {
   s.anims = kept.length === 0 ? undefined : kept;
 }
 
-/** Refresh every event-following instance's anchor to its target's live
+/** Refresh every event-following animation/balloon anchor to its target's live
  *  cell. The renderer paints a following instance on the character's live
  *  pixel while it is on the map, and falls back to the instance's x/y once
  *  the character leaves (erased / page off). Without this refresh that
@@ -1710,22 +1815,35 @@ function syncFollowAnchors(s: InterpState, input: InterpInput): void {
   const cells = input.liveEventCells;
   if (!cells) return;
   const anims = s.anims;
-  if (!anims || anims.length === 0) return;
-  let firstMoved = -1;
-  for (let i = 0; i < anims.length; i++) {
-    const a = anims[i]!;
-    if (a.target === null || a.target === "player") continue;
-    const cell = keyedValue(cells, a.target.event);
-    if (cell && (a.x !== cell.x || a.y !== cell.y)) { firstMoved = i; break; }
+  if (anims && anims.length > 0) {
+    let firstMoved = -1;
+    for (let i = 0; i < anims.length; i++) {
+      const a = anims[i]!;
+      if (a.target === null || a.target === "player") continue;
+      const cell = keyedValue(cells, a.target.event);
+      if (cell && (a.x !== cell.x || a.y !== cell.y)) { firstMoved = i; break; }
+    }
+    if (firstMoved >= 0) {
+      const writable = writableAnims(s);
+      for (let i = firstMoved; i < writable.length; i++) {
+        const a = writable[i]!;
+        if (a.target === null || a.target === "player") continue;
+        const cell = keyedValue(cells, a.target.event);
+        if (cell && (a.x !== cell.x || a.y !== cell.y)) {
+          writable[i] = { ...a, x: cell.x, y: cell.y };
+        }
+      }
+    }
   }
-  if (firstMoved < 0) return; // every follower is stationary or targetless
-  const writable = writableAnims(s);
-  for (let i = firstMoved; i < writable.length; i++) {
-    const a = writable[i]!;
-    if (a.target === null || a.target === "player") continue;
-    const cell = keyedValue(cells, a.target.event);
-    if (cell && (a.x !== cell.x || a.y !== cell.y)) {
-      writable[i] = { ...a, x: cell.x, y: cell.y };
+  const balloons = s.screen?.balloons;
+  if (!balloons) return;
+  for (const id of Object.keys(balloons)) {
+    const balloon = balloons[id]!;
+    if (balloon.target === "player") continue;
+    const cell = keyedValue(cells, balloon.target.event);
+    if (cell && (balloon.x !== cell.x || balloon.y !== cell.y)) {
+      balloon.x = cell.x;
+      balloon.y = cell.y;
     }
   }
 }
@@ -1900,7 +2018,7 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
       // While the cross-event input lock is held, confirm presses
       // start no event (the cutscene owns control); autorun/parallel above
       // still run. A box holding the player owns the press the same way.
-      if (s.inputLocked || held || !input.confirmEdge) continue;
+      if (s.inputLocked || s.screen?.backdrop !== undefined || held || !input.confirmEdge) continue;
       // MV parity: action button starts the event one tile in FRONT of the
       // player (NPCs block the tile; below-character signs are faced, not
       // stood on) OR sharing the player's cell (a plate the player walked
@@ -2663,6 +2781,58 @@ function applyTilePropertyCommand(
   }
 }
 
+function ensureScreen(s: InterpState): ScreenEffectsState {
+  return s.screen ?? (s.screen = {});
+}
+
+function resolvedEventTarget(
+  target: "this" | { event: string },
+  fiber: Fiber,
+): { event: string } {
+  return { event: target === "this" ? fiber.key.split("/").pop()! : target.event };
+}
+
+function liveTargetCell(
+  s: InterpState,
+  f: Fiber,
+  input: InterpInput,
+  target: "player" | "this" | { event: string },
+  op: "camera" | "balloon",
+): { target: "player" | { event: string }; x: number; y: number } | null {
+  if (target === "player") {
+    return { target: "player", x: input.playerCell.x, y: input.playerCell.y };
+  }
+  const resolved = resolvedEventTarget(target, f);
+  const cell = input.liveEventCells ? keyedValue(input.liveEventCells, resolved.event) : undefined;
+  if (!cell) {
+    s.error = {
+      kind: "content",
+      message: `${op} in ${f.key}: target event ${resolved.event} has no live character on this map`,
+    };
+    return null;
+  }
+  return { target: resolved, x: cell.x, y: cell.y };
+}
+
+type TimedScreenInstr = Extract<Instr, {
+  op: "screenFade" | "screenTint" | "screenFlash" | "screenShake" | "camera" | "balloon";
+}>;
+
+function screenInstructionFrames(ins: TimedScreenInstr): number {
+  return ins.op === "balloon" ? ins.frames ?? 0 : ins.frames;
+}
+
+/** Park only this fiber; the map and parallel fibers continue. */
+function finishOrWaitScreen(s: InterpState, f: Fiber, ins: TimedScreenInstr): boolean {
+  const frames = screenInstructionFrames(ins);
+  if (ins.wait && frames > 0) {
+    f.mode = "screenWait";
+    f.since = s.frame;
+    return true;
+  }
+  return false;
+}
+
 /** Drop event visual overrides whose issuing page is no longer active.
  * Session calls this immediately after page reconciliation. */
 export function clearStaleEventAppearances(
@@ -2691,6 +2861,14 @@ function runFiber(
     const top = f.stack[0]!;
     const ins = top.prog[top.pc]! as Extract<Instr, { op: "wait" }>;
     if (s.frame - f.since >= ins.frames) {
+      f.mode = "run";
+      top.pc++;
+    } else return;
+  }
+  if (f.mode === "screenWait") {
+    const top = f.stack[0]!;
+    const ins = top.prog[top.pc]! as TimedScreenInstr;
+    if (s.frame - f.since >= screenInstructionFrames(ins)) {
       f.mode = "run";
       top.pc++;
     } else return;
@@ -2983,6 +3161,128 @@ function runFiber(
         if (s.error) return;
         top.pc++;
         break;
+      case "screenFade": {
+        const screen = ensureScreen(s);
+        startScreenFade(screen, ins.direction, ins.color, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "screenTint": {
+        const screen = ensureScreen(s);
+        startScreenTint(screen, ins.layer, ins.color, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "screenFlash": {
+        const screen = ensureScreen(s);
+        startScreenFlash(screen, ins.color, ins.intensity, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "screenShake": {
+        const screen = ensureScreen(s);
+        startScreenShake(screen, ins.strength, ins.speed, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "camera": {
+        const player = {
+          x: input.playerCell.x * TILE + TILE / 2,
+          y: input.playerCell.y * TILE + TILE / 2,
+        };
+        const current = cameraFocusAt(s.screen?.camera, player);
+        let mode: "fixed" | "follow" = "fixed";
+        let destination = player;
+        if (ins.target === "player") {
+          mode = "follow";
+        } else if (typeof ins.target === "object" && "x" in ins.target) {
+          if (
+            !Number.isInteger(ins.target.x) || !Number.isInteger(ins.target.y) ||
+            ins.target.x < 0 || ins.target.y < 0 ||
+            ins.target.x >= w.map.width || ins.target.y >= w.map.height
+          ) {
+            s.error = {
+              kind: "content",
+              message: `camera in ${f.key}: (${ins.target.x},${ins.target.y}) outside ${w.map.id} (${w.map.width}x${w.map.height})`,
+            };
+            return;
+          }
+          destination = {
+            x: ins.target.x * TILE + TILE / 2,
+            y: ins.target.y * TILE + TILE / 2,
+          };
+        } else {
+          const resolved = liveTargetCell(s, f, input, ins.target, "camera");
+          if (!resolved) return;
+          destination = { x: resolved.x * TILE + TILE / 2, y: resolved.y * TILE + TILE / 2 };
+        }
+        const screen = ensureScreen(s);
+        startCameraEffect(screen, mode, current, destination, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "balloon": {
+        const resolved = liveTargetCell(s, f, input, ins.target, "balloon");
+        if (!resolved) return;
+        const key = balloonTargetKey(resolved.target);
+        if (ins.icon === null) {
+          if (s.screen?.balloons) {
+            delete s.screen.balloons[key];
+            if (Object.keys(s.screen.balloons).length === 0) delete s.screen.balloons;
+            if (screenEffectsEmpty(s.screen)) delete s.screen;
+          }
+          top.pc++;
+          break;
+        }
+        if (!w.anims.has(ins.icon)) {
+          s.error = { kind: "content", message: `balloon in ${f.key}: unknown animation ${ins.icon}` };
+          return;
+        }
+        if (ins.wait && ins.frames === null) {
+          s.error = { kind: "content", message: `balloon in ${f.key}: wait requires a finite duration` };
+          return;
+        }
+        const screen = ensureScreen(s);
+        if (!screen.balloons) screen.balloons = keyedRecord();
+        if (ins.frames === 0) delete screen.balloons[key];
+        else {
+          screen.balloons[key] = {
+            target: resolved.target,
+            icon: ins.icon,
+            x: resolved.x,
+            y: resolved.y,
+            age: 0,
+            left: ins.frames,
+          };
+        }
+        if (screen.balloons && Object.keys(screen.balloons).length === 0) delete screen.balloons;
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "screenBackdrop": {
+        if (ins.variant === null) {
+          if (s.screen) {
+            delete s.screen.backdrop;
+            if (screenEffectsEmpty(s.screen)) delete s.screen;
+          }
+        } else {
+          ensureScreen(s).backdrop = { layer: ins.layer, variant: ins.variant };
+        }
+        top.pc++;
+        break;
+      }
       case "place": {
         const p = { x: ins.x, y: ins.y, dir: ins.dir };
         if (ins.target === "player") {

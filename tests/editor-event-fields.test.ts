@@ -47,11 +47,21 @@ describe("event inspector command fields", () => {
       { op: "ext", call: "game.test", args: { untouched: true } },
       { op: "moveControl", target: "player", control: { kind: "speed", value: 6 } },
       { op: "battle", setup: { enemy: "slime" } },
+      { op: "screenFade", direction: "out", duration: 1 },
+      { op: "screenTint", layer: "night", color: { r: 1, g: 2, b: 3, a: 4 }, duration: 1 },
+      { op: "screenFlash", color: { r: 5, g: 6, b: 7, a: 8 }, intensity: 128, duration: 0.2 },
+      { op: "screenShake", strength: 6, speed: 4, duration: 0.5 },
+      { op: "camera", target: { x: 3, y: 4 }, duration: 1 },
+      { op: "balloon", target: "player", icon: "alert" },
+      { op: "screenBackdrop", layer: "cutscene", variant: "blue" },
     ];
     const rows = commandInspectorRows([...editable, ...opaque]);
     expect(rows.slice(0, editable.length).every((row) => row.supported && !row.readOnly)).toBe(true);
     expect(rows.slice(editable.length).map((row) => [row.command.op, row.supported, row.fields.length])).toEqual([
       ["shop", false, 0], ["ext", false, 0], ["moveControl", false, 0], ["battle", false, 0],
+      ["screenFade", false, 0], ["screenTint", false, 0], ["screenFlash", false, 0],
+      ["screenShake", false, 0], ["camera", false, 0], ["balloon", false, 0],
+      ["screenBackdrop", false, 0],
     ]);
     expect(commandFields(defaultCommand("choices")).map((entry) => entry.key)).toEqual([
       "prompt", "optionCount", "option:0", "option:1", "cancel",

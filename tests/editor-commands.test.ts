@@ -258,6 +258,35 @@ describe("editor command tree", () => {
     expect(editedBattle.onWin).toBe((battle as Extract<Command, { op: "battle" }>).onWin);
     expect(JSON.stringify(editedBattle.setup)).toBe(JSON.stringify(setup));
   });
+
+  test("summarizes screen commands while preserving them as opaque read-only rows", () => {
+    const screen: Command[] = [
+      { op: "screenFade", direction: "out", duration: 0.5 },
+      { op: "screenTint", layer: "night", color: { r: 8, g: 16, b: 32, a: 96 }, duration: 1 },
+      { op: "screenFlash", color: { r: 255, g: 240, b: 220, a: 200 }, intensity: 128, duration: 0.2 },
+      { op: "screenShake", strength: 6, speed: 4, duration: 0.5 },
+      { op: "camera", target: { x: 3, y: 4 }, duration: 1 },
+      { op: "balloon", target: { event: "guide" }, icon: "alert", duration: 2 },
+      { op: "screenBackdrop", layer: "cutscene", variant: "gradient-blue" },
+    ];
+    const rows = flattenCommands(screen);
+    expect(rows.every((row) => row.readOnly && !row.editable)).toBe(true);
+    expect(rows.map((row) => row.summary)).toEqual([
+      "Screen fade out 0.5s",
+      "Screen tint night rgba(8,16,32,96) 1s",
+      "Screen flash rgba(255,240,220,200) ×128 0.2s",
+      "Screen shake 6px @ 4Hz for 0.5s",
+      "Camera tile (3, 4) 1s",
+      "Balloon alert on event guide for 2s",
+      "Backdrop cutscene = gradient-blue",
+    ]);
+
+    const commands = [...screen, switchCommand("before")];
+    const bytes = screen.map((command) => JSON.stringify(command));
+    const changed = updateCommand(commands, root(screen.length), switchCommand("after"));
+    expect(changed.slice(0, screen.length).map((command) => JSON.stringify(command))).toEqual(bytes);
+    expect(updateCommand(changed, root(0), switchCommand("forbidden"))).toBe(changed);
+  });
 });
 
 describe("editor condition and route helpers", () => {

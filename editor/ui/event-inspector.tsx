@@ -41,6 +41,24 @@ const ACCENT = "#ffd24a";
 const BRANCH = "#60a5fa";
 const READ_ONLY = "#8d3d52";
 
+/** Friendly names for screen-presentation commands. They stay opaque in this
+ * v1 inspector, but an author can distinguish each preserved payload without
+ * opening the project JSON. */
+const SCREEN_COMMAND_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  screenFade: "screen fade",
+  screenTint: "screen tint",
+  screenFlash: "screen flash",
+  screenShake: "screen shake",
+  camera: "camera",
+  balloon: "balloon",
+  screenBackdrop: "screen backdrop",
+});
+
+function commandLabel(row: InspectorCommandRow): string {
+  const op = inspectorCommandOp(row);
+  return SCREEN_COMMAND_LABELS[op] ?? op;
+}
+
 export interface EventInspectorSelection {
   condition: number | null;
   command: number | null;
@@ -350,7 +368,7 @@ function RowList(props: {
           const branch = () => command()?.branchLabel ?? command()?.branch;
           const headerText = () => props.kind === "condition"
             ? `${condition()?.kind ?? "?"}: ${condition()?.summary ?? ""}`
-            : `${branch() ? `${branch()} › ` : ""}${command() ? inspectorCommandOp(command()!) : "?"}: ${command()?.summary ?? ""}`;
+            : `${branch() ? `${branch()} › ` : ""}${command() ? commandLabel(command()!) : "?"}: ${command()?.summary ?? ""}`;
           const headerRect = () => localRect(rowGeom.header.rect, props.clip);
           return (
             <>

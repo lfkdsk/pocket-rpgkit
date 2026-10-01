@@ -22,6 +22,7 @@ const INTEGER_OPS = new Set([
   "wait", "gold", "item", "se", "erase", "exit", "transfer",
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
   "mapAnim", "stopAnim", "appearance", "layer", "tileProperty",
+  "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon", "screenBackdrop",
   "ext", "extChoice", "battle",
 ]);
 
@@ -60,6 +61,24 @@ function validateAppearanceTarget(v: unknown, path: string): string | null {
   if (v === "player" || v === "this") return null;
   if (isRecord(v) && typeof v.event === "string" && v.event.length > 0) return null;
   return fail(path, "player|this|{event: id} required");
+}
+
+function validateColor(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "RGBA object required");
+  for (const channel of ["r", "g", "b", "a"] as const) {
+    if (!isNonNegInt(v[channel]) || v[channel] > 255) {
+      return fail(`${path}.${channel}`, "integer 0..255 required");
+    }
+  }
+  return null;
+}
+
+function validateCameraTarget(v: unknown, path: string): string | null {
+  if (v === "player" || v === "this") return null;
+  if (!isRecord(v)) return fail(path, "player|this|{event: id}|{x,y} required");
+  if (typeof v.event === "string" && v.event.length > 0) return null;
+  if (isNonNegInt(v.x) && isNonNegInt(v.y)) return null;
+  return fail(path, "player|this|{event: id}|{x,y} required");
 }
 
 function validateDirections(v: unknown, path: string): string | null {
@@ -551,6 +570,76 @@ function validateProg(prog: unknown, path: string): string | null {
           }
         }
         break;
+      case "screenFade": {
+        if (ins.direction !== "out" && ins.direction !== "in") {
+          return fail(`${here}.direction`, "out|in required");
+        }
+        const color = validateColor(ins.color, `${here}.color`);
+        if (color) return color;
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "screenTint": {
+        if (typeof ins.layer !== "string" || ins.layer.length === 0) {
+          return fail(`${here}.layer`, "non-empty string required");
+        }
+        const color = validateColor(ins.color, `${here}.color`);
+        if (color) return color;
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "screenFlash": {
+        const color = validateColor(ins.color, `${here}.color`);
+        if (color) return color;
+        if (!isNonNegInt(ins.intensity) || ins.intensity > 255) {
+          return fail(`${here}.intensity`, "integer 0..255 required");
+        }
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "screenShake":
+        if (!isFiniteNumber(ins.strength) || ins.strength < 0) {
+          return fail(`${here}.strength`, "non-negative number required");
+        }
+        if (!isFiniteNumber(ins.speed) || ins.speed < 0) {
+          return fail(`${here}.speed`, "non-negative number required");
+        }
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      case "camera": {
+        const target = validateCameraTarget(ins.target, `${here}.target`);
+        if (target) return target;
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "balloon": {
+        const target = validateAppearanceTarget(ins.target, `${here}.target`);
+        if (target) return target;
+        if (ins.icon !== null && (typeof ins.icon !== "string" || ins.icon.length === 0)) {
+          return fail(`${here}.icon`, "non-empty string or null required");
+        }
+        if (ins.frames !== null && !isNonNegInt(ins.frames)) {
+          return fail(`${here}.frames`, "non-negative integer or null required");
+        }
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        if (ins.wait && (ins.icon === null || ins.frames === null || ins.frames === 0)) {
+          return fail(here, "a waited balloon requires an icon and positive finite duration");
+        }
+        break;
+      }
+      case "screenBackdrop":
+        if (typeof ins.layer !== "string" || ins.layer.length === 0) {
+          return fail(`${here}.layer`, "non-empty string required");
+        }
+        if (ins.variant !== null && (typeof ins.variant !== "string" || ins.variant.length === 0)) {
+          return fail(`${here}.variant`, "non-empty string or null required");
+        }
+        break;
       case "common":
         if (needStr("id")) return fail(`${here}.id`, "string required");
         break;
@@ -669,7 +758,9 @@ function validateProg(prog: unknown, path: string): string | null {
   return null;
 }
 
-const FIBER_MODES = new Set(["run", "text", "choices", "shop", "wait", "animWait", "external"]);
+const FIBER_MODES = new Set([
+  "run", "text", "choices", "shop", "wait", "animWait", "screenWait", "external",
+]);
 
 function validateFiber(
   v: unknown,
@@ -729,6 +820,26 @@ function validateFiber(
       }
       break;
     }
+    case "animWait": {
+      const ins = top.pc < top.prog.length ? top.prog[top.pc] : undefined;
+      if (!isRecord(ins) || ins.op !== "mapAnim" || ins.wait !== true) {
+        return fail(`${path}.mode`, "an animWait fiber must park on a waited mapAnim instruction");
+      }
+      break;
+    }
+    case "screenWait": {
+      const ins = top.pc < top.prog.length ? top.prog[top.pc] : undefined;
+      if (!isRecord(ins) || ![
+        "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon",
+      ].includes(ins.op as string) || ins.wait !== true) {
+        return fail(`${path}.mode`, "a screenWait fiber must park on a waited screen instruction");
+      }
+      const frames = ins.op === "balloon" ? ins.frames : ins.frames;
+      if (!isNonNegInt(frames) || frames === 0) {
+        return fail(`${path}.mode`, "a screenWait fiber needs a positive finite duration");
+      }
+      break;
+    }
     case "text":
     case "choices":
     case "shop":
@@ -737,6 +848,113 @@ function validateFiber(
       // so a fiber suspended in one of these modes cannot be resumed: the
       // modal/pending fields it would read back are absent by construction.
       return fail(`${path}.mode`, `a save cannot park a fiber in ${v.mode as string} mode`);
+  }
+  return null;
+}
+
+function validateColorTween(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "colour tween object required");
+  const from = validateColor(v.from, `${path}.from`);
+  if (from) return from;
+  const to = validateColor(v.to, `${path}.to`);
+  if (to) return to;
+  if (!isNonNegInt(v.total) || !isNonNegInt(v.left) || v.left > v.total) {
+    return fail(path, "total/left must be non-negative integers with left <= total");
+  }
+  return null;
+}
+
+function validateScreenEffects(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "screen effects object required");
+  const known = new Set(["fade", "tints", "flash", "shake", "camera", "balloons", "backdrop"]);
+  for (const key of Object.keys(v)) {
+    if (!known.has(key)) return fail(`${path}.${key}`, "unknown screen effect field");
+  }
+  if (Object.keys(v).length === 0) return fail(path, "empty screen effects state must be omitted");
+
+  if (v.fade !== undefined) {
+    const tween = validateColorTween(v.fade, `${path}.fade`);
+    if (tween) return tween;
+    if (!isRecord(v.fade) || typeof v.fade.clear !== "boolean") {
+      return fail(`${path}.fade.clear`, "boolean required");
+    }
+  }
+  if (v.tints !== undefined) {
+    if (!isRecord(v.tints) || Object.keys(v.tints).length === 0) {
+      return fail(`${path}.tints`, "non-empty record required");
+    }
+    for (const [id, tint] of Object.entries(v.tints)) {
+      if (id.length === 0) return fail(`${path}.tints`, "layer ids must be non-empty");
+      const tween = validateColorTween(tint, `${path}.tints.${id}`);
+      if (tween) return tween;
+    }
+  }
+  if (v.flash !== undefined) {
+    const tween = validateColorTween(v.flash, `${path}.flash`);
+    if (tween) return tween;
+  }
+  if (v.shake !== undefined) {
+    const shake = v.shake;
+    if (!isRecord(shake)) return fail(`${path}.shake`, "shake object required");
+    if (!isFiniteNumber(shake.strength) || shake.strength < 0) {
+      return fail(`${path}.shake.strength`, "non-negative number required");
+    }
+    if (!isFiniteNumber(shake.speed) || shake.speed < 0) {
+      return fail(`${path}.shake.speed`, "non-negative number required");
+    }
+    if (!isNonNegInt(shake.total) || shake.total === 0 ||
+        !isNonNegInt(shake.left) || shake.left === 0 || shake.left > shake.total) {
+      return fail(`${path}.shake`, "live shake needs positive total/left with left <= total");
+    }
+  }
+  if (v.camera !== undefined) {
+    const camera = v.camera;
+    if (!isRecord(camera) || (camera.mode !== "fixed" && camera.mode !== "follow")) {
+      return fail(`${path}.camera.mode`, "fixed|follow required");
+    }
+    for (const key of ["fromX", "fromY", "toX", "toY"] as const) {
+      if (!isFiniteNumber(camera[key])) return fail(`${path}.camera.${key}`, "number required");
+    }
+    if (!isNonNegInt(camera.total) || !isNonNegInt(camera.left) || camera.left > camera.total) {
+      return fail(`${path}.camera`, "total/left must be non-negative integers with left <= total");
+    }
+    if (camera.mode === "follow" && (camera.total === 0 || camera.left === 0)) {
+      return fail(`${path}.camera`, "completed follow camera state must be omitted");
+    }
+  }
+  if (v.balloons !== undefined) {
+    if (!isRecord(v.balloons) || Object.keys(v.balloons).length === 0) {
+      return fail(`${path}.balloons`, "non-empty record required");
+    }
+    for (const [id, balloon] of Object.entries(v.balloons)) {
+      const at = `${path}.balloons.${id}`;
+      if (!isRecord(balloon)) return fail(at, "balloon object required");
+      const target = balloon.target;
+      const expected = target === "player"
+        ? "player"
+        : isRecord(target) && typeof target.event === "string" && target.event.length > 0
+          ? `event:${target.event}`
+          : null;
+      if (expected === null) return fail(`${at}.target`, "player|{event: id} required");
+      if (id !== expected) return fail(at, "balloon key must match its target");
+      if (typeof balloon.icon !== "string" || balloon.icon.length === 0) {
+        return fail(`${at}.icon`, "non-empty string required");
+      }
+      if (!isNonNegInt(balloon.x) || !isNonNegInt(balloon.y)) {
+        return fail(at, "x/y non-negative integers required");
+      }
+      if (!isNonNegInt(balloon.age)) return fail(`${at}.age`, "non-negative integer required");
+      if (balloon.left !== null && (!isNonNegInt(balloon.left) || balloon.left === 0)) {
+        return fail(`${at}.left`, "positive integer or null required");
+      }
+    }
+  }
+  if (v.backdrop !== undefined) {
+    const backdrop = v.backdrop;
+    if (!isRecord(backdrop) || typeof backdrop.layer !== "string" || backdrop.layer.length === 0 ||
+        typeof backdrop.variant !== "string" || backdrop.variant.length === 0) {
+      return fail(`${path}.backdrop`, "non-empty layer and variant strings required");
+    }
   }
   return null;
 }
@@ -1118,12 +1336,16 @@ export function validateSnapshot(snap: unknown): string | null {
   const e = validateSwitchState(it.sw, "state.interp.sw");
   if (e) return e;
 
-  // A save never carries a blocking fiber (canSave gate). Parallel fibers
+  // A waited screen presentation is the one resumable blocking safe point:
+  // it has no modal/external owner and its remaining reducer state is fully
+  // serializable. Other blocking fibers remain forbidden. Parallel fibers
   // serialize live, including one parked mid-wait.
   if (it.main !== null) {
     const fe = validateFiber(it.main, "state.interp.main", false, snap.map);
     if (fe) return fe;
-    return "state.interp.main: a save cannot hold a blocking fiber";
+    if (!isRecord(it.main) || it.main.mode !== "screenWait") {
+      return "state.interp.main: only a waited screen effect may be saved mid-command";
+    }
   }
   if (!isRecord(it.parallels)) return "state.interp.parallels: record required";
   for (const [key, fiber] of Object.entries(it.parallels)) {
@@ -1172,6 +1394,10 @@ export function validateSnapshot(snap: unknown): string | null {
   if (it.tileProperties !== undefined) {
     const tiles = validateTileProperties(it.tileProperties, "state.interp.tileProperties");
     if (tiles) return tiles;
+  }
+  if (it.screen !== undefined) {
+    const screen = validateScreenEffects(it.screen, "state.interp.screen");
+    if (screen) return screen;
   }
   if (!Array.isArray(it.cues)) return "state.interp.cues: array required";
   if (it.cues.length !== 0) return "state.interp.cues: cues must drain before save";

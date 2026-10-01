@@ -624,8 +624,9 @@ simDescribe("editor budget", () => {
     // 264 baked 16x16 tile PNGs + styles/two font atlases: under 360 KB.
     expect(pak).toBeLessThan(360_000);
     // Shared framework + tile editor + structured event inspector, the map
-    // inspector/passage mode/transfer picking (E2) and the two bundled
-    // documents: keep the complete editor under 600 KB.
-    expect(js).toBeLessThan(600_000);
+    // inspector/passage mode/transfer picking (E2), the two bundled documents,
+    // and KS1's embedded command schema/read-only summaries: 608,486 B
+    // measured. Keep a narrow margin around the complete editor.
+    expect(js).toBeLessThan(616_000);
   });
 });

@@ -32,6 +32,16 @@ export type TransferMap = string | VariableRef;
 export type TransferCoordinate = number | VariableRef;
 export type TransferDirection = Dir | "keep" | VariableRef;
 
+/** Integer RGBA colour used by deterministic full-screen effects. Alpha is
+ * the layer opacity: 0 is transparent and 255 is opaque. Keeping channels
+ * numeric avoids host-specific CSS colour parsing in reducer state. */
+export interface ScreenColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
 /** Facing as an engine index: 0 down, 1 left, 2 up, 3 right. Matches the
  *  BTN-driven order the camera reducer emits and the hero atlas file order. */
 export type Facing = 0 | 1 | 2 | 3;
@@ -75,6 +85,10 @@ export type RouteTarget = "player" | "this" | { event: string };
 
 /** A character whose runtime walking appearance can be changed. */
 export type AppearanceTarget = RouteTarget;
+
+/** A viewport-independent camera focus. Character targets are sampled when
+ * the command starts; `player` means smoothly return to live player follow. */
+export type CameraTarget = "player" | "this" | { event: string } | { x: number; y: number };
 
 /** Per-cell passage fields a runtime tileProperty command can replace.
  * Missing fields keep their authored value; an empty direction list
@@ -277,6 +291,34 @@ export type Command =
       enter?: Dir[] | null;
       exit?: Dir[] | null;
     }
+  /** Fade the complete presentation independently of map transfer. Fade-out
+   * retains its final colour until a later fade-in removes it. */
+  | {
+      op: "screenFade";
+      direction: "out" | "in";
+      duration: number;
+      color?: ScreenColor;
+      wait?: boolean;
+    }
+  /** Tween one named, composable full-screen colour layer. A target with
+   * alpha 0 removes the layer when the tween completes. */
+  | { op: "screenTint"; layer: string; color: ScreenColor; duration: number; wait?: boolean }
+  /** Replace the transient flash. `intensity` scales colour alpha (0..255). */
+  | { op: "screenFlash"; color: ScreenColor; intensity: number; duration: number; wait?: boolean }
+  /** Deterministic horizontal shake. Strength is pixels and speed is cycles
+   * per virtual second; the reference-tick triangle wave uses no RNG. */
+  | { op: "screenShake"; strength: number; speed: number; duration: number; wait?: boolean }
+  /** Scroll the viewport focus to a tile/character, or return to live player
+   * follow. The reducer stores world focus, never resolution-specific clamp. */
+  | { op: "camera"; target: CameraTarget; duration: number; wait?: boolean }
+  /** Show one project animation above a character, replacing that target's
+   * previous balloon. Omit `icon` to clear it. With duration omitted it
+   * persists (and loops) until cleared; a waited balloon needs a duration. */
+  | { op: "balloon"; target: RouteTarget; icon?: string; duration?: number; wait?: boolean }
+  /** Persistent full-screen cutscene backdrop, rendered below dialogs and
+   * retained across transfers. The named asset must be a screen layer;
+   * omitting/nulling variant closes the backdrop. */
+  | { op: "screenBackdrop"; layer: string; variant?: string | null }
   | { op: "wait"; seconds: number }
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }

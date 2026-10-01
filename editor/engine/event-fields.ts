@@ -216,6 +216,13 @@ export function commandFields(command: Command): EditableField[] {
     case "appearance":
     case "layer":
     case "tileProperty":
+    case "screenFade":
+    case "screenTint":
+    case "screenFlash":
+    case "screenShake":
+    case "camera":
+    case "balloon":
+    case "screenBackdrop":
     case "mapAnim":
     case "stopAnim":
     case "battle": return [];

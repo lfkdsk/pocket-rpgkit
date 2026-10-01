@@ -1,7 +1,8 @@
 import { mount } from "@pocketjs/framework";
 import { GameView, type MapAnimStats } from "../../../src/ui/index.ts";
+import type { GameAssets } from "../../../src/ui/game-assets.ts";
 import { GAME_ASSETS } from "./assets-game.ts";
-import { KA1_PROJECT } from "./fixture-data.ts";
+import { KA1_PROJECT, KS1_PROJECT } from "./fixture-data.ts";
 
 export interface Ka1Stats {
   below?: MapAnimStats;
@@ -11,15 +12,30 @@ export interface Ka1Stats {
 declare global {
   // eslint-disable-next-line no-var
   var __ka1Stats: Ka1Stats | undefined;
+  // eslint-disable-next-line no-var
+  var __ka1Ks1: boolean | undefined;
 }
 
 const stats: Ka1Stats = {};
 globalThis.__ka1Stats = stats;
+const ks1Fixture = globalThis.__ka1Ks1 === true;
+globalThis.__ka1Ks1 = undefined;
+
+const KS1_ASSETS: GameAssets = {
+  ...GAME_ASSETS,
+  playerHeight: 32,
+  layers: {
+    cutscene: {
+      placement: "screen",
+      variants: { blue: { color: "#184070" } },
+    },
+  },
+};
 
 mount(() => (
   <GameView
-    project={KA1_PROJECT}
-    assets={GAME_ASSETS}
+    project={ks1Fixture ? KS1_PROJECT : KA1_PROJECT}
+    assets={ks1Fixture ? KS1_ASSETS : GAME_ASSETS}
     onMapAnimStats={(layer, value) => {
       stats[layer] = value;
     }}
