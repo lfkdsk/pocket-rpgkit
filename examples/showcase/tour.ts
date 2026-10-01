@@ -3,13 +3,17 @@
 // exit. gen-assets.ts freezes the resulting 60 Hz masks as RLE data.
 
 import { BTN } from "../../vendor/pocketjs/contracts/spec/spec.ts";
-import { createSession, startSession, stepSession, type SessionState } from "../../src/engine/session.ts";
-import type { BattleRules } from "../../src/engine/battle.ts";
-import type { ExtensionOptions } from "../../src/engine/extensions.ts";
+import {
+  createSession,
+  startSession,
+  stepSession,
+  type SessionOptions,
+  type SessionState,
+} from "../../src/engine/session.ts";
 import type { Project } from "../../src/engine/types.ts";
 import { tapeRunsFromMasks } from "../../src/engine/tape.ts";
 import { SHOWCASE_HALLS } from "./showcase-data.ts";
-import { hallDoorPosition } from "./hall-kit.ts";
+import { HALL_EXIT, hallDoorPosition } from "./hall-kit.ts";
 
 export interface ShowcaseTour {
   masks: number[];
@@ -26,7 +30,7 @@ const DOORS = SHOWCASE_HALLS.map((hall, index) => ({
 /** Record against the 60 Hz reference timeline used by AttractController. */
 export function recordShowcaseTour(
   project: Project,
-  options: { extensions: ExtensionOptions; battle: BattleRules },
+  options: SessionOptions,
 ): ShowcaseTour {
   const session = createSession(project, 60, options);
   let state = startSession(project, session);
@@ -58,10 +62,13 @@ export function recordShowcaseTour(
         : target > current ? BTN.DOWN : BTN.UP;
       frame(button);
     }
-    throw new Error(`showcase tour: never reached ${axis}=${target} on ${expectedMap}`);
+    throw new Error(
+      `showcase tour: never reached ${axis}=${target} on ${expectedMap}; ` +
+      `stopped at ${state.mapId}@${state.move.tx},${state.move.ty}`,
+    );
   };
   const walkTo = (mapId: string, x: number, y: number): void => {
-    // Horizontal first keeps the lobby route away from the guide at (10,6).
+    // Horizontal first keeps the lobby route away from the central guide.
     moveAxis("x", x, mapId);
     if (state.mapId === mapId) moveAxis("y", y, mapId);
   };
@@ -72,8 +79,8 @@ export function recordShowcaseTour(
     walkTo("showcase-lobby", door.x, door.y);
     settle(door.id);
     visits.push(state.mapId);
-    // Hall entry is (2,12); the adjacent glowing pad at (2,13) returns.
-    walkTo(door.id, 2, 13);
+    // Hall entry is beside the return doorway at the lower-left desk.
+    walkTo(door.id, HALL_EXIT.x, HALL_EXIT.y);
     settle("showcase-lobby");
   }
   // A short final hold lets the tour badge and last fade read clearly.

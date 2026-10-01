@@ -5,9 +5,14 @@
 
 import type { Command, GameEvent, MapDef, TileId } from "../../src/engine/types.ts";
 
-export const HALL_WIDTH = 20;
-export const HALL_HEIGHT = 15;
+// One map pixel maps to one logical display pixel.  A 30x17 room therefore
+// fills the showcase's 480x272 viewport without the old black side gutters.
+export const HALL_WIDTH = 30;
+export const HALL_HEIGHT = 17;
 export const LOBBY_ID = "showcase-lobby";
+export const HALL_DEMO = { x: 15, y: 8 } as const;
+export const HALL_ENTRY = { x: 2, y: 14, dir: "up" as const };
+export const HALL_EXIT = { x: 2, y: 15 } as const;
 
 export interface HallDefinition {
   id: string;
@@ -20,6 +25,83 @@ export interface HallDefinition {
   /** The procedural stream cooker uses these two colours for the floor. */
   palette: readonly [string, string];
 }
+
+/** Short, player-facing copy shared by lobby signs and ambient visitors. */
+export const HALL_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "showcase-screen-effects": "A cottage garden for night tints, fades, weather, and camera moves.",
+  "showcase-map-animations": "A waterside shrine where spell rings animate above and below the map.",
+  "showcase-runtime-visuals": "A costume workshop for live sprites, layers, and passage changes.",
+  "showcase-movement-controls": "A terraced park where characters wander, run, route, and approach.",
+  "showcase-extensions": "An oracle's salon whose choices come from live game-owned state.",
+  "showcase-battle": "A stone arena for a complete win, loss, or escape battle branch.",
+  "showcase-shop": "A busy market with buying, selling, finite stock, and a shared wallet.",
+  "hall-streaming": "A forest trail with streamed chunks, animated water, and tall walkers.",
+  "hall-theme": "A portrait library where speakers and dialog themes change together.",
+  "showcase-input-and-idle": "A small theater for locked-input scenes and world-idle gates.",
+  "hall-save": "A post office that exports and verifies a real portable save code.",
+  "hall-attract": "A formal garden for the guided tour, takeover, and deterministic rewind.",
+  "hall-audio": "A listening room for music, ambience, fanfares, cues, fades, and replay.",
+  "hall-registration": "A staffed counter where the built-in name scene updates every greeting.",
+};
+
+const HALL_VISITORS: Readonly<Record<string, readonly [string, string]>> = {
+  "showcase-screen-effects": [
+    "GUIDE: The lantern path still reads clearly after sunset.",
+    "VISITOR: Wait for the lightning over the reflecting pond.",
+  ],
+  "showcase-map-animations": [
+    "GUIDE: The fountain and spell circles share the water court.",
+    "VISITOR: Some effects follow me; others stay on their tile.",
+  ],
+  "showcase-runtime-visuals": [
+    "GUIDE: The mirrors make every costume change easy to compare.",
+    "VISITOR: Even this workshop gate can change while we watch.",
+  ],
+  "showcase-movement-controls": [
+    "GUIDE: The terraces keep each walking route easy to follow.",
+    "VISITOR: Runners, wanderers, and followers all use the same map.",
+  ],
+  "showcase-extensions": [
+    "GUIDE: The oracle reads choices supplied by the game itself.",
+    "VISITOR: My favorite keepsake only appears when state allows it.",
+  ],
+  "showcase-battle": [
+    "GUIDE: Every result returns safely to this training arena.",
+    "VISITOR: I am keeping score from behind the brass rail.",
+  ],
+  "showcase-shop": [
+    "GUIDE: The clerk remembers stock after every purchase.",
+    "VISITOR: I compare prices before spending our shared gold.",
+  ],
+  "hall-streaming": [
+    "GUIDE: Only the nearby forest chunks stay resident.",
+    "VISITOR: The river keeps moving while the trail streams ahead.",
+  ],
+  "hall-theme": [
+    "GUIDE: A portrait gives every line a clear speaker.",
+    "VISITOR: I prefer the warm sunrise reading theme.",
+  ],
+  "showcase-input-and-idle": [
+    "GUIDE: The house lights mark when the stage owns input.",
+    "VISITOR: I wait for the scene to finish before taking my cue.",
+  ],
+  "hall-save": [
+    "GUIDE: The counter handles export and import at one safe point.",
+    "VISITOR: A save code fits in a letter and survives the trip.",
+  ],
+  "hall-attract": [
+    "GUIDE: Leave the controls alone and the tour begins here.",
+    "VISITOR: Taking over and rewinding never changes the recorded route.",
+  ],
+  "hall-audio": [
+    "GUIDE: Each listening booth isolates a different channel.",
+    "VISITOR: Music, ambience, fanfare, and cues can overlap cleanly.",
+  ],
+  "hall-registration": [
+    "GUIDE: The registrar can update the name used by every dialog.",
+    "VISITOR: I signed in once; the staff remembered me everywhere.",
+  ],
+};
 
 const tile = (cell: number): TileId => `showcase.${cell}`;
 
@@ -62,26 +144,32 @@ function commandLabel(commands: readonly string[]): string[] {
 }
 
 export function hallMap(def: HallDefinition): MapDef {
+  const visitors = HALL_VISITORS[def.id] ?? [
+    `GUIDE: ${HALL_DESCRIPTIONS[def.id] ?? def.title}`,
+    "VISITOR: The curator can repeat this demonstration at any time.",
+  ];
   const events: GameEvent[] = [
     {
       id: "room-label",
       name: `${def.number}. ${def.title}`,
-      x: 2,
-      y: 11,
+      x: 4,
+      y: 15,
       pages: [{
-        trigger: "playerTouch",
+        trigger: "action",
+        sprite: "sign",
+        blocks: true,
         commands: [text(
-          `HALL ${def.number}: ${def.title}`,
+          `CURATOR: HALL ${def.number} — ${def.title}`,
           ...commandLabel(def.commands),
-          "Talk to the glowing curator to try it.",
+          "The curator in the center starts the demo.",
         )],
       }],
     },
     {
       id: "demo",
       name: `${def.title} demonstration`,
-      x: 10,
-      y: 7,
+      x: HALL_DEMO.x,
+      y: HALL_DEMO.y,
       pages: [{
         trigger: "action",
         sprite: "curator",
@@ -92,11 +180,37 @@ export function hallMap(def: HallDefinition): MapDef {
     {
       id: "return-to-lobby",
       name: "Return to the feature lobby",
-      x: 2,
-      y: 13,
+      x: HALL_EXIT.x,
+      y: HALL_EXIT.y,
       pages: [{
         trigger: "playerTouch",
-        commands: [{ op: "transfer", map: LOBBY_ID, x: 10, y: 7, dir: "down", fade: 0.15 }],
+        commands: [{ op: "transfer", map: LOBBY_ID, x: 15, y: 9, dir: "down", fade: 0.15 }],
+      }],
+    },
+    {
+      id: "room-guide",
+      name: `${def.title} guide`,
+      x: 6,
+      y: 8,
+      pages: [{
+        trigger: "action",
+        sprite: "guide",
+        blocks: true,
+        dir: "right",
+        commands: [text(visitors[0])],
+      }],
+    },
+    {
+      id: "room-visitor",
+      name: `${def.title} visitor`,
+      x: 24,
+      y: 10,
+      pages: [{
+        trigger: "action",
+        sprite: "alternate",
+        blocks: true,
+        dir: "left",
+        commands: [text(visitors[1])],
       }],
     },
     ...(def.events ?? []),
@@ -114,8 +228,7 @@ export function hallMap(def: HallDefinition): MapDef {
 }
 
 /** Evenly distribute the room doors over two rows without overlapping.
- * Keep this shared with the deterministic tour and tests: a thirteenth room
- * makes the older fixed six-column formula overlap its seventh door. */
+ * Keep this shared with the deterministic tour and tests as rooms are added. */
 export function hallDoorPosition(
   index: number,
   total: number,
@@ -127,9 +240,10 @@ export function hallDoorPosition(
   const top = index < topCount;
   const rowCount = top ? topCount : total - topCount;
   const column = top ? index : index - topCount;
-  // Floor keeps the seven-door row off the lobby's occupied x=10 aisle.
-  const x = rowCount === 1 ? 10 : Math.floor(2 + column * 15 / (rowCount - 1));
-  return top ? { x, y: 2, dir: "up" } : { x, y: 12, dir: "down" };
+  const x = rowCount === 1
+    ? Math.floor(HALL_WIDTH / 2)
+    : Math.round(2 + column * (HALL_WIDTH - 5) / (rowCount - 1));
+  return top ? { x, y: 2, dir: "up" } : { x, y: 14, dir: "down" };
 }
 
 export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
@@ -137,24 +251,24 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
     {
       id: "welcome-sign",
       name: "Feature lobby directory",
-      x: 10,
-      y: 10,
+      x: 14,
+      y: 11,
       pages: [{
         trigger: "action",
         sprite: "sign",
         blocks: true,
         commands: [text(
-          `FEATURE GALLERY — ${halls.length} LIVE ROOMS`,
-          "Walk onto a numbered portal to enter.",
-          "Talk to each curator; every demo repeats.",
+          `CURATOR: FEATURE TOWN — ${halls.length} LIVE ROOMS`,
+          "Each doorway has a sign describing its room.",
+          "Every curator can repeat their demonstration.",
         )],
       }],
     },
     {
       id: "welcome",
       name: "Showcase guide",
-      x: 10,
-      y: 6,
+      x: 16,
+      y: 8,
       pages: [{
         trigger: "action",
         sprite: "guide",
@@ -165,7 +279,7 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
             op: "choices",
             prompt: "What would you like to know?",
             options: [
-              { text: "How to explore", commands: [text("Walk onto a numbered door.", "In each room, talk to its glowing curator.")] },
+              { text: "How to explore", commands: [text("Read a sign, then walk through its doorway.", "In each room, talk to the central curator.")] },
               { text: "Controls", commands: [text("DPAD walks. A confirms. B cancels.", "L rewinds. SELECT opens demo controls.")] },
               { text: "Begin", commands: [text("Every demonstration is safe to repeat.", "The return gate is beside each entrance.")] },
             ],
@@ -173,19 +287,41 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
         ],
       }],
     },
-    ...halls.map((hall, index): GameEvent => {
+    ...halls.flatMap((hall, index): GameEvent[] => {
       const pos = hallDoorPosition(index, halls.length);
-      return {
-        id: `door-${hall.id}`,
-        name: `${hall.number}. ${hall.title}`,
-        x: pos.x,
-        y: pos.y,
-        pages: [{
-          trigger: "playerTouch",
-          sprite: `portal-${hall.number}`,
-          commands: [{ op: "transfer", map: hall.id, x: 2, y: 12, dir: "up", fade: 0.15 }],
-        }],
-      };
+      // Signs stand in the gap beside each three-cell archway; the last arch
+      // in a row has no gap to its right, so its sign stands inward of it.
+      const last = pos.x === HALL_WIDTH - 3;
+      const signX = last ? pos.x + 1 : pos.x + 2;
+      const signY = pos.dir === "up" ? pos.y + (last ? 2 : 1) : pos.y - (last ? 3 : 1);
+      return [
+        {
+          id: `door-${hall.id}`,
+          name: `${hall.number}. ${hall.title}`,
+          x: pos.x,
+          y: pos.y,
+          pages: [{
+            trigger: "playerTouch",
+            commands: [{ op: "transfer", map: hall.id, ...HALL_ENTRY, fade: 0.15 }],
+          }],
+        },
+        {
+          id: `sign-${hall.id}`,
+          name: `${hall.title} information sign`,
+          x: signX,
+          y: signY,
+          pages: [{
+            trigger: "action",
+            sprite: "sign",
+            blocks: true,
+            dir: pos.dir === "up" ? "down" : "up",
+            commands: [text(
+              `CURATOR: ${hall.number}. ${hall.title}`,
+              HALL_DESCRIPTIONS[hall.id] ?? "A live Pocket RPG Kit demonstration.",
+            )],
+          }],
+        },
+      ];
     }),
   ];
   return {

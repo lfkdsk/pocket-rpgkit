@@ -94,7 +94,13 @@ describe("games", () => {
     }
     const showcase = resolveGame(KIT_ROOT, config, "showcase");
     expect(showcase.featured).toBe(true);
-    expect(showcase.features).toHaveLength(13);
+    expect(showcase.features).toHaveLength(14);
+    expect(showcase.chapters).toHaveLength(14);
+    expect(showcase.chapters.at(-1)).toMatchObject({
+      id: "hall-registration",
+      title: "14. Registration Desk",
+      preview: "docs/screenshots/showcase-14-registration.png",
+    });
   });
 
   test("the browser editor companion cannot be configured without its file host", () => {
@@ -340,7 +346,7 @@ describe("pages", () => {
     expect(renderPlayer(site, meadow, playerConfig(meadow), true)).not.toContain("data-demo-controls");
   });
 
-  test("thirteen chapter cards escape text, retain fallbacks, and copy their previews", () => {
+  test("chapter cards escape text, retain fallbacks, and copy their previews", () => {
     const game = resolveGame(KIT_ROOT, { games: { meadow: { chapters: chapterFixtures() } } }, "meadow");
     const html = renderPlayer(site, game, playerConfig(game), true);
     expect(html.match(/data-demo-chapter=/g)).toHaveLength(13);

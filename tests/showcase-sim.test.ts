@@ -10,7 +10,7 @@ import { fnv1a } from "../vendor/pocketjs/hosts/sim/sim.ts";
 import type { SessionState } from "../src/engine/session.ts";
 import type { RpgkitDemoHook } from "../src/ui/demo/index.ts";
 import { SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
-import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
+import { HALL_DEMO, HALL_ENTRY, hallDoorPosition } from "../examples/showcase/hall-kit.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 import {
   bootGameWorld,
@@ -122,8 +122,8 @@ class SimDriver {
     this.moveAxis("y", y, "showcase-lobby");
     this.until((state) => state.mapId === hall.id && state.fade === null && state.interp.main === null, false, 600);
     if (!approach) return;
-    this.moveAxis("x", 10, hall.id);
-    this.moveAxis("y", 8, hall.id);
+    this.moveAxis("x", HALL_DEMO.x, hall.id);
+    this.moveAxis("y", HALL_DEMO.y + 1, hall.id);
     this.pulse(BTN.CIRCLE);
   }
 
@@ -133,16 +133,17 @@ class SimDriver {
 }
 
 const pins: Record<string, string> = {
-  lobby: "0f38a1db",
-  tint: "10c58fb2",
-  "map-animation": "a4536f26",
+  lobby: "cbe6a1f9",
+  tint: "3890aff1",
+  "map-animation": "6d27d8b7",
   battle: "be26dddf",
-  streaming: "a35bd7f4",
-  theme: "18580819",
-  "save-code": "5f66ddee",
-  "save-verified": "237bd0fe",
-  attract: "4f481c50",
-  rewind: "11859aa1",
+  streaming: "8f1494d7",
+  theme: "1683bb4a",
+  "save-code": "3915d13f",
+  "save-verified": "c1156966",
+  attract: "72f143e6",
+  rewind: "e817e2e9",
+  registration: "006fb657",
 };
 
 async function pinned(name: keyof typeof pins, frame: Uint8Array): Promise<void> {
@@ -155,7 +156,13 @@ simDescribe("showcase rendered feature gallery", () => {
     const d = await SimDriver.boot({ __rpgkitBoot: { chapter: "hall-streaming" } });
     expect(d.state).toMatchObject({
       mapId: "hall-streaming",
-      move: { tx: 2, ty: 12, px: 32, py: 192, facing: 2 },
+      move: {
+        tx: HALL_ENTRY.x,
+        ty: HALL_ENTRY.y,
+        px: HALL_ENTRY.x * 16,
+        py: HALL_ENTRY.y * 16,
+        facing: 2,
+      },
       sw: { gold: 80 },
     });
     const hook = (globalThis as { __rpgkitDemo?: RpgkitDemoHook }).__rpgkitDemo!;
@@ -166,9 +173,11 @@ simDescribe("showcase rendered feature gallery", () => {
     const d = await SimDriver.boot();
     const frame = d.frame();
     await pinned("lobby", frame);
-    expect(pixel(frame, 0, 0)).toEqual([0, 0, 0, 255]);
-    expect(countPixels(frame, (r, g, b) => r === 255 && g === 220 && b === 82)).toBeGreaterThan(40);
-    expect(countPixels(frame, (r, g, b) => r === 244 && g === 199 && b === 82)).toBeGreaterThan(20);
+    expect(pixel(frame, 0, 0)).toEqual([58, 190, 65, 255]);
+    expect(countPixels(frame, (r, g, b) => r === 255 && g === 220 && b === 82)).toBe(0);
+    // Fourteen wooden door plaques carry their hall numbers in dark ink.
+    expect(countPixels(frame, (r, g, b) => r === 190 && g === 128 && b === 66)).toBeGreaterThan(1_400);
+    expect(countPixels(frame, (r, g, b) => r === 55 && g === 31 && b === 52)).toBeGreaterThan(140);
     expect(countPixels(frame, (r, g, b) => r === 85 && g === 47 && b === 34)).toBeGreaterThan(40);
   });
 
@@ -181,7 +190,11 @@ simDescribe("showcase rendered feature gallery", () => {
     });
     const frame = d.frame();
     await pinned("tint", frame);
-    expect(countPixels(frame, (r, g, b) => b > r + 12 && b > g + 12)).toBeGreaterThan(15_000);
+    // The garden is drawn in daylight colours; the tint alone darkens it, so
+    // no untinted grass pixel survives and the grass shifts towards blue.
+    expect(countPixels(frame, (r, g, b) => r === 58 && g === 190 && b === 65)).toBe(0);
+    expect(pixel(frame, 0, 0)).toEqual([87, 148, 80, 255]);
+    expect(countPixels(frame, (r, g, b) => b > r + 12 && b > g + 12)).toBeGreaterThan(4_000);
   });
 
   test("map-animation bands mount simultaneous floor, player, follow, and pinned effects", async () => {
@@ -212,17 +225,18 @@ simDescribe("showcase rendered feature gallery", () => {
     expect(countPixels(frame, (r, g, b) => r === 216 && g === 184 && b === 72)).toBeGreaterThan(50);
   });
 
-  test("streamed room mounts six chunks, both animated-tile bands, and the tall walker", async () => {
+  test("streamed room mounts twelve chunks, both animated-tile bands, and the tall walker", async () => {
     const d = await SimDriver.boot();
     d.enter(8, false);
     for (let frame = 0; frame < 10; frame++) d.step();
-    expect(diagnostics().stream.ground).toMatchObject({ mapId: "hall-streaming", resident: 6, pending: 0 });
+    expect(diagnostics().stream.ground).toMatchObject({ mapId: "hall-streaming", resident: 12, pending: 0 });
     expect(diagnostics().animated.below).toMatchObject({ mapId: "hall-streaming", mounted: 8 });
     expect(diagnostics().animated.above).toMatchObject({ mapId: "hall-streaming", mounted: 4 });
     const frame = d.frame();
     await pinned("streaming", frame);
     expect(countPixels(frame, (r, g, b) => r === 30 && g === 124 && b === 184)).toBeGreaterThan(4_000);
-    expect(countPixels(frame, (r, g, b) => r === 41 && g === 150 && b === 219)).toBeGreaterThan(200);
+    // Sparkle highlights over the two-cell river.
+    expect(countPixels(frame, (r, g, b) => r === 41 && g === 150 && b === 219)).toBeGreaterThan(100);
   });
 
   test("speaker portrait and sunrise theme are visible in the second themed dialog", async () => {
@@ -237,6 +251,18 @@ simDescribe("showcase rendered feature gallery", () => {
     expect(countPixels(frame, (r, g, b) => r === 31 && g === 44 && b === 61)).toBeGreaterThan(1_500);
     expect(countPixels(frame, (r, g, b) => r === 226 && g === 157 && b === 116)).toBeGreaterThan(80);
     expect(countPixels(frame, (r, g, b) => r === 255 && g === 176 && b === 92)).toBeGreaterThan(100);
+  });
+
+  test("registration desk opens the built-in name editor over the resident office", async () => {
+    const d = await SimDriver.boot();
+    d.enter(14);
+    d.until((state) => state.scene?.kind === "scene");
+    expect(findNode(d.world.getTree(), "rpgkit-world")).toBeDefined();
+    expect(findNode(d.world.getTree(), "rpgkit-name-input-scene")).toBeDefined();
+    const frame = d.frame();
+    await pinned("registration", frame);
+    expect(countPixels(frame, (r, g, b) => r === 20 && g === 28 && b === 48)).toBeGreaterThan(40_000);
+    expect(countPixels(frame, (r, g, b) => r === 255 && g === 225 && b === 122)).toBeGreaterThan(750);
   });
 
   test("real SaveMenu renders the exported code and reports a verified import round trip", async () => {

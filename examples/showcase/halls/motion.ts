@@ -69,7 +69,7 @@ export const MOTION_HALLS: HallDefinition[] = [
         control: { kind: "through", value: false },
       },
       { op: "place", target: { event: "route-blocker" }, x: 7, y: 4, dir: "down" },
-      { op: "place", target: { event: "approach-anchor" }, x: 15, y: 9, dir: "left" },
+      { op: "place", target: { event: "approach-anchor" }, x: 17, y: 9, dir: "left" },
       text("Every actor was reset.", "This demonstration is safe to repeat."),
       {
         op: "moveControl",
@@ -212,7 +212,7 @@ export const MOTION_HALLS: HallDefinition[] = [
       {
         id: "approach-anchor",
         name: "Approach target",
-        x: 15,
+        x: 17,
         y: 9,
         pages: [{
           trigger: "action",

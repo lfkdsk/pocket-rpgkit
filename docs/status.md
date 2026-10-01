@@ -48,7 +48,7 @@ The links point to where each feature is described in detail.
 | Map animations on a tile or following a character (`mapAnim` / `stopAnim`) | Done | [Map animations](../README.md#map-animations-mapanim--stopanim) |
 | Run-time appearance, named visual layers, tile passage overrides | Done | Appearance covers sprite, opacity and visibility (`appearance`). Visual layers can be bands below or above characters, or screen overlays (`layer`). Tile passage overrides use `tileProperty`. Layer and tile-property overrides reset on every transfer |
 | Screen effects | Done | Fade, composable named tints, flash, deterministic shake, camera scroll, character balloons, full-screen backdrops. All are saved and rewound with the session |
-| Tuxemon-styled feature gallery | Done | A numbered town plaza connects thirteen themed rooms, with attributed pixel art, per-room screenshots and browser chapter cards; see the [gallery catalogue](../examples/showcase/README.md) |
+| Tuxemon-styled feature gallery | Done | A town plaza connects fourteen themed halls through numbered stone archways, including a Registration Desk, with per-hall thumbnails and browser chapter cards. Every prop is cut from a measured source rectangle and every path, pond and paving edge uses Tuxemon transition tiles, both pixel-tested; limits: terrain areas must stay two cells apart and rugs are rectangles. See the [gallery catalogue](../examples/showcase/README.md) |
 | Pictures (show / move / rotate / tint / erase) | Planned | |
 | Weather particles | Planned | Colour overlays already work through screen layers and tints |
 

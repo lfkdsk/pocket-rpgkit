@@ -42,7 +42,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
+import { HALL_DEMO, HALL_ENTRY, HALL_EXIT, hallDoorPosition } from "../examples/showcase/hall-kit.ts";
 import { SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
 import { createProposalFromOperations } from "../editor/api/proposals.ts";
 import { loadProject } from "../editor/engine/document.ts";
@@ -991,7 +991,7 @@ async function main(): Promise<void> {
       await installNoReloadSentinel();
       await clickElement('[data-demo-chapter="hall-streaming"]');
       await waitFor("showcase HTML chapter jump", `__rpgSessionState.mapId === "hall-streaming" &&
-        __rpgSessionState.move.tx === 2 && __rpgSessionState.move.ty === 12 &&
+        __rpgSessionState.move.tx === ${HALL_ENTRY.x} && __rpgSessionState.move.ty === ${HALL_ENTRY.y} &&
         document.querySelector('[data-demo-chapter="hall-streaming"]').getAttribute("aria-current") === "true"`);
       const showcaseStable = await noReloadSentinel();
       const showcaseCurrent = await evaluate<string[]>(`[...document.querySelectorAll('[data-demo-chapter][aria-current="true"]')].map((button) => button.dataset.demoChapter)`);
@@ -1069,7 +1069,7 @@ async function main(): Promise<void> {
       const hall1Door = showcaseDoor("showcase-screen-effects");
       await walkShowcase("showcase-lobby", hall1Door.x, hall1Door.y);
       await waitFor("showcase hall 1", `__rpgSessionState.mapId === "showcase-screen-effects"`);
-      await walkShowcase("showcase-screen-effects", 10, 8);
+      await walkShowcase("showcase-screen-effects", HALL_DEMO.x, HALL_DEMO.y + 1);
       await pressShowcaseA();
       for (let guard = 0; guard < 30; guard++) {
         if (await evaluate<boolean>(`!!__rpgSessionState.interp.screen?.tints?.["time-of-day"]`)) break;
@@ -1080,9 +1080,8 @@ async function main(): Promise<void> {
       expect("showcase: hall 1 demonstration runs", tint, `named time-of-day tint present: ${tint}`);
       await canvasShot("showcase-hall-1");
       await finishShowcaseDemo();
-      await walkShowcase("showcase-screen-effects", 10, 12, true);
-      await walkShowcase("showcase-screen-effects", 2, 12);
-      await walkShowcaseAxis("y", 13, "showcase-screen-effects");
+      await walkShowcase("showcase-screen-effects", HALL_EXIT.x, HALL_EXIT.y - 1, true);
+      await walkShowcaseAxis("y", HALL_EXIT.y, "showcase-screen-effects");
       await waitFor("showcase first return", `__rpgSessionState.mapId === "showcase-lobby"`);
 
       // Hall 8's demo walks the player across the streamed map and sets a
@@ -1090,15 +1089,14 @@ async function main(): Promise<void> {
       const hall8Door = showcaseDoor("hall-streaming");
       await walkShowcase("showcase-lobby", hall8Door.x, hall8Door.y);
       await waitFor("showcase hall 8", `__rpgSessionState.mapId === "hall-streaming"`);
-      await walkShowcase("hall-streaming", 10, 8);
+      await walkShowcase("hall-streaming", HALL_DEMO.x, HALL_DEMO.y + 1);
       await pressShowcaseA();
       await finishShowcaseDemo();
       const streamed = await evaluate<boolean>(`__rpgSessionState.sw.switches["showcase.streaming.complete"] === true`);
       expect("showcase: hall 8 demonstration runs", streamed, `streamed route completion switch: ${streamed}`);
       await canvasShot("showcase-hall-8");
-      await walkShowcase("hall-streaming", 17, 12, true);
-      await walkShowcase("hall-streaming", 2, 12);
-      await walkShowcaseAxis("y", 13, "hall-streaming");
+      await walkShowcase("hall-streaming", HALL_EXIT.x, HALL_EXIT.y - 1, true);
+      await walkShowcaseAxis("y", HALL_EXIT.y, "hall-streaming");
       await waitFor("showcase second return", `__rpgSessionState.mapId === "showcase-lobby"`);
       const returned = await showcasePosition();
       expect(

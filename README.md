@@ -51,7 +51,9 @@ What is done, partial or still planned is tracked area by area in
 
 One walkable miniature monster-RPG town collects the kit's presentation,
 animation, movement, extension, battle, shop, streaming, theme, save,
-deterministic-replay and audio features in thirteen repeatable rooms. Its
+deterministic-replay, audio and scene features in fourteen repeatable halls.
+The Registration Desk uses the built-in name-input scene and addresses the
+player by that name in later dialogue. Its
 [room-by-room catalogue](examples/showcase/README.md) links each demonstration
 to its authoring source and the separately licensed Tuxemon assets.
 

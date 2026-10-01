@@ -17,10 +17,11 @@ import {
   type StreamedLayer,
 } from "../../tools/lib/stream.ts";
 import type { MapDef } from "../../src/engine/types.ts";
+import { NAME_INPUT_SCENE_ID, nameInputRules } from "../../src/engine/name-input.ts";
 import { buildShowcaseProject, SHOWCASE_HALLS } from "./showcase-data.ts";
 import { SHOWCASE_EXTENSIONS } from "./extensions.ts";
 import { showcaseBattleRules } from "./showcase-battle-rules.ts";
-import { showcaseMapArt, showcasePortalBadge } from "./showcase-art.ts";
+import { prepareShowcaseArt, showcaseMapArt } from "./showcase-art.ts";
 import { recordShowcaseTour } from "./tour.ts";
 
 const HERE = import.meta.dir;
@@ -70,35 +71,29 @@ function layerChunks(map: MapDef, source: Uint8Array): { chunks: Uint8Array[]; c
   };
 }
 
+// The workshop gate is Tuxemon's crate front, streamed as its own layer so
+// the room can switch it on and off.
+const GATE_TILE = { x: 496, y: 32 } as const;
 function gateChunks(map: MapDef): { chunks: Uint8Array[]; columns: number; rows: number } {
   const columns = Math.ceil((map.width * TILE) / CHUNK);
   const rows = Math.ceil((map.height * TILE) / CHUNK);
   const chunks = Array.from({ length: columns * rows }, () => new Uint8Array(CHUNK * CHUNK * 4));
+  const city = sourceImage("gfx/tilesets/core_city_and_country.png");
+  const crate = cropPixels(city, GATE_TILE.x, GATE_TILE.y, TILE, TILE);
   const gx = 12 * TILE;
   const gy = 7 * TILE;
-  for (let py = 1; py < TILE; py++) {
-    for (let px = 2; px < TILE - 2; px++) {
+  for (let py = 0; py < TILE; py++) {
+    for (let px = 0; px < TILE; px++) {
       const wx = gx + px;
       const wy = gy + py;
-      const cx = Math.floor(wx / CHUNK);
-      const cy = Math.floor(wy / CHUNK);
-      put(chunks[cy * columns + cx]!, CHUNK, wx % CHUNK, wy % CHUNK,
-        px % 4 < 2 ? [248, 196, 68, 255] : [104, 62, 34, 255]);
+      const chunk = chunks[Math.floor(wy / CHUNK) * columns + Math.floor(wx / CHUNK)]!;
+      chunk.set(crate.subarray((py * TILE + px) * 4, (py * TILE + px) * 4 + 4), ((wy % CHUNK) * CHUNK + wx % CHUNK) * 4);
     }
   }
   return { chunks, columns, rows };
 }
 
-function sign16(): Uint8Array {
-  const out = new Uint8Array(TILE * TILE * 4);
-  rect(out, TILE, 1, 1, 14, 10, [55, 31, 52, 255]);
-  rect(out, TILE, 2, 2, 12, 8, [244, 199, 82, 255]);
-  rect(out, TILE, 4, 4, 8, 1, [46, 64, 86, 255]);
-  rect(out, TILE, 4, 7, 6, 1, [46, 64, 86, 255]);
-  rect(out, TILE, 7, 11, 2, 5, [108, 68, 42, 255]);
-  return out;
-}
-
+await prepareShowcaseArt();
 const project = buildShowcaseProject();
 writeFileSync(join(HERE, "data", "showcase.json"), JSON.stringify(project, null, 2) + "\n");
 
@@ -110,6 +105,8 @@ for (const map of project.maps) {
   const upper = layerChunks(map, art.upper);
   const g = encodeStreamedLayer(`showcase-${map.id}-ground`, ground.chunks, ground.columns, ground.rows, { chunkPx: CHUNK });
   const u = encodeStreamedLayer(`showcase-${map.id}-upper`, upper.chunks, upper.columns, upper.rows, { chunkPx: CHUNK });
+  // Palette quantization would change prop pixels; the art must stream losslessly.
+  if (g.report.quantized || u.report.quantized) throw new Error(`showcase gen-assets: ${map.id} chunks were quantized`);
   entries.push(...g.entries, ...u.entries);
   streamed.set(map.id, { ground: g.layer, upper: u.layer });
 }
@@ -195,6 +192,14 @@ function resizeNearest(
   return out;
 }
 
+function gradePixels(bytes: Uint8Array, tint: readonly [number, number, number]): void {
+  for (let i = 0; i < bytes.length; i += 4) {
+    bytes[i] = Math.round(bytes[i]! * tint[0] / 255);
+    bytes[i + 1] = Math.round(bytes[i + 1]! * tint[1] / 255);
+    bytes[i + 2] = Math.round(bytes[i + 2]! * tint[2] / 255);
+  }
+}
+
 function portrait(frame: Uint8Array): Uint8Array {
   const out = new Uint8Array(64 * 64 * 4);
   rect(out, 64, 0, 0, 64, 64, [31, 44, 61, 255]);
@@ -220,25 +225,40 @@ function writeWalker(name: string, source: Bitmap): Walker {
   return frames;
 }
 
+// Information signs use Tuxemon's wooden signpost, bottom-aligned in its cell.
+const SIGNPOST = { x: 560, y: 32, w: 16, h: 14 } as const;
+function signpost(): Uint8Array {
+  const city = sourceImage("gfx/tilesets/core_city_and_country.png");
+  const out = new Uint8Array(TILE * TILE * 4);
+  const pixels = cropPixels(city, SIGNPOST.x, SIGNPOST.y, SIGNPOST.w, SIGNPOST.h);
+  out.set(pixels, (TILE - SIGNPOST.h) * TILE * 4);
+  return out;
+}
+
 const staticSprites = {
-  portal: writeImage("portal.png", showcasePortalBadge(), 16, 16),
-  sign: writeImage("sign.png", sign16(), 16, 16),
-  ...Object.fromEntries(SHOWCASE_HALLS.map((hall) => [
-    `portal-${hall.number}`,
-    writeImage(`portal-${hall.number}.png`, showcasePortalBadge(hall.number), 16, 16),
-  ])),
+  sign: writeImage("sign.png", signpost(), 16, 16),
 };
 
 const playerSheet = sourceImage("sprites/girl1.png");
 const curatorSheet = sourceImage("sprites/boss.png");
 const guideSheet = sourceImage("sprites/knight.png");
+const visitorSheet: Bitmap = {
+  width: guideSheet.width,
+  height: guideSheet.height,
+  rgba: guideSheet.rgba.slice(),
+};
+gradePixels(visitorSheet.rgba, [236, 172, 255]);
 const player = writeWalker("player", playerSheet);
 const curator = writeWalker("curator", curatorSheet);
 const guide = writeWalker("guide", guideSheet);
-const alternate = guide;
+const alternate = writeWalker("alternate", visitorSheet);
 
 const curatorFace = portrait(cropPixels(curatorSheet, 16, 0, 16, 32));
 writeImage("face-curator.png", curatorFace, 64, 64);
+const guideFace = portrait(cropPixels(guideSheet, 16, 0, 16, 32));
+writeImage("face-guide.png", guideFace, 64, 64);
+const visitorFace = portrait(cropPixels(visitorSheet, 16, 0, 16, 32));
+writeImage("face-visitor.png", visitorFace, 64, 64);
 
 const bamboon = sourceImage("gfx/sprites/battle/bamboon-sheet.png");
 const bigfin = sourceImage("gfx/sprites/battle/bigfin-sheet.png");
@@ -293,8 +313,8 @@ const animatedSource = animatedManifestSource([
     tiles: Array.from({ length: 12 }, (_, i) => {
       const local = i % 6;
       return {
-        x: (i < 6 ? 3 : 14) + local % 3,
-        y: (i < 6 ? 2 : 9) + Math.floor(local / 3),
+        x: 13 + local % 2,
+        y: (i < 6 ? 2 : 10) + Math.floor(local / 2),
         above: i % 3 === 0,
         sprite: nativeAnim.atlasFor.get("water-spark")!,
       };
@@ -338,12 +358,13 @@ writeFileSync(
   `    backdrop: { placement: "screen", defaultVisible: false, variants: { gallery: { color: "#251144", opacity: 1 }, stars: { color: "#07142e", opacity: 1 } } },\n` +
   `  },\n` +
   `};\n\n` +
-  `export const SHOWCASE_ART = { face: "assets/face-curator.png", battlePlayer: "assets/battle-player.png", battleEnemy: "assets/battle-enemy.png", battleBackground: ${q(battleBackground)} } as const;\n`,
+  `export const SHOWCASE_ART = { face: "assets/face-curator.png", guideFace: "assets/face-guide.png", visitorFace: "assets/face-visitor.png", battlePlayer: "assets/battle-player.png", battleEnemy: "assets/battle-enemy.png", battleBackground: ${q(battleBackground)} } as const;\n`,
 );
 
 const tour = recordShowcaseTour(project, {
   extensions: SHOWCASE_EXTENSIONS,
   battle: showcaseBattleRules,
+  scenes: { [NAME_INPUT_SCENE_ID]: nameInputRules },
 });
 writeFileSync(
   join(HERE, "demo-tape.ts"),
@@ -355,6 +376,6 @@ writeFileSync(
 
 console.log(
   `showcase gen-assets: ${project.maps.length} streamed maps, ${entries.length} TILESET entries, ` +
-  `${entries.reduce((sum, entry) => sum + entry.blob.length, 0)} bytes, 24 walker frames, ` +
+  `${entries.reduce((sum, entry) => sum + entry.blob.length, 0)} bytes, 48 walker frames, ` +
   `${tour.masks.length}-frame attract tour`,
 );

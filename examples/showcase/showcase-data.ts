@@ -21,7 +21,7 @@ export function buildShowcaseProject(): Project {
     format: "rpgkit-project/v1",
     title: "Pocket RPG Kit Feature Gallery",
     tileSize: 16,
-    start: { map: "showcase-lobby", x: 10, y: 8, dir: "up" },
+    start: { map: "showcase-lobby", x: 15, y: 10, dir: "up" },
     system: {
       messageBlocksPlayer: true,
       inventory: { maxPerItem: 9, maxKinds: 8 },
@@ -52,12 +52,7 @@ export function buildShowcaseProject(): Project {
     sprites: {
       curator: { kind: "image", src: "generated:curator" },
       guide: { kind: "image", src: "generated:guide" },
-      portal: { kind: "image", src: "generated:portal" },
       sign: { kind: "image", src: "generated:sign" },
-      ...Object.fromEntries(SHOWCASE_HALLS.map((hall) => [
-        `portal-${hall.number}`,
-        { kind: "image" as const, src: `generated:portal-${hall.number}` },
-      ])),
       runner: { kind: "walker", sheet: "generated-walker", h: 32, cols: 3, rows: 4 },
       alternate: { kind: "walker", sheet: "generated-alternate", h: 32, cols: 3, rows: 4 },
     },

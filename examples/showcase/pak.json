@@ -36,6 +36,14 @@
     "file": "assets/stream/showcase-hall-audio-upper.pkts"
   },
   {
+    "key": "ui:tile.showcase-hall-registration-ground",
+    "file": "assets/stream/showcase-hall-registration-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-registration-upper",
+    "file": "assets/stream/showcase-hall-registration-upper.pkts"
+  },
+  {
     "key": "ui:tile.showcase-hall-save-ground",
     "file": "assets/stream/showcase-hall-save-ground.pkts"
   },

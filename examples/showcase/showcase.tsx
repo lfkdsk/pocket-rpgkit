@@ -1,5 +1,5 @@
 // @title Pocket RPG Kit — Feature Gallery
-// One app, one lobby, thirteen rooms. The project itself demonstrates event
+// One app, one lobby, fourteen rooms. The project itself demonstrates event
 // commands; this thin shell registers game extensions, battle UI, attract
 // playback, live theme switching, streamed-render diagnostics, and the
 // SaveMenu/save-code round-trip shown in room 11.
@@ -13,10 +13,12 @@ import { createOsk } from "@pocketjs/framework/osk";
 import { GameView } from "../../src/ui/GameView.tsx";
 import { createAudioEffects } from "../../src/ui/audio/index.ts";
 import { createDemo } from "../../src/ui/demo/index.ts";
+import { NameInputScene } from "../../src/ui/name-input/NameInputScene.tsx";
 import { SaveMenu } from "../../src/ui/SaveMenu.tsx";
 import type { MenuState } from "../../src/engine/save-menu.ts";
 import type { SessionState } from "../../src/engine/session.ts";
 import { createSession } from "../../src/engine/session.ts";
+import { NAME_INPUT_SCENE_ID, nameInputRules } from "../../src/engine/name-input.ts";
 import { canSave, createSessionSnapshot, decodeSaveCode, encodeSaveCode } from "../../src/engine/save.ts";
 import type { UiTheme } from "../../src/ui/theme.ts";
 import type { AnimatedTilesStats } from "../../src/ui/AnimatedTiles.tsx";
@@ -33,6 +35,8 @@ import { createShowcaseDemo } from "./demo-chapters.ts";
 
 const PROJECT = buildShowcaseProject();
 const AudioEffects = createAudioEffects(PROJECT.audio!);
+const SCENES = { [NAME_INPUT_SCENE_ID]: nameInputRules } as const;
+const SCENE_VIEWS = { [NAME_INPUT_SCENE_ID]: NameInputScene } as const;
 
 const MIDNIGHT: Partial<UiTheme> = {
   border: "#53c8e8",
@@ -72,6 +76,7 @@ function ShowcaseApp() {
   const saveSession = createSession(project, simulationHz(), {
     extensions: SHOWCASE_EXTENSIONS,
     battle: showcaseBattleRules,
+    scenes: SCENES,
   });
   const demo = createDemo(createShowcaseDemo(project, saveSession));
   const [sunrise, setSunrise] = createSignal(false);
@@ -137,11 +142,17 @@ function ShowcaseApp() {
         extensions={SHOWCASE_EXTENSIONS}
         battle={showcaseBattleRules}
         battleScene={ShowcaseBattleScene}
+        scenes={SCENES}
+        sceneViews={SCENE_VIEWS}
         effects={AudioEffects}
         attractTape={loadAttractTape(SHOWCASE_TOUR_RUNS).masks}
         demo={demo}
         theme={theme()}
-        faces={{ CURATOR: SHOWCASE_ART.face }}
+        faces={{
+          CURATOR: SHOWCASE_ART.face,
+          GUIDE: SHOWCASE_ART.guideFace,
+          VISITOR: SHOWCASE_ART.visitorFace,
+        }}
         onStreamStats={(layer, stats) => { diagnostics.stream[layer] = stats; }}
         onAnimatedStats={(layer, stats) => { diagnostics.animated[layer] = stats; }}
         onMapAnimStats={(layer, stats) => { diagnostics.mapAnim[layer] = stats; }}

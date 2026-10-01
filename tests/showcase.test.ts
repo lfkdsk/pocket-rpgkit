@@ -15,16 +15,21 @@ import {
   type SessionState,
 } from "../src/engine/session.ts";
 import { buildShowcaseProject, SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
-import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
+import { HALL_DEMO, hallDoorPosition } from "../examples/showcase/hall-kit.ts";
 import { SHOWCASE_EXTENSIONS } from "../examples/showcase/extensions.ts";
 import { showcaseBattleRules } from "../examples/showcase/showcase-battle-rules.ts";
+import { NAME_INPUT_SCENE_ID, nameInputRules } from "../src/engine/name-input.ts";
 import {
   SHOWCASE_TOUR_RUNS,
   SHOWCASE_TOUR_VISITS,
 } from "../examples/showcase/demo-tape.ts";
 
 const project = buildShowcaseProject();
-const options = { extensions: SHOWCASE_EXTENSIONS, battle: showcaseBattleRules };
+const options = {
+  extensions: SHOWCASE_EXTENSIONS,
+  battle: showcaseBattleRules,
+  scenes: { [NAME_INPUT_SCENE_ID]: nameInputRules },
+};
 
 class Driver {
   readonly session: Session;
@@ -85,11 +90,14 @@ class Driver {
     this.settleMap(hall.id);
     expect(this.state.mapId).toBe(hall.id);
 
-    // Every hall lands at (2,12). Approach the curator from below without
-    // crossing the optional room-label pad at (2,11).
-    this.moveAxis("x", 10, hall.id);
-    this.moveAxis("y", 8, hall.id);
-    expect([this.state.move.tx, this.state.move.ty, this.state.move.facing]).toEqual([10, 8, 2]);
+    // Approach the curator from below; the room sign stays beside the entry.
+    this.moveAxis("x", HALL_DEMO.x, hall.id);
+    this.moveAxis("y", HALL_DEMO.y + 1, hall.id);
+    expect([this.state.move.tx, this.state.move.ty, this.state.move.facing]).toEqual([
+      HALL_DEMO.x,
+      HALL_DEMO.y + 1,
+      2,
+    ]);
     this.pulseConfirm();
   }
 
@@ -152,8 +160,8 @@ describe("showcase rooms — real lobby entry and repeatable demonstrations", ()
     const d = enter(3);
     const night = d.until((state) => state.interp.layers?.weather?.variant === "night");
     expect(night.interp.layers?.weather).toEqual({ visible: true, variant: "night" });
-    const blocked = d.until((state) => state.interp.tileProperties?.["152"]?.passage === "block");
-    expect(blocked.interp.tileProperties?.["152"]).toEqual({ passage: "block", enter: ["left"], exit: ["right"] });
+    const blocked = d.until((state) => state.interp.tileProperties?.["222"]?.passage === "block");
+    expect(blocked.interp.tileProperties?.["222"]).toEqual({ passage: "block", enter: ["left"], exit: ["right"] });
     const done = d.finish();
     expect(done.sw.playerAppearance).toBeUndefined();
     expect(done.interp.eventAppearances).toBeUndefined();
@@ -318,6 +326,29 @@ describe("showcase rooms — real lobby entry and repeatable demonstrations", ()
     expect(done.interp.audio?.bgs).toBeUndefined();
     expect(done.interp.audio?.savedBgm).toMatchObject({ id: "town-theme", volume: 42, pitch: 100 });
   });
+
+  test("14. registration desk commits a player name and expands it in the next greeting", () => {
+    const d = enter(14);
+    d.until((state) => state.scene?.kind === "scene");
+    d.pulseConfirm(); // append A to the default Player name
+    d.tick({ buttons: BTN.LEFT, leftEdge: true }); // cursor wraps to CANCEL
+    d.tick();
+    d.tick({ buttons: BTN.LEFT, leftEdge: true }); // then to OK
+    d.tick();
+    d.pulseConfirm();
+    const greeting = d.until((state) => state.scene === null && state.interp.modal?.kind === "text");
+    expect(greeting.sw.playerName).toBe("PlayerA");
+    expect(greeting.interp.modal).toMatchObject({
+      kind: "text",
+      lines: [
+        "CURATOR: Welcome, PlayerA! Your badge is ready.",
+        "The player name now belongs to session and save state.",
+      ],
+    });
+    const done = d.finish();
+    expect(done.sw.switches["showcase.registration.complete"]).toBe(true);
+    expect(done.sw.switches["showcase.registration.cancelled"]).toBeUndefined();
+  });
 });
 
 describe("showcase attract tape", () => {
@@ -325,7 +356,7 @@ describe("showcase attract tape", () => {
 
   test("the frozen source visits every hall in authored order", () => {
     expect(SHOWCASE_TOUR_VISITS.join("\n")).toBe(SHOWCASE_HALLS.map((hall) => hall.id).join("\n"));
-    expect(tape.length).toBe(1_503);
+    expect(tape.length).toBe(2_037);
     const doors = SHOWCASE_HALLS.map((_, index) => hallDoorPosition(index, SHOWCASE_HALLS.length));
     expect(new Set(doors.map(({ x, y }) => `${x},${y}`)).size).toBe(SHOWCASE_HALLS.length);
   });

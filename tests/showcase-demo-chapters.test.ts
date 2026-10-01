@@ -10,6 +10,8 @@ import { showcaseBattleRules } from "../examples/showcase/showcase-battle-rules.
 import { restoreSessionSnapshot } from "../src/engine/save-restore.ts";
 import { validateSnapshot } from "../src/engine/save-validate.ts";
 import { createSession } from "../src/engine/session.ts";
+import { NAME_INPUT_SCENE_ID, nameInputRules } from "../src/engine/name-input.ts";
+import { HALL_ENTRY } from "../examples/showcase/hall-kit.ts";
 
 describe("showcase demo chapters", () => {
   test("every hall has an ordered, restorable entry snapshot", () => {
@@ -17,6 +19,7 @@ describe("showcase demo chapters", () => {
     const session = createSession(project, 60, {
       extensions: SHOWCASE_EXTENSIONS,
       battle: showcaseBattleRules,
+      scenes: { [NAME_INPUT_SCENE_ID]: nameInputRules },
     });
     const demo = createShowcaseDemo(project, session);
 
@@ -33,7 +36,15 @@ describe("showcase demo chapters", () => {
       expect(restored, chapter.id).toMatchObject({
         mapId: SHOWCASE_HALLS[index]!.id,
         frame: 0,
-        move: { tx: 2, ty: 12, px: 32, py: 192, facing: 2, phase: 0, moving: false },
+        move: {
+          tx: HALL_ENTRY.x,
+          ty: HALL_ENTRY.y,
+          px: HALL_ENTRY.x * 16,
+          py: HALL_ENTRY.y * 16,
+          facing: 2,
+          phase: 0,
+          moving: false,
+        },
         sw: { gold: 80 },
         ext: { visits: 0, completed: 0, selections: [], cancellations: 0, lastChoice: null },
       });
@@ -45,9 +56,10 @@ describe("showcase demo chapters", () => {
     const session = createSession(project, 60, {
       extensions: SHOWCASE_EXTENSIONS,
       battle: showcaseBattleRules,
+      scenes: { [NAME_INPUT_SCENE_ID]: nameInputRules },
     });
     const spawns = createShowcaseDemo(project, session).warp!.spawns!;
-    expect(spawns[project.start.map]).toEqual({ x: 10, y: 8, dir: "up" });
-    for (const hall of SHOWCASE_HALLS) expect(spawns[hall.id], hall.id).toEqual({ x: 2, y: 12, dir: "up" });
+    expect(spawns[project.start.map]).toEqual({ x: 15, y: 10, dir: "up" });
+    for (const hall of SHOWCASE_HALLS) expect(spawns[hall.id], hall.id).toEqual(HALL_ENTRY);
   });
 });

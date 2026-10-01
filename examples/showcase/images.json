@@ -1,47 +1,5 @@
 {
-  "assets/portal.png": {
-    "psm": 3
-  },
   "assets/sign.png": {
-    "psm": 3
-  },
-  "assets/portal-1.png": {
-    "psm": 3
-  },
-  "assets/portal-2.png": {
-    "psm": 3
-  },
-  "assets/portal-3.png": {
-    "psm": 3
-  },
-  "assets/portal-4.png": {
-    "psm": 3
-  },
-  "assets/portal-5.png": {
-    "psm": 3
-  },
-  "assets/portal-6.png": {
-    "psm": 3
-  },
-  "assets/portal-7.png": {
-    "psm": 3
-  },
-  "assets/portal-8.png": {
-    "psm": 3
-  },
-  "assets/portal-9.png": {
-    "psm": 3
-  },
-  "assets/portal-10.png": {
-    "psm": 3
-  },
-  "assets/portal-11.png": {
-    "psm": 3
-  },
-  "assets/portal-12.png": {
-    "psm": 3
-  },
-  "assets/portal-13.png": {
     "psm": 3
   },
   "assets/player-idle-0.png": {
@@ -152,7 +110,49 @@
   "assets/guide-right-3.png": {
     "psm": 3
   },
+  "assets/alternate-idle-0.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-0.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-0.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-1.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-1.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-1.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-2.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-2.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-2.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-3.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-3.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-3.png": {
+    "psm": 3
+  },
   "assets/face-curator.png": {
+    "psm": 3
+  },
+  "assets/face-guide.png": {
+    "psm": 3
+  },
+  "assets/face-visitor.png": {
     "psm": 3
   },
   "assets/battle-player.png": {

@@ -3,6 +3,7 @@
 
 import type { HallDefinition } from "../hall-kit.ts";
 import { text } from "../hall-kit.ts";
+import { NAME_INPUT_SCENE_ID } from "../../../src/engine/name-input.ts";
 
 export const SYSTEM_HALLS: HallDefinition[] = [
   {
@@ -103,6 +104,35 @@ export const SYSTEM_HALLS: HallDefinition[] = [
       text("CURATOR: The saved melody returns at its old position.", "Music, ambience, fanfares, and cues share one clock."),
       { op: "stopBgm" },
       { op: "switch", id: "showcase.audio.complete", value: true },
+    ],
+  },
+  {
+    id: "hall-registration",
+    number: 14,
+    title: "Registration Desk",
+    commands: ["scene", "rpgkit.nameInput", "{name}"],
+    palette: ["#27445b", "#d29b52"],
+    demo: [
+      text(
+        "CURATOR: Welcome to the registration desk.",
+        "Enter a name and I will use it right away.",
+      ),
+      {
+        op: "scene",
+        id: NAME_INPUT_SCENE_ID,
+        args: { title: "Gallery Registration", maxLength: 10 },
+        onDone: [
+          { op: "switch", id: "showcase.registration.complete", value: true },
+          text(
+            "CURATOR: Welcome, {name}! Your badge is ready.",
+            "The player name now belongs to session and save state.",
+          ),
+        ],
+        onCancel: [
+          { op: "switch", id: "showcase.registration.cancelled", value: true },
+          text("CURATOR: No problem, {name}.", "The desk stays open whenever you are ready."),
+        ],
+      },
     ],
   },
 ];
