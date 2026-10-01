@@ -4,9 +4,12 @@
 // the pages' URLs. tools/web-verify.ts plays the built site in Chrome.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { EXAMPLES } from "../tools/build-example.ts";
 import {
   cardOrder,
+  copyChapterPreviews,
   DEFAULT_WEB_RASTER_DENSITY,
   defaultGameIds,
   KIT_ROOT,
@@ -18,6 +21,7 @@ import {
   shortTitle,
   viewportFor,
   type PlayerConfig,
+  type WebChapter,
   type WebGame,
 } from "../tools/web.ts";
 import { fitViewport, type ViewportConfig } from "../tools/web/fit.ts";
@@ -28,6 +32,16 @@ import { createMasterAudioHost } from "../tools/web/audio-control.ts";
 
 const config = loadSiteConfig(KIT_ROOT);
 const site = { title: config.title!, intro: config.intro!, source: config.source! };
+const CHAPTER_PREVIEW = "tests/goldens/showcase-lobby.png";
+
+function chapterFixtures(count = 13): WebChapter[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `room-${index + 1}`,
+    title: index === 0 ? 'Room <1> & "friends"' : `Room ${index + 1}`,
+    description: index === 0 ? 'Try <everything> & say "hello".' : `Description ${index + 1}`,
+    preview: CHAPTER_PREVIEW,
+  }));
+}
 
 function playerConfig(game: WebGame): PlayerConfig {
   return {
@@ -70,7 +84,7 @@ describe("games", () => {
     }
     const showcase = resolveGame(KIT_ROOT, config, "showcase");
     expect(showcase.featured).toBe(true);
-    expect(showcase.features).toHaveLength(12);
+    expect(showcase.features).toHaveLength(13);
   });
 
   test("viewports: sunstone pinned fixed, grow dynamic from its plan, meadow fixed", () => {
@@ -108,9 +122,15 @@ describe("games", () => {
     expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "  " }] } } })).toThrow(/non-empty text/);
     expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "One" }, { id: "intro", title: "Again" }] } } })).toThrow(/duplicate id/);
     expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", autoplay: "yes" }] } } })).toThrow(/autoplay is a boolean/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", description: 1 }] } } })).toThrow(/description is text/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", preview: 1 }] } } })).toThrow(/relative PNG path/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", preview: "/preview.png" }] } } })).toThrow(/relative PNG path/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", preview: "../preview.png" }] } } })).toThrow(/relative PNG path/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", preview: "https://example.com/preview.png" }] } } })).toThrow(/relative PNG path/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", preview: "preview.jpg" }] } } })).toThrow(/relative PNG path/);
     expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction" }] } } })).not.toThrow();
-    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", autoplay: true }] } } })()).toEqual({
-      games: { meadow: { chapters: [{ id: "intro", title: "Introduction", autoplay: true }] } },
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", description: "Start here", preview: "art/intro.png", autoplay: true }] } } })()).toEqual({
+      games: { meadow: { chapters: [{ id: "intro", title: "Introduction", description: "Start here", preview: "art/intro.png", autoplay: true }] } },
     });
     expect(parse({ games: { meadow: { features: "one room" } } })).toThrow(/features is a list of text/);
     expect(parse({ games: { meadow: { features: ["one room", 2] } } })).toThrow(/features is a list of text/);
@@ -125,6 +145,18 @@ describe("games", () => {
     expect(parse({ games: { meadow: { rasterDensity: Number.NaN } } })).toThrow(/integer from 1 through 4/);
     expect(parse({ games: { meadow: { rasterDensity: Number.POSITIVE_INFINITY } } })).toThrow(/integer from 1 through 4/);
     expect(parse({ games: { meadow: {} } })()).toEqual({ games: { meadow: {} } });
+  });
+
+  test("chapter preview files are resolved before a game is built", () => {
+    const game = resolveGame(KIT_ROOT, { games: { meadow: { chapters: chapterFixtures(1) } } }, "meadow");
+    expect(game.chapters[0]).toMatchObject({
+      id: "room-1",
+      preview: CHAPTER_PREVIEW,
+      description: 'Try <everything> & say "hello".',
+    });
+    expect(() => resolveGame(KIT_ROOT, {
+      games: { meadow: { chapters: [{ id: "missing", title: "Missing", preview: "art/not-there.png" }] } },
+    }, "meadow")).toThrow(/chapter preview.*not found/);
   });
 
   test("a web.json game can override the default raster density", () => {
@@ -260,27 +292,30 @@ describe("pages", () => {
 
     const meadow = games.find((game) => game.id === "meadow")!;
     expect(renderPlayer(site, meadow, playerConfig(meadow), true)).not.toContain("data-demo-controls");
+  });
 
-    const showcase = games.find((game) => game.id === "showcase")!;
-    expect(showcase.chapters.map(({ id }) => id)).toEqual([
-      "showcase-screen-effects",
-      "showcase-map-animations",
-      "showcase-runtime-visuals",
-      "showcase-movement-controls",
-      "showcase-extensions",
-      "showcase-battle",
-      "showcase-shop",
-      "hall-streaming",
-      "hall-theme",
-      "showcase-input-and-idle",
-      "hall-save",
-      "hall-attract",
-    ]);
-    expect(showcase.controls.find(({ button }) => button === "SELECT")?.action).toBe("Demo menu");
-    const showcaseHtml = renderPlayer(site, showcase, playerConfig(showcase), true);
-    expect(showcaseHtml.match(/data-demo-chapter=/g)).toHaveLength(12);
-    expect(showcaseHtml).toContain('data-demo-chapter="hall-streaming"');
-    expect(showcaseHtml).not.toContain("data-demo-speed=");
+  test("thirteen chapter cards escape text, retain fallbacks, and copy their previews", () => {
+    const game = resolveGame(KIT_ROOT, { games: { meadow: { chapters: chapterFixtures() } } }, "meadow");
+    const html = renderPlayer(site, game, playerConfig(game), true);
+    expect(html.match(/data-demo-chapter=/g)).toHaveLength(13);
+    expect(html.match(/class="demo-chapter-preview"/g)).toHaveLength(13);
+    expect(html).toContain('data-demo-chapter="room-1" data-demo-autoplay="false" href="?chapter=room-1"');
+    expect(html).toContain('src="chapter-previews/room-1.png" alt="" loading="lazy"');
+    expect(html).toContain('Room &lt;1&gt; &amp; &quot;friends&quot;');
+    expect(html).toContain('Try &lt;everything&gt; &amp; say &quot;hello&quot;.');
+    expect(html).toContain('aria-labelledby="demo-chapter-title-room-1" aria-describedby="demo-chapter-description-room-1"');
+    expect(html).not.toContain("data-demo-speed=");
+
+    const output = mkdtempSync(join(KIT_ROOT, ".web-chapter-previews-"));
+    try {
+      copyChapterPreviews(KIT_ROOT, game, output);
+      const copied = readdirSync(join(output, "chapter-previews")).sort();
+      expect(copied).toEqual(Array.from({ length: 13 }, (_, index) => `room-${index + 1}.png`).sort());
+      expect(readFileSync(join(output, "chapter-previews", "room-1.png")))
+        .toEqual(readFileSync(join(KIT_ROOT, CHAPTER_PREVIEW)));
+    } finally {
+      rmSync(output, { recursive: true, force: true });
+    }
   });
 
   test("text is escaped and the settings cannot close their script tag", () => {
@@ -297,7 +332,7 @@ describe("pages", () => {
     expect(html).toContain("<ol class=\"features\">");
     expect(html).toContain("<li>One &amp; two</li>");
     expect(html).toContain("<li>&lt;script&gt;three&lt;/script&gt;</li>");
-    expect(html).toContain(">Chapter &lt;one&gt;</a>");
+    expect(html).toContain(">Chapter &lt;one&gt;</span>");
     expect(html.match(/<\/script>/g)!.length).toBe(2);
     expect(html).not.toContain("ATTRIBUTION.txt");
   });

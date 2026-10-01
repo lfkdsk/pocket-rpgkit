@@ -13,7 +13,8 @@
       ],
       "enhances": [
         "data.fs",
-        "display.viewport.live"
+        "display.viewport.live",
+        "audio.pcm"
       ]
     }
   },

@@ -1,7 +1,7 @@
 // Read-only battle presentation for showcase hall 6. The pure reducer lives
 // in showcase-battle-rules.ts so build-time tools can use it without JSX.
 
-import { Text, View } from "@pocketjs/framework/components";
+import { Image, Text, View } from "@pocketjs/framework/components";
 import type { BattleSceneViewProps } from "../../src/ui/GameView.tsx";
 import {
   CommandGrid,
@@ -53,11 +53,17 @@ export function ShowcaseBattleScene(props: BattleSceneViewProps) {
       style={{ posType: 1, insetL: 0, insetT: 0, width: props.width, height: props.height, bgColor: "#101827" }}
       debugName="showcase-battle-scene"
     >
+      <Image
+        src={SHOWCASE_ART.battleBackground}
+        class="absolute w-full h-full"
+        style={{ posType: 1, insetL: 0, insetT: 0, opacity: 0.72 }}
+        debugName="showcase-battle-background"
+      />
       <Text
         class="text-lg"
         style={{ posType: 1, insetL: 18, insetT: 14, textColor: "#ffe97a", height: 24, lineHeight: 24 }}
       >
-        TRAINING ARENA
+        TUXEMON TRAINING ARENA
       </Text>
 
       <SpriteSlot
@@ -72,7 +78,7 @@ export function ShowcaseBattleScene(props: BattleSceneViewProps) {
       />
 
       <View class="absolute flex-col" style={{ posType: 1, insetL: props.width - 190, insetT: 112, width: 170 }}>
-        <Text class="text-sm" style={{ textColor: "#dce8ff", height: 18, lineHeight: 18 }}>TRAINING SHADE</Text>
+        <Text class="text-sm" style={{ textColor: "#dce8ff", height: 18, lineHeight: 18 }}>WILD BAMBOON</Text>
         <StatBar current={state().enemyHp} max={state().enemyMaxHp} width={150} fill="#ef6a78" showNumbers />
       </View>
 
@@ -89,7 +95,7 @@ export function ShowcaseBattleScene(props: BattleSceneViewProps) {
       />
 
       <View class="absolute flex-col" style={{ posType: 1, insetL: 20, insetT: props.height - 103, width: 190 }}>
-        <Text class="text-sm" style={{ textColor: "#dce8ff", height: 18, lineHeight: 18 }}>CURATOR'S HERO</Text>
+        <Text class="text-sm" style={{ textColor: "#dce8ff", height: 18, lineHeight: 18 }}>BIGFIN</Text>
         <StatBar current={state().playerHp} max={state().playerMaxHp} width={150} fill="#63d39a" showNumbers />
       </View>
 

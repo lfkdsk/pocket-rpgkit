@@ -1,5 +1,5 @@
 // @title Pocket RPG Kit — Feature Gallery
-// One app, one lobby, twelve rooms. The project itself demonstrates event
+// One app, one lobby, thirteen rooms. The project itself demonstrates event
 // commands; this thin shell registers game extensions, battle UI, attract
 // playback, live theme switching, streamed-render diagnostics, and the
 // SaveMenu/save-code round-trip shown in room 11.
@@ -11,6 +11,7 @@ import { simulationHz } from "@pocketjs/framework/clock";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { createOsk } from "@pocketjs/framework/osk";
 import { GameView } from "../../src/ui/GameView.tsx";
+import { createAudioEffects } from "../../src/ui/audio/index.ts";
 import { createDemo } from "../../src/ui/demo/index.ts";
 import { SaveMenu } from "../../src/ui/SaveMenu.tsx";
 import type { MenuState } from "../../src/engine/save-menu.ts";
@@ -29,6 +30,9 @@ import { showcaseBattleRules } from "./showcase-battle-rules.ts";
 import { ShowcaseBattleScene } from "./showcase-battle.tsx";
 import { SHOWCASE_TOUR_RUNS } from "./demo-tape.ts";
 import { createShowcaseDemo } from "./demo-chapters.ts";
+
+const PROJECT = buildShowcaseProject();
+const AudioEffects = createAudioEffects(PROJECT.audio!);
 
 const MIDNIGHT: Partial<UiTheme> = {
   border: "#53c8e8",
@@ -64,7 +68,7 @@ declare global {
 }
 
 function ShowcaseApp() {
-  const project = buildShowcaseProject();
+  const project = PROJECT;
   const saveSession = createSession(project, simulationHz(), {
     extensions: SHOWCASE_EXTENSIONS,
     battle: showcaseBattleRules,
@@ -133,6 +137,7 @@ function ShowcaseApp() {
         extensions={SHOWCASE_EXTENSIONS}
         battle={showcaseBattleRules}
         battleScene={ShowcaseBattleScene}
+        effects={AudioEffects}
         attractTape={loadAttractTape(SHOWCASE_TOUR_RUNS).masks}
         demo={demo}
         theme={theme()}

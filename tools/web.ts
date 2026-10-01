@@ -47,7 +47,7 @@
 // Keys: tools/web/keys.ts. An entry's "keys" rebinds keys for a game whose
 // own prompts name other keys; the page's controls follow.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { validateAndResolveBuildPlan } from "../vendor/pocketjs/framework/src/manifest/resolve.ts";
 import type { ResolvedBuildPlan } from "../vendor/pocketjs/framework/src/manifest/plan.ts";
@@ -95,6 +95,10 @@ export interface WebChapter {
   /** Stable id handed to the game as ?chapter=<id>. */
   id: string;
   title: string;
+  /** Optional supporting text shown on the chapter card. */
+  description?: string;
+  /** Preview PNG, relative to the project root. */
+  preview?: string;
   /** Whether this chapter has a tape that can start from the web player. */
   autoplay?: boolean;
 }
@@ -191,6 +195,15 @@ export interface PlayerConfig {
 
 const ID = /^[a-z0-9][a-z0-9._-]*$/i;
 
+function isRelativePngPath(path: string): boolean {
+  return path.length > 0 &&
+    !isAbsolute(path) &&
+    !/^[a-z][a-z0-9+.-]*:/i.test(path) &&
+    !path.includes("\\") &&
+    !path.split("/").includes("..") &&
+    extname(path).toLowerCase() === ".png";
+}
+
 function readJson(path: string): any {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -276,6 +289,15 @@ function validateEntry(id: string, entry: WebGameEntry, source: string): void {
     chapterIds.add(chapter.id);
     if (typeof chapter.title !== "string" || chapter.title.trim().length === 0) {
       throw new Error(`web: ${source}: games.${id}.chapters[${index}].title must be non-empty text`);
+    }
+    if (chapter.description !== undefined && typeof chapter.description !== "string") {
+      throw new Error(`web: ${source}: games.${id}.chapters[${index}].description is text`);
+    }
+    if (
+      chapter.preview !== undefined &&
+      (typeof chapter.preview !== "string" || !isRelativePngPath(chapter.preview))
+    ) {
+      throw new Error(`web: ${source}: games.${id}.chapters[${index}].preview must be a relative PNG path`);
     }
     if (chapter.autoplay !== undefined && typeof chapter.autoplay !== "boolean") {
       throw new Error(`web: ${source}: games.${id}.chapters[${index}].autoplay is a boolean`);
@@ -410,17 +432,28 @@ export function resolveGame(projectRoot: string, config: WebSiteConfig, id: stri
   const preview = entry.preview ? resolve(projectRoot, entry.preview) : undefined;
   if (preview && !existsSync(preview)) throw new Error(`web: preview for "${id}" not found: ${preview}`);
   if (preview && extname(preview).toLowerCase() !== ".png") throw new Error(`web: preview for "${id}" must be a PNG`);
+  const chapters = (entry.chapters ?? []).map(({ id: chapterId, title, description, preview, autoplay }) => {
+    if (preview) {
+      const source = resolve(projectRoot, preview);
+      if (!isInside(projectRoot, source) || !existsSync(source) || !statSync(source).isFile()) {
+        throw new Error(`web: chapter preview for "${id}/${chapterId}" not found: ${source}`);
+      }
+    }
+    return {
+      id: chapterId,
+      title,
+      ...(description !== undefined ? { description } : {}),
+      ...(preview !== undefined ? { preview } : {}),
+      ...(autoplay !== undefined ? { autoplay } : {}),
+    };
+  });
   return {
     id,
     manifestPath,
     title: entry.title ?? shortTitle(plan.app.title, config.title),
     description: entry.description ?? "",
     controls: [...(entry.controls ?? DEFAULT_CONTROLS)],
-    chapters: (entry.chapters ?? []).map(({ id, title, autoplay }) => ({
-      id,
-      title,
-      ...(autoplay !== undefined ? { autoplay } : {}),
-    })),
+    chapters,
     ...(entry.pointer ? { pointer: entry.pointer } : {}),
     ...(entry.features ? { features: [...entry.features] } : {}),
     ...(entry.featured !== undefined ? { featured: entry.featured } : {}),
@@ -537,9 +570,23 @@ function chaptersNav(game: WebGame): string | undefined {
  * deep-link fallbacks when the game does not install the demo hook. */
 function playerDemoControls(game: WebGame): string | undefined {
   if (game.chapters.length === 0) return undefined;
-  const chapters = game.chapters.map(({ id, title, autoplay }) => {
+  const chapters = game.chapters.map(({ id, title, description, preview, autoplay }) => {
     const href = `?${new URLSearchParams({ chapter: id })}`;
-    return `<a class="demo-button" role="button" aria-pressed="false" data-demo-chapter="${escapeHtml(id)}" data-demo-autoplay="${autoplay === true}" href="${escapeHtml(href)}">${escapeHtml(title)}</a>`;
+    const titleId = `demo-chapter-title-${id}`;
+    const descriptionId = `demo-chapter-description-${id}`;
+    return [
+      `<a class="demo-button demo-chapter-card" role="button" aria-pressed="false" data-demo-chapter="${escapeHtml(id)}" data-demo-autoplay="${autoplay === true}" href="${escapeHtml(href)}" aria-labelledby="${escapeHtml(titleId)}"${description === undefined ? "" : ` aria-describedby="${escapeHtml(descriptionId)}"`}>`,
+      ...(preview
+        ? [`<img class="demo-chapter-preview" src="${escapeHtml(chapterPreviewOutput(id))}" alt="" loading="lazy">`]
+        : []),
+      '<span class="demo-chapter-copy">',
+      `<span class="demo-chapter-title" id="${escapeHtml(titleId)}">${escapeHtml(title)}</span>`,
+      ...(description === undefined
+        ? []
+        : [`<span class="demo-chapter-description" id="${escapeHtml(descriptionId)}">${escapeHtml(description)}</span>`]),
+      "</span>",
+      "</a>",
+    ].join("");
   });
   const firstAutoplay = game.chapters.find((chapter) => chapter.autoplay)?.id;
   const speeds = firstAutoplay ? ([1, 2, 4] as const).map((speed) => {
@@ -549,7 +596,7 @@ function playerDemoControls(game: WebGame): string | undefined {
   return [
     '<section class="demo-controls" data-demo-controls aria-labelledby="demo-controls-heading">',
     '<h2 id="demo-controls-heading">Demo controls</h2>',
-    '<div class="demo-control-row"><span>Chapter</span><div class="demo-buttons">',
+    '<div class="demo-control-row"><span>Chapter</span><div class="demo-buttons demo-chapter-cards">',
     ...chapters,
     "</div></div>",
     ...(speeds.length > 0
@@ -713,6 +760,21 @@ function isInside(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Relative URL/path used for one copied chapter-card preview. */
+export function chapterPreviewOutput(id: string): string {
+  return `chapter-previews/${id}.png`;
+}
+
+/** Copy configured chapter previews beside one built game's player page. */
+export function copyChapterPreviews(projectRoot: string, game: WebGame, outputDir: string): void {
+  for (const chapter of game.chapters) {
+    if (!chapter.preview) continue;
+    const target = join(outputDir, chapterPreviewOutput(chapter.id));
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(resolve(projectRoot, chapter.preview), target);
+  }
+}
+
 export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
   const projectRoot = resolve(options.projectRoot);
   const outdir = resolve(options.outdir);
@@ -770,6 +832,7 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
     // hosts/web/audio.js loads this document-relative URL in a separate
     // AudioWorklet realm, so every game page needs the standalone module.
     copyFileSync(AUDIO_WORKLET_PATH, join(dir, "audio-worklet.js"));
+    copyChapterPreviews(projectRoot, game, dir);
 
     const preview = join(dir, "preview.png");
     if (game.preview) {

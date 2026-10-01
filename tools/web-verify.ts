@@ -33,6 +33,8 @@
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
+import { SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PREFIX = "/pocket-rpgkit/";
@@ -377,17 +379,26 @@ async function main(): Promise<void> {
     expect(`${id}: keyboard focus on load`, focused, focused ? "the game screen has focus" : "focus is elsewhere");
     return stats;
   };
+  const loadCardPreviews = async (label: string) => {
+    const selector = ".game-card:not(.showcase-card) img";
+    const count = await evaluate<number>(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+    for (let index = 0; index < count; index++) {
+      await evaluate(`document.querySelectorAll(${JSON.stringify(selector)})[${index}]?.scrollIntoView({ block: "center" })`);
+      await waitFor(
+        `${label} preview ${index + 1}`,
+        `(() => { const image = document.querySelectorAll(${JSON.stringify(selector)})[${index}]; return image?.complete && image.naturalWidth > 0; })()`,
+      );
+    }
+    await evaluate(`window.scrollTo(0, 0)`);
+  };
 
   try {
     // ---- landing ----
     phase = "landing";
     await navigate(rootBase);
-    // Local cards use lazy previews. A featured card adds enough height that
-    // the last image can sit outside Chrome's lazy-load distance, so visit
-    // the bottom once before requiring every local preview to be decoded.
-    await evaluate(`window.scrollTo(0, document.documentElement.scrollHeight)`);
-    await waitFor("previews", `[...document.querySelectorAll(".game-card:not(.showcase-card) img")].every((i) => i.complete)`);
-    await evaluate(`window.scrollTo(0, 0)`);
+    // Local cards use lazy previews. Visit each one so this remains reliable
+    // when a featured card or a narrow viewport makes the page much taller.
+    await loadCardPreviews("landing");
     const landing = await evaluate<{ cards: string[]; previews: number[]; links: string[] }>(`({
       // Showcase cards link projects hosted elsewhere; only this site's games count.
       cards: [...document.querySelectorAll(".game-card:not(.showcase-card) h2")].map((h) => h.textContent),
@@ -413,6 +424,22 @@ async function main(): Promise<void> {
     if (games.some((g) => g.id === "showcase")) {
       await openGame(rootBase, "showcase");
       await checkRuns("showcase");
+      const chapterPreviewCount = await evaluate<number>(`document.querySelectorAll('[data-demo-chapter] img').length`);
+      if (chapterPreviewCount > 0) {
+        await evaluate(`document.querySelector('[data-demo-chapter]:last-of-type')?.scrollIntoView({ block: "center" })`);
+        await waitFor(
+          "showcase chapter previews",
+          `[...document.querySelectorAll('[data-demo-chapter] img')].every((image) => image.complete && image.naturalWidth > 0)`,
+        );
+      }
+      const loadedChapterPreviews = await evaluate<number>(
+        `[...document.querySelectorAll('[data-demo-chapter] img')].filter((image) => image.complete && image.naturalWidth > 0).length`,
+      );
+      expect(
+        "showcase: chapter preview images load",
+        loadedChapterPreviews === chapterPreviewCount,
+        `${loadedChapterPreviews}/${chapterPreviewCount} loaded`,
+      );
       const showcaseLoads = loadEvents;
       const showcaseErrors = consoleErrors.length;
       await installNoReloadSentinel();
@@ -485,10 +512,16 @@ async function main(): Promise<void> {
         }
         throw new Error("showcase demonstration did not settle");
       };
+      const showcaseDoor = (mapId: string) => {
+        const index = SHOWCASE_HALLS.findIndex((hall) => hall.id === mapId);
+        if (index < 0) throw new Error(`showcase: unknown hall ${mapId}`);
+        return hallDoorPosition(index, SHOWCASE_HALLS.length);
+      };
 
       // Hall 1: top-left portal, then action at the centre curator. Wait for
       // the named tint so this proves the command ran, not merely the map.
-      await walkShowcase("showcase-lobby", 2, 2);
+      const hall1Door = showcaseDoor("showcase-screen-effects");
+      await walkShowcase("showcase-lobby", hall1Door.x, hall1Door.y);
       await waitFor("showcase hall 1", `__rpgSessionState.mapId === "showcase-screen-effects"`);
       await walkShowcase("showcase-screen-effects", 10, 8);
       await pressShowcaseA();
@@ -506,9 +539,10 @@ async function main(): Promise<void> {
       await walkShowcaseAxis("y", 13, "showcase-screen-effects");
       await waitFor("showcase first return", `__rpgSessionState.mapId === "showcase-lobby"`);
 
-      // Hall 8: bottom row's second portal. Its demo walks the player across
-      // the streamed map and sets a completion switch after the live route.
-      await walkShowcase("showcase-lobby", 5, 12);
+      // Hall 8's demo walks the player across the streamed map and sets a
+      // completion switch after the live route.
+      const hall8Door = showcaseDoor("hall-streaming");
+      await walkShowcase("showcase-lobby", hall8Door.x, hall8Door.y);
       await waitFor("showcase hall 8", `__rpgSessionState.mapId === "hall-streaming"`);
       await walkShowcase("hall-streaming", 10, 8);
       await pressShowcaseA();
@@ -877,9 +911,7 @@ async function main(): Promise<void> {
     phase = "subpath";
     const before = requests.length;
     await navigate(subBase);
-    await evaluate(`window.scrollTo(0, document.documentElement.scrollHeight)`);
-    await waitFor("subpath previews", `[...document.querySelectorAll(".game-card:not(.showcase-card) img")].every((i) => i.complete && i.naturalWidth > 0)`);
-    await evaluate(`window.scrollTo(0, 0)`);
+    await loadCardPreviews("subpath");
     for (const game of games) {
       await openGame(subBase, game.id);
       const f0 = await frames();

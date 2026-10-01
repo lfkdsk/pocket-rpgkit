@@ -16,6 +16,12 @@
     }
   },
   "initialGold": 80,
+  "audio": {
+    "town-theme": "audio:wav.showcase-town",
+    "coin-chime": "audio:wav.showcase-coinecho",
+    "bark-fanfare": "audio:wav.showcase-bark",
+    "ice-ambience": "audio:wav.showcase-ice"
+  },
   "sheets": [
     {
       "id": "showcase",
@@ -75,6 +81,58 @@
       "kind": "image",
       "src": "generated:sign"
     },
+    "portal-1": {
+      "kind": "image",
+      "src": "generated:portal-1"
+    },
+    "portal-2": {
+      "kind": "image",
+      "src": "generated:portal-2"
+    },
+    "portal-3": {
+      "kind": "image",
+      "src": "generated:portal-3"
+    },
+    "portal-4": {
+      "kind": "image",
+      "src": "generated:portal-4"
+    },
+    "portal-5": {
+      "kind": "image",
+      "src": "generated:portal-5"
+    },
+    "portal-6": {
+      "kind": "image",
+      "src": "generated:portal-6"
+    },
+    "portal-7": {
+      "kind": "image",
+      "src": "generated:portal-7"
+    },
+    "portal-8": {
+      "kind": "image",
+      "src": "generated:portal-8"
+    },
+    "portal-9": {
+      "kind": "image",
+      "src": "generated:portal-9"
+    },
+    "portal-10": {
+      "kind": "image",
+      "src": "generated:portal-10"
+    },
+    "portal-11": {
+      "kind": "image",
+      "src": "generated:portal-11"
+    },
+    "portal-12": {
+      "kind": "image",
+      "src": "generated:portal-12"
+    },
+    "portal-13": {
+      "kind": "image",
+      "src": "generated:portal-13"
+    },
     "runner": {
       "kind": "walker",
       "sheet": "generated-walker",
@@ -94,22 +152,28 @@
     {
       "id": "showcase-pulse",
       "sheet": "generated:showcase-pulse",
-      "frameW": 32,
-      "frameH": 32,
+      "frameW": 64,
+      "frameH": 64,
       "frames": [
         0,
         1,
         2,
-        3
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
       ],
       "frameDuration": 0.1
     },
     {
       "id": "showcase-ring",
       "sheet": "generated:showcase-ring",
-      "frameW": 32,
-      "frameH": 32,
-      "count": 4,
+      "frameW": 64,
+      "frameH": 64,
+      "count": 10,
       "frameDuration": 0.12,
       "loop": true
     }
@@ -706,7 +770,7 @@
                 {
                   "op": "text",
                   "lines": [
-                    "FEATURE GALLERY — 12 LIVE ROOMS",
+                    "FEATURE GALLERY — 13 LIVE ROOMS",
                     "Walk onto a numbered portal to enter.",
                     "Talk to each curator; every demo repeats."
                   ]
@@ -730,7 +794,7 @@
                   "op": "text",
                   "lines": [
                     "CURATOR: Welcome to Pocket RPG Kit.",
-                    "Twelve doors, twelve live features."
+                    "13 doors, 13 live features."
                   ]
                 },
                 {
@@ -787,7 +851,7 @@
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-1",
               "commands": [
                 {
                   "op": "transfer",
@@ -804,12 +868,12 @@
         {
           "id": "door-showcase-map-animations",
           "name": "2. Map Animations",
-          "x": 5,
+          "x": 4,
           "y": 2,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-2",
               "commands": [
                 {
                   "op": "transfer",
@@ -826,12 +890,12 @@
         {
           "id": "door-showcase-runtime-visuals",
           "name": "3. Runtime Appearance and Layers",
-          "x": 8,
+          "x": 7,
           "y": 2,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-3",
               "commands": [
                 {
                   "op": "transfer",
@@ -848,12 +912,12 @@
         {
           "id": "door-showcase-movement-controls",
           "name": "4. Movement Controls & Routes",
-          "x": 11,
+          "x": 9,
           "y": 2,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-4",
               "commands": [
                 {
                   "op": "transfer",
@@ -870,12 +934,12 @@
         {
           "id": "door-showcase-extensions",
           "name": "5. Extensions & Live Choices",
-          "x": 14,
+          "x": 12,
           "y": 2,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-5",
               "commands": [
                 {
                   "op": "transfer",
@@ -892,12 +956,12 @@
         {
           "id": "door-showcase-battle",
           "name": "6. Battle Processing",
-          "x": 17,
+          "x": 14,
           "y": 2,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-6",
               "commands": [
                 {
                   "op": "transfer",
@@ -914,12 +978,12 @@
         {
           "id": "door-showcase-shop",
           "name": "7. Buy, Sell & Stock",
-          "x": 2,
-          "y": 12,
+          "x": 17,
+          "y": 2,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-7",
               "commands": [
                 {
                   "op": "transfer",
@@ -936,12 +1000,12 @@
         {
           "id": "door-hall-streaming",
           "name": "8. Streamed World",
-          "x": 5,
+          "x": 2,
           "y": 12,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-8",
               "commands": [
                 {
                   "op": "transfer",
@@ -958,12 +1022,12 @@
         {
           "id": "door-hall-theme",
           "name": "9. Themes & Portraits",
-          "x": 8,
+          "x": 5,
           "y": 12,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-9",
               "commands": [
                 {
                   "op": "transfer",
@@ -980,12 +1044,12 @@
         {
           "id": "door-showcase-input-and-idle",
           "name": "10. Input Locks & World Idle",
-          "x": 11,
+          "x": 8,
           "y": 12,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-10",
               "commands": [
                 {
                   "op": "transfer",
@@ -1002,12 +1066,12 @@
         {
           "id": "door-hall-save",
           "name": "11. Saves & Save Codes",
-          "x": 14,
+          "x": 11,
           "y": 12,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-11",
               "commands": [
                 {
                   "op": "transfer",
@@ -1024,16 +1088,38 @@
         {
           "id": "door-hall-attract",
           "name": "12. Attract Tour & Rewind",
+          "x": 14,
+          "y": 12,
+          "pages": [
+            {
+              "trigger": "playerTouch",
+              "sprite": "portal-12",
+              "commands": [
+                {
+                  "op": "transfer",
+                  "map": "hall-attract",
+                  "x": 2,
+                  "y": 12,
+                  "dir": "up",
+                  "fade": 0.15
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "door-hall-audio",
+          "name": "13. Sound Studio",
           "x": 17,
           "y": 12,
           "pages": [
             {
               "trigger": "playerTouch",
-              "sprite": "portal",
+              "sprite": "portal-13",
               "commands": [
                 {
                   "op": "transfer",
-                  "map": "hall-attract",
+                  "map": "hall-audio",
                   "x": 2,
                   "y": 12,
                   "dir": "up",
@@ -10407,6 +10493,748 @@
                 {
                   "op": "switch",
                   "id": "showcase.attract.explained",
+                  "value": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "return-to-lobby",
+          "name": "Return to the feature lobby",
+          "x": 2,
+          "y": 13,
+          "pages": [
+            {
+              "trigger": "playerTouch",
+              "commands": [
+                {
+                  "op": "transfer",
+                  "map": "showcase-lobby",
+                  "x": 10,
+                  "y": 7,
+                  "dir": "down",
+                  "fade": 0.15
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hall-audio",
+      "name": "13. Sound Studio",
+      "width": 20,
+      "height": 15,
+      "sheets": [
+        "showcase"
+      ],
+      "ground": [
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1",
+        "showcase.0",
+        "showcase.1"
+      ],
+      "passage": [
+        [
+          0,
+          "block"
+        ],
+        [
+          1,
+          "block"
+        ],
+        [
+          2,
+          "block"
+        ],
+        [
+          3,
+          "block"
+        ],
+        [
+          4,
+          "block"
+        ],
+        [
+          5,
+          "block"
+        ],
+        [
+          6,
+          "block"
+        ],
+        [
+          7,
+          "block"
+        ],
+        [
+          8,
+          "block"
+        ],
+        [
+          9,
+          "block"
+        ],
+        [
+          10,
+          "block"
+        ],
+        [
+          11,
+          "block"
+        ],
+        [
+          12,
+          "block"
+        ],
+        [
+          13,
+          "block"
+        ],
+        [
+          14,
+          "block"
+        ],
+        [
+          15,
+          "block"
+        ],
+        [
+          16,
+          "block"
+        ],
+        [
+          17,
+          "block"
+        ],
+        [
+          18,
+          "block"
+        ],
+        [
+          19,
+          "block"
+        ],
+        [
+          20,
+          "block"
+        ],
+        [
+          39,
+          "block"
+        ],
+        [
+          40,
+          "block"
+        ],
+        [
+          59,
+          "block"
+        ],
+        [
+          60,
+          "block"
+        ],
+        [
+          79,
+          "block"
+        ],
+        [
+          80,
+          "block"
+        ],
+        [
+          99,
+          "block"
+        ],
+        [
+          100,
+          "block"
+        ],
+        [
+          119,
+          "block"
+        ],
+        [
+          120,
+          "block"
+        ],
+        [
+          139,
+          "block"
+        ],
+        [
+          140,
+          "block"
+        ],
+        [
+          159,
+          "block"
+        ],
+        [
+          160,
+          "block"
+        ],
+        [
+          179,
+          "block"
+        ],
+        [
+          180,
+          "block"
+        ],
+        [
+          199,
+          "block"
+        ],
+        [
+          200,
+          "block"
+        ],
+        [
+          219,
+          "block"
+        ],
+        [
+          220,
+          "block"
+        ],
+        [
+          239,
+          "block"
+        ],
+        [
+          240,
+          "block"
+        ],
+        [
+          259,
+          "block"
+        ],
+        [
+          260,
+          "block"
+        ],
+        [
+          279,
+          "block"
+        ],
+        [
+          280,
+          "block"
+        ],
+        [
+          281,
+          "block"
+        ],
+        [
+          282,
+          "block"
+        ],
+        [
+          283,
+          "block"
+        ],
+        [
+          284,
+          "block"
+        ],
+        [
+          285,
+          "block"
+        ],
+        [
+          286,
+          "block"
+        ],
+        [
+          287,
+          "block"
+        ],
+        [
+          288,
+          "block"
+        ],
+        [
+          289,
+          "block"
+        ],
+        [
+          290,
+          "block"
+        ],
+        [
+          291,
+          "block"
+        ],
+        [
+          292,
+          "block"
+        ],
+        [
+          293,
+          "block"
+        ],
+        [
+          294,
+          "block"
+        ],
+        [
+          295,
+          "block"
+        ],
+        [
+          296,
+          "block"
+        ],
+        [
+          297,
+          "block"
+        ],
+        [
+          298,
+          "block"
+        ],
+        [
+          299,
+          "block"
+        ]
+      ],
+      "events": [
+        {
+          "id": "room-label",
+          "name": "13. Sound Studio",
+          "x": 2,
+          "y": 11,
+          "pages": [
+            {
+              "trigger": "playerTouch",
+              "commands": [
+                {
+                  "op": "text",
+                  "lines": [
+                    "HALL 13: Sound Studio",
+                    "Commands: playBgm/Bgs/Me/Se / pause/resume",
+                    "fade/replay",
+                    "Talk to the glowing curator to try it."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "demo",
+          "name": "Sound Studio demonstration",
+          "x": 10,
+          "y": 7,
+          "pages": [
+            {
+              "trigger": "action",
+              "sprite": "curator",
+              "blocks": true,
+              "commands": [
+                {
+                  "op": "playBgm",
+                  "id": "town-theme",
+                  "volume": 42
+                },
+                {
+                  "op": "playBgs",
+                  "id": "ice-ambience",
+                  "volume": 16,
+                  "pitch": 80
+                },
+                {
+                  "op": "playSe",
+                  "id": "coin-chime",
+                  "volume": 76
+                },
+                {
+                  "op": "if",
+                  "if": {
+                    "kind": "bgmPlaying",
+                    "id": "town-theme"
+                  },
+                  "then": [
+                    {
+                      "op": "switch",
+                      "id": "showcase.audio.playing",
+                      "value": true
+                    }
+                  ]
+                },
+                {
+                  "op": "text",
+                  "lines": [
+                    "CURATOR: Town music and crystal ambience mix live.",
+                    "The coin chime is a one-shot sound effect."
+                  ]
+                },
+                {
+                  "op": "saveBgm"
+                },
+                {
+                  "op": "playMe",
+                  "id": "bark-fanfare",
+                  "duration": 0.35,
+                  "volume": 82
+                },
+                {
+                  "op": "wait",
+                  "seconds": 0.4
+                },
+                {
+                  "op": "pauseBgm"
+                },
+                {
+                  "op": "text",
+                  "lines": [
+                    "CURATOR: The melody is paused now.",
+                    "Confirm to resume, fade, and restore it."
+                  ]
+                },
+                {
+                  "op": "resumeBgm"
+                },
+                {
+                  "op": "playSe",
+                  "id": "ice-ambience",
+                  "volume": 62,
+                  "pitch": 125
+                },
+                {
+                  "op": "fadeoutBgs",
+                  "duration": 0.25
+                },
+                {
+                  "op": "fadeoutBgm",
+                  "duration": 0.4
+                },
+                {
+                  "op": "wait",
+                  "seconds": 0.45
+                },
+                {
+                  "op": "replayBgm"
+                },
+                {
+                  "op": "playSe",
+                  "id": "coin-chime",
+                  "volume": 76,
+                  "pitch": 115
+                },
+                {
+                  "op": "text",
+                  "lines": [
+                    "CURATOR: The saved melody returns at its old position.",
+                    "Music, ambience, fanfares, and cues share one clock."
+                  ]
+                },
+                {
+                  "op": "stopBgm"
+                },
+                {
+                  "op": "switch",
+                  "id": "showcase.audio.complete",
                   "value": true
                 }
               ]

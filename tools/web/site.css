@@ -281,6 +281,11 @@ table.controls td { padding: 4px 0; color: var(--muted); }
 .demo-control-row + .demo-control-row { margin-top: 9px; }
 .demo-control-row > span { padding-top: 5px; color: var(--muted); font-size: 13px; }
 .demo-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.demo-chapter-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
 .demo-button {
   display: inline-block;
   padding: 4px 9px;
@@ -297,12 +302,44 @@ table.controls td { padding: 4px 0; color: var(--muted); }
   background: var(--accent);
   color: var(--accent-ink);
 }
+.demo-chapter-card {
+  display: flex;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  flex-direction: column;
+  text-align: left;
+}
+.demo-chapter-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #090b10;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+.demo-chapter-copy {
+  display: flex;
+  padding: 8px 10px 9px;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+.demo-chapter-title { font-weight: 650; }
+.demo-chapter-description {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.demo-chapter-card.active .demo-chapter-description { color: #463a21; }
 .demo-speed { min-width: 42px; text-align: center; }
 .demo-help { margin: 9px 0 0; color: var(--muted); font-size: 12px; }
 
 @media (max-width: 520px) {
   .demo-control-row { grid-template-columns: 1fr; gap: 4px; }
   .demo-control-row > span { padding-top: 0; }
+  .demo-chapter-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 }
 
 .info {

@@ -10,6 +10,7 @@ import { fnv1a } from "../vendor/pocketjs/hosts/sim/sim.ts";
 import type { SessionState } from "../src/engine/session.ts";
 import type { RpgkitDemoHook } from "../src/ui/demo/index.ts";
 import { SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
+import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 import {
   bootGameWorld,
@@ -115,9 +116,8 @@ class SimDriver {
 
   enter(number: number, approach = true): void {
     const hall = SHOWCASE_HALLS.find((candidate) => candidate.number === number)!;
-    const index = number - 1;
-    const x = 2 + (index % 6) * 3;
-    const y = index < 6 ? 2 : 12;
+    const index = SHOWCASE_HALLS.indexOf(hall);
+    const { x, y } = hallDoorPosition(index, SHOWCASE_HALLS.length);
     this.moveAxis("x", x, "showcase-lobby");
     this.moveAxis("y", y, "showcase-lobby");
     this.until((state) => state.mapId === hall.id && state.fade === null && state.interp.main === null, false, 600);
@@ -133,16 +133,16 @@ class SimDriver {
 }
 
 const pins: Record<string, string> = {
-  lobby: "e4329fb9",
-  tint: "37148516",
-  "map-animation": "24dcbd5d",
-  battle: "6ea41614",
-  streaming: "f3843c78",
-  theme: "28327bb7",
-  "save-code": "c4ac52a5",
-  "save-verified": "312df6f1",
-  attract: "9b6f6f9e",
-  rewind: "f0c22039",
+  lobby: "0f38a1db",
+  tint: "10c58fb2",
+  "map-animation": "a4536f26",
+  battle: "be26dddf",
+  streaming: "a35bd7f4",
+  theme: "18580819",
+  "save-code": "5f66ddee",
+  "save-verified": "237bd0fe",
+  attract: "4f481c50",
+  rewind: "11859aa1",
 };
 
 async function pinned(name: keyof typeof pins, frame: Uint8Array): Promise<void> {
@@ -165,11 +165,11 @@ simDescribe("showcase rendered feature gallery", () => {
   test("lobby has two portal rows, a guide, a directory sign, and a 16x32 player", async () => {
     const d = await SimDriver.boot();
     const frame = d.frame();
+    await pinned("lobby", frame);
     expect(pixel(frame, 0, 0)).toEqual([0, 0, 0, 255]);
     expect(countPixels(frame, (r, g, b) => r === 255 && g === 220 && b === 82)).toBeGreaterThan(40);
     expect(countPixels(frame, (r, g, b) => r === 244 && g === 199 && b === 82)).toBeGreaterThan(20);
-    expect(countPixels(frame, (r, g, b) => r === 244 && g === 202 && b === 80)).toBeGreaterThan(30);
-    await pinned("lobby", frame);
+    expect(countPixels(frame, (r, g, b) => r === 85 && g === 47 && b === 34)).toBeGreaterThan(40);
   });
 
   test("named night tint visibly composites over the room", async () => {
@@ -180,20 +180,20 @@ simDescribe("showcase rendered feature gallery", () => {
       return tint?.to.b === 140 && tint.left === 6;
     });
     const frame = d.frame();
-    expect(countPixels(frame, (r, g, b) => b > r + 12 && b > g + 12)).toBeGreaterThan(20_000);
     await pinned("tint", frame);
+    expect(countPixels(frame, (r, g, b) => b > r + 12 && b > g + 12)).toBeGreaterThan(15_000);
   });
 
   test("map-animation bands mount simultaneous floor, player, follow, and pinned effects", async () => {
     const d = await SimDriver.boot();
     d.enter(2);
     d.until((state) => (state.interp.anims?.length ?? 0) >= 4);
-    d.step();
+    for (let frame = 0; frame < 12; frame++) d.step();
     expect(diagnostics().mapAnim.below).toMatchObject({ mapId: "showcase-map-animations", mounted: 1 });
     expect(diagnostics().mapAnim.above).toMatchObject({ mapId: "showcase-map-animations", mounted: 3 });
     const frame = d.frame();
-    expect(countPixels(frame, (r, g, b) => r > 200 && g > 180 && b < 180)).toBeGreaterThan(20);
     await pinned("map-animation", frame);
+    expect(countPixels(frame, (r, g, b) => r === 0 && g === 168 && b === 232)).toBeGreaterThan(20);
   });
 
   test("battle scene uses SpriteSlot art while the animated map subtree stays resident", async () => {
@@ -206,10 +206,10 @@ simDescribe("showcase rendered feature gallery", () => {
     expect(findNode(tree, "showcase-battle-scene")).toBeDefined();
     expect(diagnostics().mapAnim.below).toMatchObject({ mapId: "showcase-battle", mounted: 1 });
     const frame = d.frame();
-    expect(pixel(frame, 0, 0)).toEqual([16, 24, 39, 255]);
-    expect(countPixels(frame, (r, g, b) => r === 235 && g === 88 && b === 130)).toBeGreaterThan(500);
-    expect(countPixels(frame, (r, g, b) => r === 72 && g === 190 && b === 246)).toBeGreaterThan(500);
     await pinned("battle", frame);
+    expect(pixel(frame, 0, 0)).toEqual([76, 43, 30, 255]);
+    expect(countPixels(frame, (r, g, b) => r === 72 && g === 112 && b === 168)).toBeGreaterThan(400);
+    expect(countPixels(frame, (r, g, b) => r === 216 && g === 184 && b === 72)).toBeGreaterThan(50);
   });
 
   test("streamed room mounts six chunks, both animated-tile bands, and the tall walker", async () => {
@@ -220,9 +220,9 @@ simDescribe("showcase rendered feature gallery", () => {
     expect(diagnostics().animated.below).toMatchObject({ mapId: "hall-streaming", mounted: 8 });
     expect(diagnostics().animated.above).toMatchObject({ mapId: "hall-streaming", mounted: 4 });
     const frame = d.frame();
-    expect(countPixels(frame, (r, g, b) => r < 130 && g > 200 && b > 220)).toBeGreaterThan(20);
-    expect(countPixels(frame, (r, g, b) => r === 244 && g === 202 && b === 80)).toBeGreaterThan(30);
     await pinned("streaming", frame);
+    expect(countPixels(frame, (r, g, b) => r === 30 && g === 124 && b === 184)).toBeGreaterThan(4_000);
+    expect(countPixels(frame, (r, g, b) => r === 41 && g === 150 && b === 219)).toBeGreaterThan(200);
   });
 
   test("speaker portrait and sunrise theme are visible in the second themed dialog", async () => {
@@ -233,9 +233,10 @@ simDescribe("showcase rendered feature gallery", () => {
     // the release frame leaves the themed portrait dialog on screen.
     d.pulse(BTN.CIRCLE);
     const frame = d.frame();
-    expect(countPixels(frame, (r, g, b) => r === 236 && g === 94 && b === 188)).toBeGreaterThan(400);
-    expect(countPixels(frame, (r, g, b) => r === 255 && g === 176 && b === 92)).toBeGreaterThan(100);
     await pinned("theme", frame);
+    expect(countPixels(frame, (r, g, b) => r === 31 && g === 44 && b === 61)).toBeGreaterThan(1_500);
+    expect(countPixels(frame, (r, g, b) => r === 226 && g === 157 && b === 116)).toBeGreaterThan(80);
+    expect(countPixels(frame, (r, g, b) => r === 255 && g === 176 && b === 92)).toBeGreaterThan(100);
   });
 
   test("real SaveMenu renders the exported code and reports a verified import round trip", async () => {

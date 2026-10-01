@@ -1,5 +1,21 @@
 [
   {
+    "key": "audio:wav.showcase-bark",
+    "file": "assets/tuxemon/mods/tuxemon/sounds/monster/Bark.wav"
+  },
+  {
+    "key": "audio:wav.showcase-coinecho",
+    "file": "assets/tuxemon/mods/tuxemon/sounds/setting/coinecho.wav"
+  },
+  {
+    "key": "audio:wav.showcase-ice",
+    "file": "assets/tuxemon/mods/tuxemon/sounds/monster/Ice.wav"
+  },
+  {
+    "key": "audio:wav.showcase-town",
+    "file": "assets/tuxemon/mods/tuxemon/music/JRPG_town_loop.wav"
+  },
+  {
     "key": "ui:tile.showcase-gate",
     "file": "assets/stream/showcase-gate.pkts"
   },
@@ -10,6 +26,14 @@
   {
     "key": "ui:tile.showcase-hall-attract-upper",
     "file": "assets/stream/showcase-hall-attract-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-audio-ground",
+    "file": "assets/stream/showcase-hall-audio-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-audio-upper",
+    "file": "assets/stream/showcase-hall-audio-upper.pkts"
   },
   {
     "key": "ui:tile.showcase-hall-save-ground",

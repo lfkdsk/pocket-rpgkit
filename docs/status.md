@@ -48,6 +48,7 @@ The links point to where each feature is described in detail.
 | Map animations on a tile or following a character (`mapAnim` / `stopAnim`) | Done | [Map animations](../README.md#map-animations-mapanim--stopanim) |
 | Run-time appearance, named visual layers, tile passage overrides | Done | Appearance covers sprite, opacity and visibility (`appearance`). Visual layers can be bands below or above characters, or screen overlays (`layer`). Tile passage overrides use `tileProperty`. Layer and tile-property overrides reset on every transfer |
 | Screen effects | Done | Fade, composable named tints, flash, deterministic shake, camera scroll, character balloons, full-screen backdrops. All are saved and rewound with the session |
+| Tuxemon-styled feature gallery | Done | A numbered town plaza connects thirteen themed rooms, with attributed pixel art, per-room screenshots and browser chapter cards; see the [gallery catalogue](../examples/showcase/README.md) |
 | Pictures (show / move / rotate / tint / erase) | Planned | |
 | Weather particles | Planned | Colour overlays already work through screen layers and tints |
 
@@ -56,7 +57,7 @@ The links point to where each feature is described in detail.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Sound effects (`playSe`; legacy `se`) | Done | Ordered deterministic cues and the opt-in PocketJS WAV/streaming-QOA bridge work; missing hosts or resources degrade to silence. See [Opt-in host audio](../README.md#opt-in-host-audio) |
-| Background music, ambience and music effects (BGM / BGS / ME) | Partial | Playback, fades, pause/resume, saves/rewind, `bgmPlaying`, battle BGM swap/restore, WAV and credit-driven QOA playback work on the web and desktop hosts (desktop on Linux needs ALSA). ME duration is still authored rather than read from media. See [Opt-in host audio](../README.md#opt-in-host-audio) |
+| Background music, ambience and music effects (BGM / BGS / ME) | Partial | Playback, fades, pause/resume, saves/rewind, `bgmPlaying`, battle BGM swap/restore, WAV and credit-driven QOA playback work on the web and desktop hosts (desktop on Linux needs ALSA). ME duration is still authored rather than read from media. The showcase has a Sound Studio room. See [Opt-in host audio](../README.md#opt-in-host-audio) |
 | Build-time QOA encoding | Done | Deterministic interleaved s16 PCM to host-playable mono/stereo QOA at 11.025, 22.05 or 44.1 kHz; callers decode Ogg/MP3 first. See [Opt-in host audio](../README.md#opt-in-host-audio) |
 
 ## Scenes and menus
@@ -74,7 +75,7 @@ The links point to where each feature is described in detail.
 | --- | --- | --- |
 | Save slots and save codes | Done | Slots use `data.fs` on desktop; the web falls back to save codes. Loaded snapshots are validated |
 | Attract mode | Done | Plays a tape after 10 idle seconds; any button takes over, **L** rewinds 3 virtual seconds, using bounded keyframes |
-| Demo controls and web deep links | Done | Opt-in chapter starts, safe map warp and 1×/2×/4× autoplay through [`pocket-rpgkit/ui/demo`](../README.md#demo-controls-pocket-rpgkituidemo); web supports chapter/map/autoplay query links and on-page chapter buttons that jump the running game without a reload, falling back to the links when the game has no demo hook. Desktop has the menu but no guest argv/environment launch bridge |
+| Demo controls and web deep links | Done | Opt-in chapter starts, safe map warp and 1×/2×/4× autoplay through [`pocket-rpgkit/ui/demo`](../README.md#demo-controls-pocket-rpgkituidemo); web chapter cards support preview images and descriptions, jump the running game without a reload, and retain query-link fallbacks. Desktop has the menu but no guest argv/environment launch bridge |
 | Byte-identical replays on every host and simulation rate | Done | No wall clock and no `Math.random` in the engine |
 
 ## Maps and resources

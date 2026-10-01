@@ -1,5 +1,5 @@
 // Deterministic attract-tour recorder. It drives the same session reducer as
-// the shipped game, visits all twelve rooms, and returns through every room's
+// the shipped game, visits every room, and returns through every room's
 // exit. gen-assets.ts freezes the resulting 60 Hz masks as RLE data.
 
 import { BTN } from "../../vendor/pocketjs/contracts/spec/spec.ts";
@@ -9,6 +9,7 @@ import type { ExtensionOptions } from "../../src/engine/extensions.ts";
 import type { Project } from "../../src/engine/types.ts";
 import { tapeRunsFromMasks } from "../../src/engine/tape.ts";
 import { SHOWCASE_HALLS } from "./showcase-data.ts";
+import { hallDoorPosition } from "./hall-kit.ts";
 
 export interface ShowcaseTour {
   masks: number[];
@@ -19,8 +20,7 @@ export interface ShowcaseTour {
 
 const DOORS = SHOWCASE_HALLS.map((hall, index) => ({
   id: hall.id,
-  x: 2 + (index % 6) * 3,
-  y: index < 6 ? 2 : 12,
+  ...hallDoorPosition(index, SHOWCASE_HALLS.length),
 }));
 
 /** Record against the 60 Hz reference timeline used by AttractController. */

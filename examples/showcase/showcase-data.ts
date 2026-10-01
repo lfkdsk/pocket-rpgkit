@@ -27,6 +27,12 @@ export function buildShowcaseProject(): Project {
       inventory: { maxPerItem: 9, maxKinds: 8 },
     },
     initialGold: 80,
+    audio: {
+      "town-theme": "audio:wav.showcase-town",
+      "coin-chime": "audio:wav.showcase-coinecho",
+      "bark-fanfare": "audio:wav.showcase-bark",
+      "ice-ambience": "audio:wav.showcase-ice",
+    },
     sheets: [
       {
         id: "showcase",
@@ -48,6 +54,10 @@ export function buildShowcaseProject(): Project {
       guide: { kind: "image", src: "generated:guide" },
       portal: { kind: "image", src: "generated:portal" },
       sign: { kind: "image", src: "generated:sign" },
+      ...Object.fromEntries(SHOWCASE_HALLS.map((hall) => [
+        `portal-${hall.number}`,
+        { kind: "image" as const, src: `generated:portal-${hall.number}` },
+      ])),
       runner: { kind: "walker", sheet: "generated-walker", h: 32, cols: 3, rows: 4 },
       alternate: { kind: "walker", sheet: "generated-alternate", h: 32, cols: 3, rows: 4 },
     },
@@ -55,17 +65,17 @@ export function buildShowcaseProject(): Project {
       {
         id: "showcase-pulse",
         sheet: "generated:showcase-pulse",
-        frameW: 32,
-        frameH: 32,
-        frames: [0, 1, 2, 3],
+        frameW: 64,
+        frameH: 64,
+        frames: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         frameDuration: 0.1,
       },
       {
         id: "showcase-ring",
         sheet: "generated:showcase-ring",
-        frameW: 32,
-        frameH: 32,
-        count: 4,
+        frameW: 64,
+        frameH: 64,
+        count: 10,
         frameDuration: 0.12,
         loop: true,
       },

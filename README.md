@@ -47,12 +47,13 @@ What is done, partial or still planned is tracked area by area in
 
 ### `examples/showcase` — Pocket RPG Kit Feature Gallery
 
-![The feature-gallery lobby with twelve numbered portals](tests/goldens/showcase-lobby.png)
+![The Tuxemon-styled feature town and themed rooms](docs/screenshots/showcase-overview.png)
 
-One walkable app collects the kit's presentation, animation, movement,
-extension, battle, shop, streaming, theme, save and deterministic-replay
-features in twelve repeatable rooms; the [room-by-room catalogue](examples/showcase/README.md)
-links each demonstration to its authoring source.
+One walkable miniature monster-RPG town collects the kit's presentation,
+animation, movement, extension, battle, shop, streaming, theme, save,
+deterministic-replay and audio features in thirteen repeatable rooms. Its
+[room-by-room catalogue](examples/showcase/README.md) links each demonstration
+to its authoring source and the separately licensed Tuxemon assets.
 
 | | |
 | --- | --- |

@@ -1,14 +1,47 @@
 {
-  "assets/curator.png": {
-    "psm": 3
-  },
-  "assets/guide.png": {
-    "psm": 3
-  },
   "assets/portal.png": {
     "psm": 3
   },
   "assets/sign.png": {
+    "psm": 3
+  },
+  "assets/portal-1.png": {
+    "psm": 3
+  },
+  "assets/portal-2.png": {
+    "psm": 3
+  },
+  "assets/portal-3.png": {
+    "psm": 3
+  },
+  "assets/portal-4.png": {
+    "psm": 3
+  },
+  "assets/portal-5.png": {
+    "psm": 3
+  },
+  "assets/portal-6.png": {
+    "psm": 3
+  },
+  "assets/portal-7.png": {
+    "psm": 3
+  },
+  "assets/portal-8.png": {
+    "psm": 3
+  },
+  "assets/portal-9.png": {
+    "psm": 3
+  },
+  "assets/portal-10.png": {
+    "psm": 3
+  },
+  "assets/portal-11.png": {
+    "psm": 3
+  },
+  "assets/portal-12.png": {
+    "psm": 3
+  },
+  "assets/portal-13.png": {
     "psm": 3
   },
   "assets/player-idle-0.png": {
@@ -20,15 +53,6 @@
   "assets/player-right-0.png": {
     "psm": 3
   },
-  "assets/alternate-idle-0.png": {
-    "psm": 3
-  },
-  "assets/alternate-left-0.png": {
-    "psm": 3
-  },
-  "assets/alternate-right-0.png": {
-    "psm": 3
-  },
   "assets/player-idle-1.png": {
     "psm": 3
   },
@@ -36,15 +60,6 @@
     "psm": 3
   },
   "assets/player-right-1.png": {
-    "psm": 3
-  },
-  "assets/alternate-idle-1.png": {
-    "psm": 3
-  },
-  "assets/alternate-left-1.png": {
-    "psm": 3
-  },
-  "assets/alternate-right-1.png": {
     "psm": 3
   },
   "assets/player-idle-2.png": {
@@ -56,15 +71,6 @@
   "assets/player-right-2.png": {
     "psm": 3
   },
-  "assets/alternate-idle-2.png": {
-    "psm": 3
-  },
-  "assets/alternate-left-2.png": {
-    "psm": 3
-  },
-  "assets/alternate-right-2.png": {
-    "psm": 3
-  },
   "assets/player-idle-3.png": {
     "psm": 3
   },
@@ -74,13 +80,76 @@
   "assets/player-right-3.png": {
     "psm": 3
   },
-  "assets/alternate-idle-3.png": {
+  "assets/curator-idle-0.png": {
     "psm": 3
   },
-  "assets/alternate-left-3.png": {
+  "assets/curator-left-0.png": {
     "psm": 3
   },
-  "assets/alternate-right-3.png": {
+  "assets/curator-right-0.png": {
+    "psm": 3
+  },
+  "assets/curator-idle-1.png": {
+    "psm": 3
+  },
+  "assets/curator-left-1.png": {
+    "psm": 3
+  },
+  "assets/curator-right-1.png": {
+    "psm": 3
+  },
+  "assets/curator-idle-2.png": {
+    "psm": 3
+  },
+  "assets/curator-left-2.png": {
+    "psm": 3
+  },
+  "assets/curator-right-2.png": {
+    "psm": 3
+  },
+  "assets/curator-idle-3.png": {
+    "psm": 3
+  },
+  "assets/curator-left-3.png": {
+    "psm": 3
+  },
+  "assets/curator-right-3.png": {
+    "psm": 3
+  },
+  "assets/guide-idle-0.png": {
+    "psm": 3
+  },
+  "assets/guide-left-0.png": {
+    "psm": 3
+  },
+  "assets/guide-right-0.png": {
+    "psm": 3
+  },
+  "assets/guide-idle-1.png": {
+    "psm": 3
+  },
+  "assets/guide-left-1.png": {
+    "psm": 3
+  },
+  "assets/guide-right-1.png": {
+    "psm": 3
+  },
+  "assets/guide-idle-2.png": {
+    "psm": 3
+  },
+  "assets/guide-left-2.png": {
+    "psm": 3
+  },
+  "assets/guide-right-2.png": {
+    "psm": 3
+  },
+  "assets/guide-idle-3.png": {
+    "psm": 3
+  },
+  "assets/guide-left-3.png": {
+    "psm": 3
+  },
+  "assets/guide-right-3.png": {
     "psm": 3
   },
   "assets/face-curator.png": {
@@ -90,6 +159,9 @@
     "psm": 3
   },
   "assets/battle-enemy.png": {
+    "psm": 3
+  },
+  "assets/battle-background.png": {
     "psm": 3
   },
   "assets/map-anim/pulse-0.png": {
@@ -102,6 +174,24 @@
     "psm": 3
   },
   "assets/map-anim/pulse-3.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-4.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-5.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-6.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-7.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-8.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-9.png": {
     "psm": 3
   }
 }

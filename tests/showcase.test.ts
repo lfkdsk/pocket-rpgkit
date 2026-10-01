@@ -15,6 +15,7 @@ import {
   type SessionState,
 } from "../src/engine/session.ts";
 import { buildShowcaseProject, SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
+import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
 import { SHOWCASE_EXTENSIONS } from "../examples/showcase/extensions.ts";
 import { showcaseBattleRules } from "../examples/showcase/showcase-battle-rules.ts";
 import {
@@ -74,9 +75,8 @@ class Driver {
   enter(number: number): void {
     const hall = SHOWCASE_HALLS.find((candidate) => candidate.number === number);
     if (!hall) throw new Error(`showcase test: unknown hall ${number}`);
-    const index = number - 1;
-    const doorX = 2 + (index % 6) * 3;
-    const doorY = index < 6 ? 2 : 12;
+    const index = SHOWCASE_HALLS.indexOf(hall);
+    const { x: doorX, y: doorY } = hallDoorPosition(index, SHOWCASE_HALLS.length);
 
     // Horizontal first avoids the guide and directory sign on the lobby's
     // centre aisle. Walking onto the authored portal performs the transfer.
@@ -296,14 +296,38 @@ describe("showcase rooms — real lobby entry and repeatable demonstrations", ()
     const done = d.finish();
     expect(done.sw.switches["showcase.attract.explained"]).toBe(true);
   });
+
+  test("13. sound studio mixes tracks, suspends BGM for ME, then restores and stops cleanly", () => {
+    const d = enter(13);
+    const mixed = d.until((state) => state.interp.modal?.kind === "text" && state.interp.audio?.bgs !== undefined);
+    expect(mixed.interp.audio).toMatchObject({
+      bgm: { id: "town-theme", volume: 42, pitch: 100 },
+      bgs: { id: "ice-ambience", volume: 16, pitch: 80 },
+    });
+    expect(mixed.sw.switches["showcase.audio.playing"]).toBe(true);
+
+    const fanfare = d.until((state) => state.interp.audio?.me?.id === "bark-fanfare");
+    expect(fanfare.interp.audio?.me).toMatchObject({ id: "bark-fanfare", durationTicks: 21 });
+
+    const paused = d.until((state) => state.interp.audio?.bgm?.paused === true);
+    expect(paused.interp.audio?.bgm?.id).toBe("town-theme");
+
+    const done = d.finish();
+    expect(done.sw.switches["showcase.audio.complete"]).toBe(true);
+    expect(done.interp.audio?.bgm).toBeUndefined();
+    expect(done.interp.audio?.bgs).toBeUndefined();
+    expect(done.interp.audio?.savedBgm).toMatchObject({ id: "town-theme", volume: 42, pitch: 100 });
+  });
 });
 
 describe("showcase attract tape", () => {
   const tape = expandTapeRuns(SHOWCASE_TOUR_RUNS);
 
-  test("the frozen source visits all twelve halls in authored order", () => {
+  test("the frozen source visits every hall in authored order", () => {
     expect(SHOWCASE_TOUR_VISITS.join("\n")).toBe(SHOWCASE_HALLS.map((hall) => hall.id).join("\n"));
-    expect(tape.length).toBe(1_401);
+    expect(tape.length).toBe(1_503);
+    const doors = SHOWCASE_HALLS.map((_, index) => hallDoorPosition(index, SHOWCASE_HALLS.length));
+    expect(new Set(doors.map(({ x, y }) => `${x},${y}`)).size).toBe(SHOWCASE_HALLS.length);
   });
 
   test("60/30/20 Hz consume the same source tape into identical reducer state", () => {

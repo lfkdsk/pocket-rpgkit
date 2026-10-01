@@ -1,10 +1,11 @@
-// Deterministically generate the feature gallery's complete visual payload:
-// streamed CLUT8+RLE map chunks, a native animated-tile atlas, 16x32 walker
-// frames, map-animation frames, portraits, battle sprites, and GameAssets.
-// All pixels are original procedural shapes; the example has no external art.
+// Deterministically generate the feature gallery's complete visual payload
+// from its small, attributed set of Tuxemon source art: streamed CLUT8+RLE
+// map chunks, native animated water, 16x32 walkers, map animations, portraits,
+// battle sprites, and GameAssets.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { decodePng } from "../../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../../vendor/pocketjs/tests/png.ts";
 import { cookAnimationAtlases, animatedManifestSource } from "../../tools/lib/animated.ts";
 import {
@@ -19,10 +20,12 @@ import type { MapDef } from "../../src/engine/types.ts";
 import { buildShowcaseProject, SHOWCASE_HALLS } from "./showcase-data.ts";
 import { SHOWCASE_EXTENSIONS } from "./extensions.ts";
 import { showcaseBattleRules } from "./showcase-battle-rules.ts";
+import { showcaseMapArt, showcasePortalBadge } from "./showcase-art.ts";
 import { recordShowcaseTour } from "./tour.ts";
 
 const HERE = import.meta.dir;
 const ASSETS = join(HERE, "assets");
+const TUXEMON = join(ASSETS, "tuxemon", "mods", "tuxemon");
 const TILE = 16;
 const CHUNK = 128;
 type Rgba = readonly [number, number, number, number];
@@ -31,20 +34,6 @@ mkdirSync(join(ASSETS, "stream"), { recursive: true });
 mkdirSync(join(ASSETS, "anim"), { recursive: true });
 mkdirSync(join(ASSETS, "map-anim"), { recursive: true });
 mkdirSync(join(HERE, "data"), { recursive: true });
-
-function rgba(hex: string, alpha = 255): Rgba {
-  const value = Number.parseInt(hex.replace(/^#/, ""), 16);
-  return [(value >>> 16) & 255, (value >>> 8) & 255, value & 255, alpha];
-}
-
-function mix(a: Rgba, b: Rgba, amount: number): Rgba {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * amount),
-    Math.round(a[1] + (b[1] - a[1]) * amount),
-    Math.round(a[2] + (b[2] - a[2]) * amount),
-    Math.round(a[3] + (b[3] - a[3]) * amount),
-  ];
-}
 
 function put(out: Uint8Array, width: number, x: number, y: number, colour: Rgba): void {
   if (x < 0 || y < 0 || x >= width || (y * width + x) * 4 >= out.length) return;
@@ -55,55 +44,29 @@ function rect(out: Uint8Array, width: number, x: number, y: number, w: number, h
   for (let py = y; py < y + h; py++) for (let px = x; px < x + w; px++) put(out, width, px, py, colour);
 }
 
-function mapPalette(id: string): readonly [Rgba, Rgba] {
-  if (id === "showcase-lobby") return [rgba("#102a43"), rgba("#173f5f")];
-  const hall = SHOWCASE_HALLS.find((entry) => entry.id === id);
-  if (!hall) throw new Error(`showcase gen-assets: no palette for ${id}`);
-  return [rgba(hall.palette[0]), rgba(hall.palette[1])];
-}
-
-function chunkPixels(map: MapDef, cx: number, cy: number, upper: boolean): Uint8Array {
-  const out = new Uint8Array(CHUNK * CHUNK * 4);
-  const [dark, light] = mapPalette(map.id);
-  const wall = mix(dark, [5, 8, 16, 255], 0.58);
-  const path = mix(light, [238, 220, 158, 255], 0.28);
-  const trim = mix(light, [255, 255, 255, 255], 0.2);
-  const worldW = map.width * TILE;
-  const worldH = map.height * TILE;
-  for (let y = 0; y < CHUNK; y++) {
-    const gy = cy * CHUNK + y;
-    for (let x = 0; x < CHUNK; x++) {
-      const gx = cx * CHUNK + x;
-      if (gx >= worldW || gy >= worldH) continue;
-      const tx = Math.floor(gx / TILE);
-      const ty = Math.floor(gy / TILE);
-      const lx = gx % TILE;
-      const ly = gy % TILE;
-      if (!upper) {
-        let colour = (tx + ty) % 2 === 0 ? dark : light;
-        if (tx === 10 || ty === 7) colour = path;
-        if (lx === 0 || ly === 0) colour = mix(colour, wall, 0.22);
-        put(out, CHUNK, x, y, colour);
-      } else {
-        const edge = tx === 0 || ty === 0 || tx === map.width - 1 || ty === map.height - 1;
-        if (edge && (lx < 3 || ly < 3 || lx > 12 || ly > 12)) put(out, CHUNK, x, y, wall);
-        // A luminous four-corner marker around the room's action curator.
-        const marker = tx === 10 && ty === 7 && ((lx < 3 || lx > 12) && (ly < 3 || ly > 12));
-        if (marker) put(out, CHUNK, x, y, trim);
-      }
-    }
-  }
-  return out;
-}
-
-function layerChunks(map: MapDef, upper: boolean): { chunks: Uint8Array[]; columns: number; rows: number } {
+function layerChunks(map: MapDef, source: Uint8Array): { chunks: Uint8Array[]; columns: number; rows: number } {
   const columns = Math.ceil((map.width * TILE) / CHUNK);
   const rows = Math.ceil((map.height * TILE) / CHUNK);
+  const worldW = map.width * TILE;
+  const worldH = map.height * TILE;
   return {
     columns,
     rows,
-    chunks: Array.from({ length: columns * rows }, (_, index) =>
-      chunkPixels(map, index % columns, Math.floor(index / columns), upper)),
+    chunks: Array.from({ length: columns * rows }, (_, index) => {
+      const out = new Uint8Array(CHUNK * CHUNK * 4);
+      const cx = index % columns;
+      const cy = Math.floor(index / columns);
+      for (let y = 0; y < CHUNK; y++) {
+        const worldY = cy * CHUNK + y;
+        if (worldY >= worldH) break;
+        const sourceX = cx * CHUNK;
+        const copyWidth = Math.min(CHUNK, worldW - sourceX);
+        if (copyWidth <= 0) continue;
+        const from = (worldY * worldW + sourceX) * 4;
+        out.set(source.subarray(from, from + copyWidth * 4), y * CHUNK * 4);
+      }
+      return out;
+    }),
   };
 }
 
@@ -126,17 +89,6 @@ function gateChunks(map: MapDef): { chunks: Uint8Array[]; columns: number; rows:
   return { chunks, columns, rows };
 }
 
-function sprite16(body: Rgba, accent: Rgba): Uint8Array {
-  const out = new Uint8Array(TILE * TILE * 4);
-  rect(out, TILE, 4, 2, 8, 4, accent);
-  rect(out, TILE, 3, 6, 10, 8, body);
-  rect(out, TILE, 5, 14, 2, 2, accent);
-  rect(out, TILE, 9, 14, 2, 2, accent);
-  put(out, TILE, 6, 8, [8, 12, 20, 255]);
-  put(out, TILE, 9, 8, [8, 12, 20, 255]);
-  return out;
-}
-
 function sign16(): Uint8Array {
   const out = new Uint8Array(TILE * TILE * 4);
   rect(out, TILE, 1, 1, 14, 10, [55, 31, 52, 255]);
@@ -147,46 +99,15 @@ function sign16(): Uint8Array {
   return out;
 }
 
-function walkerFrame(facing: number, pose: number, alternate = false): Uint8Array {
-  const out = new Uint8Array(TILE * 32 * 4);
-  const bodies: Rgba[] = alternate
-    ? [[246, 114, 194, 255], [104, 216, 246, 255], [184, 116, 246, 255], [246, 176, 86, 255]]
-    : [[86, 206, 246, 255], [92, 224, 148, 255], [244, 202, 80, 255], [240, 104, 118, 255]];
-  const outline: Rgba = [10, 14, 26, 255];
-  rect(out, TILE, 4, 4, 8, 8, outline);
-  rect(out, TILE, 5, 5, 6, 6, bodies[facing]!);
-  rect(out, TILE, 3, 12, 10, 14, outline);
-  rect(out, TILE, 4, 13, 8, 12, bodies[facing]!);
-  if (facing !== 2) {
-    const eyeX = facing === 1 ? 5 : facing === 3 ? 10 : 7;
-    put(out, TILE, eyeX, 8, [255, 255, 255, 255]);
-  }
-  const left = pose === 1 ? 2 : 4;
-  const right = pose === 2 ? 12 : 10;
-  rect(out, TILE, left, 26, 3, 5, outline);
-  rect(out, TILE, right, 26, 3, 5, outline);
-  return out;
-}
-
-function radial(size: number, inner: Rgba, outer: Rgba, radius: number): Uint8Array {
-  const out = new Uint8Array(size * size * 4);
-  const c = (size - 1) / 2;
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const d = Math.hypot(x - c, y - c);
-    if (Math.abs(d - radius) < 2.2) put(out, size, x, y, inner);
-    else if (d < radius - 2 && ((x + y) & 3) === 0) put(out, size, x, y, outer);
-  }
-  return out;
-}
-
 const project = buildShowcaseProject();
 writeFileSync(join(HERE, "data", "showcase.json"), JSON.stringify(project, null, 2) + "\n");
 
 const entries: StreamEntry[] = [];
 const streamed = new Map<string, { ground: StreamedLayer; upper: StreamedLayer }>();
 for (const map of project.maps) {
-  const ground = layerChunks(map, false);
-  const upper = layerChunks(map, true);
+  const art = showcaseMapArt(map);
+  const ground = layerChunks(map, art.ground);
+  const upper = layerChunks(map, art.upper);
   const g = encodeStreamedLayer(`showcase-${map.id}-ground`, ground.chunks, ground.columns, ground.rows, { chunkPx: CHUNK });
   const u = encodeStreamedLayer(`showcase-${map.id}-upper`, upper.chunks, upper.columns, upper.rows, { chunkPx: CHUNK });
   entries.push(...g.entries, ...u.entries);
@@ -205,7 +126,16 @@ for (const entry of entries) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, entry.blob);
 }
-writeFileSync(join(HERE, "pak.json"), JSON.stringify(pakManifest(entries), null, 2) + "\n");
+const audioEntries = [
+  { key: "audio:wav.showcase-town", file: "assets/tuxemon/mods/tuxemon/music/JRPG_town_loop.wav" },
+  { key: "audio:wav.showcase-coinecho", file: "assets/tuxemon/mods/tuxemon/sounds/setting/coinecho.wav" },
+  { key: "audio:wav.showcase-bark", file: "assets/tuxemon/mods/tuxemon/sounds/monster/Bark.wav" },
+  { key: "audio:wav.showcase-ice", file: "assets/tuxemon/mods/tuxemon/sounds/monster/Ice.wav" },
+] as const;
+writeFileSync(
+  join(HERE, "pak.json"),
+  JSON.stringify([...pakManifest(entries), ...audioEntries].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0), null, 2) + "\n",
+);
 
 const imageMeta: Record<string, { psm: number }> = {};
 function writeImage(file: string, bytes: Uint8Array, width: number, height: number, psm = 3): string {
@@ -216,44 +146,115 @@ function writeImage(file: string, bytes: Uint8Array, width: number, height: numb
   return path;
 }
 
-const staticSprites = {
-  curator: writeImage("curator.png", sprite16([236, 94, 188, 255], [255, 221, 94, 255]), 16, 16),
-  guide: writeImage("guide.png", sprite16([70, 182, 236, 255], [245, 245, 255, 255]), 16, 16),
-  portal: writeImage("portal.png", radial(16, [255, 220, 82, 255], [96, 214, 250, 160], 5), 16, 16),
-  sign: writeImage("sign.png", sign16(), 16, 16),
-};
-
-const player = { idle: [] as string[], walkL: [] as string[], walkR: [] as string[] };
-const alternate = { idle: [] as string[], walkL: [] as string[], walkR: [] as string[] };
-for (let facing = 0; facing < 4; facing++) {
-  player.idle.push(writeImage(`player-idle-${facing}.png`, walkerFrame(facing, 0), 16, 32));
-  player.walkL.push(writeImage(`player-left-${facing}.png`, walkerFrame(facing, 1), 16, 32));
-  player.walkR.push(writeImage(`player-right-${facing}.png`, walkerFrame(facing, 2), 16, 32));
-  alternate.idle.push(writeImage(`alternate-idle-${facing}.png`, walkerFrame(facing, 0, true), 16, 32));
-  alternate.walkL.push(writeImage(`alternate-left-${facing}.png`, walkerFrame(facing, 1, true), 16, 32));
-  alternate.walkR.push(writeImage(`alternate-right-${facing}.png`, walkerFrame(facing, 2, true), 16, 32));
+interface Bitmap {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
 }
 
-const face = new Uint8Array(64 * 64 * 4);
-rect(face, 64, 8, 6, 48, 52, [42, 20, 58, 255]);
-rect(face, 64, 12, 10, 40, 44, [236, 94, 188, 255]);
-rect(face, 64, 18, 18, 28, 24, [248, 205, 154, 255]);
-rect(face, 64, 22, 26, 5, 5, [12, 18, 30, 255]);
-rect(face, 64, 37, 26, 5, 5, [12, 18, 30, 255]);
-writeImage("face-curator.png", face, 64, 64);
+function sourceImage(relative: string): Bitmap {
+  return decodePng(new Uint8Array(readFileSync(join(TUXEMON, relative))));
+}
 
-const battlePlayer = new Uint8Array(64 * 64 * 4);
-const battleEnemy = new Uint8Array(64 * 64 * 4);
-rect(battlePlayer, 64, 10, 8, 44, 48, [72, 190, 246, 255]);
-rect(battlePlayer, 64, 18, 18, 28, 18, [248, 224, 96, 255]);
-rect(battleEnemy, 64, 8, 14, 48, 40, [235, 88, 130, 255]);
-rect(battleEnemy, 64, 16, 6, 12, 20, [175, 72, 235, 255]);
-rect(battleEnemy, 64, 36, 6, 12, 20, [175, 72, 235, 255]);
-writeImage("battle-player.png", battlePlayer, 64, 64);
-writeImage("battle-enemy.png", battleEnemy, 64, 64);
+function cropPixels(source: Bitmap, x: number, y: number, width: number, height: number): Uint8Array {
+  const out = new Uint8Array(width * height * 4);
+  for (let row = 0; row < height; row++) {
+    const offset = ((y + row) * source.width + x) * 4;
+    out.set(source.rgba.subarray(offset, offset + width * 4), row * width * 4);
+  }
+  return out;
+}
 
-const sparkFrames = [3, 5, 7, 5].map((radius, index) => ({
-  rgba: radial(16, [90, 238, 255, 255], [255, 239, 92, 190], radius),
+function scaleNearest(source: Uint8Array, width: number, height: number, scale: number): Uint8Array {
+  const out = new Uint8Array(width * scale * height * scale * 4);
+  for (let y = 0; y < height * scale; y++) {
+    for (let x = 0; x < width * scale; x++) {
+      const from = (Math.floor(y / scale) * width + Math.floor(x / scale)) * 4;
+      out.set(source.subarray(from, from + 4), (y * width * scale + x) * 4);
+    }
+  }
+  return out;
+}
+
+function resizeNearest(
+  source: Uint8Array,
+  sourceWidth: number,
+  sourceHeight: number,
+  width: number,
+  height: number,
+): Uint8Array {
+  const out = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const sx = Math.min(sourceWidth - 1, Math.floor(x * sourceWidth / width));
+      const sy = Math.min(sourceHeight - 1, Math.floor(y * sourceHeight / height));
+      const from = (sy * sourceWidth + sx) * 4;
+      out.set(source.subarray(from, from + 4), (y * width + x) * 4);
+    }
+  }
+  return out;
+}
+
+function portrait(frame: Uint8Array): Uint8Array {
+  const out = new Uint8Array(64 * 64 * 4);
+  rect(out, 64, 0, 0, 64, 64, [31, 44, 61, 255]);
+  const enlarged = scaleNearest(frame, 16, 32, 2);
+  for (let y = 0; y < 64; y++) {
+    const from = y * 32 * 4;
+    out.set(enlarged.subarray(from, from + 32 * 4), (y * 64 + 16) * 4);
+  }
+  return out;
+}
+
+type Walker = { idle: string[]; walkL: string[]; walkR: string[] };
+function writeWalker(name: string, source: Bitmap): Walker {
+  const frames: Walker = { idle: [], walkL: [], walkR: [] };
+  // Tuxemon rows are down, left, right, up; RPG Kit order is down, left, up, right.
+  const sourceRows = [0, 1, 3, 2];
+  for (let facing = 0; facing < 4; facing++) {
+    const row = sourceRows[facing]!;
+    frames.idle.push(writeImage(`${name}-idle-${facing}.png`, cropPixels(source, 16, row * 32, 16, 32), 16, 32));
+    frames.walkL.push(writeImage(`${name}-left-${facing}.png`, cropPixels(source, 0, row * 32, 16, 32), 16, 32));
+    frames.walkR.push(writeImage(`${name}-right-${facing}.png`, cropPixels(source, 32, row * 32, 16, 32), 16, 32));
+  }
+  return frames;
+}
+
+const staticSprites = {
+  portal: writeImage("portal.png", showcasePortalBadge(), 16, 16),
+  sign: writeImage("sign.png", sign16(), 16, 16),
+  ...Object.fromEntries(SHOWCASE_HALLS.map((hall) => [
+    `portal-${hall.number}`,
+    writeImage(`portal-${hall.number}.png`, showcasePortalBadge(hall.number), 16, 16),
+  ])),
+};
+
+const playerSheet = sourceImage("sprites/girl1.png");
+const curatorSheet = sourceImage("sprites/boss.png");
+const guideSheet = sourceImage("sprites/knight.png");
+const player = writeWalker("player", playerSheet);
+const curator = writeWalker("curator", curatorSheet);
+const guide = writeWalker("guide", guideSheet);
+const alternate = guide;
+
+const curatorFace = portrait(cropPixels(curatorSheet, 16, 0, 16, 32));
+writeImage("face-curator.png", curatorFace, 64, 64);
+
+const bamboon = sourceImage("gfx/sprites/battle/bamboon-sheet.png");
+const bigfin = sourceImage("gfx/sprites/battle/bigfin-sheet.png");
+writeImage("battle-player.png", cropPixels(bigfin, 0, 0, 64, 64), 64, 64);
+writeImage("battle-enemy.png", cropPixels(bamboon, 64, 0, 64, 64), 64, 64);
+const battleScene = sourceImage("gfx/ui/combat/cavern_background.png");
+const battleBackground = writeImage(
+  "battle-background.png",
+  resizeNearest(battleScene.rgba, battleScene.width, battleScene.height, 256, 128),
+  256,
+  128,
+);
+
+const city = sourceImage("gfx/tilesets/core_city_and_country.png");
+const sparkFrames = [16, 17, 18, 19].map((column, index) => ({
+  rgba: cropPixels(city, column * TILE, 0, TILE, TILE),
   durationMs: index === 0 ? 100 : undefined,
 }));
 const nativeAnim = cookAnimationAtlases([{ id: "water-spark", frames: sparkFrames }], {
@@ -267,12 +268,13 @@ for (const atlas of nativeAnim.atlases) {
 writeFileSync(join(HERE, "sprites.json"), JSON.stringify(nativeAnim.spritesJson, null, 2) + "\n");
 
 const mapAnimFrames: string[] = [];
-for (let i = 0; i < 4; i++) {
+const blueCircle = sourceImage("animations/technique/blue_circle.png");
+for (let i = 0; i < 10; i++) {
   mapAnimFrames.push(writeImage(
     `map-anim/pulse-${i}.png`,
-    radial(32, [255, 245 - i * 22, 80 + i * 38, 255], [112, 228, 255, 150], 4 + i * 3),
-    32,
-    32,
+    cropPixels(blueCircle, i * 64, 0, 64, 64),
+    64,
+    64,
   ));
 }
 writeFileSync(join(HERE, "images.json"), JSON.stringify(imageMeta, null, 2) + "\n");
@@ -288,16 +290,19 @@ const streamSource = streamManifestSource(mapSpecs, { chunkPx: CHUNK, margin: 16
 const animatedSource = animatedManifestSource([
   {
     id: "hall-streaming",
-    tiles: Array.from({ length: 12 }, (_, i) => ({
-      x: 4 + (i % 6) * 2,
-      y: i < 6 ? 3 : 11,
-      above: i % 3 === 0,
-      sprite: nativeAnim.atlasFor.get("water-spark")!,
-    })),
+    tiles: Array.from({ length: 12 }, (_, i) => {
+      const local = i % 6;
+      return {
+        x: (i < 6 ? 3 : 14) + local % 3,
+        y: (i < 6 ? 2 : 9) + Math.floor(local / 3),
+        above: i % 3 === 0,
+        sprite: nativeAnim.atlasFor.get("water-spark")!,
+      };
+    }),
   },
 ]);
 const q = JSON.stringify;
-const walkerSource = (frames: typeof player) => `{
+const walkerSource = (frames: Walker) => `{
     idle: ${q(frames.idle)},
     walkL: ${q(frames.walkL)},
     walkR: ${q(frames.walkR)},
@@ -311,18 +316,21 @@ writeFileSync(
   `// AUTO-GENERATED by examples/showcase/gen-assets.ts — do not edit.\n` +
   `import type { GameAssets } from "../../src/ui/game-assets.ts";\n\n` +
   `const PLAYER = ${walkerSource(player)} as const;\n` +
+  `const CURATOR = ${walkerSource(curator)} as const;\n` +
+  `const GUIDE = ${walkerSource(guide)} as const;\n` +
   `const ALTERNATE = ${walkerSource(alternate)} as const;\n\n` +
+  `const STATIC = ${q(staticSprites)} as const;\n\n` +
   `export const GAME_ASSETS: GameAssets = {\n` +
   `  ground: {}, upper: {}, chunkColumns: {}, maxChunks: 0, maxActors: ${maxActors},\n` +
   `  world: ${q(world)},\n` +
   `  order: ${q(project.maps.map((map) => map.id))},\n` +
-  `  npcSrc: { curator: ${q(staticSprites.curator)}, guide: ${q(staticSprites.guide)}, portal: ${q(staticSprites.portal)}, sign: ${q(staticSprites.sign)}, runner: PLAYER, alternate: ALTERNATE },\n` +
+  `  npcSrc: { ...STATIC, curator: CURATOR, guide: GUIDE, runner: GUIDE, alternate: ALTERNATE },\n` +
   `  player: PLAYER, playerHeight: 32,\n` +
   `  stream: ${streamSource},\n` +
   `  animated: ${animatedSource},\n` +
   `  anims: {\n` +
-  `    "showcase-pulse": { frames: ${q(mapAnimFrames)}, w: 32, h: 32 },\n` +
-  `    "showcase-ring": { frames: ${q([...mapAnimFrames].reverse())}, w: 32, h: 32 },\n` +
+  `    "showcase-pulse": { frames: ${q(mapAnimFrames)}, w: 64, h: 64 },\n` +
+  `    "showcase-ring": { frames: ${q([...mapAnimFrames].reverse())}, w: 64, h: 64 },\n` +
   `  },\n` +
   `  layers: {\n` +
   `    gate: { placement: "above", mode: "streamed", defaultVariant: "closed", defaultVisible: true, variants: { closed: { refs: { ${q(appearanceMap.id)}: ${q(gateLayer.layer.refs)} }, columns: { ${q(appearanceMap.id)}: ${gateLayer.layer.columns} }, chunkPx: ${CHUNK} } } },\n` +
@@ -330,7 +338,7 @@ writeFileSync(
   `    backdrop: { placement: "screen", defaultVisible: false, variants: { gallery: { color: "#251144", opacity: 1 }, stars: { color: "#07142e", opacity: 1 } } },\n` +
   `  },\n` +
   `};\n\n` +
-  `export const SHOWCASE_ART = { face: "assets/face-curator.png", battlePlayer: "assets/battle-player.png", battleEnemy: "assets/battle-enemy.png" } as const;\n`,
+  `export const SHOWCASE_ART = { face: "assets/face-curator.png", battlePlayer: "assets/battle-player.png", battleEnemy: "assets/battle-enemy.png", battleBackground: ${q(battleBackground)} } as const;\n`,
 );
 
 const tour = recordShowcaseTour(project, {

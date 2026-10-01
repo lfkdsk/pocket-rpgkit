@@ -1,4 +1,4 @@
-// Shared authoring helpers for the showcase lobby and its twelve rooms.
+// Shared authoring helpers for the showcase lobby and its focused rooms.
 // Each room stays small enough to read as an event-command example. The
 // generated art gives every room its own palette; this file owns gameplay
 // geometry and leaves the feature-specific command lists in halls/*.ts.
@@ -113,9 +113,23 @@ export function hallMap(def: HallDefinition): MapDef {
   };
 }
 
-function doorPosition(index: number): { x: number; y: number; dir: "up" | "down" } {
-  const x = 2 + (index % 6) * 3;
-  return index < 6 ? { x, y: 2, dir: "up" } : { x, y: 12, dir: "down" };
+/** Evenly distribute the room doors over two rows without overlapping.
+ * Keep this shared with the deterministic tour and tests: a thirteenth room
+ * makes the older fixed six-column formula overlap its seventh door. */
+export function hallDoorPosition(
+  index: number,
+  total: number,
+): { x: number; y: number; dir: "up" | "down" } {
+  if (!Number.isInteger(index) || index < 0 || index >= total || total < 1) {
+    throw new Error(`showcase hall door: invalid index ${index} of ${total}`);
+  }
+  const topCount = Math.ceil(total / 2);
+  const top = index < topCount;
+  const rowCount = top ? topCount : total - topCount;
+  const column = top ? index : index - topCount;
+  // Floor keeps the seven-door row off the lobby's occupied x=10 aisle.
+  const x = rowCount === 1 ? 10 : Math.floor(2 + column * 15 / (rowCount - 1));
+  return top ? { x, y: 2, dir: "up" } : { x, y: 12, dir: "down" };
 }
 
 export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
@@ -130,7 +144,7 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
         sprite: "sign",
         blocks: true,
         commands: [text(
-          "FEATURE GALLERY — 12 LIVE ROOMS",
+          `FEATURE GALLERY — ${halls.length} LIVE ROOMS`,
           "Walk onto a numbered portal to enter.",
           "Talk to each curator; every demo repeats.",
         )],
@@ -146,7 +160,7 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
         sprite: "guide",
         blocks: true,
         commands: [
-          text("CURATOR: Welcome to Pocket RPG Kit.", "Twelve doors, twelve live features."),
+          text("CURATOR: Welcome to Pocket RPG Kit.", `${halls.length} doors, ${halls.length} live features.`),
           {
             op: "choices",
             prompt: "What would you like to know?",
@@ -160,7 +174,7 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
       }],
     },
     ...halls.map((hall, index): GameEvent => {
-      const pos = doorPosition(index);
+      const pos = hallDoorPosition(index, halls.length);
       return {
         id: `door-${hall.id}`,
         name: `${hall.number}. ${hall.title}`,
@@ -168,7 +182,7 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
         y: pos.y,
         pages: [{
           trigger: "playerTouch",
-          sprite: "portal",
+          sprite: `portal-${hall.number}`,
           commands: [{ op: "transfer", map: hall.id, x: 2, y: 12, dir: "up", fade: 0.15 }],
         }],
       };

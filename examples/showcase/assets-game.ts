@@ -7,18 +7,32 @@ const PLAYER = {
     walkR: ["assets/player-right-0.png","assets/player-right-1.png","assets/player-right-2.png","assets/player-right-3.png"],
     h: 32 as const,
   } as const;
+const CURATOR = {
+    idle: ["assets/curator-idle-0.png","assets/curator-idle-1.png","assets/curator-idle-2.png","assets/curator-idle-3.png"],
+    walkL: ["assets/curator-left-0.png","assets/curator-left-1.png","assets/curator-left-2.png","assets/curator-left-3.png"],
+    walkR: ["assets/curator-right-0.png","assets/curator-right-1.png","assets/curator-right-2.png","assets/curator-right-3.png"],
+    h: 32 as const,
+  } as const;
+const GUIDE = {
+    idle: ["assets/guide-idle-0.png","assets/guide-idle-1.png","assets/guide-idle-2.png","assets/guide-idle-3.png"],
+    walkL: ["assets/guide-left-0.png","assets/guide-left-1.png","assets/guide-left-2.png","assets/guide-left-3.png"],
+    walkR: ["assets/guide-right-0.png","assets/guide-right-1.png","assets/guide-right-2.png","assets/guide-right-3.png"],
+    h: 32 as const,
+  } as const;
 const ALTERNATE = {
-    idle: ["assets/alternate-idle-0.png","assets/alternate-idle-1.png","assets/alternate-idle-2.png","assets/alternate-idle-3.png"],
-    walkL: ["assets/alternate-left-0.png","assets/alternate-left-1.png","assets/alternate-left-2.png","assets/alternate-left-3.png"],
-    walkR: ["assets/alternate-right-0.png","assets/alternate-right-1.png","assets/alternate-right-2.png","assets/alternate-right-3.png"],
+    idle: ["assets/guide-idle-0.png","assets/guide-idle-1.png","assets/guide-idle-2.png","assets/guide-idle-3.png"],
+    walkL: ["assets/guide-left-0.png","assets/guide-left-1.png","assets/guide-left-2.png","assets/guide-left-3.png"],
+    walkR: ["assets/guide-right-0.png","assets/guide-right-1.png","assets/guide-right-2.png","assets/guide-right-3.png"],
     h: 32 as const,
   } as const;
 
+const STATIC = {"portal":"assets/portal.png","sign":"assets/sign.png","portal-1":"assets/portal-1.png","portal-2":"assets/portal-2.png","portal-3":"assets/portal-3.png","portal-4":"assets/portal-4.png","portal-5":"assets/portal-5.png","portal-6":"assets/portal-6.png","portal-7":"assets/portal-7.png","portal-8":"assets/portal-8.png","portal-9":"assets/portal-9.png","portal-10":"assets/portal-10.png","portal-11":"assets/portal-11.png","portal-12":"assets/portal-12.png","portal-13":"assets/portal-13.png"} as const;
+
 export const GAME_ASSETS: GameAssets = {
-  ground: {}, upper: {}, chunkColumns: {}, maxChunks: 0, maxActors: 14,
-  world: {"showcase-lobby":{"w":320,"h":240},"showcase-screen-effects":{"w":320,"h":240},"showcase-map-animations":{"w":320,"h":240},"showcase-runtime-visuals":{"w":320,"h":240},"showcase-movement-controls":{"w":320,"h":240},"showcase-extensions":{"w":320,"h":240},"showcase-battle":{"w":320,"h":240},"showcase-shop":{"w":320,"h":240},"hall-streaming":{"w":320,"h":240},"hall-theme":{"w":320,"h":240},"showcase-input-and-idle":{"w":320,"h":240},"hall-save":{"w":320,"h":240},"hall-attract":{"w":320,"h":240}},
-  order: ["showcase-lobby","showcase-screen-effects","showcase-map-animations","showcase-runtime-visuals","showcase-movement-controls","showcase-extensions","showcase-battle","showcase-shop","hall-streaming","hall-theme","showcase-input-and-idle","hall-save","hall-attract"],
-  npcSrc: { curator: "assets/curator.png", guide: "assets/guide.png", portal: "assets/portal.png", sign: "assets/sign.png", runner: PLAYER, alternate: ALTERNATE },
+  ground: {}, upper: {}, chunkColumns: {}, maxChunks: 0, maxActors: 15,
+  world: {"showcase-lobby":{"w":320,"h":240},"showcase-screen-effects":{"w":320,"h":240},"showcase-map-animations":{"w":320,"h":240},"showcase-runtime-visuals":{"w":320,"h":240},"showcase-movement-controls":{"w":320,"h":240},"showcase-extensions":{"w":320,"h":240},"showcase-battle":{"w":320,"h":240},"showcase-shop":{"w":320,"h":240},"hall-streaming":{"w":320,"h":240},"hall-theme":{"w":320,"h":240},"showcase-input-and-idle":{"w":320,"h":240},"hall-save":{"w":320,"h":240},"hall-attract":{"w":320,"h":240},"hall-audio":{"w":320,"h":240}},
+  order: ["showcase-lobby","showcase-screen-effects","showcase-map-animations","showcase-runtime-visuals","showcase-movement-controls","showcase-extensions","showcase-battle","showcase-shop","hall-streaming","hall-theme","showcase-input-and-idle","hall-save","hall-attract","hall-audio"],
+  npcSrc: { ...STATIC, curator: CURATOR, guide: GUIDE, runner: GUIDE, alternate: ALTERNATE },
   player: PLAYER, playerHeight: 32,
   stream: {
   chunkPx: 128,
@@ -38,6 +52,7 @@ export const GAME_ASSETS: GameAssets = {
     "showcase-input-and-idle": ["ui:tile.showcase-showcase-input-and-idle-ground#0","ui:tile.showcase-showcase-input-and-idle-ground#1","ui:tile.showcase-showcase-input-and-idle-ground#2","ui:tile.showcase-showcase-input-and-idle-ground#3","ui:tile.showcase-showcase-input-and-idle-ground#4","ui:tile.showcase-showcase-input-and-idle-ground#5"],
     "hall-save": ["ui:tile.showcase-hall-save-ground#0","ui:tile.showcase-hall-save-ground#1","ui:tile.showcase-hall-save-ground#2","ui:tile.showcase-hall-save-ground#3","ui:tile.showcase-hall-save-ground#4","ui:tile.showcase-hall-save-ground#5"],
     "hall-attract": ["ui:tile.showcase-hall-attract-ground#0","ui:tile.showcase-hall-attract-ground#1","ui:tile.showcase-hall-attract-ground#2","ui:tile.showcase-hall-attract-ground#3","ui:tile.showcase-hall-attract-ground#4","ui:tile.showcase-hall-attract-ground#5"],
+    "hall-audio": ["ui:tile.showcase-hall-audio-ground#0","ui:tile.showcase-hall-audio-ground#1","ui:tile.showcase-hall-audio-ground#2","ui:tile.showcase-hall-audio-ground#3","ui:tile.showcase-hall-audio-ground#4","ui:tile.showcase-hall-audio-ground#5"],
   },
   upper: {
     "showcase-lobby": ["ui:tile.showcase-showcase-lobby-upper#0","ui:tile.showcase-showcase-lobby-upper#1","ui:tile.showcase-showcase-lobby-upper#2","ui:tile.showcase-showcase-lobby-upper#3","ui:tile.showcase-showcase-lobby-upper#4","ui:tile.showcase-showcase-lobby-upper#5"],
@@ -46,13 +61,14 @@ export const GAME_ASSETS: GameAssets = {
     "showcase-runtime-visuals": ["ui:tile.showcase-showcase-runtime-visuals-upper#0","ui:tile.showcase-showcase-runtime-visuals-upper#1","ui:tile.showcase-showcase-runtime-visuals-upper#2","ui:tile.showcase-showcase-runtime-visuals-upper#3","ui:tile.showcase-showcase-runtime-visuals-upper#4","ui:tile.showcase-showcase-runtime-visuals-upper#5"],
     "showcase-movement-controls": ["ui:tile.showcase-showcase-movement-controls-upper#0","ui:tile.showcase-showcase-movement-controls-upper#1","ui:tile.showcase-showcase-movement-controls-upper#2","ui:tile.showcase-showcase-movement-controls-upper#3","ui:tile.showcase-showcase-movement-controls-upper#4","ui:tile.showcase-showcase-movement-controls-upper#5"],
     "showcase-extensions": ["ui:tile.showcase-showcase-extensions-upper#0","ui:tile.showcase-showcase-extensions-upper#1","ui:tile.showcase-showcase-extensions-upper#2","ui:tile.showcase-showcase-extensions-upper#3","ui:tile.showcase-showcase-extensions-upper#4","ui:tile.showcase-showcase-extensions-upper#5"],
-    "showcase-battle": ["ui:tile.showcase-showcase-battle-upper#0","ui:tile.showcase-showcase-battle-upper#1","ui:tile.showcase-showcase-battle-upper#2","ui:tile.showcase-showcase-battle-upper#3","ui:tile.showcase-showcase-battle-upper#4","ui:tile.showcase-showcase-battle-upper#5"],
+    "showcase-battle": ["ui:tile.showcase-showcase-battle-upper#0","ui:tile.showcase-showcase-battle-upper#1","ui:tile.showcase-showcase-battle-upper#2",null,null,null],
     "showcase-shop": ["ui:tile.showcase-showcase-shop-upper#0","ui:tile.showcase-showcase-shop-upper#1","ui:tile.showcase-showcase-shop-upper#2","ui:tile.showcase-showcase-shop-upper#3","ui:tile.showcase-showcase-shop-upper#4","ui:tile.showcase-showcase-shop-upper#5"],
     "hall-streaming": ["ui:tile.showcase-hall-streaming-upper#0","ui:tile.showcase-hall-streaming-upper#1","ui:tile.showcase-hall-streaming-upper#2","ui:tile.showcase-hall-streaming-upper#3","ui:tile.showcase-hall-streaming-upper#4","ui:tile.showcase-hall-streaming-upper#5"],
     "hall-theme": ["ui:tile.showcase-hall-theme-upper#0","ui:tile.showcase-hall-theme-upper#1","ui:tile.showcase-hall-theme-upper#2","ui:tile.showcase-hall-theme-upper#3","ui:tile.showcase-hall-theme-upper#4","ui:tile.showcase-hall-theme-upper#5"],
     "showcase-input-and-idle": ["ui:tile.showcase-showcase-input-and-idle-upper#0","ui:tile.showcase-showcase-input-and-idle-upper#1","ui:tile.showcase-showcase-input-and-idle-upper#2","ui:tile.showcase-showcase-input-and-idle-upper#3","ui:tile.showcase-showcase-input-and-idle-upper#4","ui:tile.showcase-showcase-input-and-idle-upper#5"],
     "hall-save": ["ui:tile.showcase-hall-save-upper#0","ui:tile.showcase-hall-save-upper#1","ui:tile.showcase-hall-save-upper#2","ui:tile.showcase-hall-save-upper#3","ui:tile.showcase-hall-save-upper#4","ui:tile.showcase-hall-save-upper#5"],
     "hall-attract": ["ui:tile.showcase-hall-attract-upper#0","ui:tile.showcase-hall-attract-upper#1","ui:tile.showcase-hall-attract-upper#2","ui:tile.showcase-hall-attract-upper#3","ui:tile.showcase-hall-attract-upper#4","ui:tile.showcase-hall-attract-upper#5"],
+    "hall-audio": ["ui:tile.showcase-hall-audio-upper#0","ui:tile.showcase-hall-audio-upper#1","ui:tile.showcase-hall-audio-upper#2","ui:tile.showcase-hall-audio-upper#3","ui:tile.showcase-hall-audio-upper#4","ui:tile.showcase-hall-audio-upper#5"],
   },
   columns: {
     "showcase-lobby": 3,
@@ -68,27 +84,28 @@ export const GAME_ASSETS: GameAssets = {
     "showcase-input-and-idle": 3,
     "hall-save": 3,
     "hall-attract": 3,
+    "hall-audio": 3,
   },
 },
   animated: {
   "hall-streaming": [
-    { x: 4, y: 3, above: true, sprite: "assets/anim/spark-0.png" },
-    { x: 6, y: 3, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 8, y: 3, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 10, y: 3, above: true, sprite: "assets/anim/spark-0.png" },
-    { x: 12, y: 3, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 14, y: 3, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 4, y: 11, above: true, sprite: "assets/anim/spark-0.png" },
-    { x: 6, y: 11, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 8, y: 11, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 10, y: 11, above: true, sprite: "assets/anim/spark-0.png" },
-    { x: 12, y: 11, above: false, sprite: "assets/anim/spark-0.png" },
-    { x: 14, y: 11, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 3, y: 2, above: true, sprite: "assets/anim/spark-0.png" },
+    { x: 4, y: 2, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 5, y: 2, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 3, y: 3, above: true, sprite: "assets/anim/spark-0.png" },
+    { x: 4, y: 3, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 5, y: 3, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 14, y: 9, above: true, sprite: "assets/anim/spark-0.png" },
+    { x: 15, y: 9, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 16, y: 9, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 14, y: 10, above: true, sprite: "assets/anim/spark-0.png" },
+    { x: 15, y: 10, above: false, sprite: "assets/anim/spark-0.png" },
+    { x: 16, y: 10, above: false, sprite: "assets/anim/spark-0.png" },
   ],
 },
   anims: {
-    "showcase-pulse": { frames: ["assets/map-anim/pulse-0.png","assets/map-anim/pulse-1.png","assets/map-anim/pulse-2.png","assets/map-anim/pulse-3.png"], w: 32, h: 32 },
-    "showcase-ring": { frames: ["assets/map-anim/pulse-3.png","assets/map-anim/pulse-2.png","assets/map-anim/pulse-1.png","assets/map-anim/pulse-0.png"], w: 32, h: 32 },
+    "showcase-pulse": { frames: ["assets/map-anim/pulse-0.png","assets/map-anim/pulse-1.png","assets/map-anim/pulse-2.png","assets/map-anim/pulse-3.png","assets/map-anim/pulse-4.png","assets/map-anim/pulse-5.png","assets/map-anim/pulse-6.png","assets/map-anim/pulse-7.png","assets/map-anim/pulse-8.png","assets/map-anim/pulse-9.png"], w: 64, h: 64 },
+    "showcase-ring": { frames: ["assets/map-anim/pulse-9.png","assets/map-anim/pulse-8.png","assets/map-anim/pulse-7.png","assets/map-anim/pulse-6.png","assets/map-anim/pulse-5.png","assets/map-anim/pulse-4.png","assets/map-anim/pulse-3.png","assets/map-anim/pulse-2.png","assets/map-anim/pulse-1.png","assets/map-anim/pulse-0.png"], w: 64, h: 64 },
   },
   layers: {
     gate: { placement: "above", mode: "streamed", defaultVariant: "closed", defaultVisible: true, variants: { closed: { refs: { "showcase-runtime-visuals": [null,"ui:tile.showcase-gate#1",null,null,null,null] }, columns: { "showcase-runtime-visuals": 3 }, chunkPx: 128 } } },
@@ -97,4 +114,4 @@ export const GAME_ASSETS: GameAssets = {
   },
 };
 
-export const SHOWCASE_ART = { face: "assets/face-curator.png", battlePlayer: "assets/battle-player.png", battleEnemy: "assets/battle-enemy.png" } as const;
+export const SHOWCASE_ART = { face: "assets/face-curator.png", battlePlayer: "assets/battle-player.png", battleEnemy: "assets/battle-enemy.png", battleBackground: "assets/battle-background.png" } as const;
