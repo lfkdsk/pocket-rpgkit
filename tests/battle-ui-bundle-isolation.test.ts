@@ -52,9 +52,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // its interpreter support, the 525-byte optional native FS text read, and
 // KS1's shared screen-effect/camera/balloon presentation path are shared
 // GameView/session/interpreter code. KS1 adds 28,383 bytes to the previously
-// measured 525,552-byte bundle. The distinctive battle identifiers below
-// remain absent.
-const EXPECTED_BYTES = 553_935;
+// measured 525,552-byte bundle. The opt-in onFiberStart fiber trace
+// (rpgkit-check's explore coverage) adds 273 bytes of shared
+// interpreter/session code: four optional call sites in the trigger scan
+// plus the WorldOptions/SessionOptions threading. It is inert when no
+// session installs it. The distinctive battle identifiers below remain
+// absent.
+const EXPECTED_BYTES = 554_208;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

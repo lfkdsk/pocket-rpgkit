@@ -27,6 +27,7 @@
     "build:wasm": "bun vendor/pocketjs/tools/wasm.ts",
     "check": "bun test && bunx tsc --noEmit",
     "desktop": "bun tools/desktop.ts",
+    "rpgkit-check": "bun tools/rpgkit-check/cli.ts",
     "package:macos": "bun tools/package-macos.ts",
     "editor": "bun tools/editor.ts",
     "rpgkit-edit": "bun tools/rpgkit-edit/cli.ts",

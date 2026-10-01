@@ -1,0 +1,959 @@
+// tests/rpgkit-check-lint.test.ts — every static lint check must fire on a
+// fixture broken exactly where the check says, and stay silent on a clean
+// fixture. The example documents must be error-clean (warnings/info are
+// listed in findings/AI2.md).
+
+import { describe, expect, test } from "bun:test";
+import { lintProject } from "../tools/rpgkit-check/src/lint.ts";
+import { loadProjectFile } from "../tools/rpgkit-check/src/doc.ts";
+import type { CheckReport, Finding, FindingLocation } from "../tools/rpgkit-check/src/finding.ts";
+import type { Project } from "../src/engine/types.ts";
+
+function cleanProject(): Project {
+  return {
+    format: "rpgkit-project/v1",
+    title: "Fixture",
+    tileSize: 16,
+    start: { map: "m1", x: 1, y: 1, dir: "down" },
+    sheets: [{ id: "grass", cols: 1, rows: 1 }],
+    items: [{ id: "potion", name: "Potion", sprite: "grass.0" }],
+    sprites: { npc: { kind: "image", src: "npc.png" } },
+    maps: [
+      {
+        id: "m1",
+        name: "M1",
+        width: 5,
+        height: 5,
+        sheets: ["grass"],
+        ground: new Array<string>(25).fill("grass.0"),
+        events: [
+          {
+            id: "ev1",
+            x: 2,
+            y: 2,
+            pages: [
+              {
+                trigger: "action",
+                commands: [
+                  { op: "switch", id: "s1", value: true },
+                  { op: "if", if: { kind: "switch", id: "s1" }, then: [{ op: "text", lines: ["hi"] }] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function lint(project: Project): CheckReport {
+  return lintProject(project);
+}
+
+function findingsOf(report: CheckReport, check: string): Finding[] {
+  return report.findings.filter((f) => f.check === check);
+}
+
+function expectError(report: CheckReport, check: string, n = 1): void {
+  const found = findingsOf(report, check);
+  expect(found.length).toBe(n);
+  expect(found.every((f) => f.severity === "error")).toBe(true);
+}
+
+/** Assert the check fired, and that every finding for it carries a loc and a
+ *  non-empty suggestion. When `loc` is given, assert the first finding's loc
+ *  carries those fields. Returns the first finding for further assertions. */
+function expectFinding(
+  report: CheckReport,
+  check: string,
+  loc?: Partial<FindingLocation>,
+): Finding {
+  const found = findingsOf(report, check);
+  expect(found.length).toBeGreaterThanOrEqual(1);
+  for (const f of found) {
+    expect(f.severity === "error" || f.severity === "warning" || f.severity === "info").toBe(true);
+    expect(f.suggestion.length).toBeGreaterThan(0);
+    expect(Object.keys(f.loc).length).toBeGreaterThan(0);
+  }
+  const first = found[0]!;
+  if (loc) {
+    for (const [key, value] of Object.entries(loc)) {
+      expect((first.loc as Record<string, unknown>)[key]).toEqual(value);
+    }
+  }
+  return first;
+}
+
+/** The clean fixture must be completely silent. */
+describe("rpgkit-check lint: clean fixture", () => {
+  test("no findings on the clean fixture", () => {
+    expect(lint(cleanProject()).findings).toEqual([]);
+  });
+});
+
+describe("rpgkit-check lint: switch/variable usage", () => {
+  test("switch read never set → warning", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "if",
+      if: { kind: "switch", id: "ghost" },
+      then: [{ op: "text", lines: ["?"] }],
+    });
+    const f = findingsOf(lint(p), "lint/switch-read-never-set");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+  });
+
+  test("switch set never read → info", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "switch", id: "dead", value: true });
+    const f = findingsOf(lint(p), "lint/switch-set-never-read");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("info");
+  });
+
+  test("variable read never set → info", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "if",
+      if: { kind: "variable", id: "v", op: ">=", value: 3 },
+      then: [],
+    });
+    expect(findingsOf(lint(p), "lint/variable-read-never-set")).toHaveLength(1);
+  });
+
+  test("variable set never read → info", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "variable",
+      id: "v",
+      set: { op: "set", value: 1 },
+    });
+    expect(findingsOf(lint(p), "lint/variable-set-never-read")).toHaveLength(1);
+  });
+
+  test("variable op ref operand counts as a read", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push(
+      { op: "variable", id: "v", set: { op: "set", value: 1 } },
+      { op: "variable", id: "w", set: { op: "copy", from: "v" } },
+    );
+    // v is set and read (by the copy); w is set but never read.
+    expect(findingsOf(lint(p), "lint/variable-read-never-set")).toEqual([]);
+    expect(findingsOf(lint(p), "lint/variable-set-never-read")).toHaveLength(1);
+  });
+});
+
+describe("rpgkit-check lint: pages", () => {
+  test("self switch read never set → warning", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = { selfSwitch: "A" };
+    const f = findingsOf(lint(p), "lint/selfswitch-read-never-set");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+  });
+
+  test("self switch read and set within the event → silent", () => {
+    const p = cleanProject();
+    const ev = p.maps[0]!.events![0]!;
+    ev.pages[0]!.condition = { selfSwitch: "A" };
+    ev.pages.unshift({ trigger: "action", commands: [{ op: "selfSwitch", key: "A", value: true }] });
+    expect(findingsOf(lint(p), "lint/selfswitch-read-never-set")).toEqual([]);
+  });
+
+  test("self switch read with value:false never set → silent (default state satisfies it)", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [{ kind: "selfSwitch", key: "B", value: false }],
+    };
+    expect(findingsOf(lint(p), "lint/selfswitch-read-never-set")).toEqual([]);
+  });
+
+  test("self switch required true but only written false → warning", () => {
+    const p = cleanProject();
+    const ev = p.maps[0]!.events![0]!;
+    ev.pages[0]!.condition = { selfSwitch: "A" };
+    ev.pages[0]!.commands.push({ op: "selfSwitch", key: "A", value: false });
+    const f = findingsOf(lint(p), "lint/selfswitch-read-never-set");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+  });
+
+  test("self switch set inside a called common event → silent", () => {
+    const p = cleanProject();
+    p.commonEvents = [{
+      id: "ce1",
+      trigger: "none",
+      commands: [{ op: "selfSwitch", key: "A", value: true }],
+    }];
+    const ev = p.maps[0]!.events![0]!;
+    ev.pages[0]!.condition = { selfSwitch: "A" };
+    ev.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expect(findingsOf(lint(p), "lint/selfswitch-read-never-set")).toEqual([]);
+  });
+
+  test("page requiring two distinct self switches true → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "selfSwitch", key: "A", value: true },
+        { kind: "selfSwitch", key: "B", value: true },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("page requiring A=true and B=false → silent (self=A satisfies both)", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "selfSwitch", key: "A", value: true },
+        { kind: "selfSwitch", key: "B", value: false },
+      ],
+    };
+    expect(findingsOf(lint(p), "lint/page-condition-contradiction")).toEqual([]);
+  });
+
+  test("contradictory page condition → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "switch", id: "a", value: true },
+        { kind: "switch", id: "a", value: false },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("contradictory variable bounds → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "variable", id: "v", op: ">=", value: 5 },
+        { kind: "variable", id: "v", op: "<=", value: 2 },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("earlier page shadowed by later unconditional page → error", () => {
+    const p = cleanProject();
+    const ev = p.maps[0]!.events![0]!;
+    ev.pages[0]!.condition = { switch: "a" };
+    ev.pages.push({ trigger: "action", commands: [] });
+    expectError(lint(p), "lint/page-shadowed");
+  });
+
+  test("normal page progression (unconditional then conditional) → silent", () => {
+    const p = cleanProject();
+    const ev = p.maps[0]!.events![0]!;
+    ev.pages[0]!.commands = [{ op: "selfSwitch", key: "A", value: true }];
+    ev.pages.push({
+      trigger: "action",
+      condition: { selfSwitch: "A" },
+      commands: [{ op: "text", lines: ["after"] }],
+    });
+    expect(findingsOf(lint(p), "lint/page-shadowed")).toEqual([]);
+  });
+});
+
+describe("rpgkit-check lint: missing references", () => {
+  test("start map missing → error", () => {
+    const p = cleanProject();
+    p.start = { map: "nope", x: 0, y: 0, dir: "down" };
+    expectError(lint(p), "lint/start-map-missing");
+  });
+
+  test("start out of bounds → error", () => {
+    const p = cleanProject();
+    p.start = { map: "m1", x: 99, y: 99, dir: "down" };
+    expectError(lint(p), "lint/start-map-missing");
+  });
+
+  test("transfer to unknown map → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "transfer",
+      map: "nope",
+      x: 0,
+      y: 0,
+    });
+    expectError(lint(p), "lint/transfer-target-missing");
+  });
+
+  test("transfer out of bounds → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "transfer", map: "m1", x: 99, y: 0 });
+    expectError(lint(p), "lint/transfer-target-missing");
+  });
+
+  test("place unknown event → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "place",
+      target: { event: "nope" },
+      x: 0,
+      y: 0,
+    });
+    expectError(lint(p), "lint/place-target-missing");
+  });
+
+  test("place out of bounds → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "place", target: "this", x: 99, y: 0 });
+    expectError(lint(p), "lint/place-target-missing");
+  });
+
+  test("moveRoute unknown event → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "moveRoute",
+      target: { event: "nope" },
+      route: { steps: [], repeat: false, skippable: false },
+    });
+    expectError(lint(p), "lint/route-target-missing");
+  });
+
+  test("common event missing → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "nope" });
+    expectError(lint(p), "lint/common-event-missing");
+  });
+
+  test("common event present → silent", () => {
+    const p = cleanProject();
+    p.commonEvents = [{ id: "ce1", trigger: "none", commands: [{ op: "text", lines: ["x"] }] }];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expect(findingsOf(lint(p), "lint/common-event-missing")).toEqual([]);
+  });
+
+  test("item op unknown item → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "item", item: "nope", set: "add", count: 1 });
+    expectError(lint(p), "lint/item-missing");
+  });
+
+  test("shop selling unknown item → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "shop",
+      id: "shop1",
+      goods: [{ item: "nope" }],
+    });
+    expectError(lint(p), "lint/item-missing");
+  });
+
+  test("page sprite missing → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.sprite = "nope";
+    expectError(lint(p), "lint/sprite-missing");
+  });
+
+  test("map sheet missing → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.sheets = ["nope"];
+    expectError(lint(p), "lint/sheet-missing");
+  });
+
+  test("tile sheet missing → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.ground![0] = "nope.0";
+    expectError(lint(p), "lint/sheet-missing");
+  });
+
+  test("item sprite sheet missing → error", () => {
+    const p = cleanProject();
+    p.items.push({ id: "bad", name: "Bad", sprite: "nope.0" });
+    expectError(lint(p), "lint/sheet-missing");
+  });
+
+  test("duplicate event id → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events!.push({ id: "ev1", x: 0, y: 0, pages: [] });
+    expectError(lint(p), "lint/event-id-duplicate");
+  });
+
+  test("duplicate map id → error", () => {
+    const p = cleanProject();
+    p.maps.push({
+      id: "m1",
+      name: "M1 again",
+      width: 5,
+      height: 5,
+      sheets: ["grass"],
+      ground: new Array<string>(25).fill("grass.0"),
+    });
+    expectError(lint(p), "lint/map-id-duplicate");
+  });
+
+  test("upper-layer tile sheet missing → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.upper = [[0, "nope.0"]];
+    expectError(lint(p), "lint/sheet-missing");
+  });
+
+  test("walker sprite sheet missing → error", () => {
+    const p = cleanProject();
+    p.sprites!["walker"] = { kind: "walker", sheet: "nope" };
+    expectError(lint(p), "lint/sheet-missing");
+  });
+
+  test("page condition item unknown → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = { item: "nope" };
+    expectError(lint(p), "lint/item-missing");
+  });
+
+  test("if condition item unknown → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "if",
+      if: { kind: "item", id: "nope", count: 1 },
+      then: [],
+    });
+    expectError(lint(p), "lint/item-missing");
+  });
+
+  test("shop good condition item unknown → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "shop",
+      id: "shop1",
+      goods: [{ item: "potion", condition: { item: "nope" } }],
+    });
+    expectError(lint(p), "lint/item-missing");
+  });
+
+  test("item condition on a catalog item → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = { item: "potion" };
+    expect(findingsOf(lint(p), "lint/item-missing")).toEqual([]);
+  });
+
+  test("transfer with literal x out of bounds and dynamic y → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.width = 2;
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "transfer",
+      map: "m1",
+      x: 99,
+      y: { variable: "y" },
+    });
+    expectError(lint(p), "lint/transfer-target-missing");
+  });
+
+  test("place in a common event with a unique caller map → error", () => {
+    const p = cleanProject();
+    p.commonEvents = [{
+      id: "ce1",
+      trigger: "none",
+      commands: [{ op: "place", target: { event: "nope" }, x: 0, y: 0 }],
+    }];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expectError(lint(p), "lint/place-target-missing");
+  });
+
+  test("moveRoute in a common event with a unique caller map → error", () => {
+    const p = cleanProject();
+    p.commonEvents = [{
+      id: "ce1",
+      trigger: "none",
+      commands: [{
+        op: "moveRoute",
+        target: { event: "nope" },
+        route: { steps: [], repeat: false, skippable: false },
+      }],
+    }];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expectError(lint(p), "lint/route-target-missing");
+  });
+
+  test("place in a nested common event (common calls common) with a unique caller map → error", () => {
+    const p = cleanProject();
+    p.commonEvents = [
+      { id: "ce1", trigger: "none", commands: [{ op: "common", id: "ce2" }] },
+      { id: "ce2", trigger: "none", commands: [{ op: "place", target: { event: "nope" }, x: 0, y: 0 }] },
+    ];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    // ce2's only caller is ce1, whose only caller is m1 — the host map is
+    // provably m1, so the unknown place target is caught.
+    expectError(lint(p), "lint/place-target-missing");
+  });
+
+  test("place in a common event called from several maps → silent", () => {
+    const p = cleanProject();
+    p.maps.push({
+      id: "m2",
+      name: "M2",
+      width: 5,
+      height: 5,
+      sheets: ["grass"],
+      ground: new Array<string>(25).fill("grass.0"),
+      events: [{
+        id: "ev2",
+        x: 0,
+        y: 0,
+        pages: [{ trigger: "action", commands: [{ op: "common", id: "ce1" }] }],
+      }],
+    });
+    p.commonEvents = [{
+      id: "ce1",
+      trigger: "none",
+      commands: [{ op: "place", target: { event: "nope" }, x: 0, y: 0 }],
+    }];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expect(findingsOf(lint(p), "lint/place-target-missing")).toEqual([]);
+  });
+
+  test("place of a valid event → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "place",
+      target: { event: "ev1" },
+      x: 0,
+      y: 0,
+    });
+    expect(findingsOf(lint(p), "lint/place-target-missing")).toEqual([]);
+  });
+
+  test("moveRoute at a valid event → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "moveRoute",
+      target: { event: "ev1" },
+      route: { steps: [], repeat: false, skippable: false },
+    });
+    expect(findingsOf(lint(p), "lint/route-target-missing")).toEqual([]);
+  });
+
+  test("appearance with unknown sprite → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "appearance",
+      target: "this",
+      sprite: "nope",
+    });
+    expectError(lint(p), "lint/sprite-missing");
+  });
+
+  test("appearance targeting an unknown event → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "appearance",
+      target: { event: "nope" },
+    });
+    expectError(lint(p), "lint/appearance-target-missing");
+  });
+
+  test("appearance in a common event with a unique caller map → error", () => {
+    const p = cleanProject();
+    p.commonEvents = [{
+      id: "ce1",
+      trigger: "none",
+      commands: [{ op: "appearance", target: { event: "nope" } }],
+    }];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expectError(lint(p), "lint/appearance-target-missing");
+  });
+
+  test("appearance with valid sprite and target → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "appearance",
+      target: { event: "ev1" },
+      sprite: "npc",
+    });
+    const report = lint(p);
+    expect(findingsOf(report, "lint/sprite-missing")).toEqual([]);
+    expect(findingsOf(report, "lint/appearance-target-missing")).toEqual([]);
+  });
+
+  test("tileProperty out of bounds → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "tileProperty",
+      x: 99,
+      y: 0,
+      passage: "block",
+    });
+    expectError(lint(p), "lint/tileproperty-out-of-bounds");
+  });
+
+  test("tileProperty in bounds → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "tileProperty",
+      x: 0,
+      y: 0,
+      passage: "block",
+    });
+    expect(findingsOf(lint(p), "lint/tileproperty-out-of-bounds")).toEqual([]);
+  });
+
+  test("findings carry a loc and a non-empty suggestion", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "transfer",
+      map: "nope",
+      x: 0,
+      y: 0,
+    });
+    const f = expectFinding(lint(p), "lint/transfer-target-missing", { map: "m1", event: "ev1" });
+    expect(f.loc.commandPath).toBeDefined();
+  });
+});
+
+describe("rpgkit-check lint: KV1 condition references", () => {
+  test("appearance condition with a missing sprite → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [{ kind: "appearance", target: "player", sprite: "ghost" }],
+    };
+    expectError(lint(p), "lint/sprite-missing");
+  });
+
+  test("appearance condition with sprite:null → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [{ kind: "appearance", target: "player", sprite: null }],
+    };
+    expect(findingsOf(lint(p), "lint/sprite-missing")).toEqual([]);
+  });
+
+  test("appearance condition targeting an event not on the map → error", () => {
+    const p = cleanProject();
+    p.sprites!["hero"] = { kind: "image", src: "hero.png" };
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [{ kind: "appearance", target: { event: "ghost" }, sprite: "hero" }],
+    };
+    expectError(lint(p), "lint/appearance-target-missing");
+  });
+
+  test("appearance condition targeting player or this → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "appearance", target: "player", sprite: "npc" },
+        { kind: "appearance", target: "this", sprite: "npc" },
+      ],
+    };
+    const report = lint(p);
+    expect(findingsOf(report, "lint/appearance-target-missing")).toEqual([]);
+    expect(findingsOf(report, "lint/sprite-missing")).toEqual([]);
+  });
+
+  test("appearance condition in an if guard with a missing sprite → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "if",
+      if: { kind: "appearance", target: "player", sprite: "ghost" },
+      then: [],
+    });
+    expectError(lint(p), "lint/sprite-missing");
+  });
+
+  test("tileProperty condition out of bounds → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [{ kind: "tileProperty", x: 99, y: 99, passage: "block" }],
+    };
+    expectError(lint(p), "lint/tileproperty-out-of-bounds");
+  });
+
+  test("appearance conflict: same target, different sprites → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "appearance", target: "player", sprite: "npc" },
+        { kind: "appearance", target: "player", sprite: null },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("appearance same target and same sprite → silent (redundant)", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "appearance", target: "player", sprite: "npc" },
+        { kind: "appearance", target: "player", sprite: "npc" },
+      ],
+    };
+    expect(findingsOf(lint(p), "lint/page-condition-contradiction")).toEqual([]);
+  });
+
+  test("appearance conflict on an event target → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "appearance", target: { event: "ev1" }, sprite: "npc" },
+        { kind: "appearance", target: { event: "ev1" }, sprite: null },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("tileProperty conflict: same cell, passage pass vs block → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "tileProperty", x: 0, y: 0, passage: "pass" },
+        { kind: "tileProperty", x: 0, y: 0, passage: "block" },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("tileProperty conflict: same cell, enter masks differ → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "tileProperty", x: 0, y: 0, enter: ["down"] },
+        { kind: "tileProperty", x: 0, y: 0, enter: ["down", "left"] },
+      ],
+    };
+    expectError(lint(p), "lint/page-condition-contradiction");
+  });
+
+  test("tileProperty same cell, same field expectations → silent (redundant)", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "tileProperty", x: 0, y: 0, passage: "block", enter: ["down"] },
+        { kind: "tileProperty", x: 0, y: 0, passage: "block", enter: ["down"] },
+      ],
+    };
+    expect(findingsOf(lint(p), "lint/page-condition-contradiction")).toEqual([]);
+  });
+
+  test("tileProperty on different cells → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "tileProperty", x: 0, y: 0, passage: "pass" },
+        { kind: "tileProperty", x: 1, y: 1, passage: "block" },
+      ],
+    };
+    expect(findingsOf(lint(p), "lint/page-condition-contradiction")).toEqual([]);
+  });
+
+  test("valid appearance and in-bounds tileProperty conditions → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.condition = {
+      all: [
+        { kind: "appearance", target: "player", sprite: "npc" },
+        { kind: "tileProperty", x: 0, y: 0, passage: "block" },
+      ],
+    };
+    expect(lint(p).findings).toEqual([]);
+  });
+});
+
+describe("rpgkit-check lint: branches and reachability", () => {
+  test("choices with no options and no cancel → error", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "choices", prompt: "?", options: [] });
+    expectError(lint(p), "lint/choices-empty");
+  });
+
+  test("choices with cancel only → silent", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "choices",
+      prompt: "?",
+      options: [],
+      cancel: { commands: [] },
+    });
+    expect(findingsOf(lint(p), "lint/choices-empty")).toEqual([]);
+  });
+
+  test("choices where every branch is empty → warning", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "choices",
+      prompt: "?",
+      options: [
+        { text: "a", commands: [] },
+        { text: "b", commands: [] },
+      ],
+    });
+    const f = findingsOf(lint(p), "lint/choices-empty");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+  });
+
+  test("choices where one option is empty → warning naming the index", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "choices",
+      prompt: "?",
+      options: [
+        { text: "a", commands: [{ op: "text", lines: ["a"] }] },
+        { text: "b", commands: [] },
+      ],
+    });
+    const f = findingsOf(lint(p), "lint/choices-empty");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+    expect(f[0]!.message).toContain("1");
+  });
+
+  test("choices where one option is empty but the cancel acts → warning", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "choices",
+      prompt: "?",
+      options: [
+        { text: "a", commands: [{ op: "text", lines: ["a"] }] },
+        { text: "b", commands: [] },
+      ],
+      cancel: { commands: [{ op: "text", lines: ["c"] }] },
+    });
+    const f = findingsOf(lint(p), "lint/choices-empty");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+    expect(f[0]!.message).toContain("1");
+  });
+
+  test("choices where every option is empty but the cancel acts → warning", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "choices",
+      prompt: "?",
+      options: [
+        { text: "a", commands: [] },
+        { text: "b", commands: [] },
+      ],
+      cancel: { commands: [{ op: "text", lines: ["c"] }] },
+    });
+    const f = findingsOf(lint(p), "lint/choices-empty");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+    expect(f[0]!.message).toContain("only the cancel branch has commands");
+  });
+
+  test("map never transferred to → warning", () => {
+    const p = cleanProject();
+    p.maps.push({
+      id: "m2",
+      name: "M2",
+      width: 5,
+      height: 5,
+      sheets: ["grass"],
+      ground: new Array<string>(25).fill("grass.0"),
+    });
+    const f = findingsOf(lint(p), "lint/map-unreachable");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+  });
+
+  test("map reached by a literal transfer → silent", () => {
+    const p = cleanProject();
+    p.maps.push({
+      id: "m2",
+      name: "M2",
+      width: 5,
+      height: 5,
+      sheets: ["grass"],
+      ground: new Array<string>(25).fill("grass.0"),
+    });
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "transfer", map: "m2", x: 0, y: 0 });
+    expect(findingsOf(lint(p), "lint/map-unreachable")).toEqual([]);
+  });
+
+  test("map reached only through a common-event transfer → silent", () => {
+    const p = cleanProject();
+    p.maps.push({
+      id: "m2",
+      name: "M2",
+      width: 5,
+      height: 5,
+      sheets: ["grass"],
+      ground: new Array<string>(25).fill("grass.0"),
+    });
+    p.commonEvents = [{
+      id: "ce1",
+      trigger: "none",
+      commands: [{ op: "transfer", map: "m2", x: 0, y: 0 }],
+    }];
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "common", id: "ce1" });
+    expect(findingsOf(lint(p), "lint/map-unreachable")).toEqual([]);
+  });
+
+  test("map with only a self-loop transfer → unreachable warning", () => {
+    const p = cleanProject();
+    p.maps.push({
+      id: "m2",
+      name: "M2",
+      width: 5,
+      height: 5,
+      sheets: ["grass"],
+      ground: new Array<string>(25).fill("grass.0"),
+      events: [{
+        id: "loop",
+        x: 0,
+        y: 0,
+        pages: [{
+          trigger: "action",
+          commands: [{ op: "transfer", map: "m2", x: 0, y: 0 }],
+        }],
+      }],
+    });
+    const f = findingsOf(lint(p), "lint/map-unreachable");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe("warning");
+  });
+
+  test("map behind a chain of transfers → silent", () => {
+    const p = cleanProject();
+    p.maps.push(
+      {
+        id: "m2",
+        name: "M2",
+        width: 5,
+        height: 5,
+        sheets: ["grass"],
+        ground: new Array<string>(25).fill("grass.0"),
+        events: [{
+          id: "go",
+          x: 0,
+          y: 0,
+          pages: [{
+            trigger: "action",
+            commands: [{ op: "transfer", map: "m3", x: 0, y: 0 }],
+          }],
+        }],
+      },
+      {
+        id: "m3",
+        name: "M3",
+        width: 5,
+        height: 5,
+        sheets: ["grass"],
+        ground: new Array<string>(25).fill("grass.0"),
+      },
+    );
+    p.maps[0]!.events![0]!.pages[0]!.commands.push({ op: "transfer", map: "m2", x: 0, y: 0 });
+    expect(findingsOf(lint(p), "lint/map-unreachable")).toEqual([]);
+  });
+});
+
+describe("rpgkit-check lint: example documents", () => {
+  for (const path of [
+    "examples/sunstone/data/sunstone.json",
+    "examples/meadow/data/meadow.json",
+    "examples/grow/data/grow-settlement.json",
+  ]) {
+    test(`${path} is error-clean`, () => {
+      const loaded = loadProjectFile(path);
+      expect(loaded.project).not.toBeNull();
+      const report = lint(loaded.project!);
+      const errors = report.findings.filter((f) => f.severity === "error");
+      if (errors.length > 0) {
+        console.log(`${path} lint findings:`, JSON.stringify(report.findings, null, 2));
+      }
+      expect(errors).toEqual([]);
+    });
+  }
+});

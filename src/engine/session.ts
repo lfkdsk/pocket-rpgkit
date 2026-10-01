@@ -298,6 +298,10 @@ export interface SessionOptions {
   extensions?: ExtensionOptions;
   battle?: BattleRules;
   scene?: SceneOptions;
+  /** Opt-in fiber-start trace forwarded to every world (see
+   *  WorldOptions.onFiberStart). Coverage/QA tools use it to observe pages
+   *  whose fibers begin and end inside one tick. */
+  onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
 }
 
 function visitCondition(c: Condition, found: Set<string>): void {
@@ -523,6 +527,7 @@ export function createSession(
     extensions,
     items: project.items,
     inventory: project.system?.inventory,
+    onFiberStart: options.onFiberStart,
     animations: project.animations,
   };
   assertRegisteredExtensions(extensions, commonExtensionCalls(commonEvents));

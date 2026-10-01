@@ -1208,6 +1208,8 @@ export interface World {
   /** Project.system.messageBlocksPlayer: an open box of any fiber holds
    *  the player (messageHoldsPlayer). */
   messageBlocksPlayer?: boolean;
+  /** Opt-in fiber-start trace (see WorldOptions.onFiberStart). */
+  onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
   /** Project animation catalog (AnimationDef id -> compiled timing), for
    *  mapAnim commands and the UI's frame selection. */
   anims: ReadonlyMap<string, CompiledAnim>;
@@ -1223,6 +1225,13 @@ export interface WorldOptions {
   extensions?: ExtensionRuntime;
   items?: readonly Item[];
   inventory?: { maxPerItem?: number; maxKinds?: number };
+  /** Opt-in fiber-start trace. Called once for every page fiber that
+   *  starts (parallel/autorun/action/playerTouch), including fibers that
+   *  begin and end inside the same tick — so a coverage tool can observe
+   *  instant pages that leave no residual fiber to inspect. Absent by
+   *  default: the call sites are only reached when a fiber actually
+   *  starts, so games that do not install it pay nothing. */
+  onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
   animations?: readonly AnimationDef[];
 }
 
@@ -1562,6 +1571,7 @@ export function createWorld(
     items: itemsById,
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
+    onFiberStart: options.onFiberStart,
     anims: animsById,
     extensions: options.extensions ?? createExtensionRuntime(),
   };
@@ -2007,12 +2017,14 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
     if (page.commands.length === 0) continue;
     if (page.trigger === "parallel") {
       if (!keyedValue(s.parallels, key)) {
+        w.onFiberStart?.(key, index, true);
         s.parallels[key] = startFiber(s, key, index, true, w.pagePrograms.get(key)![index]!);
       }
       continue;
     }
     if (s.main) continue; // one blocking fiber at a time
     if (page.trigger === "autorun") {
+      w.onFiberStart?.(key, index, false);
       s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
     } else if (page.trigger === "action") {
       // While the cross-event input lock is held, confirm presses
@@ -2029,6 +2041,7 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
       const [fx, fy] = FRONT[input.facing];
       const front = { x: input.playerCell.x + fx, y: input.playerCell.y + fy };
       if (cellInRect(front, r) || cellInRect(input.playerCell, r)) {
+        w.onFiberStart?.(key, index, false);
         s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
       }
     } else if (page.trigger === "playerTouch") {
@@ -2042,6 +2055,7 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
       const turnEdge = turned && !moved && pageReadsFacing(page);
       if (stepEdge || turnEdge) {
         s.touched[key] = true;
+        w.onFiberStart?.(key, index, false);
         s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
       }
     }

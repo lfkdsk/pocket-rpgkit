@@ -271,3 +271,86 @@ describe("deepClone — reducer snapshot without structuredClone", () => {
     expect(deepClone("x")).toBe("x");
   });
 });
+
+// --- opt-in fiber-start trace (QA coverage tools observe instant pages) ---
+
+import { createSession, startSession, stepSession } from "../src/engine/session.ts";
+
+function fiberTraceProject(): Project {
+  return {
+    format: "rpgkit-project/v1",
+    title: "Fiber trace",
+    tileSize: 16,
+    start: { map: "m", x: 1, y: 1, dir: "down" },
+    sheets: [{ id: "grass", cols: 1, rows: 1 }],
+    items: [],
+    sprites: {},
+    maps: [
+      {
+        id: "m",
+        name: "M",
+        width: 5,
+        height: 5,
+        sheets: ["grass"],
+        ground: new Array<string>(25).fill("grass.0"),
+        events: [
+          // An action page whose only command is instant: the fiber starts
+          // and ends inside one tick, leaving no residual fiber to inspect.
+          {
+            id: "instant",
+            x: 1,
+            y: 2,
+            pages: [{ trigger: "action", commands: [{ op: "switch", id: "did-run", value: true }] }],
+          },
+          // A parallel page that parks on a wait: its fiber spans ticks.
+          {
+            id: "loop",
+            x: 3,
+            y: 3,
+            pages: [{ trigger: "parallel", commands: [{ op: "wait", seconds: 1 }] }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("onFiberStart trace", () => {
+  test("fires for an instant action fiber that ends inside the same tick", () => {
+    const project = fiberTraceProject();
+    const starts: { key: string; pageIndex: number; parallel: boolean }[] = [];
+    const session = createSession(project, 60, { onFiberStart: (key, pageIndex, parallel) => starts.push({ key, pageIndex, parallel }) });
+    let state = startSession(project, session);
+    // Player at (1,1) facing down: the instant event sits at (1,2), in front.
+    state = stepSession(session, state, { buttons: 0, confirmEdge: true, cancelEdge: false, upEdge: false, downEdge: false });
+    // The fiber really ran: the switch it set is in the bank.
+    expect(state.sw.switches["did-run"]).toBe(true);
+    // And the trace saw it start, even though no fiber is left to observe.
+    expect(starts.some((s) => s.key === "m/instant" && s.pageIndex === 0 && s.parallel === false)).toBe(true);
+    // No residual main fiber: the page completed inside the tick.
+    expect(state.interp.main).toBeNull();
+  });
+
+  test("fires once per parallel fiber start, not per frame", () => {
+    const project = fiberTraceProject();
+    const starts: { key: string; pageIndex: number; parallel: boolean }[] = [];
+    const session = createSession(project, 60, { onFiberStart: (key, pageIndex, parallel) => starts.push({ key, pageIndex, parallel }) });
+    let state = startSession(project, session);
+    for (let frame = 0; frame < 30; frame++) {
+      state = stepSession(session, state, { buttons: 0, confirmEdge: false, cancelEdge: false, upEdge: false, downEdge: false });
+    }
+    const loopStarts = starts.filter((s) => s.key === "m/loop");
+    expect(loopStarts.length).toBeGreaterThan(0);
+    // The parallel fiber parks on a 1 s wait; it cannot restart every frame.
+    expect(loopStarts.length).toBeLessThan(30);
+    expect(loopStarts.every((s) => s.pageIndex === 0 && s.parallel === true)).toBe(true);
+  });
+
+  test("costs nothing when not installed", () => {
+    const project = fiberTraceProject();
+    const session = createSession(project, 60);
+    let state = startSession(project, session);
+    state = stepSession(session, state, { buttons: 0, confirmEdge: true, cancelEdge: false, upEdge: false, downEdge: false });
+    expect(state.sw.switches["did-run"]).toBe(true);
+  });
+});

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { EDIT_COMMANDS, type EditPatch } from "../editor/api/types.ts";
 import { EDIT_TOOLS } from "../editor/api/tools.ts";
 import { runFileEdit } from "../editor/api/file.ts";
+import { CHECK_TOOLS } from "../tools/rpgkit-check/src/registry.ts";
 import {
   MCP_PROTOCOL_VERSION,
   dispatchMcpLine,
@@ -25,8 +26,8 @@ function copy(): string {
   return path;
 }
 
-function call(name: string, args: Record<string, unknown>): any {
-  return dispatchMcpMessage({
+async function call(name: string, args: Record<string, unknown>): Promise<any> {
+  return await dispatchMcpMessage({
     jsonrpc: "2.0",
     id: 7,
     method: "tools/call",
@@ -41,27 +42,28 @@ const initializeParams = {
 };
 
 describe("rpgkit-edit MCP protocol", () => {
-  test("initializes, pings, lists tools, and emits nothing for notifications", () => {
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: "init", method: "initialize", params: initializeParams }))
+  test("initializes, pings, lists tools, and emits nothing for notifications", async () => {
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: "init", method: "initialize", params: initializeParams }))
       .toMatchObject({ id: "init", result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} } } });
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
-    const listed = dispatchMcpMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }) as any;
-    expect(listed.result.tools.map((tool: any) => tool.name)).toEqual(EDIT_TOOLS.map((tool) => tool.name));
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
+    const listed = await dispatchMcpMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }) as any;
+    expect(listed.result.tools.map((tool: any) => tool.name))
+      .toEqual([...EDIT_TOOLS.map((tool) => tool.name), ...CHECK_TOOLS.map((tool) => tool.name)]);
     expect(listed.result.tools.every((tool: any) => tool.description.length > 20 && tool.inputSchema.type === "object")).toBe(true);
   });
 
-  test("returns standard JSON-RPC errors for malformed messages, methods and params", () => {
-    expect(dispatchMcpLine("{bad")).toMatchObject({ error: { code: -32700 } });
-    expect(dispatchMcpMessage([])).toMatchObject({ error: { code: -32600 } });
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "missing" })).toMatchObject({ error: { code: -32601 } });
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "missing", arguments: {} } }))
+  test("returns standard JSON-RPC errors for malformed messages, methods and params", async () => {
+    expect(await dispatchMcpLine("{bad")).toMatchObject({ error: { code: -32700 } });
+    expect(await dispatchMcpMessage([])).toMatchObject({ error: { code: -32600 } });
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "missing" })).toMatchObject({ error: { code: -32601 } });
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "missing", arguments: {} } }))
       .toMatchObject({ error: { code: -32602 } });
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "rpgkit_events_list", arguments: {} } }))
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "rpgkit_events_list", arguments: {} } }))
       .toMatchObject({ error: { code: -32602, data: expect.any(Array) } });
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: { bad: true }, method: "ping" }))
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: { bad: true }, method: "ping" }))
       .toMatchObject({ id: null, error: { code: -32600 } });
-    expect(dispatchMcpMessage({ jsonrpc: "2.0", id: 4, method: "notifications/initialized" }))
+    expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: 4, method: "notifications/initialized" }))
       .toMatchObject({ id: 4, error: { code: -32600 } });
   });
 
@@ -95,11 +97,11 @@ describe("rpgkit-edit MCP protocol", () => {
   ];
 
   for (const entry of cases) {
-    test(`${entry.name} is registered and callable`, () => {
+    test(`${entry.name} is registered and callable`, async () => {
       const file = copy();
       const before = readFileSync(file, "utf8");
       const args = entry.args(file);
-      const response = call(entry.name, args);
+      const response = await call(entry.name, args);
       expect(response).toMatchObject({ jsonrpc: "2.0", id: 7, result: { isError: false } });
       const body = JSON.parse(response.result.content[0].text);
       expect(body.ok).toBe(true);
@@ -112,13 +114,13 @@ describe("rpgkit-edit MCP protocol", () => {
     expect(EDIT_TOOLS.map((tool) => tool.command).sort()).toEqual([...EDIT_COMMANDS].sort());
   });
 
-  test("a non-dry-run MCP mutation persists and a domain failure is a tool error", () => {
+  test("a non-dry-run MCP mutation persists and a domain failure is a tool error", async () => {
     const file = copy();
-    const changed = call("rpgkit_tile_paint", { file, map: "village", x: 0, y: 0, tile: "town.1" });
+    const changed = await call("rpgkit_tile_paint", { file, map: "village", x: 0, y: 0, tile: "town.1" });
     expect(changed).toMatchObject({ result: { isError: false, structuredContent: { ok: true, written: true } } });
     expect((JSON.parse(readFileSync(file, "utf8")) as any).maps[0].ground[0]).toBe("town.1");
 
-    const failed = call("rpgkit_tile_paint", { file, map: "missing", x: 0, y: 0, tile: "town.1" });
+    const failed = await call("rpgkit_tile_paint", { file, map: "missing", x: 0, y: 0, tile: "town.1" });
     expect(failed).toMatchObject({ result: { isError: true, structuredContent: { ok: false, error: { code: "MAP_NOT_FOUND" } } } });
   });
 
@@ -151,6 +153,57 @@ describe("rpgkit-edit MCP protocol", () => {
     expect(messages[1]).toMatchObject({ result: { isError: false } });
     expect(messages[2]).toMatchObject({ result: { isError: true } });
     expect(messages[3]).toMatchObject({ error: { code: -32700 } });
-    expect(messages[4].result.tools).toHaveLength(EDIT_TOOLS.length);
+    expect(messages[4].result.tools).toHaveLength(EDIT_TOOLS.length + CHECK_TOOLS.length);
+  });
+});
+
+describe("rpgkit-check tools over MCP", () => {
+  test("rpgkit-lint runs on a project copy and returns a clean structured report", async () => {
+    const file = copy();
+    const response = await call("rpgkit-lint", { file });
+    expect(response).toMatchObject({ jsonrpc: "2.0", id: 7, result: { isError: false } });
+    const body = JSON.parse(response.result.content[0].text);
+    expect(body.check).toBe("lint");
+    expect(body.findings.filter((f: any) => f.severity === "error")).toEqual([]);
+    // structuredContent is the same object.
+    expect(response.result.structuredContent.check).toBe("lint");
+  });
+
+  test("rpgkit-reach runs and reports reachable maps", async () => {
+    const file = copy();
+    const response = await call("rpgkit-reach", { file });
+    expect(response).toMatchObject({ result: { isError: false } });
+    const body = JSON.parse(response.result.content[0].text);
+    expect(body.check).toBe("reach");
+    expect(body.reachableMaps).toContain("village");
+  });
+
+  test("args failing the inputSchema are a tool error, not a server crash", async () => {
+    const file = copy();
+    const response = await call("rpgkit-lint", { file, bogus: 1 });
+    expect(response).toMatchObject({ result: { isError: true } });
+    expect(response.result.content[0].text).toContain("invalid args");
+  });
+
+  test("a missing file is a tool-level load error with doc findings", async () => {
+    const response = await call("rpgkit-lint", { file: join(TEMP, "does-not-exist.json") });
+    expect(response).toMatchObject({ result: { isError: true } });
+    expect(response.result.structuredContent.findings[0].check).toBe("doc/unreadable");
+  });
+
+  test("a path outside the server root is rejected as invalid params", async () => {
+    const response = await call("rpgkit-lint", { file: "/etc/passwd" });
+    expect(response).toMatchObject({ error: { code: -32602 } });
+  });
+
+  test("rpgkit-shot's array result is wrapped as an object for structuredContent", async () => {
+    const file = copy();
+    const out = join(TEMP, `shot-${randomUUID()}`);
+    const response = await call("rpgkit-shot", { file, map: "village", x: 1, y: 1, out });
+    // Without built fixtures the shot is a tool error (preflight), never a
+    // -32603 server crash; with fixtures it returns {shots: [...]}.
+    if (!response.result.isError) {
+      expect(Array.isArray(response.result.structuredContent.shots)).toBe(true);
+    }
   });
 });

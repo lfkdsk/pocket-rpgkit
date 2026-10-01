@@ -318,6 +318,33 @@ The server implements MCP initialization, ping, `tools/list`, and
 are returned as structured tool errors, while malformed requests use standard
 JSON-RPC error codes.
 
+## QA checks
+
+`rpgkit-check` runs the same QA tools over any `rpgkit-project/v1` document,
+from the CLI or as MCP tools mounted on the editing server:
+
+```sh
+bun run rpgkit-check lint    --file game/data/project.json
+bun run rpgkit-check locks   --file game/data/project.json
+bun run rpgkit-check freeze  --file game/data/project.json
+bun run rpgkit-check reach   --file game/data/project.json
+bun run rpgkit-check explore --file game/data/project.json
+bun run rpgkit-check shot    --file game/data/project.json --json '{"map":"village","x":4,"y":6}'
+```
+
+`lint` is a static health check (dead pages, missing references, empty
+choices). `locks` proves every `lockInput` is released on the real engine,
+`freeze` scans for maps that lock input or park a blocking fiber forever, and
+`explore` walks the game headlessly and reports which event pages never ran.
+`shot` renders schematic PNGs of a map's passability and events.
+
+`reach` is **experimental**: it builds the multi-map walk graph from a real
+session state and reports which maps the player can reach, but its model
+freezes story state, dry-runs entry pages for a fixed window, and does not
+re-expand recursive common events. A "reachable" verdict is reliable; an
+"unreachable" verdict is a **lead, not a proof** — every report carries
+`experimental: true` and an `assumptions` list naming the known imprecisions.
+
 ## The format in one screen
 
 A project document (`"format": "rpgkit-project/v1"`) names a `start` tile,

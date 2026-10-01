@@ -1,11 +1,16 @@
 #!/usr/bin/env bun
-// Zero-dependency MCP stdio server for the RPG Kit editing operation registry.
+// Zero-dependency MCP stdio server for the RPG Kit editing operation registry
+// and the rpgkit-check QA tools (lint/locks/freeze/reach/explore/shot): one
+// server, one tool list, so an agent can edit a project and then check it.
 
 import { createInterface } from "node:readline";
 import { once } from "node:events";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { validateSchema } from "../../src/engine/schema-validate.ts";
 import { runFileEdit, type FileEditRequest } from "../../editor/api/file.ts";
 import { EDIT_TOOL_BY_NAME, EDIT_TOOLS, type EditToolDefinition } from "../../editor/api/tools.ts";
+import { CHECK_TOOLS, CheckArgsError, CheckLoadError, type CheckTool } from "../rpgkit-check/src/registry.ts";
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 export const MCP_SERVER_INFO = { name: "pocket-rpgkit-edit", version: "0.1.0" } as const;
@@ -60,6 +65,102 @@ function publicTool(definition: EditToolDefinition): Record<string, unknown> {
   };
 }
 
+/** A check tool's public descriptor. Only rpgkit-shot writes files (PNGs);
+ *  the rest are read-only. */
+function publicCheckTool(tool: CheckTool): Record<string, unknown> {
+  const writes = tool.name === "rpgkit-shot";
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    annotations: {
+      readOnlyHint: !writes,
+      destructiveHint: false,
+      idempotentHint: !writes,
+      openWorldHint: false,
+    },
+  };
+}
+
+const CHECK_TOOL_BY_NAME = new Map<string, CheckTool>(CHECK_TOOLS.map((tool) => [tool.name, tool]));
+
+function isOutsideRoot(fromRoot: string): boolean {
+  return fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(fromRoot);
+}
+
+/** Resolve a tool-supplied path and confirm it stays inside `root`,
+ *  symlink-safe: the deepest existing ancestor is realpath'ed, so a symlink
+ *  pointing out of the root is caught even when the leaf does not exist yet
+ *  (a load error to report, or a fresh shot output dir). */
+function confinePath(root: string, p: unknown): { path: string } | { error: string } {
+  if (typeof p !== "string" || p.length === 0) return { error: "path must be a non-empty string" };
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(resolve(root));
+  } catch {
+    return { error: `server root ${root} does not exist` };
+  }
+  let existing = resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(existing);
+      const fromRoot = relative(rootReal, join(real, ...tail));
+      if (isOutsideRoot(fromRoot)) return { error: `path ${p} resolves outside the configured project root` };
+      return { path: join(real, ...tail) };
+    } catch {
+      const base = basename(existing);
+      const parent = dirname(existing);
+      if (parent === existing) return { error: `path ${p} resolves outside the configured project root` };
+      tail.unshift(base);
+      existing = parent;
+    }
+  }
+}
+
+function toolErrorResult(id: JsonRpcId, message: string, structured?: unknown): JsonRpcResponse {
+  return resultResponse(id, {
+    content: [{ type: "text", text: message }],
+    ...(structured === undefined ? {} : { structuredContent: structured }),
+    isError: true,
+  });
+}
+
+/** Run a check tool with root confinement and tool-level errors. A bad path,
+ *  bad args or unloadable file is an isError tool result, never a -32603
+ *  server crash. */
+async function callCheckTool(id: JsonRpcId, name: string, args: Record<string, unknown>, root: string): Promise<JsonRpcResponse> {
+  const file = confinePath(root, args.file);
+  if ("error" in file) return errorResponse(id, -32602, `Invalid params: ${file.error}`);
+  const callArgs: Record<string, unknown> = { ...args, file: file.path };
+  if (typeof callArgs.out === "string") {
+    const out = confinePath(root, callArgs.out);
+    if ("error" in out) return errorResponse(id, -32602, `Invalid params: ${out.error}`);
+    callArgs.out = out.path;
+  }
+  const tool = CHECK_TOOL_BY_NAME.get(name)!;
+  try {
+    const result = await tool.run(callArgs);
+    // structuredContent must be an object; rpgkit-shot returns an array.
+    const structured = result !== null && typeof result === "object" && !Array.isArray(result)
+      ? result
+      : { shots: result };
+    return resultResponse(id, {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      structuredContent: structured,
+      isError: false,
+    });
+  } catch (error) {
+    if (error instanceof CheckArgsError) {
+      return toolErrorResult(id, `invalid args: ${error.message}`, { error: error.message, details: error.details });
+    }
+    if (error instanceof CheckLoadError) {
+      return toolErrorResult(id, error.message, { check: name, findings: error.findings });
+    }
+    return toolErrorResult(id, error instanceof Error ? error.message : String(error));
+  }
+}
+
 function parseToolRequest(
   params: unknown,
   root: string,
@@ -87,9 +188,9 @@ function parseToolRequest(
 }
 
 /** Pure single-message dispatcher. Notifications return null and emit no
- * protocol response. File tool calls are synchronous and serialized by the
- * line reader, preventing two writes from racing inside one server. */
-export function dispatchMcpMessage(value: unknown, root = process.cwd()): JsonRpcResponse | null {
+ * protocol response. Edit calls are synchronous and serialized by the line
+ * reader; check calls are async (they drive the engine) and awaited. */
+export async function dispatchMcpMessage(value: unknown, root = process.cwd()): Promise<JsonRpcResponse | null> {
   if (!isRecord(value) || value.jsonrpc !== "2.0" || typeof value.method !== "string") {
     return errorResponse(null, -32600, "Invalid Request: expected a JSON-RPC 2.0 object with method");
   }
@@ -121,9 +222,17 @@ export function dispatchMcpMessage(value: unknown, root = process.cwd()): JsonRp
   if (request.method === "ping") return resultResponse(id, {});
   if (request.method === "tools/list") {
     if (request.params !== undefined && !isRecord(request.params)) return errorResponse(id, -32602, "Invalid params: tools/list params must be an object");
-    return resultResponse(id, { tools: EDIT_TOOLS.map(publicTool) });
+    return resultResponse(id, { tools: [...EDIT_TOOLS.map(publicTool), ...CHECK_TOOLS.map(publicCheckTool)] });
   }
   if (request.method === "tools/call") {
+    if (!isRecord(request.params) || typeof request.params.name !== "string") {
+      return errorResponse(id, -32602, "Invalid params: tools/call params must contain a string name");
+    }
+    const toolName = request.params.name;
+    if (CHECK_TOOL_BY_NAME.has(toolName)) {
+      const args = isRecord(request.params.arguments) ? request.params.arguments : {};
+      return callCheckTool(id, toolName, args, root);
+    }
     const parsed = parseToolRequest(request.params, root);
     if ("error" in parsed) return errorResponse(id, -32602, `Invalid params: ${parsed.error}`, parsed.details);
     try {
@@ -141,14 +250,14 @@ export function dispatchMcpMessage(value: unknown, root = process.cwd()): JsonRp
   return errorResponse(id, -32601, `Method not found: ${request.method}`);
 }
 
-export function dispatchMcpLine(line: string, root = process.cwd()): JsonRpcResponse | null {
+export async function dispatchMcpLine(line: string, root = process.cwd()): Promise<JsonRpcResponse | null> {
   let value: unknown;
   try {
     value = JSON.parse(line);
   } catch (error) {
     return errorResponse(null, -32700, "Parse error", error instanceof Error ? error.message : String(error));
   }
-  return dispatchMcpMessage(value, root);
+  return await dispatchMcpMessage(value, root);
 }
 
 async function writeResponse(response: JsonRpcResponse): Promise<boolean> {
@@ -167,7 +276,7 @@ export async function runMcpServer(root = process.cwd()): Promise<void> {
     if (line.trim() === "") continue;
     const response = line.length > 4 * 1024 * 1024
       ? errorResponse(null, -32600, "Invalid Request: message exceeds 4 MiB")
-      : dispatchMcpLine(line, root);
+      : await dispatchMcpLine(line, root);
     if (response && !(await writeResponse(response))) break;
   }
 }
