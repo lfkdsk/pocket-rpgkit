@@ -274,6 +274,28 @@ export function commandSummary(command: unknown): string {
       return `Item ${text(command.item)} ${signed(command.set, command.count)}`;
     case "se":
       return `Sound ${text(command.name)}`;
+    case "playBgm":
+      return `Play BGM ${text(command.id)}`;
+    case "fadeoutBgm":
+      return `Fade out BGM over ${numberText(command.duration)}s`;
+    case "stopBgm":
+      return "Stop BGM";
+    case "pauseBgm":
+      return "Pause BGM";
+    case "resumeBgm":
+      return "Resume BGM";
+    case "playBgs":
+      return `Play BGS ${text(command.id)}`;
+    case "fadeoutBgs":
+      return `Fade out BGS over ${numberText(command.duration)}s`;
+    case "playMe":
+      return `Play ME ${text(command.id)} for ${numberText(command.duration)}s`;
+    case "playSe":
+      return `Play SE ${text(command.id)}`;
+    case "saveBgm":
+      return "Save BGM";
+    case "replayBgm":
+      return "Replay BGM";
     case "erase":
       return "Erase event";
     case "exit":
@@ -705,10 +727,13 @@ export function defaultCondition<Kind extends ConditionKind>(kind: Kind): Condit
   return condition as ConditionOf<Kind>;
 }
 
-/** Extension and future conditions are display/preserve-only in the generic
- * editor; their game-owned argument schema is unknowable here. */
-export function isEditableCondition(condition: unknown): condition is Exclude<Condition, { kind: "ext" }> {
-  return isRecord(condition) && CONDITION_KINDS.includes(condition.kind as ConditionKind) && condition.kind !== "ext";
+/** Audio-state, extension and future conditions are display/preserve-only in
+ * the generic editor. */
+export function isEditableCondition(
+  condition: unknown,
+): condition is Exclude<Condition, { kind: "bgmPlaying" | "ext" }> {
+  return isRecord(condition) && CONDITION_KINDS.includes(condition.kind as ConditionKind) &&
+    condition.kind !== "bgmPlaying" && condition.kind !== "ext";
 }
 
 export function conditionSummary(condition: unknown): string {
@@ -728,6 +753,12 @@ export function conditionSummary(condition: unknown): string {
       return `Facing ${text(condition.dir)}`;
     case "worldIdle":
       return condition.negate === true ? "World is busy" : "World is idle";
+    case "bgmPlaying": {
+      const target = typeof condition.id === "string" && condition.id.length > 0
+        ? `BGM ${condition.id}`
+        : "Any BGM";
+      return condition.negate === true ? `${target} is not playing` : `${target} is playing`;
+    }
     case "ext":
       return `Extension ${text(condition.call)} ${jsonPreview(condition.args)}`;
     default:

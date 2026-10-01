@@ -10,6 +10,7 @@ export * from "./tiles.ts";
 export * from "./chunk-window.ts";
 export * from "./camera.ts";
 export * from "./screen.ts";
+export * from "./audio.ts";
 export * from "./viewport.ts";
 export * from "./start.ts";
 export * from "./passability.ts";

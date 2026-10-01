@@ -19,7 +19,10 @@ import { extensionCallNameValid, jsonValueProblem } from "./extensions.ts";
 
 const INTEGER_OPS = new Set([
   "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp",
-  "wait", "gold", "item", "se", "erase", "exit", "transfer",
+  "wait", "gold", "item", "se",
+  "playBgm", "fadeoutBgm", "stopBgm", "pauseBgm", "resumeBgm",
+  "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm",
+  "erase", "exit", "transfer",
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
   "mapAnim", "stopAnim", "appearance", "layer", "tileProperty",
   "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon", "screenBackdrop",
@@ -156,6 +159,14 @@ function validateCondition(v: unknown, path: string): string | null {
       return null;
     }
     case "worldIdle":
+      if (v.negate !== undefined && typeof v.negate !== "boolean") {
+        return fail(`${path}.negate`, "boolean required");
+      }
+      return null;
+    case "bgmPlaying":
+      if (v.id !== undefined && (typeof v.id !== "string" || v.id.length === 0)) {
+        return fail(`${path}.id`, "non-empty string required");
+      }
       if (v.negate !== undefined && typeof v.negate !== "boolean") {
         return fail(`${path}.negate`, "boolean required");
       }
@@ -324,6 +335,102 @@ function validateVariableRef(v: unknown, path: string): string | null {
   return null;
 }
 
+type AudioTrackShape = "track" | "me" | "savedBgm";
+
+function validateAudioTrack(v: unknown, path: string, shape: AudioTrackShape): string | null {
+  if (!isRecord(v)) return fail(path, "audio track object required");
+  const allowed = new Set(["id", "volume", "pitch", "positionTicks"]);
+  if (shape !== "savedBgm") {
+    allowed.add("paused");
+    allowed.add("fade");
+  }
+  if (shape === "me") {
+    allowed.add("durationTicks");
+    allowed.add("leftTicks");
+  }
+  for (const key of Object.keys(v)) {
+    if (!allowed.has(key)) return fail(`${path}.${key}`, "unknown audio track field");
+  }
+  if (typeof v.id !== "string" || v.id.length === 0) {
+    return fail(`${path}.id`, "non-empty string required");
+  }
+  if (!isNonNegInt(v.volume) || v.volume > 100) {
+    return fail(`${path}.volume`, "integer 0..100 required");
+  }
+  if (!Number.isInteger(v.pitch) || (v.pitch as number) < 50 || (v.pitch as number) > 150) {
+    return fail(`${path}.pitch`, "integer 50..150 required");
+  }
+  if (!isNonNegInt(v.positionTicks)) {
+    return fail(`${path}.positionTicks`, "non-negative integer required");
+  }
+  if (shape === "savedBgm") return null;
+  if (v.paused !== undefined && v.paused !== true) {
+    return fail(`${path}.paused`, "true or omitted required");
+  }
+  if (v.fade !== undefined) {
+    if (!isRecord(v.fade)) return fail(`${path}.fade`, "fade object required");
+    for (const key of Object.keys(v.fade)) {
+      if (key !== "totalTicks" && key !== "leftTicks") {
+        return fail(`${path}.fade.${key}`, "unknown fade field");
+      }
+    }
+    if (!isNonNegInt(v.fade.totalTicks) || v.fade.totalTicks === 0) {
+      return fail(`${path}.fade.totalTicks`, "positive integer required");
+    }
+    if (!isNonNegInt(v.fade.leftTicks) || v.fade.leftTicks === 0 ||
+        v.fade.leftTicks > v.fade.totalTicks) {
+      return fail(`${path}.fade.leftTicks`, "positive integer no greater than totalTicks required");
+    }
+  }
+  if (shape === "me") {
+    if (!isNonNegInt(v.durationTicks) || v.durationTicks === 0) {
+      return fail(`${path}.durationTicks`, "positive integer required");
+    }
+    if (!isNonNegInt(v.leftTicks) || v.leftTicks === 0 || v.leftTicks > v.durationTicks) {
+      return fail(`${path}.leftTicks`, "positive integer no greater than durationTicks required");
+    }
+  }
+  return null;
+}
+
+function validateAudioState(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "audio state object required");
+  const allowed = new Set(["bgm", "bgs", "me", "savedBgm"]);
+  for (const key of Object.keys(v)) {
+    if (!allowed.has(key)) return fail(`${path}.${key}`, "unknown audio state field");
+  }
+  if (v.bgm !== undefined) {
+    const e = validateAudioTrack(v.bgm, `${path}.bgm`, "track");
+    if (e) return e;
+  }
+  if (v.bgs !== undefined) {
+    const e = validateAudioTrack(v.bgs, `${path}.bgs`, "track");
+    if (e) return e;
+  }
+  if (v.me !== undefined) {
+    const e = validateAudioTrack(v.me, `${path}.me`, "me");
+    if (e) return e;
+  }
+  if (v.savedBgm !== undefined) {
+    const e = validateAudioTrack(v.savedBgm, `${path}.savedBgm`, "savedBgm");
+    if (e) return e;
+  }
+  return null;
+}
+
+function validateCompiledAudioTrack(v: Record<string, unknown>, path: string): string | null {
+  if (typeof v.id !== "string" || v.id.length === 0) {
+    return fail(`${path}.id`, "non-empty string required");
+  }
+  if (!isNonNegInt(v.volume) || v.volume > 100) {
+    return fail(`${path}.volume`, "integer 0..100 required");
+  }
+  if (!Number.isInteger(v.pitch) || (v.pitch as number) < 50 || (v.pitch as number) > 150) {
+    return fail(`${path}.pitch`, "integer 50..150 required");
+  }
+  return null;
+}
+
 /** Validate a compiled instruction tree (the programs serialized inside
  *  fiber stacks). An unknown op would wedge the run loop (pc never
  *  advances), so the vocabulary is checked exhaustively. */
@@ -456,6 +563,33 @@ function validateProg(prog: unknown, path: string): string | null {
         if (e) return e;
         break;
       }
+      case "playBgm":
+      case "playBgs":
+      case "playSe": {
+        const e = validateCompiledAudioTrack(ins, here);
+        if (e) return e;
+        break;
+      }
+      case "playMe": {
+        const e = validateCompiledAudioTrack(ins, here);
+        if (e) return e;
+        if (!isNonNegInt(ins.durationFrames)) {
+          return fail(`${here}.durationFrames`, "non-negative integer required");
+        }
+        break;
+      }
+      case "fadeoutBgm":
+      case "fadeoutBgs":
+        if (!isNonNegInt(ins.frames)) {
+          return fail(`${here}.frames`, "non-negative integer required");
+        }
+        break;
+      case "stopBgm":
+      case "pauseBgm":
+      case "resumeBgm":
+      case "saveBgm":
+      case "replayBgm":
+        break;
       case "erase":
       case "exit":
         break;
@@ -1398,6 +1532,10 @@ export function validateSnapshot(snap: unknown): string | null {
   if (it.screen !== undefined) {
     const screen = validateScreenEffects(it.screen, "state.interp.screen");
     if (screen) return screen;
+  }
+  if (it.audio !== undefined) {
+    const audio = validateAudioState(it.audio, "state.interp.audio");
+    if (audio) return audio;
   }
   if (!Array.isArray(it.cues)) return "state.interp.cues: array required";
   if (it.cues.length !== 0) return "state.interp.cues: cues must drain before save";

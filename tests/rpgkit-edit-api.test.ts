@@ -358,6 +358,62 @@ describe("rpgkit edit command operations and patches", () => {
     }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
   });
 
+  test("AI inserts, validates and lists audio commands but cannot field-edit them", () => {
+    const project = fixture();
+    project.audio = {
+      field: "audio:wav.field",
+      rain: "audio:wav.rain",
+      victory: "audio:wav.victory",
+      door: "audio:wav.door",
+    };
+    project.maps[0]!.events![0]!.pages[0] = {
+      condition: { all: [{ kind: "bgmPlaying", id: "field", negate: true }] },
+      trigger: "action",
+      commands: [],
+    };
+    const audio: Command[] = [
+      { op: "playBgm", id: "field", volume: 80, pitch: 90 },
+      { op: "fadeoutBgm", duration: 1.5 },
+      { op: "stopBgm" },
+      { op: "pauseBgm" },
+      { op: "resumeBgm" },
+      { op: "playBgs", id: "rain" },
+      { op: "fadeoutBgs", duration: 0 },
+      { op: "playMe", id: "victory", duration: 4, volume: 75 },
+      { op: "playSe", id: "door", pitch: 120 },
+      { op: "saveBgm" },
+      { op: "replayBgm" },
+    ];
+
+    let source = serializeProject(project);
+    for (let index = 0; index < audio.length; index++) {
+      const inserted = success(executeEditOperation(source, "insert-command", {
+        map: "map",
+        event: "npc",
+        page: 0,
+        address: { path: [], index },
+        command: audio[index],
+      }));
+      expect(inserted.result).toEqual(audio[index]);
+      source = inserted.output;
+    }
+
+    expect(readSuccess(executeEditOperation(source, "validate")).result).toEqual({ valid: true, errors: [] });
+    const pages = readSuccess(executeEditOperation(source, "list-pages", { map: "map", event: "npc" })).result as any[];
+    expect(pages[0]!.condition).toEqual({ all: [{ kind: "bgmPlaying", id: "field", negate: true }] });
+
+    const listed = readSuccess(executeEditOperation(source, "list-commands", {
+      map: "map", event: "npc", page: 0,
+    })).result as Array<{ readOnly: boolean; command: Command }>;
+    expect(listed.map((row) => row.command)).toEqual(audio);
+    expect(listed.map((row) => row.readOnly)).toEqual(new Array(audio.length).fill(true));
+
+    expect(executeEditOperation(source, "update-command", {
+      map: "map", event: "npc", page: 0,
+      address: { path: [], index: 0 }, field: "volume", value: "50",
+    }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+  });
+
   test("command field errors identify the field and legal alternatives", () => {
     const rejected = executeEditOperation(serializeProject(fixture()), "update-command", {
       map: "map", event: "npc", page: 0, address: { path: [], index: 0 }, field: "cps", value: "0",

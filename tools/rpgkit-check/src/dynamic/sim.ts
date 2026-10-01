@@ -83,7 +83,9 @@ export function clearLocalBank(sw: SwitchState): void {
 export const pageConditions = flattenPageCondition;
 
 /** A stable fingerprint of the world-level state, for freeze/progress
- *  detection: where the player is and every saved bank. */
+ *  detection: where the player is and every saved bank. Audio is deliberately
+ *  excluded: a BGM cursor advances every tick and must not disguise a frozen
+ *  gameplay fiber as world progress. */
 export function worldFingerprint(state: SessionState): string {
   const entries = (record: Readonly<Record<string, unknown>>) =>
     Object.entries(record).sort(([a], [b]) => a.localeCompare(b));
@@ -123,9 +125,10 @@ export { createSwitchState };
 /** The ConditionContext the engine itself would derive for this state, so a
  *  check tool's activePage/evalCondition calls see the same facts the runtime
  *  does: worldIdle, each live event's active page/sprite (for appearance
- *  conditions), and the per-visit tileProperty overrides (for tileProperty
- *  conditions). Without it, KV1 conditions conservatively evaluate false and
- *  pages the engine really activates look dead to the checks. */
+ *  conditions), persistent audio intent (for bgmPlaying), and the per-visit
+ *  tileProperty overrides (for tileProperty conditions). Without it, runtime
+ *  conditions can conservatively evaluate false and pages the engine really
+ *  activates look dead to the checks. */
 export function checkConditionContext(state: SessionState, map: MapDef): ConditionContext {
   const eventPages: Record<string, EventPageAppearance> = {};
   for (const ev of map.events ?? []) {
@@ -136,6 +139,7 @@ export function checkConditionContext(state: SessionState, map: MapDef): Conditi
   }
   return {
     worldIdle: isSessionWorldIdle(state),
+    audio: state.interp.audio,
     eventPages,
     eventAppearances: state.interp.eventAppearances,
     tileProperties: state.interp.tileProperties,

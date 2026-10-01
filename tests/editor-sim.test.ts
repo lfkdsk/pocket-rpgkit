@@ -630,8 +630,10 @@ simDescribe("editor budget", () => {
     // inspector/passage mode/transfer picking (E2), the two bundled documents,
     // and KS1's embedded command schema/read-only summaries: 608,486 B.
     // E3 intentionally adds the production GameView/session renderer to the
-    // editor-only entry plus its debug adapter; measured total: 1,016,715 B.
-    // The separate Sunstone isolation gate proves games do not pay for it.
-    expect(js).toBeLessThan(1_030_000);
+    // editor-only entry plus its debug adapter, and KAU1 adds the audio schema
+    // plus read-only audio command/condition summaries; measured total:
+    // 1,038,828 B. The separate Sunstone isolation gate proves games do
+    // not pay for it.
+    expect(js).toBeLessThan(1_050_000);
   });
 });

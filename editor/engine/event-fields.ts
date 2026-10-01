@@ -19,6 +19,7 @@ import {
   defaultCondition,
   flattenCommands,
   isEditableCommand,
+  isEditableCondition,
   type BasicMoveStep,
   type ConditionKind,
   type FlatCommandRow,
@@ -142,6 +143,11 @@ export function conditionFields(condition: Condition, prefix = ""): EditableFiel
       return [field(p("dir"), "DIR", condition.dir, "enum", DIRS)];
     case "worldIdle":
       return [field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS)];
+    case "bgmPlaying":
+      return [
+        field(p("id"), "BGM", condition.id ?? "(any)", "text", undefined, true),
+        field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS, true),
+      ];
     case "ext":
       return [field(p("call"), "CALL", condition.call, "text", undefined, true), field(p("args"), "ARGS", JSON.stringify(condition.args), "text", undefined, true)];
     case "appearance":
@@ -180,12 +186,14 @@ export function commandFields(command: Command): EditableField[] {
     }
     case "selfSwitch":
       return [field("key", "KEY", command.key, "enum", ["A", "B", "C", "D"]), field("value", "VALUE", command.value, "boolean", BOOLS)];
-    case "if":
+    case "if": {
+      const conditionReadOnly = !isEditableCondition(command.if);
       return [
-        field("if.kind", "KIND", command.if.kind, "enum", CONDITION_KINDS),
+        field("if.kind", "KIND", command.if.kind, "enum", CONDITION_KINDS, conditionReadOnly),
         ...conditionFields(command.if, "if."),
         field("else", "ELSE", command.else !== undefined, "boolean", BOOLS),
       ];
+    }
     case "transfer":
       return [
         field("map", "MAP", operand(command.map)), field("x", "X", operand(command.x)),
@@ -203,6 +211,24 @@ export function commandFields(command: Command): EditableField[] {
     case "gold": return [field("set", "MODE", command.set, "enum", ["add", "sub"]), field("amount", "AMOUNT", command.amount, "integer")];
     case "item": return [field("item", "ITEM", command.item), field("set", "MODE", command.set, "enum", ["add", "sub"]), field("count", "COUNT", command.count, "integer")];
     case "se": return [field("name", "NAME", command.name), field("volume", "VOLUME", command.volume ?? "", "integer"), field("pitch", "PITCH", command.pitch ?? "", "integer")];
+    case "playBgm":
+    case "playBgs":
+    case "playSe":
+      return [
+        field("id", "ID", command.id, "text", undefined, true),
+        field("volume", "VOLUME", command.volume ?? "", "integer", undefined, true),
+        field("pitch", "PITCH", command.pitch ?? "", "integer", undefined, true),
+      ];
+    case "playMe":
+      return [
+        field("id", "ID", command.id, "text", undefined, true),
+        field("duration", "DURATION", command.duration, "number", undefined, true),
+        field("volume", "VOLUME", command.volume ?? "", "integer", undefined, true),
+        field("pitch", "PITCH", command.pitch ?? "", "integer", undefined, true),
+      ];
+    case "fadeoutBgm":
+    case "fadeoutBgs":
+      return [field("duration", "DURATION", command.duration, "number", undefined, true)];
     case "common": return [field("id", "ID", command.id)];
     case "place": return [field("target", "TARGET", target(command.target)), field("x", "X", command.x, "integer"), field("y", "Y", command.y, "integer"), field("dir", "DIR", command.dir ?? "down", "enum", DIRS)];
     case "erase":
@@ -225,6 +251,11 @@ export function commandFields(command: Command): EditableField[] {
     case "screenBackdrop":
     case "mapAnim":
     case "stopAnim":
+    case "stopBgm":
+    case "pauseBgm":
+    case "resumeBgm":
+    case "saveBgm":
+    case "replayBgm":
     case "battle": return [];
   }
 }
@@ -244,6 +275,7 @@ export function commandInspectorRows(commands: readonly Command[]): InspectorCom
 
 function editCondition(condition: Condition, key: string, raw: string): FieldEdit<Condition> {
   if (condition.kind === "ext") return bad("extension conditions are read-only");
+  if (condition.kind === "bgmPlaying") return bad("bgmPlaying conditions are read-only");
   if (condition.kind === "switch") {
     if (key === "id") return identifier(raw, "switch id").ok ? good({ ...condition, id: raw }) : bad("switch id has invalid characters");
     if (key === "value") { const value = bool(raw); return value === null ? bad("value must be true or false") : good({ ...condition, value }); }
@@ -352,6 +384,9 @@ export function editCommandField(command: Command, key: string, raw: string): Fi
       break;
     }
     case "if": {
+      if ((key === "if.kind" || key.startsWith("if.")) && !isEditableCondition(command.if)) {
+        return bad(`${command.if.kind} conditions are read-only`);
+      }
       if (key === "if.kind") {
         const kind = enumValue(raw, CONDITION_KINDS, "condition kind");
         return kind.ok ? good({ ...command, if: defaultCondition(kind.value) }) : kind;

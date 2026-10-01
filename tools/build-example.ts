@@ -24,7 +24,7 @@ export const EXAMPLES = ["meadow", "sunstone", "grow", "wander"] as const;
 /** The examples plus the editor app. */
 export const APPS = [...EXAMPLES, "editor"] as const;
 /** Small apps that exist only for the sim suites. */
-export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim"] as const;
+export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kau1-audio"] as const;
 
 const root = resolve(import.meta.dir, "..");
 

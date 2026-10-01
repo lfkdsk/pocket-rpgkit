@@ -62,8 +62,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // session installs it. KB6 fix 1's host-portable JSON clone fast path adds
 // 2,257 bytes of shared engine code: it replaces per-property defineProperty calls with
 // ordinary assignment while retaining the __proto__ data-key guard. The
-// distinctive battle identifiers below remain absent.
-const EXPECTED_BYTES = 558_617;
+// distinctive battle identifiers below remain absent. KAU1's deterministic
+// audio state/commands and generic effects injection point are also shared;
+// its separately imported WAV host adapter remains absent (pinned by
+// audio-bundle-isolation.test.ts). The exact combined size is re-measured
+// after every shared-path change.
+const EXPECTED_BYTES = 568_033;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

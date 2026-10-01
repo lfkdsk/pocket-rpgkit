@@ -3,6 +3,7 @@ import {
   addPageCondition,
   commandFields,
   commandInspectorRows,
+  conditionFields,
   deletePageCondition,
   editCommandField,
   editPageConditionField,
@@ -123,6 +124,36 @@ describe("event inspector command fields", () => {
     expect(editCommandField({ op: "ext", call: "game.keep", args: { x: 1 } }, "args", "{}"))
       .toMatchObject({ ok: false, error: "ext is read-only" });
   });
+
+  test("shows audio command fields without exposing field edits", () => {
+    const audio: Command[] = [
+      { op: "playBgm", id: "field", volume: 80, pitch: 90 },
+      { op: "fadeoutBgm", duration: 1.5 },
+      { op: "stopBgm" },
+      { op: "pauseBgm" },
+      { op: "resumeBgm" },
+      { op: "playBgs", id: "rain" },
+      { op: "fadeoutBgs", duration: 0 },
+      { op: "playMe", id: "victory", duration: 4, volume: 75 },
+      { op: "playSe", id: "door", pitch: 120 },
+      { op: "saveBgm" },
+      { op: "replayBgm" },
+    ];
+    const rows = commandInspectorRows(audio);
+    expect(rows.every((row) => row.readOnly && !row.supported)).toBe(true);
+    expect(rows.map((row) => row.fields.map((entry) => entry.key))).toEqual([
+      ["id", "volume", "pitch"],
+      ["duration"],
+      [], [], [],
+      ["id", "volume", "pitch"],
+      ["duration"],
+      ["id", "duration", "volume", "pitch"],
+      ["id", "volume", "pitch"],
+      [], [],
+    ]);
+    expect(rows.flatMap((row) => row.fields).every((entry) => entry.readOnly)).toBe(true);
+    expect(editCommandField(audio[0]!, "volume", "50")).toMatchObject({ ok: false, error: "playBgm is read-only" });
+  });
 });
 
 describe("event inspector page and condition fields", () => {
@@ -157,5 +188,29 @@ describe("event inspector page and condition fields", () => {
     expect(page.condition).toEqual({ all: [ext, { kind: "gold", amount: 25 }] });
     page = deletePageCondition(page, { kind: "all", index: 1 });
     expect(page.condition?.all).toEqual([ext]);
+  });
+
+  test("shows and preserves BGM conditions as read-only", () => {
+    const condition: Condition = { kind: "bgmPlaying", id: "field", negate: true };
+    expect(conditionFields(condition)).toEqual([
+      expect.objectContaining({ key: "id", value: "field", readOnly: true }),
+      expect.objectContaining({ key: "negate", value: true, readOnly: true }),
+    ]);
+
+    const page: Page = { trigger: "action", condition: { all: [condition] }, commands: [] };
+    expect(editPageConditionField(page, { kind: "all", index: 0 }, "id", "other"))
+      .toMatchObject({ ok: false, error: "bgmPlaying conditions are read-only" });
+
+    const conditional: Command = { op: "if", if: condition, then: [] };
+    expect(commandFields(conditional)).toEqual([
+      expect.objectContaining({ key: "if.kind", readOnly: true }),
+      expect.objectContaining({ key: "if.id", readOnly: true }),
+      expect.objectContaining({ key: "if.negate", readOnly: true }),
+      expect.objectContaining({ key: "else" }),
+    ]);
+    expect(editCommandField(conditional, "if.kind", "switch"))
+      .toMatchObject({ ok: false, error: "bgmPlaying conditions are read-only" });
+    expect(editCommandField(conditional, "if.id", "other"))
+      .toMatchObject({ ok: false, error: "bgmPlaying conditions are read-only" });
   });
 });

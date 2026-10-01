@@ -351,6 +351,116 @@ describe("rpgkit-check explore", () => {
   });
 });
 
+describe("rpgkit-check explore: audio-conditioned pages", () => {
+  test("uses live BGM state when selecting an action page", () => {
+    const project = grassProject([
+      {
+        id: "boot",
+        x: 0,
+        y: 0,
+        pages: [
+          {
+            trigger: "autorun",
+            commands: [
+              { op: "playBgm", id: "field" },
+              { op: "selfSwitch", key: "A", value: true },
+            ],
+          },
+          { trigger: "autorun", condition: { selfSwitch: "A" }, commands: [] },
+        ],
+      },
+      {
+        id: "listener",
+        x: 4,
+        y: 4,
+        pages: [{
+          trigger: "action",
+          condition: { all: [{ kind: "bgmPlaying", id: "field" }] },
+          commands: [{ op: "text", lines: ["I hear it"] }],
+        }],
+      },
+    ]);
+    project.audio = { field: "audio:wav.field" };
+
+    const report = checkExplore(project, { frames: 600 });
+    expect(report.endedReason).toBe("complete");
+    expect(report.events.find((event) => event.event === "listener")!.pages[0]).toBeGreaterThan(0);
+    expect(report.neverTriggered).toEqual([]);
+  });
+
+  test("waits for an ME to release BGM before declaring completion", () => {
+    const project = grassProject([
+      {
+        id: "boot",
+        x: 0,
+        y: 0,
+        pages: [
+          {
+            trigger: "autorun",
+            commands: [
+              { op: "playBgm", id: "field" },
+              { op: "playMe", id: "fanfare", duration: 1 },
+              { op: "selfSwitch", key: "A", value: true },
+            ],
+          },
+          { trigger: "autorun", condition: { selfSwitch: "A" }, commands: [] },
+        ],
+      },
+      {
+        id: "listener",
+        x: 4,
+        y: 4,
+        pages: [{
+          trigger: "action",
+          condition: { all: [{ kind: "bgmPlaying", id: "field" }] },
+          commands: [{ op: "text", lines: ["The fanfare ended"] }],
+        }],
+      },
+    ]);
+    project.audio = {
+      field: "audio:wav.field",
+      fanfare: "audio:wav.fanfare",
+    };
+
+    const report = checkExplore(project, { frames: 600 });
+    expect(report.framesRun).toBeGreaterThan(60);
+    expect(report.events.find((event) => event.event === "listener")!.pages[0]).toBeGreaterThan(0);
+    expect(report.neverTriggered).toEqual([]);
+  });
+
+  test("does not treat a delayed parallel BGM change as benign ambience", () => {
+    const project = grassProject([
+      {
+        id: "delayed-music",
+        x: 0,
+        y: 0,
+        pages: [{
+          trigger: "parallel",
+          commands: [
+            { op: "wait", seconds: 0.75 },
+            { op: "playBgm", id: "field" },
+          ],
+        }],
+      },
+      {
+        id: "listener",
+        x: 4,
+        y: 4,
+        pages: [{
+          trigger: "action",
+          condition: { all: [{ kind: "bgmPlaying", id: "field" }] },
+          commands: [{ op: "text", lines: ["Delayed music"] }],
+        }],
+      },
+    ]);
+    project.audio = { field: "audio:wav.field" };
+
+    const report = checkExplore(project, { frames: 600, stuckFrames: 240 });
+    expect(report.framesRun).toBeGreaterThan(45);
+    expect(report.events.find((event) => event.event === "listener")!.pages[0]).toBeGreaterThan(0);
+  });
+});
+
 describe("rpgkit-check explore: example documents", () => {
   for (const [path, maps] of [
     ["examples/sunstone/data/sunstone.json", 3],

@@ -425,9 +425,11 @@ simDescribe("sunstone — render budget", () => {
     // the generic runtime appearance/layer render path, KM1's runtime movement
     // controls with their separately compiled legacy loop, KA1's state-driven
     // map animation layer, and KS1's shared screen effect, scripted camera,
-    // backdrop and pooled balloon renderer: 553,935 B measured. The bound
-    // keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(562_000);
+    // backdrop and pooled balloon renderer, KAU1 deterministic audio, AI2's
+    // optional trace, KB6 kept-alive scenes, and battle audio restoration:
+    // 568,033 B measured. The bound keeps a narrow margin so an accidental
+    // bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(576_000);
   });
 });
 

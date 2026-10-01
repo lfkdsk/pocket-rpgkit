@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-nexus/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 35 commands), map-character motion,
+  event interpreter (pages, triggers, 46 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -474,7 +474,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 35 commands
+### The 46 commands
 
 | op | purpose |
 | --- | --- |
@@ -483,7 +483,7 @@ earlier resident map within the same host frame.
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
-| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, or a registered `ext` predicate, with `else` |
+| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, current `bgmPlaying`, or a registered `ext` predicate, with `else` |
 | `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }` |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
 | `moveControl` | change a target's autonomous mode, stop it, start bounded wandering, or override speed/run/frequency/collision/facing settings |
@@ -501,6 +501,13 @@ earlier resident map within the same host frame.
 | `gold` | add/sub gold |
 | `item` | add/remove an item count |
 | `se` | emit a sound cue the host drains |
+| `playBgm` | start or replace looping background music with optional volume and pitch |
+| `fadeoutBgm` | fade BGM to silence over virtual seconds, then remove it |
+| `stopBgm` / `pauseBgm` / `resumeBgm` | control the current BGM without consulting host time |
+| `playBgs` / `fadeoutBgs` | start ambient background sound or fade it to silence independently of BGM |
+| `playMe` | play a duration-authored music effect while BGM is suspended, then resume BGM |
+| `playSe` | emit a transient sound effect by logical audio id (`se` remains compatible) |
+| `saveBgm` / `replayBgm` | snapshot and restore BGM id, volume, pitch, and virtual position |
 | `erase` | remove this event for the rest of the map visit |
 | `exit` | end this fiber |
 | `common` | run a common event's command list |
@@ -629,6 +636,8 @@ event, input lock, modal, player route, pending transfer/battle, fade, active
 scene, fatal overlay, or host-owned menu. It is derived when the condition is
 read and adds no save field; `negate:true` inverts it. Parallel fibers and
 attract/demo input ownership alone do not make the world busy.
+`{kind:"bgmPlaying", id?, negate?}` tests any or one named BGM and is false
+while that BGM is paused or suspended behind an ME.
 Switch/variable ids prefixed `local.` reset on every map entry; a page `dir`
 sets the character's initial facing. Conditions compile to forward jumps; no
 command can express a loop, and the runtime backstops a hand-crafted cyclic
@@ -735,7 +744,11 @@ as `null`.
 
 ```ts
 interface BattleRules {
-  start(ext, setup, seed, context): { state: JsonValue; ext: JsonValue } | null;
+  start(ext, setup, seed, context): {
+    state: JsonValue;
+    ext: JsonValue;
+    audio?: { bgm: { id: string; volume?: number; pitch?: number } | null };
+  } | null;
   step(state, input, ticks): JsonValue;
   done(state): null | {
     ext: JsonValue;
@@ -762,6 +775,15 @@ switch writes, item counts, and gold commit atomically before the matching
 result branch; an optional transfer runs after that branch. `draw` has no
 branch.
 
+When `start` omits `audio`, the existing audio state continues unchanged for
+backwards compatibility. Supplying `audio` suspends the complete map mix
+(including BGM/BGS/ME, fades, pause state, and an authored `saveBgm` snapshot),
+then plays only the requested battle BGM; `{ bgm: null }` requests silence.
+Completion restores the suspended state in the same reducer fold before the
+result branch resumes, so map playback does not advance behind a default-frozen
+battle. The game-owned track id must be non-empty, volume must be an integer
+from 0 through 100, and pitch an integer from 50 through 150.
+
 An `items` result replaces only the listed ids rather than replacing the
 whole backpack. Each finite count is floored through `clampFiniteVar`, clamped
 to `[0, system.inventory.maxPerItem]`, and zero removes the id. All removals
@@ -787,7 +809,9 @@ dialog layers mounted but hidden (`display:none`, so core skips layout,
 paint and hit-testing) while a scene is open, pausing their per-frame sync
 hooks; the registered scene component mounts on first use and likewise stays
 mounted (hidden) between battles, so scene entry/exit frames pay no
-mount/unmount cost. That component
+mount/unmount cost. The optional effects component is a permanent root sibling
+of both visibility gates, so a battle BGM swap and map-BGM restoration do not
+remount the audio driver. The battle component
 receives only `{ state, width, height }`, so every visible animation cursor
 must be in battle state:
 
@@ -890,9 +914,10 @@ pixel checks, and the Hz/determinism proofs).
 ## Using it in your own project
 
 The published package exports the engine surface (`pocket-rpgkit`), the
-Solid components (`pocket-rpgkit/ui`), the battle UI kit
-(`pocket-rpgkit/ui/battle`), the host adapters (`pocket-rpgkit/host`), and
-the schema (`pocket-rpgkit/schema`). The
+Solid components (`pocket-rpgkit/ui`), the opt-in WAV bridge
+(`pocket-rpgkit/ui/audio`), the battle UI kit (`pocket-rpgkit/ui/battle`),
+the host adapters (`pocket-rpgkit/host`), and the schema
+(`pocket-rpgkit/schema`). The
 in-repo examples import the sources relatively, because PocketJS's build
 pass 1 walks relative imports; `examples/meadow/meadow.tsx` shows the
 reducer loop by hand:
@@ -920,6 +945,28 @@ mount(() => (
             attractTape={loadAttractTape(DEMO_TAPE_RUNS).masks} />
 ));
 ```
+
+### Opt-in host audio
+
+An audio-enabled project maps logical ids to complete `audio:wav.*` pak keys
+and explicitly injects the host effect:
+
+```tsx
+import { GameView } from "pocket-rpgkit/ui";
+import { createAudioEffects } from "pocket-rpgkit/ui/audio";
+
+const project = { /* ... */, audio: { field: "audio:wav.music/field" } };
+const AudioEffects = createAudioEffects(project.audio);
+
+mount(() => <GameView project={project} assets={GAME_ASSETS} effects={AudioEffects} />);
+```
+
+If a project does not need host playback, omit both the audio import and
+`effects` prop; the WAV decoder and PocketJS audio SDK then stay out of its
+bundle. A project may still declare `project.audio` for reducer and QA use
+without pulling in that adapter. A host without the audio module, or a
+missing/malformed resource, is silent while reducer state, conditions, saves,
+and rewind continue deterministically.
 
 A game supplies its own project document, its own baked art (the
 `tools/lib/chunks.ts` pipeline turns its sheet PNGs into map chunks and

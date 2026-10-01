@@ -31,6 +31,7 @@ import {
 } from "../../../src/engine/session.ts";
 import type { BattleRules } from "../../../src/engine/battle.ts";
 import type { Dir, Project } from "../../../src/engine/types.ts";
+import { checkConditionContext } from "../../../tools/rpgkit-check/src/dynamic/sim.ts";
 
 const NOOP_BATTLE_RULES: BattleRules = {
   start: () => null,
@@ -137,6 +138,7 @@ export function paintSchematic(cfg: ShotConfig): SchematicPaint {
   const sheets = new Map(project.sheets.map((s) => [s.id, s]));
   const table = tableWithBodies(buildPassage(map, sheets), state.chars);
   const ext = { runtime: session.extensions, ext: state.ext };
+  const conditionContext = checkConditionContext(state, map);
   const reach = new Set(cfg.reach ?? []);
 
   const rgba = new Uint8Array(width * height * 4);
@@ -208,7 +210,7 @@ export function paintSchematic(cfg: ShotConfig): SchematicPaint {
     const ch = state.chars.chars[ev.id];
     const ex = ch ? ch.tx : ev.x;
     const ey = ch ? ch.ty : ev.y;
-    const active = activePage(ev, state.sw, map.id, state.move.facing, ext);
+    const active = activePage(ev, state.sw, map.id, state.move.facing, ext, conditionContext);
     const color = active ? (TRIGGER_COLORS[active.page.trigger] ?? INACTIVE) : INACTIVE;
     const w = ev.w ?? 1;
     const h = ev.h ?? 1;

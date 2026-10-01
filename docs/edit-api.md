@@ -368,6 +368,13 @@ newline-separated text lines). Only editor-owned ops are field-editable:
 `READ_ONLY_COMMAND`; a bad field or value fails with `INVALID_COMMAND_FIELD`
 listing the legal fields.
 
+The audio ops `playBgm`, `fadeoutBgm`, `stopBgm`, `pauseBgm`, `resumeBgm`,
+`playBgs`, `fadeoutBgs`, `playMe`, `playSe`, `saveBgm`, and `replayBgm` are
+accepted by `insert-command`, returned intact by `list-commands`, and checked
+by whole-project validation. They are deliberately read-only for
+`update-command`, as is the `bgmPlaying` condition inside a page or `if`;
+field-level controls have not landed in the editor yet.
+
 ```sh
 $ bun run rpgkit-edit update-command --file examples/sunstone/data/sunstone.json --dry-run \
     --json '{"map":"village","event":"elder","page":0,"address":{"path":[],"index":0},"field":"lines","value":"New text"}'

@@ -287,6 +287,37 @@ describe("editor command tree", () => {
     expect(changed.slice(0, screen.length).map((command) => JSON.stringify(command))).toEqual(bytes);
     expect(updateCommand(changed, root(0), switchCommand("forbidden"))).toBe(changed);
   });
+
+  test("summarizes audio commands while preserving them as opaque read-only rows", () => {
+    const audio: Command[] = [
+      { op: "playBgm", id: "field", volume: 80, pitch: 90 },
+      { op: "fadeoutBgm", duration: 1.5 },
+      { op: "stopBgm" },
+      { op: "pauseBgm" },
+      { op: "resumeBgm" },
+      { op: "playBgs", id: "rain" },
+      { op: "fadeoutBgs", duration: 0 },
+      { op: "playMe", id: "victory", duration: 4, volume: 75 },
+      { op: "playSe", id: "door", pitch: 120 },
+      { op: "saveBgm" },
+      { op: "replayBgm" },
+    ];
+    const rows = flattenCommands(audio);
+    expect(rows.every((row) => row.readOnly && !row.editable)).toBe(true);
+    expect(rows.map((row) => row.summary)).toEqual([
+      "Play BGM field",
+      "Fade out BGM over 1.5s",
+      "Stop BGM",
+      "Pause BGM",
+      "Resume BGM",
+      "Play BGS rain",
+      "Fade out BGS over 0s",
+      "Play ME victory for 4s",
+      "Play SE door",
+      "Save BGM",
+      "Replay BGM",
+    ]);
+  });
 });
 
 describe("editor condition and route helpers", () => {
@@ -333,6 +364,22 @@ describe("editor condition and route helpers", () => {
     expect(clauses[5]!.summary).toContain('"chapter":4');
     expect(pageConditionSummary(pageCondition)).toContain("Switch opened is ON AND Self switch B is ON");
     expect(pageConditionSummary()).toBe("Always");
+  });
+
+  test("summarizes BGM conditions without making them editor-owned", () => {
+    const any: Condition = { kind: "bgmPlaying" };
+    const specific: Condition = { kind: "bgmPlaying", id: "field", negate: true };
+    expect(conditionSummary(any)).toBe("Any BGM is playing");
+    expect(conditionSummary(specific)).toBe("BGM field is not playing");
+    expect(isEditableCondition(any)).toBe(false);
+
+    const clauses = pageConditionClauses({ all: [specific] });
+    expect(clauses).toEqual([expect.objectContaining({
+      condition: specific,
+      summary: "BGM field is not playing",
+      editable: false,
+      readOnly: true,
+    })]);
   });
 
   test("names every basic move-route step and safely displays advanced steps", () => {

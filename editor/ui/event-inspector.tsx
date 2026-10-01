@@ -124,6 +124,14 @@ function conditionDetail(condition: Condition): { fields: InspectorField[]; read
       return { fields: [field("dir", "DIR", condition.dir)], readOnly: false };
     case "worldIdle":
       return { fields: [field("negate", "NEGATE", condition.negate ?? false)], readOnly: false };
+    case "bgmPlaying":
+      return {
+        fields: [
+          field("id", "ID", condition.id ?? "(any)", true),
+          field("negate", "NEGATE", condition.negate ?? false, true),
+        ],
+        readOnly: true,
+      };
     case "ext":
       return {
         fields: [field("call", "CALL", condition.call, true), field("args", "ARGS", stringValue(condition.args), true)],
@@ -215,6 +223,10 @@ function conditionSummary(condition: Condition): string {
     case "gold": return `gold >= ${condition.amount}`;
     case "facing": return condition.dir;
     case "worldIdle": return condition.negate ? "world busy" : "world idle";
+    case "bgmPlaying": {
+      const target = condition.id === undefined ? "Any BGM" : `BGM ${condition.id}`;
+      return `${target} is ${condition.negate ? "not " : ""}playing`;
+    }
     case "ext": return condition.call;
     case "appearance": return `appearance ${condition.sprite ?? "default"}`;
     case "tileProperty": return `tile (${condition.x}, ${condition.y})`;

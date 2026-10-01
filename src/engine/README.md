@@ -11,6 +11,9 @@ state.
   mask mirror.
 - `screen.ts` — sparse deterministic fade, named tint, flash, shake, scripted
   camera, character-balloon, and full-screen backdrop presentation state.
+- `audio.ts` — sparse, saveable BGM/BGS/ME intent, fixed-reference-tick
+  playback/fade clocks, and MV-style saved-BGM state. PCM and host handles
+  deliberately stay outside the reducer.
 - `viewport.ts` — centering offset for maps smaller than the host viewport.
 - `start.ts` — camera placement derived from a project's start tile.
 - `tiles.ts` — tile ids and the baked-chunk constants.
@@ -23,7 +26,7 @@ state.
   `approach` move steps (fixed neighbour order, respects all edge guards
   and bodies; the search is sliced across reference ticks to bound QuickJS
   frame cost).
-- `interpreter.ts` — event pages, triggers, the 35-command interpreter
+- `interpreter.ts` — event pages, triggers, the 46-command interpreter
   (the v1 15 plus `lockInput` / `unlockInput` / `place` / `shop` / `ext` /
   `extChoice` / `battle` / `moveControl` / `appearance` / `layer` /
   `tileProperty` / `mapAnim` / `stopAnim` and seven screen-presentation
@@ -200,6 +203,17 @@ Conventions:
   flash/shake, scripted camera, and balloons. Default-frozen battles pause all
   screen-effect clocks and hide the map presentation; `worldContinues:true`
   advances it behind the battle scene.
+- **Audio state:** `playBgm`, `fadeoutBgm`, `stopBgm`, `pauseBgm`,
+  `resumeBgm`, `playBgs`, `fadeoutBgs`, `playMe`, `playSe`, `saveBgm`, and
+  `replayBgm` write sparse `InterpState.audio`. BGM/BGS/ME position and fade
+  counters advance on the fixed 60 Hz reference clock. ME suspends BGM until
+  its authored duration ends; BGS continues independently. `{kind:
+  "bgmPlaying", id?, negate?}` is false while BGM is paused or suspended by
+  ME. Persistent audio intent round-trips through saves and attract rewind;
+  SE remains an ordered, one-tick cue and never enters a save. A game may
+  return `BattleStart.audio` to suspend that complete state, play one battle
+  BGM (or silence), and restore the exact map mix in the completion fold;
+  omitting it preserves the legacy continue-through behavior.
 - **Persistence:** in-flight tween endpoints and remaining reference ticks,
   camera focus, balloon frame age, and persistent layers all round-trip in
   saves and attract rewind. Older saves omit `screen` and retain the zero-cost
@@ -211,7 +225,10 @@ Conventions:
 - Edges are one frame wide: the host computes `pressed = buttons & ~prev`
   for CIRCLE (confirm), CROSS (cancel), UP and DOWN and passes booleans.
 - `state.cues` lists sound effects emitted by commands on the latest step;
-  drain it after every step (it is cleared at the top of the next one).
+  drain it after every step (it is cleared at the top of the next one). A
+  session whose project declares `audio` preserves all reference-tick cues
+  when a low-Hz host frame folds several ticks; projects without that table
+  retain the original last-tick-only fold and dormant allocation path.
 - All switch/variable/item/gold values and the mulberry32 RNG cursor live
   in `state.sw`, a plain JSON-serializable object: the P1⑤ save snapshot.
 - **Invariant: every write into `state.sw`'s numeric banks (`gold`,
@@ -404,6 +421,11 @@ otherwise its returned JSON state becomes `SessionState.scene.state`.
 `context` is a read-only snapshot of the session's ext, switches, variables,
 items and gold at battle entry. Existing three-parameter implementations stay
 compatible because the additional argument may be ignored.
+Its result may also include
+`audio: { bgm: { id, volume?, pitch? } | null }`. Presence snapshots the
+complete map audio state, replaces it with only the battle track (or silence),
+and restores the snapshot atomically when `done` completes; omission leaves
+audio untouched. Invalid track fields are game-code contract errors.
 `BattleRules.step(state, input, ticks)` receives only scene input, once per
 host frame, with fixed-reference `ticks`. `done` returns ext, a
 win/lose/escape/draw result, optional variable/switch/item/gold replacements,
@@ -430,9 +452,11 @@ Tuxemon:
   map interpreter fiber stay frozen;
 - the absolute interpreter clock remains rate-stable while relative wait and
   typewriter timers are shifted with it, so paused commands do not elapse;
-- `GameView` hides the map/dialog tree and renders the registered battle
-  component from `{ state, width, height }` only; a parked map modal remains
-  in reducer state, but the scene owns confirm/cancel until it closes.
+- `GameView` keeps the map/dialog tree mounted but hides it, and renders the
+  registered battle component from `{ state, width, height }` only; a parked
+  map modal remains in reducer state, but the scene owns confirm/cancel until
+  it closes. The optional effects component stays mounted outside both scene
+  visibility gates.
 
 Pass `scene: { worldContinues: true }` to `createSession`, `GameView`, or
 `AttractController` to opt into background map simulation. Any battle request

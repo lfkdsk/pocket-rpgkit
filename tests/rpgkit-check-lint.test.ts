@@ -604,6 +604,82 @@ describe("rpgkit-check lint: missing references", () => {
   });
 });
 
+describe("rpgkit-check lint: declared audio references", () => {
+  test("an omitted audio table leaves state-only audio references valid", () => {
+    const p = cleanProject();
+    const page = p.maps[0]!.events![0]!.pages[0]!;
+    page.condition = { all: [{ kind: "bgmPlaying", id: "ambient" }] };
+    page.commands.push(
+      { op: "playBgm", id: "field" },
+      { op: "playBgs", id: "rain" },
+      { op: "playMe", id: "victory", duration: 1 },
+      { op: "playSe", id: "door" },
+      { op: "se", name: "legacy-cue" },
+      { op: "if", if: { kind: "bgmPlaying", id: "field" }, then: [] },
+    );
+    expect(findingsOf(lint(p), "lint/audio-missing")).toEqual([]);
+  });
+
+  test("declared tables reject missing command and condition ids at precise paths", () => {
+    const p = cleanProject();
+    p.audio = { field: "audio:wav.field" };
+    const page = p.maps[0]!.events![0]!.pages[0]!;
+    page.condition = { all: [{ kind: "bgmPlaying", id: "missing-page" }] };
+    page.commands.push(
+      { op: "playBgm", id: "field" },
+      { op: "playBgs", id: "missing-bgs" },
+      {
+        op: "if",
+        if: { kind: "bgmPlaying", id: "missing-if" },
+        then: [{ op: "playMe", id: "missing-me", duration: 1 }],
+      },
+      {
+        op: "choices",
+        prompt: "sound?",
+        options: [{ text: "yes", commands: [{ op: "playSe", id: "missing-se" }] }],
+      },
+      { op: "se", name: "legacy-cue" },
+    );
+    p.commonEvents = [{
+      id: "audio-common",
+      trigger: "none",
+      commands: [{ op: "playBgm", id: "missing-common" }],
+    }];
+
+    const findings = findingsOf(lint(p), "lint/audio-missing");
+    expect(findings).toHaveLength(6);
+    expect(findings.every((finding) => finding.severity === "error")).toBe(true);
+    expect(findings.map((finding) => finding.loc)).toContainEqual({
+      map: "m1", event: "ev1", page: 0,
+    });
+    expect(findings.map((finding) => finding.loc.commandPath)).toContainEqual([3]);
+    expect(findings.map((finding) => finding.loc.commandPath)).toContainEqual([4, "then", 0]);
+    expect(findings.map((finding) => finding.loc.commandPath)).toContainEqual([5, "options", 0, 0]);
+    expect(findings.map((finding) => finding.loc)).toContainEqual({
+      common: "audio-common", commandPath: [0],
+    });
+  });
+
+  test("declared ids and id-less bgmPlaying remain silent", () => {
+    const p = cleanProject();
+    p.audio = {
+      field: "audio:wav.field",
+      rain: "audio:wav.rain",
+      victory: "audio:wav.victory",
+      door: "audio:wav.door",
+    };
+    const page = p.maps[0]!.events![0]!.pages[0]!;
+    page.condition = { all: [{ kind: "bgmPlaying" }] };
+    page.commands.push(
+      { op: "playBgm", id: "field" },
+      { op: "playBgs", id: "rain" },
+      { op: "playMe", id: "victory", duration: 1 },
+      { op: "playSe", id: "door" },
+    );
+    expect(findingsOf(lint(p), "lint/audio-missing")).toEqual([]);
+  });
+});
+
 describe("rpgkit-check lint: KV1 condition references", () => {
   test("appearance condition with a missing sprite → error", () => {
     const p = cleanProject();

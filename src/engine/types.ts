@@ -195,6 +195,9 @@ export type Condition =
   /** True only while the map world is the unobstructed top-level state.
    *  `negate` asks for any blocking world state instead. */
   | { kind: "worldIdle"; negate?: boolean }
+  /** True while a BGM is audibly advancing. A paused BGM or one suspended
+   *  behind an ME is not playing. `id` omitted matches any BGM. */
+  | { kind: "bgmPlaying"; id?: string; negate?: boolean }
   /** Game-owned pure condition handler, registered on createSession(). */
   | { kind: "ext"; call: string; args: JsonValue };
 
@@ -323,6 +326,19 @@ export type Command =
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }
   | { op: "se"; name: string; volume?: number; pitch?: number }
+  | { op: "playBgm"; id: string; volume?: number; pitch?: number }
+  | { op: "fadeoutBgm"; duration: number }
+  | { op: "stopBgm" }
+  | { op: "pauseBgm" }
+  | { op: "resumeBgm" }
+  | { op: "playBgs"; id: string; volume?: number; pitch?: number }
+  | { op: "fadeoutBgs"; duration: number }
+  /** ME is a deterministic one-shot. `duration` is virtual seconds; when
+   *  it expires, an unpaused BGM resumes from its held position. */
+  | { op: "playMe"; id: string; duration: number; volume?: number; pitch?: number }
+  | { op: "playSe"; id: string; volume?: number; pitch?: number }
+  | { op: "saveBgm" }
+  | { op: "replayBgm" }
   | { op: "erase" }
   | { op: "exit" }
   | { op: "common"; id: string }
@@ -617,6 +633,9 @@ export interface Project {
   sprites?: Record<string, SpriteDef>;
   /** Frame animations playable with the `mapAnim` command, by id. */
   animations?: AnimationDef[];
+  /** Logical audio id -> raw WAV pak key (`audio:wav.*`). Host playback is
+   *  opt-in; the reducer remains fully functional when this is absent. */
+  audio?: Record<string, string>;
   commonEvents?: CommonEvent[];
   maps: MapDef[];
 }

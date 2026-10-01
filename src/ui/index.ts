@@ -38,6 +38,8 @@ export {
   GameView,
   type BattleSceneComponent,
   type BattleSceneViewProps,
+  type GameEffectsComponent,
+  type GameEffectsProps,
   type GameViewProps,
 } from "./GameView.tsx";
 export type {

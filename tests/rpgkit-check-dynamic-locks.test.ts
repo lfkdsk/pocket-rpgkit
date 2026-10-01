@@ -66,6 +66,33 @@ describe("rpgkit-check locks: lock released on the same page", () => {
     expect(report.summary.dynamicChecks).toBe(1);
     expect(report.summary.unlocked).toBe(1);
   });
+
+  test("audio leaves stay intact while instrumenting a released lock", () => {
+    const project = baseProject([
+      { op: "playBgm", id: "field" },
+      { op: "saveBgm" },
+      { op: "lockInput" },
+      { op: "playBgs", id: "rain" },
+      { op: "playMe", id: "fanfare", duration: 0.1 },
+      { op: "playSe", id: "door" },
+      { op: "pauseBgm" },
+      { op: "resumeBgm" },
+      { op: "fadeoutBgm", duration: 0.1 },
+      { op: "fadeoutBgs", duration: 0.1 },
+      { op: "stopBgm" },
+      { op: "replayBgm" },
+      { op: "unlockInput" },
+    ]);
+    project.audio = {
+      field: "audio:wav.field",
+      rain: "audio:wav.rain",
+      fanfare: "audio:wav.fanfare",
+      door: "audio:wav.door",
+    };
+    const report = checkLocks(project, FAST);
+    expect(report.rows[0]!.outcome).toBe("unlocked");
+    expect(report.findings).toEqual([]);
+  });
 });
 
 describe("rpgkit-check locks: lock never released", () => {

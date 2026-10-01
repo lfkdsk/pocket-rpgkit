@@ -93,7 +93,7 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
     description:
       "Static health check of an rpgkit-project/v1 document: switches/variables read but never set " +
       "(or set but never read), dead pages (shadowed or contradictory conditions), missing references " +
-      "(transfer/place/common-event/item/sprite/sheet), empty choices, unreachable maps. " +
+      "(transfer/place/common-event/item/audio/sprite/sheet), empty choices, unreachable maps. " +
       "Returns findings with severity, location and a suggestion.",
     inputSchema: {
       type: "object",

@@ -44,7 +44,7 @@ import { initialCursor, stepCursor, HEADER_ORDER } from "../editor/engine/cursor
 import { SHEETS } from "../editor/engine/sheets.ts";
 import { TILE_SRC } from "../editor/engine/tile-keys.ts";
 import { EDITOR_SOURCES } from "../editor/sources.ts";
-import type { Project } from "../src/engine/types.ts";
+import type { Command, Condition, Project } from "../src/engine/types.ts";
 import { createSession, startSession, stepSession } from "../src/engine/session.ts";
 import { loadTileCells } from "../tools/lib/bake.ts";
 import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
@@ -152,6 +152,64 @@ describe("editor document gate", () => {
     const broken = structuredClone(project);
     (broken.maps[0]!.ground as unknown[])[0] = "bogus!!";
     expect(loadProject(JSON.stringify(broken)).errors.length).toBeGreaterThan(0);
+  });
+
+  test("accepts audio declarations, commands and BGM conditions at their schema boundaries", () => {
+    const project = bundled("meadow");
+    project.audio = {
+      field: "audio:wav.field",
+      rain: "audio:wav.weather.rain",
+    };
+    const commands: Command[] = [
+      { op: "playBgm", id: "field", volume: 0, pitch: 50 },
+      { op: "fadeoutBgm", duration: 0 },
+      { op: "stopBgm" },
+      { op: "pauseBgm" },
+      { op: "resumeBgm" },
+      { op: "playBgs", id: "rain", volume: 100, pitch: 150 },
+      { op: "fadeoutBgs", duration: 1.25 },
+      { op: "playMe", id: "victory", duration: 3 },
+      { op: "playSe", id: "door" },
+      { op: "saveBgm" },
+      { op: "replayBgm" },
+      { op: "if", if: { kind: "bgmPlaying", id: "field", negate: true }, then: [] },
+    ];
+    project.maps[0]!.events = [{
+      id: "audio",
+      x: 0,
+      y: 0,
+      pages: [{
+        condition: { all: [{ kind: "bgmPlaying" }] },
+        trigger: "action",
+        commands,
+      }],
+    }];
+    expect(validateProject(project)).toEqual([]);
+
+    const badPakKey = structuredClone(project);
+    badPakKey.audio!.field = "sounds/field.wav";
+    expect(validateProject(badPakKey).length).toBeGreaterThan(0);
+
+    const emptyCommandId = structuredClone(project);
+    (emptyCommandId.maps[0]!.events![0]!.pages[0]!.commands[0] as Extract<Command, { op: "playBgm" }>).id = "";
+    expect(validateProject(emptyCommandId).length).toBeGreaterThan(0);
+
+    const emptyConditionId = structuredClone(project);
+    const condition = emptyConditionId.maps[0]!.events![0]!.pages[0]!.commands[11] as Extract<Command, { op: "if" }>;
+    (condition.if as Extract<Condition, { kind: "bgmPlaying" }>).id = "";
+    expect(validateProject(emptyConditionId).length).toBeGreaterThan(0);
+
+    const badVolume = structuredClone(project);
+    (badVolume.maps[0]!.events![0]!.pages[0]!.commands[0] as Extract<Command, { op: "playBgm" }>).volume = 101;
+    expect(validateProject(badVolume).length).toBeGreaterThan(0);
+
+    const badPitch = structuredClone(project);
+    (badPitch.maps[0]!.events![0]!.pages[0]!.commands[5] as Extract<Command, { op: "playBgs" }>).pitch = 49;
+    expect(validateProject(badPitch).length).toBeGreaterThan(0);
+
+    const badDuration = structuredClone(project);
+    (badDuration.maps[0]!.events![0]!.pages[0]!.commands[6] as Extract<Command, { op: "fadeoutBgs" }>).duration = -0.01;
+    expect(validateProject(badDuration).length).toBeGreaterThan(0);
   });
 
   test("prototype-named event and switch ids play, load in the editor, and export", () => {

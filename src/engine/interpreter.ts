@@ -36,6 +36,14 @@ import {
   type ExtensionRuntime,
 } from "./extensions.ts";
 import { DEFAULT_PLAYER_NAME, substituteLines, substitutePlayerName } from "./player-name.ts";
+import {
+  advanceAudioStateInPlace,
+  audioStateEmpty,
+  cloneAudioState,
+  cloneAudioTrack,
+  type AudioState,
+  type AudioTrackState,
+} from "./audio.ts";
 import { TILE } from "./tiles.ts";
 import {
   cloneMoveControlState,
@@ -281,6 +289,8 @@ function tileOverrideFieldMatches(
  * and deliberately never serialized. */
 export interface ConditionContext {
   worldIdle: boolean;
+  /** Current persistent audio intent. Omitted means silence. */
+  audio?: Readonly<AudioState>;
   /** Current page index and authored sprite for each live map event. */
   eventPages?: Readonly<Record<string, EventPageAppearance>>;
   /** Per-visit overrides are separate so an event page switch can discard
@@ -349,6 +359,12 @@ export function evalCondition(
       // conservative false result.
       const idle = context?.worldIdle ?? false;
       return c.negate === true ? !idle : idle;
+    }
+    case "bgmPlaying": {
+      const bgm = context?.audio?.bgm;
+      const playing = bgm !== undefined && bgm.paused !== true && context?.audio?.me === undefined &&
+        (c.id === undefined || bgm.id === c.id);
+      return c.negate === true ? !playing : playing;
     }
     case "ext": {
       // Map acquisition validates registration. Missing handlers and
@@ -519,6 +535,17 @@ export type Instr =
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }
   | { op: "se"; name: string; volume: number; pitch: number }
+  | { op: "playBgm"; id: string; volume: number; pitch: number }
+  | { op: "fadeoutBgm"; frames: number }
+  | { op: "stopBgm" }
+  | { op: "pauseBgm" }
+  | { op: "resumeBgm" }
+  | { op: "playBgs"; id: string; volume: number; pitch: number }
+  | { op: "fadeoutBgs"; frames: number }
+  | { op: "playMe"; id: string; durationFrames: number; volume: number; pitch: number }
+  | { op: "playSe"; id: string; volume: number; pitch: number }
+  | { op: "saveBgm" }
+  | { op: "replayBgm" }
   | { op: "erase" }
   | { op: "exit" }
   | { op: "lockInput" }
@@ -664,6 +691,37 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
           break;
         case "se":
           emit({ op: "se", name: c.name, volume: c.volume ?? 80, pitch: c.pitch ?? 100 });
+          break;
+        case "playBgm":
+          emit({ op: "playBgm", id: c.id, volume: c.volume ?? 100, pitch: c.pitch ?? 100 });
+          break;
+        case "fadeoutBgm":
+          emit({ op: "fadeoutBgm", frames: secondsToFrames(c.duration, hz) });
+          break;
+        case "stopBgm":
+        case "pauseBgm":
+        case "resumeBgm":
+        case "saveBgm":
+        case "replayBgm":
+          emit({ op: c.op });
+          break;
+        case "playBgs":
+          emit({ op: "playBgs", id: c.id, volume: c.volume ?? 100, pitch: c.pitch ?? 100 });
+          break;
+        case "fadeoutBgs":
+          emit({ op: "fadeoutBgs", frames: secondsToFrames(c.duration, hz) });
+          break;
+        case "playMe":
+          emit({
+            op: "playMe",
+            id: c.id,
+            durationFrames: secondsToFrames(c.duration, hz),
+            volume: c.volume ?? 100,
+            pitch: c.pitch ?? 100,
+          });
+          break;
+        case "playSe":
+          emit({ op: "playSe", id: c.id, volume: c.volume ?? 100, pitch: c.pitch ?? 100 });
           break;
         case "erase":
           emit({ op: "erase" });
@@ -1315,6 +1373,9 @@ export interface InterpState {
   screen?: ScreenEffectsState;
   /** Sound cues emitted on this frame; the host drains them after step. */
   cues: SoundCue[];
+  /** Persistent, host-independent playback intent. Allocated only after an
+   * audio command executes and carried across maps, saves and rewinds. */
+  audio?: AudioState;
   pendingTransfer: PendingTransfer | null;
   /** Move routes published on THIS step, in command order. A fiber can
    *  publish more than one before it parks (a fire-and-forget player turn
@@ -1405,6 +1466,7 @@ function liveConditionContext(
   eventPages?: Readonly<Record<string, EventPageAppearance>>,
 ): ConditionContext {
   const context: ConditionContext = { worldIdle: isWorldIdle(s, blockers) };
+  if (s.audio) context.audio = s.audio;
   if (eventPages) {
     context.eventPages = eventPages;
     context.eventAppearances = s.eventAppearances;
@@ -1751,6 +1813,10 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
   };
   if (s0.moveControls) s.moveControls = cloneMoveControlState(s0.moveControls);
   if (s0.error) s.error = { ...s0.error };
+  // Keep the dormant audio path allocation-free: a conditional object
+  // spread would create a temporary `{}` on every interpreter copy even
+  // when the project never declares or uses audio.
+  if (s0.audio) s.audio = cloneAudioState(s0.audio);
   return s;
 }
 
@@ -2072,6 +2138,17 @@ type InstantInstr = Extract<
   | { op: "gold" }
   | { op: "item" }
   | { op: "se" }
+  | { op: "playBgm" }
+  | { op: "fadeoutBgm" }
+  | { op: "stopBgm" }
+  | { op: "pauseBgm" }
+  | { op: "resumeBgm" }
+  | { op: "playBgs" }
+  | { op: "fadeoutBgs" }
+  | { op: "playMe" }
+  | { op: "playSe" }
+  | { op: "saveBgm" }
+  | { op: "replayBgm" }
 >;
 
 /** T2-16/B3: the single normalizer for every numeric value that lands in
@@ -2237,7 +2314,91 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
     case "se":
       s.cues.push({ name: ins.name, volume: ins.volume, pitch: ins.pitch });
       break;
+    case "playBgm":
+      (s.audio ??= {}).bgm = freshAudioTrack(ins.id, ins.volume, ins.pitch);
+      break;
+    case "fadeoutBgm":
+      if (s.audio?.bgm) {
+        if (ins.frames <= 0) delete s.audio.bgm;
+        else s.audio.bgm.fade = { totalTicks: ins.frames, leftTicks: ins.frames };
+        pruneAudioState(s);
+      }
+      break;
+    case "stopBgm":
+      if (s.audio) {
+        delete s.audio.bgm;
+        pruneAudioState(s);
+      }
+      break;
+    case "pauseBgm":
+      if (s.audio?.bgm) s.audio.bgm.paused = true;
+      break;
+    case "resumeBgm":
+      if (s.audio?.bgm) delete s.audio.bgm.paused;
+      break;
+    case "playBgs":
+      (s.audio ??= {}).bgs = freshAudioTrack(ins.id, ins.volume, ins.pitch);
+      break;
+    case "fadeoutBgs":
+      if (s.audio?.bgs) {
+        if (ins.frames <= 0) delete s.audio.bgs;
+        else s.audio.bgs.fade = { totalTicks: ins.frames, leftTicks: ins.frames };
+        pruneAudioState(s);
+      }
+      break;
+    case "playMe":
+      if (ins.durationFrames <= 0) {
+        if (s.audio) {
+          delete s.audio.me;
+          pruneAudioState(s);
+        }
+      } else {
+        (s.audio ??= {}).me = {
+          ...freshAudioTrack(ins.id, ins.volume, ins.pitch),
+          durationTicks: ins.durationFrames,
+          leftTicks: ins.durationFrames,
+        };
+      }
+      break;
+    case "playSe":
+      s.cues.push({ name: ins.id, volume: ins.volume, pitch: ins.pitch });
+      break;
+    case "saveBgm":
+      if (s.audio?.bgm) {
+        s.audio.savedBgm = {
+          id: s.audio.bgm.id,
+          volume: s.audio.bgm.volume,
+          pitch: s.audio.bgm.pitch,
+          positionTicks: s.audio.bgm.positionTicks,
+        };
+      } else if (s.audio) {
+        delete s.audio.savedBgm;
+        pruneAudioState(s);
+      }
+      break;
+    case "replayBgm":
+      if (s.audio?.savedBgm) {
+        s.audio.bgm = cloneAudioTrack(s.audio.savedBgm as AudioTrackState);
+        delete s.audio.me;
+      }
+      break;
   }
+}
+
+function freshAudioTrack(id: string, volume: number, pitch: number): AudioTrackState {
+  return { id, volume, pitch, positionTicks: 0 };
+}
+
+function pruneAudioState(s: InterpState): void {
+  if (s.audio && audioStateEmpty(s.audio)) delete s.audio;
+}
+
+/** Advance persistent playback intent on the engine's fixed reference clock.
+ * Session calls this before every early-return path (battle/fade/error). */
+export function advanceInterpAudioInPlace(s: InterpState): void {
+  if (!s.audio) return;
+  advanceAudioStateInPlace(s.audio);
+  pruneAudioState(s);
 }
 
 function finishFiber(s: InterpState, f: Fiber): void {
@@ -3150,6 +3311,17 @@ function runFiber(
       case "gold":
       case "item":
       case "se":
+      case "playBgm":
+      case "fadeoutBgm":
+      case "stopBgm":
+      case "pauseBgm":
+      case "resumeBgm":
+      case "playBgs":
+      case "fadeoutBgs":
+      case "playMe":
+      case "playSe":
+      case "saveBgm":
+      case "replayBgm":
         runInstant(s, f, ins);
         top.pc++;
         break;
@@ -3594,6 +3766,7 @@ export function stepInterpWithExtensionsInPlace(
   ext0: JsonValue,
 ): JsonValue {
   const extension: MutableExtensionScope = { runtime: w.extensions, ext: ext0 };
+  advanceInterpAudioInPlace(s);
   // A fatalized state is frozen: no triggers scan, no fiber advances. The
   // frame clock still ticks so render/host code keeps its cadence, but the
   // cyclic program can never consume another step (review 1274 B1).

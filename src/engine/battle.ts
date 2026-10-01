@@ -5,6 +5,7 @@
 // input/ticks to the pure reducer, and resume the parked event branch.
 
 import { deepClone } from "./clone.ts";
+import { cloneAudioState, type AudioState } from "./audio.ts";
 import { assertJsonValue } from "./extensions.ts";
 import type { ExtensionReadContext } from "./extensions.ts";
 import type { Dir, JsonValue, VariableValue } from "./types.ts";
@@ -44,6 +45,17 @@ export interface BattleCompletion {
 export interface BattleStart {
   state: JsonValue;
   ext: JsonValue;
+  /** Optional MV-style battle audio policy. Omit to leave the current audio
+   * state alone. When present, the session suspends the complete map audio
+   * state, plays only this BGM (or silence for null), then restores the map
+   * state atomically when the battle completes. */
+  audio?: {
+    bgm: {
+      id: string;
+      volume?: number;
+      pitch?: number;
+    } | null;
+  };
 }
 
 export interface BattleRules {
@@ -66,6 +78,9 @@ export interface BattleScene {
   /** Reference ticks for which the map world has been paused. Applied to
    * fiber-relative clocks atomically when this scene completes. */
   pausedTicks: number;
+  /** Complete map-side audio suspended by BattleStart.audio. undefined means
+   * the battle did not opt into audio ownership; null means prior silence. */
+  returnAudio?: AudioState | null;
 }
 
 export type SceneSlot = BattleScene;
@@ -78,5 +93,8 @@ export function cloneScene(scene: SceneSlot | null): SceneSlot | null {
     fiber: scene.fiber,
     state: deepClone(scene.state),
     pausedTicks: scene.pausedTicks ?? 0,
+    ...(scene.returnAudio !== undefined
+      ? { returnAudio: scene.returnAudio === null ? null : cloneAudioState(scene.returnAudio) }
+      : {}),
   };
 }

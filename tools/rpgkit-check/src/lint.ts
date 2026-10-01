@@ -24,6 +24,8 @@
 //   lint/common-event-missing       common op to an unknown common event
 //   lint/item-missing               item/shop/condition reference to an item
 //                                   not in the catalog
+//   lint/audio-missing              audio command/condition id absent from a
+//                                   declared project.audio table
 //   lint/sprite-missing             page.sprite / appearance.sprite key not in
 //                                   project.sprites
 //   lint/sheet-missing              map.sheets / tile id / walker sheet / item
@@ -74,6 +76,7 @@ function noteConditionReads(
   variables: Map<string, Usage>,
   items: Set<string>,
   onMissingItem: (id: string, loc: FindingLocation) => void,
+  onMissingAudio: (id: string, loc: FindingLocation) => void,
   sprites: Set<string>,
   map: MapDef | null,
   findings: Finding[],
@@ -84,6 +87,8 @@ function noteConditionReads(
     note(variables, condition.id, "reads", loc);
   } else if (condition.kind === "item") {
     if (!items.has(condition.id)) onMissingItem(condition.id, loc);
+  } else if (condition.kind === "bgmPlaying") {
+    if (condition.id !== undefined) onMissingAudio(condition.id, loc);
   } else if (condition.kind === "appearance") {
     // The engine compares the target's ONE effective sprite key against this
     // value; an unknown key can never be the live sprite (null is the
@@ -137,12 +142,13 @@ function notePageConditionReads(
   variables: Map<string, Usage>,
   items: Set<string>,
   onMissingItem: (id: string, loc: FindingLocation) => void,
+  onMissingAudio: (id: string, loc: FindingLocation) => void,
   sprites: Set<string>,
   map: MapDef | null,
   findings: Finding[],
 ): void {
   for (const c of flattenPageCondition(condition)) {
-    noteConditionReads(c, loc, switches, variables, items, onMissingItem, sprites, map, findings);
+    noteConditionReads(c, loc, switches, variables, items, onMissingItem, onMissingAudio, sprites, map, findings);
   }
 }
 
@@ -155,6 +161,9 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
   const findings: Finding[] = [...schemaErrors, ...structuralFindings(project)];
   const sheetIds = new Set(project.sheets.map((s) => s.id));
   const itemIds = new Set(project.items.map((i) => i.id));
+  // An omitted table deliberately supports state-only/headless projects. Once
+  // a project declares the table, every logical id is expected to resolve.
+  const audioIds = project.audio === undefined ? null : new Set(Object.keys(project.audio));
   const spriteIds = new Set(project.sprites ? Object.keys(project.sprites) : []);
   const mapIds = new Set(project.maps.map((m) => m.id));
   const commonIds = new Set((project.commonEvents ?? []).map((c) => c.id));
@@ -171,6 +180,16 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
       "error",
       `condition references unknown item ${JSON.stringify(id)}`,
       "add the item to the catalog or fix the id",
+      loc,
+    ));
+  };
+  const missingAudio = (id: string, loc: FindingLocation): void => {
+    if (audioIds === null || audioIds.has(id)) return;
+    findings.push(makeFinding(
+      "lint/audio-missing",
+      "error",
+      `audio reference uses undeclared id ${JSON.stringify(id)}`,
+      "add the logical id to project.audio or fix the reference",
       loc,
     ));
   };
@@ -247,7 +266,13 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           // event writes run on the caller's fiber), not here.
           break;
         case "if":
-          noteConditionReads(command.if, cloc, switches, variables, itemIds, missingItem, spriteIds, map, findings);
+          noteConditionReads(command.if, cloc, switches, variables, itemIds, missingItem, missingAudio, spriteIds, map, findings);
+          break;
+        case "playBgm":
+        case "playBgs":
+        case "playMe":
+        case "playSe":
+          missingAudio(command.id, cloc);
           break;
         case "transfer": {
           if (typeof command.map === "string") {
@@ -395,7 +420,7 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
                 cloc,
               ));
             }
-            notePageConditionReads(good.condition, cloc, switches, variables, itemIds, missingItem, spriteIds, map, findings);
+            notePageConditionReads(good.condition, cloc, switches, variables, itemIds, missingItem, missingAudio, spriteIds, map, findings);
           }
           break;
         case "choices":
@@ -500,7 +525,7 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
         const flat = flattenPageCondition(page.condition);
         flatConditions.push(flat);
         for (const c of flat) {
-          noteConditionReads(c, loc, switches, variables, itemIds, missingItem, spriteIds, map, findings);
+          noteConditionReads(c, loc, switches, variables, itemIds, missingItem, missingAudio, spriteIds, map, findings);
           if (c.kind === "selfSwitch" && (c.value ?? true) === true) selfTrueReads.add(c.key);
         }
         if (page.sprite !== undefined && page.sprite !== null && !spriteIds.has(page.sprite)) {

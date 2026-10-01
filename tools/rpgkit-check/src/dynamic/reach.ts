@@ -129,6 +129,7 @@ const REACH_ASSUMPTIONS: readonly string[] = [
   "KNOWN IMPRECISION (fixed-step dry-run): entry pages are dry-run for a fixed 10-tick window; a forced transfer that fires after the window is still followed, but state its page sets before transferring (beyond the window) is lost, so a page on the target map gated on that state can be falsely reported unreachable",
   "KNOWN IMPRECISION (recursive common events): a self-/mutually-recursive common event is not re-expanded (the real interpreter runaways on it); commands after the recursive call can be falsely reported reachable",
   "KNOWN IMPRECISION (battle outcomes): a transfer inside a battle branch is collected as a may-reach edge, but battle outcomes are not modelled, so a fiber that always transfers through battle is not recognized as terminated",
+  "KNOWN IMPRECISION (cross-map audio): entry-state merging propagates the switch bank but not persistent audio, so a target-map path gated on BGM started before a transfer can be missed",
 ];
 
 // --- graph nodes -------------------------------------------------------------

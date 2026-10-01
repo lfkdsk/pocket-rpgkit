@@ -87,6 +87,13 @@ const STATE_MUTATING_OPS: ReadonlySet<Command["op"]> = new Set<Command["op"]>([
   "ext",
   "extChoice",
   "shop",
+  "playBgm",
+  "fadeoutBgm",
+  "stopBgm",
+  "pauseBgm",
+  "resumeBgm",
+  "playMe",
+  "replayBgm",
 ]);
 
 export interface ExploreOptions {
@@ -302,9 +309,11 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
    *  no main fiber, modal, input lock, pending transfer/battle, scene,
    *  fade or player route (isSessionWorldIdle), and no live parallel
    *  fiber whose page can mutate story state (parallels are NOT covered
-   *  by isWorldIdle and can set switches at any time). */
+   *  by isWorldIdle and can set switches at any time). A live BGM fade or ME
+   *  can also flip bgmPlaying later without a fiber remaining. */
   const worldIsIdle = (): boolean => {
     if (!isSessionWorldIdle(state)) return false;
+    if (state.interp.audio?.bgm?.fade || state.interp.audio?.me) return false;
     for (const key of Object.keys(state.interp.parallels)) {
       if (parallelCanMutate(key, state.interp.parallels[key]!.pageIndex)) return false;
     }

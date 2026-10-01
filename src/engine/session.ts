@@ -33,9 +33,11 @@
 
 import { deepClone, keyedRecord } from "./clone.ts";
 import { startupProfileMark } from "../startup-profile.ts";
+import { cloneAudioState, type AudioState } from "./audio.ts";
 
 import {
   activePage,
+  advanceInterpAudioInPlace,
   clearStaleEventAppearances,
   clampFiniteVar,
   continueBattle,
@@ -59,6 +61,7 @@ import {
   type EventPageAppearance,
   type InterpInput,
   type InterpState,
+  type SoundCue,
   type PendingBattle,
   type SwitchState,
   type WorldIdleBlockers,
@@ -248,6 +251,9 @@ export interface Session {
   hz: number;
   /** Fixed-rate reference ticks folded per host frame (MOTION_HZ / hz). */
   ticksPerFrame: number;
+  /** Projects with an audio table opt into preserving every reference-tick
+   * cue across a low-Hz host frame. Absent tables retain the v1 cue fold. */
+  audioCues: boolean;
   /** Derived, mutable compile cache. It is deliberately outside
    * SessionState, snapshots and reducer hashes. Inline projects retain all
    * maps; sharded projects retain only the deterministic keep set. */
@@ -549,6 +555,7 @@ export function createSession(
       cfg: { tile: project.tileSize, speed: 2 },
       hz,
       ticksPerFrame: motionTicksPerFrame(hz),
+      audioCues: project.audio !== undefined,
       maps: new Map(),
       worlds: new Map(),
       tables: new Map(),
@@ -587,6 +594,7 @@ export function createSession(
     cfg: { tile: project.tileSize, speed: 2 },
     hz,
     ticksPerFrame: motionTicksPerFrame(hz),
+    audioCues: project.audio !== undefined,
     maps: inlineMaps,
     worlds,
     tables,
@@ -680,12 +688,14 @@ function enterMap(
   cfg: MovementConfig,
 ): void {
   const screen = screenEffectsAfterTransfer(s.interp.screen);
+  const audio = s.interp.audio;
   clearLocalBank(s.sw);
   s.mapId = mapId;
   s.move = initialMovement(x, y, facing, cfg);
   s.chars = createChars();
   s.interp = createInterpState(s.sw);
   if (screen) s.interp.screen = screen;
+  if (audio) s.interp.audio = audio;
   s.sw = s.interp.sw;
   s.playerRoute = null;
 }
@@ -720,6 +730,7 @@ function sessionConditionContext(
   eventPages: Readonly<Record<string, EventPageAppearance>> | undefined,
 ): ConditionContext {
   const context: ConditionContext = { worldIdle: isSessionWorldIdle(s) };
+  if (s.interp.audio) context.audio = s.interp.audio;
   if (eventPages) {
     context.eventPages = eventPages;
     context.eventAppearances = s.interp.eventAppearances;
@@ -972,6 +983,43 @@ function battleInput(input: SessionInput): Readonly<BattleInput> {
   };
 }
 
+/** Validate and compile the game-owned BattleStart.audio contract. undefined
+ * preserves the current audio state; null requests battle silence. */
+function battleAudioState(value: unknown): AudioState | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("battle start audio: object with bgm required");
+  }
+  const audio = value as Record<string, unknown>;
+  if (!("bgm" in audio)) {
+    throw new Error("battle start audio: bgm required");
+  }
+  if (audio.bgm === null) return null;
+  if (typeof audio.bgm !== "object" || Array.isArray(audio.bgm)) {
+    throw new Error("battle start audio.bgm: track object or null required");
+  }
+  const bgm = audio.bgm as Record<string, unknown>;
+  if (typeof bgm.id !== "string" || bgm.id.length === 0) {
+    throw new Error("battle start audio.bgm.id: non-empty string required");
+  }
+  const volume = bgm.volume ?? 100;
+  if (!Number.isInteger(volume) || (volume as number) < 0 || (volume as number) > 100) {
+    throw new Error("battle start audio.bgm.volume: integer 0..100 required");
+  }
+  const pitch = bgm.pitch ?? 100;
+  if (!Number.isInteger(pitch) || (pitch as number) < 50 || (pitch as number) > 150) {
+    throw new Error("battle start audio.bgm.pitch: integer 50..150 required");
+  }
+  return {
+    bgm: {
+      id: bgm.id,
+      volume: volume as number,
+      pitch: pitch as number,
+      positionTicks: 0,
+    },
+  };
+}
+
 /** Consume one queued Battle Processing request. One draw
  * from the session cursor derives an isolated u32 seed even when start()
  * declines the encounter; no game rule may read wall time or global RNG.
@@ -1011,12 +1059,23 @@ function startBattleScene(sess: Session, s: SessionState, request: PendingBattle
     throw new Error("battle start: BattleStart object or null required");
   }
   assertJsonValue(started.state, "battle start state");
+  const battleAudio = battleAudioState(started.audio);
+  const returnAudio = battleAudio === undefined
+    ? undefined
+    : s.interp.audio
+      ? cloneAudioState(s.interp.audio)
+      : null;
   s.ext = cloneExtension(sess.extensions, started.ext, "battle start extension state");
+  if (battleAudio !== undefined) {
+    if (battleAudio === null) delete s.interp.audio;
+    else s.interp.audio = battleAudio;
+  }
   s.scene = {
     kind: "battle",
     fiber: request.fiber,
     state: deepClone(started.state),
     pausedTicks: 0,
+    ...(returnAudio !== undefined ? { returnAudio } : {}),
   };
   return true;
 }
@@ -1038,6 +1097,7 @@ function startNextBattleScene(sess: Session, s: SessionState): void {
  * pause is retained on the scene and applied to relative fiber clocks on
  * completion, leaving the fibers themselves byte-stable while frozen. */
 function tickFrozenWorld(s: SessionState): void {
+  advanceInterpAudioInPlace(s.interp);
   s.interp.frame++;
   if (s.scene) s.scene.pausedTicks++;
   s.interp.cues = [];
@@ -1198,6 +1258,13 @@ function advanceBattleScene(
       s.interp.anims = anims.map((a) => ({ ...a, start: a.start + scene.pausedTicks }));
     }
   }
+  // Battle-owned audio is a presentation scene resource, but its intent is
+  // reducer state. Restore it before resuming the parked branch so the
+  // completion is one atomic state transition (including instant battles).
+  if (scene.returnAudio !== undefined) {
+    if (scene.returnAudio === null) delete s.interp.audio;
+    else s.interp.audio = cloneAudioState(scene.returnAudio);
+  }
   s.interp = continueBattle(s.interp, scene.fiber, completion.result, transfer);
   s.sw = s.interp.sw;
   s.scene = null;
@@ -1249,6 +1316,7 @@ export function stepSession(
   const ticks = sess.ticksPerFrame;
   const sceneAtFrameStart = s.scene !== null;
   let sceneStartedAt = sceneAtFrameStart ? 0 : -1;
+  let frameCues: SoundCue[] | undefined;
 
   let prevCell = { x: s.move.tx, y: s.move.ty };
   for (let tick = 0; tick < ticks; tick++) {
@@ -1258,8 +1326,12 @@ export function stepSession(
         ? input
         : { buttons: input.buttons, confirmEdge: false, cancelEdge: false, upEdge: false, downEdge: false };
     const hadScene = s.scene !== null;
-    const nextCell = stepReferenceTick(sess, s, tickInput, prevCell);
-    prevCell = nextCell;
+    const tickResult = stepReferenceTick(sess, s, tickInput, prevCell);
+    prevCell = tickResult;
+    if (sess.audioCues && tickResult.cues) {
+      if (frameCues === undefined) frameCues = tickResult.cues;
+      else frameCues.push(...tickResult.cues);
+    }
     if (!hadScene && s.scene !== null && sceneStartedAt < 0) sceneStartedAt = tick + 1;
     // A fatalized interpreter freezes the playfield for the rest of the
     // batch (review 1274 B1): reference clock keeps advancing, the fold
@@ -1275,6 +1347,7 @@ export function stepSession(
       sceneTicks,
     );
   }
+  if (sess.audioCues && frameCues !== undefined) s.interp.cues = frameCues;
   return s;
 }
 
@@ -1285,7 +1358,7 @@ function stepReferenceTick(
   s: SessionState,
   input: SessionInput,
   prevCellIn: { x: number; y: number },
-): { x: number; y: number } {
+): { x: number; y: number; cues?: SoundCue[] } {
   const map = sess.maps.get(s.mapId)!;
 
   // A completion is observed after the previous host frame's reference-tick
@@ -1305,6 +1378,7 @@ function stepReferenceTick(
 
   // -- fade: gameplay and input freeze while the overlay moves -----------
   if (s.fade) {
+    advanceInterpAudioInPlace(s.interp);
     if (s.fade.phase === "out") {
       const transfer = s.interp.pendingTransfer;
       if (transfer) prepareSessionMapStep(sess, transfer.map);
@@ -1324,7 +1398,10 @@ function stepReferenceTick(
   // A fatal interpreter error freezes the playfield (review 1274 B1): the
   // clock advances but no mover, character, or interpreter fold runs, so a
   // cyclic program cannot consume steps or keep throwing tick after tick.
-  if (s.interp.error) return { x: s.move.tx, y: s.move.ty };
+  if (s.interp.error) {
+    advanceInterpAudioInPlace(s.interp);
+    return { x: s.move.tx, y: s.move.ty };
+  }
 
   // Presentation descriptors advance on the same fixed reference clock as
   // movement and event waits. Transfer fades and default-frozen scenes take
@@ -1528,6 +1605,10 @@ function stepReferenceTick(
     interpInput,
     s.ext,
   );
+  // Capture before an immediate transfer rebuilds the interpreter. A host
+  // frame may fold several reference ticks, so stepSession aggregates every
+  // non-empty list in command order instead of exposing only the final tick.
+  const tickCues = sess.audioCues && s.interp.cues.length > 0 ? s.interp.cues : undefined;
   // continueExternal above may have replaced s.interp with a copy whose
   // switch bank is a new object; re-alias the session's top-level bank to it
   // so the values chars/motion read next tick are the ones commands just
@@ -1540,7 +1621,9 @@ function stepReferenceTick(
       kind: "content",
       message: `transfer in ${transfer.fiber}: unknown map ${JSON.stringify(transfer.map)}`,
     };
-    return { x: s.move.tx, y: s.move.ty };
+    const result: { x: number; y: number; cues?: SoundCue[] } = { x: s.move.tx, y: s.move.ty };
+    if (tickCues) result.cues = tickCues;
+    return result;
   }
 
   // A page-scoped parallel canceled this tick may have owned a waited
@@ -1635,7 +1718,9 @@ function stepReferenceTick(
       applyTransfer(sess, s, t.map, t.x, t.y, t.dir);
     }
   }
-  return { x: s.move.tx, y: s.move.ty };
+  const result: { x: number; y: number; cues?: SoundCue[] } = { x: s.move.tx, y: s.move.ty };
+  if (tickCues) result.cues = tickCues;
+  return result;
 }
 
 function applyTransfer(

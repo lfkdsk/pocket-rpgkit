@@ -50,6 +50,41 @@ describe("rpgkit-check freeze: clean fixture", () => {
     expect(report.findings).toEqual([]);
     expect(report.summary.flagged).toBe(0);
   });
+
+  test("a finite autorun may use every audio state family without an error", () => {
+    const project = fixture([
+      {
+        id: "music",
+        x: 0,
+        y: 0,
+        pages: [
+          {
+            trigger: "autorun",
+            commands: [
+              { op: "playBgm", id: "field" },
+              { op: "playBgs", id: "rain" },
+              { op: "playMe", id: "fanfare", duration: 0.1 },
+              { op: "playSe", id: "door" },
+              { op: "wait", seconds: 0.1 },
+              { op: "fadeoutBgm", duration: 0.1 },
+              { op: "fadeoutBgs", duration: 0.1 },
+              { op: "selfSwitch", key: "A", value: true },
+            ],
+          },
+          { trigger: "autorun", condition: { selfSwitch: "A" }, commands: [] },
+        ],
+      },
+    ]);
+    project.audio = {
+      field: "audio:wav.field",
+      rain: "audio:wav.rain",
+      fanfare: "audio:wav.fanfare",
+      door: "audio:wav.door",
+    };
+    const report = checkFreeze(project, { windowFrames: WINDOW });
+    expect(report.findings).toEqual([]);
+    expect(report.summary.errors).toBe(0);
+  });
 });
 
 describe("rpgkit-check freeze: permanent input lock", () => {
@@ -119,6 +154,26 @@ describe("rpgkit-check freeze: permanent blocking fiber", () => {
     expect(report.findings[0]!.loc.map).toBe("m1");
     expect(report.summary.permanentBlockingFibers).toBe(1);
     expect(report.summary.flagged).toBe(1);
+  });
+
+  test("an advancing BGM clock cannot hide a blocking fiber", () => {
+    const project = fixture([
+      {
+        id: "stuck-with-music",
+        x: 0,
+        y: 0,
+        pages: [{
+          trigger: "autorun",
+          commands: [
+            { op: "playBgm", id: "field" },
+            { op: "choices", prompt: "?", options: [] },
+          ],
+        }],
+      },
+    ]);
+    project.audio = { field: "audio:wav.field" };
+    const report = checkFreeze(project, { windowFrames: WINDOW });
+    expect(report.findings.some((finding) => finding.check === "freeze/blocking-fiber")).toBe(true);
   });
 });
 

@@ -588,6 +588,15 @@ export interface BattleSceneViewProps {
 
 export type BattleSceneComponent = Component<BattleSceneViewProps>;
 
+/** Optional host-side effects observe reducer state but cannot mutate it.
+ * Keeping the component injected lets apps that do not opt in exclude an
+ * effect implementation (and its host SDK imports) from their bundle. */
+export interface GameEffectsProps {
+  state: () => Readonly<SessionState>;
+}
+
+export type GameEffectsComponent = Component<GameEffectsProps>;
+
 export interface GameViewProps {
   project: ProjectSource;
   /** Required with ProjectShell; omitted for backwards-compatible inline
@@ -601,6 +610,8 @@ export interface GameViewProps {
   /** Full-screen renderer used while SessionState.scene is a battle. Its
    * only inputs are reducer state and the live logical resolution. */
   battleScene?: BattleSceneComponent;
+  /** Optional opt-in host effects, such as `pocket-rpgkit/ui/audio`. */
+  effects?: GameEffectsComponent;
   assets: GameAssets;
   /** One u16 button mask per 60 Hz source frame (engine/attract-tape.ts).
    *  Present: attract/takeover/rewind drive the fold. Absent: live play. */
@@ -625,6 +636,7 @@ export interface GameViewProps {
 export function GameView(props: GameViewProps) {
   startupProfileMark("game-view:start");
   const { project, assets } = props;
+  const Effects = props.effects;
   // Shop box item display names, keyed by id (DialogBox falls back to the
   // raw id for anything absent). Derived once from the project's own item
   // catalog: the same source shop goods and inventory ids resolve against.
@@ -696,6 +708,7 @@ export function GameView(props: GameViewProps) {
       });
   startupProfileMark("game-view:session");
   let state: SessionState = attract ? attract.state : startSession(project, session);
+  const readState = (): Readonly<SessionState> => state;
   startupProfileMark("game-view:state");
   globalThis.__rpgSessionState = state;
 
@@ -1032,6 +1045,7 @@ export function GameView(props: GameViewProps) {
 
   const view = (
     <View class="w-full h-full overflow-hidden bg-black">
+      {Effects ? <Effects state={readState} /> : null}
       {/* The world subtree stays mounted across full-screen scenes. Hiding
           it with display:none (core skips layout, paint and hit-testing) and
           pausing its frame hooks is far cheaper than unmounting and

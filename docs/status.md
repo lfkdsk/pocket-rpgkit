@@ -12,12 +12,12 @@ The links point to where each feature is described in detail.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Event pages with `action`, `playerTouch`, `autorun` and `parallel` triggers; common events | Done | [The 35 commands](../README.md#the-35-commands) |
+| Event pages with `action`, `playerTouch`, `autorun` and `parallel` triggers; common events | Done | [The 46 commands](../README.md#the-46-commands) |
 | Dialog: typewriter text, choices with 2–8 options (scrolling past 4) and a cancel branch | Done | |
 | Dialog themes and speaker portraits | Done | [Themes and speaker portraits](../README.md#themes-and-speaker-portraits) |
 | Switches, self switches, items, gold | Done | |
 | Variables: set/add/sub, seeded random ranges, arithmetic against another variable | Done | Numbers only |
-| Page and `if` conditions on switches, variables, self switches, items, gold, facing, appearance, tile-property overrides, `worldIdle`, or an extension predicate | Done | |
+| Page and `if` conditions on switches, variables, self switches, items, gold, facing, appearance, tile-property overrides, `worldIdle`, `bgmPlaying`, or an extension predicate | Done | |
 | Cross-event input lock (`lockInput` / `unlockInput`) | Done | |
 | Map transfers with an optional fade and variable targets | Done | |
 | Game extensions | Done | Namespaced pure commands (`ext`) and choice boxes whose rows come from an extension (`extChoice`); see [Game extensions and Battle Processing](../README.md#game-extensions-and-battle-processing) |
@@ -51,15 +51,15 @@ The links point to where each feature is described in detail.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Sound cues (`se`) | Partial | The engine emits a cue that the host drains; playing it is up to the app |
-| Background music, ambience and music effects (BGM / BGS / ME) | Planned | In progress: kept in saves and rewind, plus a condition on what is playing |
+| Sound effects (`playSe`; legacy `se`) | Done | Ordered deterministic cues and the opt-in PocketJS WAV bridge work; missing hosts or resources degrade to silence. See [Opt-in host audio](../README.md#opt-in-host-audio) |
+| Background music, ambience and music effects (BGM / BGS / ME) | Partial | Playback, fades, pause/resume, saves/rewind, `bgmPlaying`, and battle BGM swap/restore work. The host bridge is WAV-only and ME duration is authored rather than read from media. See [Opt-in host audio](../README.md#opt-in-host-audio) |
 
 ## Scenes and menus
 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Battle scenes and battle UI kit | Done | A game registers a battle scene; `battle` parks the event until it ends and runs its win/lose/escape branch. The kit provides state-driven battle UI blocks; see [Battle UI kit](../README.md#battle-ui-kit-pocket-rpgkituibattle) |
-| The map world stays alive during battles | Done | Entering or leaving a battle does not rebuild the map, and map animations freeze while it is on screen |
+| The map world stays alive during battles | Done | Entering or leaving a battle does not rebuild the map. The map/dialog stay mounted but hidden; map clocks freeze by default, while battle audio can switch and restore without remounting its driver |
 | Generic full-screen game scenes and a name-input screen | Planned | In progress |
 | Menu and save access switches, game over, return to title | Planned | |
 
@@ -84,7 +84,7 @@ The links point to where each feature is described in detail.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Tile painting, passage overrides, one-way edges, undo/redo | Done | [Editor](../editor/README.md) |
-| Editing events, pages, conditions and command trees | Done | Newer commands are shown read-only: screen effects, map animations, movement control, extensions |
+| Editing events, pages, conditions and command trees | Done | Newer commands are shown read-only: screen effects, map animations, movement control, audio, extensions |
 | Map properties; new, duplicate and delete maps | Done | |
 | Play-test from the selected tile with a live debug panel | Done | Runs the unsaved document in the real `GameView`; the debug panel edits switches, variables, self switches, items and gold of the preview only and lists running pages and fibers. Unregistered extensions, battles and backdrops get visible stand-ins; see [Editor](../editor/README.md) |
 | Large (sharded) projects and an editor in the browser | Planned | |

@@ -78,6 +78,14 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
       "items": { "$ref": "#/$defs/animation" },
       "description": "Frame animations playable with the mapAnim command; the cooker slices each sheet into one static baked image per frame."
     },
+    "audio": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^audio:wav\\..+$"
+      },
+      "description": "Logical audio id to raw WAV pak entry. Every value uses the audio:wav.* namespace; host playback remains optional."
+    },
     "items": {
       "type": "array",
       "items": { "$ref": "#/$defs/item" }
@@ -725,6 +733,74 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             "pitch": { "type": "integer", "minimum": 50, "maximum": 150 }
           }
         },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id"],
+          "properties": {
+            "op": { "const": "playBgm" },
+            "id": { "type": "string", "minLength": 1 },
+            "volume": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "pitch": { "type": "integer", "minimum": 50, "maximum": 150 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "duration"],
+          "properties": {
+            "op": { "const": "fadeoutBgm" },
+            "duration": { "type": "number", "minimum": 0 }
+          }
+        },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "stopBgm" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "pauseBgm" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "resumeBgm" } } },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id"],
+          "properties": {
+            "op": { "const": "playBgs" },
+            "id": { "type": "string", "minLength": 1 },
+            "volume": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "pitch": { "type": "integer", "minimum": 50, "maximum": 150 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "duration"],
+          "properties": {
+            "op": { "const": "fadeoutBgs" },
+            "duration": { "type": "number", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id", "duration"],
+          "properties": {
+            "op": { "const": "playMe" },
+            "id": { "type": "string", "minLength": 1 },
+            "duration": { "type": "number", "minimum": 0 },
+            "volume": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "pitch": { "type": "integer", "minimum": 50, "maximum": 150 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id"],
+          "properties": {
+            "op": { "const": "playSe" },
+            "id": { "type": "string", "minLength": 1 },
+            "volume": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "pitch": { "type": "integer", "minimum": 50, "maximum": 150 }
+          }
+        },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "saveBgm" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "replayBgm" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "erase" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "exit" } } },
         {
@@ -1222,6 +1298,17 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             "negate": { "type": "boolean", "description": "Invert the derived world-idle result." }
           },
           "description": "True only while the map world is the unobstructed top-level state: no blocking event, input lock, modal, player route, transfer/fade, queued or active scene, fatal overlay, or host menu. Derived at the exact condition evaluation point and never saved."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "bgmPlaying" },
+            "id": { "type": "string", "minLength": 1 },
+            "negate": { "type": "boolean" }
+          },
+          "description": "True while any BGM, or the specified logical BGM id, is audibly advancing; negate inverts the result."
         },
         {
           "type": "object",

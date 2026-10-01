@@ -10,6 +10,7 @@
     "./engine": "./src/engine/index.ts",
     "./ui": "./src/ui/index.ts",
     "./ui/battle": "./src/ui/battle/index.ts",
+    "./ui/audio": "./src/ui/audio/index.ts",
     "./host": "./src/host/index.ts",
     "./editor-api": "./editor/api/index.ts",
     "./schema": "./src/data/schema.json"

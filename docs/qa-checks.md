@@ -47,7 +47,7 @@ tags (`then`, `else`, `options`, `cancel`, `onWin`, `onLose`, `onEscape`,
 ## `lint` — static health check
 
 Args: `file` only. Pure function of the document: switch/variable use,
-provably-dead pages, missing references, empty choices, and static map
+provably-dead pages, missing references (including declared audio ids), empty choices, and static map
 reachability. `summary` adds `maps`, `events`, `pages`, `commands`, and
 per-severity counts.
 
@@ -110,7 +110,8 @@ branch, and an "unreachable" map may be gated on state the frozen model
 cannot produce (for example a non-zero item or gold baseline carried
 through a forced entry transfer). Treat every verdict as a **lead, not a
 proof**; each report carries `experimental: true` and an `assumptions` list
-naming the twelve known imprecisions. The check is being reworked into a
+naming thirteen modelling assumptions and known imprecisions, including audio
+state not propagated between map-entry branches. The check is being reworked into a
 real engine search with a replayable witness for each verdict.
 
 Args: `file`, `start` (optional object: `{ map?, x?, y?, dir?, switches?,
@@ -134,7 +135,7 @@ $ bun run rpgkit-check reach --file examples/sunstone/data/sunstone.json
   "start": "village@9,9",
   "reachableMaps": [ "village", "forest" ],
   "unreachableMaps": [ "cave" ],
-  "assumptions": [ "story variables are frozen except for state propagated through forced entry transfers", "… 11 more" ]
+  "assumptions": [ "story variables are frozen except for state propagated through forced entry transfers", "… 12 more" ]
 }
 ```
 
@@ -232,6 +233,7 @@ prerequisite is a thrown error (exit 2).
 | `lint/appearance-target-missing` | error | an `appearance` command or condition names an event not on the host map | fix the event id or remove the clause |
 | `lint/common-event-missing` | error | a `common` op calls an unknown common event | add the common event or fix the id |
 | `lint/item-missing` | error | an item/shop/condition references an item not in the catalog | add the item to the catalog or fix the id |
+| `lint/audio-missing` | error | an audio command or `bgmPlaying` condition references an id absent from a declared `project.audio` table | add the logical id to `project.audio` or fix the reference; projects without an audio table remain valid for state-only use |
 | `lint/sprite-missing` | error | a page sprite, `appearance` sprite, or appearance-condition sprite key is not in `project.sprites` | add the sprite or fix the key |
 | `lint/sheet-missing` | error | a map sheet, tile id prefix, walker sheet, or item sprite references an unknown sheet | add the sheet or fix the id |
 | `lint/tileproperty-out-of-bounds` | error | a `tileProperty` command (throws at runtime) or condition (always false) addresses a cell outside the host map | move the cell inside the map or remove the clause |
