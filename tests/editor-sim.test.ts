@@ -633,8 +633,9 @@ simDescribe("editor budget", () => {
     // editor-only entry plus its debug adapter, and KAU1 adds the audio schema
     // plus read-only audio command/condition summaries. The PocketJS upstream
     // rebase adds the same 10,219 shared bytes as Sunstone, and DEMO1's shared
-    // GameView demo seam adds a little more; measured total: 1,051,993 B. The
-    // separate Sunstone isolation gate proves games do not pay for it.
-    expect(js).toBeLessThan(1_060_000);
+    // GameView demo seam adds a little more. Together with the proposal queue,
+    // portable validation/apply model, review panel, ghost overlays, and the
+    // exact-revision host SAVE handshake, the merged editor is 1,118,080 B.
+    expect(js).toBeLessThan(1_130_000);
   });
 });

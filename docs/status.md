@@ -102,7 +102,7 @@ The links point to where each feature is described in detail.
 | `rpgkit-edit` | Done | Edits projects from scripts and agents, JSON in and JSON out, with reversible patches. Available on the CLI and as MCP tools; see [Edit API reference](edit-api.md) |
 | `rpgkit-check` | Done | Lint, input-lock audit, freeze scan, exploration coverage and schematic screenshots. Available on the CLI and as MCP tools; see [QA checks reference](qa-checks.md) |
 | `rpgkit-check reach` | Partial | Experimental: neither "reachable" nor "unreachable" is a proof. In progress: a rebuild that searches with the real engine and returns a replayable input tape for every map it reaches |
-| AI edit proposals reviewed in the editor | Planned | In progress: ghost preview, accept or reject each hunk |
+| AI edit proposals reviewed in the editor | Done | Validated sidecar queue with ghost previews, per-hunk accept/reject, live conflict checks and crash-safe archival; currently limited to inline projects through the desktop bridge. See [Editor](../editor/README.md#what-it-does) |
 | Natural-language box in the editor that drives a local agent | Planned | |
 | Explaining an event; health check with suggested fixes | Planned | |
 

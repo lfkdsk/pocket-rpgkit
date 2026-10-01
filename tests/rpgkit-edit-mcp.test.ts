@@ -4,10 +4,12 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EDIT_COMMANDS, type EditPatch } from "../editor/api/types.ts";
 import { EDIT_TOOLS } from "../editor/api/tools.ts";
+import { PROPOSAL_COMMANDS } from "../editor/api/proposals.ts";
+import { PROPOSAL_TOOLS } from "../editor/api/proposal-tools.ts";
 import { runFileEdit } from "../editor/api/file.ts";
-import { CHECK_TOOLS } from "../tools/rpgkit-check/src/registry.ts";
 import {
   MCP_PROTOCOL_VERSION,
+  RPGKIT_TOOLS,
   dispatchMcpLine,
   dispatchMcpMessage,
 } from "../tools/rpgkit-edit/mcp.ts";
@@ -48,8 +50,7 @@ describe("rpgkit-edit MCP protocol", () => {
     expect(await dispatchMcpMessage({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
     expect(await dispatchMcpMessage({ jsonrpc: "2.0", id: 1, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
     const listed = await dispatchMcpMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }) as any;
-    expect(listed.result.tools.map((tool: any) => tool.name))
-      .toEqual([...EDIT_TOOLS.map((tool) => tool.name), ...CHECK_TOOLS.map((tool) => tool.name)]);
+    expect(listed.result.tools.map((tool: any) => tool.name)).toEqual(RPGKIT_TOOLS.map((tool) => tool.name));
     expect(listed.result.tools.every((tool: any) => tool.description.length > 20 && tool.inputSchema.type === "object")).toBe(true);
   });
 
@@ -112,6 +113,36 @@ describe("rpgkit-edit MCP protocol", () => {
   test("registry has exactly one MCP tool for every operation", () => {
     expect(new Set(EDIT_TOOLS.map((tool) => tool.name)).size).toBe(EDIT_TOOLS.length);
     expect(EDIT_TOOLS.map((tool) => tool.command).sort()).toEqual([...EDIT_COMMANDS].sort());
+    expect(new Set(PROPOSAL_TOOLS.map((tool) => tool.name)).size).toBe(PROPOSAL_TOOLS.length);
+    expect(PROPOSAL_TOOLS.map((tool) => tool.command).sort()).toEqual([...PROPOSAL_COMMANDS].sort());
+    expect(new Set(RPGKIT_TOOLS.map((tool) => tool.name)).size).toBe(RPGKIT_TOOLS.length);
+  });
+
+  test("creates, lists, shows and withdraws a proposal through MCP without editing the project", async () => {
+    const file = copy();
+    const before = readFileSync(file, "utf8");
+    const proposal = {
+      file,
+      id: "mcp-proposal",
+      title: "Entrance polish",
+      rationale: "Make the path easier to read.",
+      author: "mcp-agent",
+      createdAt: "2026-09-30T12:00:00.000Z",
+      hunks: [{
+        id: "entrance",
+        summary: "Paint one entrance tile",
+        operations: [{ command: "paint-tile", args: { map: "village", x: 0, y: 0, tile: "town.1" } }],
+      }],
+    };
+    expect(await call("rpgkit_proposal_create", proposal))
+      .toMatchObject({ result: { isError: false, structuredContent: { ok: true, written: true } } });
+    expect(await call("rpgkit_proposals_list", { file }))
+      .toMatchObject({ result: { structuredContent: { ok: true, result: [{ id: "mcp-proposal" }] } } });
+    expect(await call("rpgkit_proposal_show", { file, id: "mcp-proposal" }))
+      .toMatchObject({ result: { structuredContent: { ok: true, result: { proposal: { author: "mcp-agent" } } } } });
+    expect(await call("rpgkit_proposal_withdraw", { file, id: "mcp-proposal" }))
+      .toMatchObject({ result: { structuredContent: { ok: true, written: true } } });
+    expect(readFileSync(file, "utf8")).toBe(before);
   });
 
   test("a non-dry-run MCP mutation persists and a domain failure is a tool error", async () => {
@@ -153,7 +184,7 @@ describe("rpgkit-edit MCP protocol", () => {
     expect(messages[1]).toMatchObject({ result: { isError: false } });
     expect(messages[2]).toMatchObject({ result: { isError: true } });
     expect(messages[3]).toMatchObject({ error: { code: -32700 } });
-    expect(messages[4].result.tools).toHaveLength(EDIT_TOOLS.length + CHECK_TOOLS.length);
+    expect(messages[4].result.tools).toHaveLength(RPGKIT_TOOLS.length);
   });
 });
 

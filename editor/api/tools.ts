@@ -3,6 +3,7 @@
 import type { EditCommandName } from "./types.ts";
 
 export interface EditToolDefinition {
+  kind: "edit";
   name: string;
   title: string;
   description: string;
@@ -148,7 +149,7 @@ function tool(
   required: string[] = [],
   mutates = false,
 ): EditToolDefinition {
-  return { name, title, command, description, inputSchema: schema(properties, required, mutates), mutates };
+  return { kind: "edit", name, title, command, description, inputSchema: schema(properties, required, mutates), mutates };
 }
 
 /** Ordered registry used for both tools/list and tools/call dispatch. */

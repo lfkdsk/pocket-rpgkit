@@ -31,10 +31,12 @@ import { onFrame } from "@pocketjs/framework/lifecycle";
 import { getOps, hostViewport } from "@pocketjs/framework/host";
 import { BTN } from "@pocketjs/framework/input";
 import type { GameEvent, Page, Project, TileId } from "../src/engine/types.ts";
+import { sha256Text } from "../src/engine/map-repository.ts";
 import {
   addPage,
   canRedo,
   canUndo,
+  commitProjectReplacement,
   copyPage,
   createEditorState,
   createEventAt,
@@ -162,6 +164,35 @@ import {
 } from "./engine/map-layout.ts";
 import { EventInspector, flattenInspectorConditions } from "./ui/event-inspector.tsx";
 import { MapInspector } from "./ui/map-inspector.tsx";
+import { ProposalPanel } from "./ui/proposal-panel.tsx";
+import {
+  hitProposalPanel,
+  proposalVisibleRows,
+  type ProposalPanelAction,
+} from "./engine/proposal-layout.ts";
+import {
+  applyProposalHunks,
+  assessHunk,
+  assessProposal,
+  decideProposalHunks,
+  parseProposal,
+  previewProposalHunks,
+  proposalComplete,
+  proposalSemanticHash,
+} from "./proposals/model.ts";
+import {
+  editorSaveBridgeCapability,
+  readEditorSaveResult,
+  readProposalHostState,
+  readProposalSession,
+  writeEditorSaveRequest,
+  writeProposalSession,
+} from "./proposals/store.ts";
+import type {
+  EditProposal,
+  EditorSaveRequest,
+  ProposalPreview,
+} from "./proposals/types.ts";
 import {
   buildPlaytestProject,
   playtestStartCell,
@@ -196,6 +227,29 @@ interface DocSlot {
   sourceText: string;
 }
 
+interface HostSaveGuard {
+  /** Last host revision observed before the accepted review was queued. */
+  previousHash: string;
+  /** Null means the bridge merged a host revision the guest cannot model. */
+  expectedHash: string | null;
+  /** Expected host document after applying the accepted hunks. */
+  baseline: DocSlot | null;
+}
+
+interface PendingHostSave {
+  request: EditorSaveRequest;
+  baseline: DocSlot;
+  project: Project;
+  successPrefix: string;
+}
+
+let saveRequestSequence = 0;
+
+function saveRequestId(expectedSourceHash: string, projectHash: string): string {
+  saveRequestSequence++;
+  return sha256Text(`${Date.now()}\n${saveRequestSequence}\n${expectedSourceHash}\n${projectHash}`);
+}
+
 function bootDoc(index: number): DocSlot {
   const bundled = BUNDLED_PROJECTS[index]!;
   // A previously exported copy on data.fs wins over the bundled document.
@@ -210,6 +264,7 @@ function bootDoc(index: number): DocSlot {
 export function EditorApp(): JSX.Element {
   const svc: Svc | null = connectSvc();
   const fsOk = hasFs();
+  const proposalSession = readProposalSession();
 
   const vp0 = hostViewport(getOps());
   const [vp, setVp] = createSignal(vp0 ? { w: vp0.w, h: vp0.h } : { w: SCREEN_W, h: SCREEN_H });
@@ -233,6 +288,7 @@ export function EditorApp(): JSX.Element {
   /** True once the host's --file document is open: SAVE writes that file,
    *  so DOC must not swap another project in under it. */
   const [hostFile, setHostFile] = createSignal(false);
+  const [pendingHostSave, setPendingHostSave] = createSignal<PendingHostSave | null>(null);
   const [eventMode, setEventMode] = createSignal(false);
   const [inspectorOpen, setInspectorOpen] = createSignal(false);
   const [eventPlacement, setEventPlacement] = createSignal({ x: 0, y: 0 });
@@ -264,6 +320,12 @@ export function EditorApp(): JSX.Element {
      *  it; undo/redo and structural command changes do not. */
     command: Page["commands"][number];
   } | null>(null);
+  const [proposals, setProposals] = createSignal<EditProposal[]>(proposalSession?.proposals ?? []);
+  const [proposalOpen, setProposalOpen] = createSignal(false);
+  const [selectedProposal, setSelectedProposal] = createSignal<number | null>(null);
+  const [selectedProposalHunk, setSelectedProposalHunk] = createSignal(0);
+  const [proposalScroll, setProposalScroll] = createSignal(0);
+  const [hostSaveGuard, setHostSaveGuard] = createSignal<HostSaveGuard | null>(null);
   const [playProject, setPlayProject] = createSignal<Project | null>(null);
   const [playAssets, setPlayAssets] = createSignal<GameAssets | null>(null);
   const [playState, setPlayState] = createSignal<SessionState | null>(null);
@@ -287,6 +349,27 @@ export function EditorApp(): JSX.Element {
   let playPort: PlaytestPort | null = null;
 
   const tileTextures = createTileTextures();
+
+  const pendingProposals = createMemo(() => proposals().filter((proposal) => !proposalComplete(proposal)));
+  const proposalAssessments = createMemo(() => {
+    const project = exportProject(editor());
+    return pendingProposals().map((proposal) => assessProposal(project, proposal));
+  });
+  const proposalPreview = createMemo<ProposalPreview>(() => {
+    const index = selectedProposal();
+    if (!proposalOpen() || index === null) return { tiles: [], events: [], maps: [] };
+    const proposal = pendingProposals()[index];
+    const assessment = proposalAssessments()[index];
+    if (!proposal || !assessment) return { tiles: [], events: [], maps: [] };
+    const cleanIds = proposal.hunks.filter((hunk, hunkIndex) =>
+      !hunk.decision && assessment.hunks[hunkIndex]?.state === "clean").map((hunk) => hunk.id);
+    if (cleanIds.length === 0) return { tiles: [], events: [], maps: [] };
+    try {
+      return previewProposalHunks(exportProject(editor()), proposal, cleanIds);
+    } catch {
+      return { tiles: [], events: [], maps: [] };
+    }
+  });
 
   const map = createMemo(() => currentMap(editor()));
   const markers = createMemo(() => eventMarkers(map()));
@@ -390,6 +473,12 @@ export function EditorApp(): JSX.Element {
       setDeleteRefs(null);
       setMapReferencePage(0);
       setPendingPick(null);
+      setProposalOpen(false);
+      setSelectedProposal(null);
+      setSelectedProposalHunk(0);
+      setProposalScroll(0);
+      setHostSaveGuard(null);
+      setPendingHostSave(null);
       setPassTool("pass");
       setEventPlacement({ x: 0, y: 0 });
       setPlayStartCell(null);
@@ -432,13 +521,38 @@ export function EditorApp(): JSX.Element {
     });
   };
 
-  const performSave = (): void => {
-    let e = editor();
-    if (e.stroke) {
+  const resolvePendingHostBaseline = (): DocSlot | null => {
+    const pending = hostSaveGuard();
+    if (!pending) return doc();
+    const observed = readProposalHostState();
+    if (pending.expectedHash === null || pending.baseline === null) {
+      setNotice({ kind: "bad", text: "SAVE REFUSED: HOST FILE CHANGED DURING PROPOSAL REVIEW; RELOAD THE EDITOR" });
+      return null;
+    }
+    if (observed?.projectHash === pending.expectedHash) {
+      setDoc(pending.baseline);
+      setHostSaveGuard(null);
+      return pending.baseline;
+    }
+    if (!observed || observed.projectHash === pending.previousHash) {
+      setNotice({ kind: "bad", text: "SAVE REFUSED: WAITING FOR HOST PROPOSAL APPLY; WAIT OR RELOAD THE EDITOR" });
+      return null;
+    }
+    setNotice({ kind: "bad", text: "SAVE REFUSED: HOST FILE CHANGED DURING PROPOSAL REVIEW; RELOAD THE EDITOR" });
+    return null;
+  };
+
+  const performSave = (provided?: EditorState, successPrefix = "SAVED"): void => {
+    if (pendingHostSave()) {
+      setNotice({ kind: "bad", text: "SAVE WAITING FOR HOST COMMIT" });
+      return;
+    }
+    let e = provided ?? editor();
+    if (provided === undefined && e.stroke) {
       e = strokeEnd(e);
       setEditor(e);
     }
-    if (e.edgeStroke) {
+    if (provided === undefined && e.edgeStroke) {
       e = edgeStrokeEnd(e);
       setEditor(e);
     }
@@ -451,7 +565,13 @@ export function EditorApp(): JSX.Element {
       });
       return;
     }
-    const baseline = doc();
+    const baseline = resolvePendingHostBaseline();
+    if (!baseline) return;
+    const observed = readProposalHostState();
+    if (hostFile() && observed && observed.projectHash !== proposalSemanticHash(baseline.project)) {
+      setNotice({ kind: "bad", text: "SAVE REFUSED: HOST FILE CHANGED SINCE IT WAS LOADED; RELOAD THE EDITOR" });
+      return;
+    }
     const text = serializeProjectPreservingSource(
       baseline.sourceText,
       baseline.project,
@@ -461,14 +581,40 @@ export function EditorApp(): JSX.Element {
       batch(() => {
         setSavedText(text);
         setDoc({ ...baseline, project: candidate, sourceText: text });
-        setEditor(markSaved(editor()));
+        setEditor(markSaved(e));
         setNotice({ kind: "good", text: message });
       });
     };
     if (svc) {
-      // The desktop host persists {t:"save"} lines atomically to --file.
+      // The managed launcher exposes data.fs host state. Queue an exact-source
+      // CAS there so SAVE shares the project lock with CLI edits and proposal
+      // acceptance. A generic companion without the bridge keeps the legacy
+      // svc save path.
+      const saveBridge = hostFile() && fsOk ? editorSaveBridgeCapability() : "absent";
+      if (saveBridge !== "absent") {
+        if (saveBridge !== "ready" || !observed) {
+          setNotice({ kind: "bad", text: "SAVE REFUSED: HOST SAVE BRIDGE IS NOT READY; WAIT OR RELOAD THE EDITOR" });
+          return;
+        }
+        const expectedSourceHash = sha256Text(baseline.sourceText);
+        const projectHash = proposalSemanticHash(candidate);
+        const request: EditorSaveRequest = {
+          id: saveRequestId(expectedSourceHash, projectHash),
+          expectedSourceHash,
+          projectHash,
+          text,
+        };
+        const queued = writeEditorSaveRequest(request);
+        if ("error" in queued) {
+          setNotice({ kind: "bad", text: `SAVE FAILED: ${queued.error}` });
+          return;
+        }
+        setPendingHostSave({ request, baseline, project: candidate, successPrefix });
+        setNotice({ kind: "info", text: `SAVE QUEUED ${text.length} bytes FOR HOST CAS` });
+        return;
+      }
       svc.save(text);
-      finish(`SAVED ${text.length} bytes TO HOST FILE`);
+      finish(`${successPrefix} ${text.length} bytes TO HOST FILE`);
       return;
     }
     if (fsOk) {
@@ -477,13 +623,40 @@ export function EditorApp(): JSX.Element {
         setNotice({ kind: "bad", text: `SAVE FAILED: ${result.error}` });
         return;
       }
-      finish(`SAVED ${result.bytes} bytes TO ${result.path}`);
+      finish(`${successPrefix} ${result.bytes} bytes TO ${result.path}`);
       return;
     }
     // Explicit, visible failure: no silent drop (the fs API's same rule).
     setNotice({
       kind: "bad",
       text: "NO SAVE CHANNEL: RELAUNCH WITH THE rpgkit-editor COMPANION OR A DATA.FS HOST",
+    });
+  };
+
+  const settlePendingHostSave = (): void => {
+    const pending = pendingHostSave();
+    if (!pending) return;
+    const result = readEditorSaveResult();
+    if (!result || result.id !== pending.request.id) return;
+    setPendingHostSave(null);
+    if (result.status !== "saved") {
+      setNotice({
+        kind: "bad",
+        text: result.status === "conflict"
+          ? "SAVE REFUSED: HOST FILE CHANGED BEFORE COMMIT; RELOAD THE EDITOR"
+          : `SAVE REFUSED: ${result.message ?? "HOST REJECTED THE DOCUMENT"}`,
+      });
+      return;
+    }
+    const stillCurrent = proposalSemanticHash(exportProject(editor())) === pending.request.projectHash;
+    batch(() => {
+      setSavedText(pending.request.text);
+      setDoc({ ...pending.baseline, project: pending.project, sourceText: pending.request.text });
+      if (stillCurrent) setEditor(markSaved(editor()));
+      setNotice({
+        kind: "good",
+        text: `${pending.successPrefix} ${pending.request.text.length} bytes TO HOST FILE`,
+      });
     });
   };
 
@@ -501,12 +674,243 @@ export function EditorApp(): JSX.Element {
     edgeStrokeOpen = false;
   };
 
+  const persistProposalQueue = (
+    next: EditProposal[],
+    changed?: EditProposal,
+  ): boolean => {
+    setProposals(next);
+    // projectHash is the bridge's last observation of the real host file.
+    // Review UI must never replace it with an unconfirmed in-memory result.
+    const observed = readProposalSession();
+    const projectHash = observed?.projectHash ?? proposalSession?.projectHash ?? proposalSemanticHash(doc().project);
+    const stored = writeProposalSession({ projectHash, proposals: next });
+    if (changed && svc) svc.reviewProposal(changed);
+    if ("error" in stored) {
+      setNotice({ kind: "bad", text: `PROPOSAL STATUS NOT SAVED: ${stored.error}` });
+      return false;
+    }
+    return true;
+  };
+
+  const locateProposalHunk = (proposal: EditProposal, hunkIndex: number): void => {
+    const hunk = proposal.hunks[hunkIndex];
+    if (!hunk) return;
+    const project = exportProject(editor());
+    let mapIndex = -1;
+    const pathMap = /^\/maps\/(\d+)(?:\/|$)/.exec(hunk.changes[0]?.path ?? "");
+    if (pathMap) mapIndex = Number(pathMap[1]);
+    let location: { mapId: string; x: number; y: number } | undefined;
+    try {
+      const preview = previewProposalHunks(project, proposal, [hunk.id]);
+      const first = preview.tiles[0] ?? preview.events[0];
+      if (first) location = { mapId: first.mapId, x: first.x, y: first.y };
+    } catch {
+      // A conflicting hunk still locates its map by JSON Pointer below.
+    }
+    if (location) mapIndex = project.maps.findIndex((map) => map.id === location!.mapId);
+    if (mapIndex < 0 || mapIndex >= project.maps.length) return;
+    let next = editor();
+    if (next.mapIndex !== mapIndex) next = selectMap(next, mapIndex);
+    batch(() => {
+      setEditor(next);
+      if (location) {
+        const previewMap = previewProposalHunks(project, proposal, [hunk.id]).maps
+          .find((candidate) => candidate.mapId === location!.mapId);
+        const width = Math.max(currentMap(next).width, previewMap?.width ?? 0);
+        const height = Math.max(currentMap(next).height, previewMap?.height ?? 0);
+        setCam({
+          x: clampCam(location.x - Math.floor(viewCols() / 2), width, viewCols()),
+          y: clampCam(location.y - Math.floor(viewRows() / 2), height, viewRows()),
+        });
+      } else {
+        setCam(clampCameraTo(next, cam()));
+      }
+    });
+  };
+
+  const selectProposalAt = (index: number): void => {
+    const proposal = pendingProposals()[index];
+    if (!proposal) return;
+    const firstPending = proposal.hunks.findIndex((hunk) => !hunk.decision);
+    const hunkIndex = firstPending < 0 ? 0 : firstPending;
+    setSelectedProposal(index);
+    setSelectedProposalHunk(hunkIndex);
+    setProposalScroll(Math.max(0, hunkIndex - 1));
+    locateProposalHunk(proposal, hunkIndex);
+  };
+
+  /** Leave a hunk preview and return the camera to the live map's bounds.
+   * Expanded proposals may temporarily pan beyond those bounds. */
+  const clearProposalSelection = (state = editor()): void => {
+    batch(() => {
+      setSelectedProposal(null);
+      setProposalScroll(0);
+      setCam(clampCameraTo(state, cam()));
+    });
+  };
+
+  /** A decision can remove an expansion preview without closing the detail
+   * panel. Clamp against the live map plus only the clean hunks still shown. */
+  const clampCameraToProposalBounds = (state: EditorState, proposal: EditProposal): void => {
+    const project = exportProject(state);
+    const assessment = assessProposal(project, proposal);
+    const cleanIds = proposal.hunks.filter((hunk, index) =>
+      !hunk.decision && assessment.hunks[index]?.state === "clean").map((hunk) => hunk.id);
+    let proposed: ProposalPreview["maps"][number] | undefined;
+    if (cleanIds.length > 0) {
+      try {
+        proposed = previewProposalHunks(project, proposal, cleanIds).maps
+          .find((candidate) => candidate.mapId === currentMap(state).id);
+      } catch {
+        // A concurrent edit can invalidate the preview; live bounds are safe.
+      }
+    }
+    const live = currentMap(state);
+    setCam({
+      x: clampCam(cam().x, Math.max(live.width, proposed?.width ?? 0), viewCols()),
+      y: clampCam(cam().y, Math.max(live.height, proposed?.height ?? 0), viewRows()),
+    });
+  };
+
+  const toggleProposalPanel = (): void => {
+    finishActiveInput();
+    if (proposalOpen()) {
+      setProposalOpen(false);
+      clearProposalSelection();
+      return;
+    }
+    const stored = readProposalSession();
+    if (stored) setProposals(stored.proposals);
+    batch(() => {
+      setInspectorOpen(false);
+      setMapInspectorOpen(false);
+      setPendingPick(null);
+      setProposalOpen(true);
+      setSelectedProposal(null);
+      setProposalScroll(0);
+      setNotice({ kind: "info", text: `${pendingProposals().length} PENDING PROPOSAL(S)` });
+    });
+  };
+
+  const activateProposal = (action: ProposalPanelAction): void => {
+    const index = selectedProposal();
+    if (action.kind === "back") {
+      clearProposalSelection();
+      return;
+    }
+    if (action.kind === "select-proposal") {
+      selectProposalAt(action.index);
+      return;
+    }
+    const proposal = index === null ? undefined : pendingProposals()[index];
+    if (!proposal) return;
+    if (action.kind === "select-hunk") {
+      setSelectedProposalHunk(action.index);
+      locateProposalHunk(proposal, action.index);
+      return;
+    }
+    const project = exportProject(editor());
+    const assessment = assessProposal(project, proposal);
+    const selected = proposal.hunks[selectedProposalHunk()];
+    if (action.kind === "reject") {
+      if (!selected || selected.decision) return;
+      const updated = decideProposalHunks(proposal, [selected.id], "rejected");
+      const next = proposals().map((item) => item.id === updated.id ? updated : item);
+      const persisted = persistProposalQueue(next, updated);
+      if (proposalComplete(updated)) {
+        clearProposalSelection();
+      } else {
+        clampCameraToProposalBounds(editor(), updated);
+      }
+      if (persisted) setNotice({ kind: "info", text: `REJECTED ${selected.id}${proposalComplete(updated) ? "; ARCHIVE QUEUED" : ""}` });
+      return;
+    }
+    const chosen = action.kind === "accept-all"
+      ? proposal.hunks.filter((hunk, hunkIndex) => !hunk.decision &&
+          ["clean", "already-applied"].includes(assessment.hunks[hunkIndex]?.state ?? "conflict"))
+      : selected && !selected.decision &&
+          ["clean", "already-applied"].includes(assessment.hunks[selectedProposalHunk()]?.state ?? "conflict")
+        ? [selected]
+        : [];
+    if (chosen.length === 0) {
+      setNotice({ kind: "bad", text: "NO CLEAN HUNK TO ACCEPT; ASK THE AGENT TO REGENERATE CONFLICTS" });
+      return;
+    }
+    if (hostSaveGuard() && !resolvePendingHostBaseline()) return;
+    const reviewBaseline = doc();
+    const observedHost = hostFile() ? readProposalHostState() : null;
+    let nextHostGuard: HostSaveGuard | null = null;
+    if (observedHost) {
+      if (observedHost.projectHash !== proposalSemanticHash(reviewBaseline.project)) {
+        nextHostGuard = { previousHash: observedHost.projectHash, expectedHash: null, baseline: null };
+      } else {
+        const hostClean: string[] = [];
+        let predictable = true;
+        for (const hunk of chosen) {
+          const state = assessHunk(reviewBaseline.project, hunk).state;
+          if (state === "clean") hostClean.push(hunk.id);
+          else if (state !== "already-applied") predictable = false;
+        }
+        if (predictable) {
+          const expectedProject = hostClean.length > 0
+            ? applyProposalHunks(reviewBaseline.project, proposal, hostClean)
+            : reviewBaseline.project;
+          const expectedSource = serializeProjectPreservingSource(
+            reviewBaseline.sourceText,
+            reviewBaseline.project,
+            expectedProject,
+          );
+          nextHostGuard = {
+            previousHash: observedHost.projectHash,
+            expectedHash: proposalSemanticHash(expectedProject),
+            baseline: { ...reviewBaseline, project: expectedProject, sourceText: expectedSource },
+          };
+        } else {
+          nextHostGuard = { previousHash: observedHost.projectHash, expectedHash: null, baseline: null };
+        }
+      }
+    }
+    const cleanIds = chosen.filter((hunk) =>
+      assessment.hunks[proposal.hunks.indexOf(hunk)]?.state === "clean").map((hunk) => hunk.id);
+    let committed = editor();
+    let candidate = project;
+    if (cleanIds.length > 0) {
+      try {
+        candidate = applyProposalHunks(project, proposal, cleanIds);
+        committed = commitProjectReplacement(editor(), candidate);
+      } catch (error) {
+        setNotice({ kind: "bad", text: `ACCEPT REFUSED: ${error instanceof Error ? error.message : String(error)}` });
+        return;
+      }
+    }
+    const updated = decideProposalHunks(proposal, chosen.map((hunk) => hunk.id), "accepted");
+    const next = proposals().map((item) => item.id === updated.id ? updated : item);
+    setEditor(committed);
+    // The desktop bridge applies accepted hunks to the latest host document.
+    // Do not send a whole stale editor snapshot through the generic save
+    // channel: that could overwrite an unrelated external edit made since
+    // this document was opened.
+    const persisted = persistProposalQueue(next, updated);
+    if (persisted && nextHostGuard) setHostSaveGuard(nextHostGuard);
+    if (proposalComplete(updated)) {
+      clearProposalSelection(committed);
+    } else {
+      clampCameraToProposalBounds(committed, updated);
+    }
+    if (persisted) {
+      if (cleanIds.length === 0) setNotice({ kind: "good", text: `RECORDED ${chosen.length} ALREADY-APPLIED HUNK(S)` });
+      else setNotice({ kind: "good", text: `ACCEPTED ${chosen.length} HUNK(S); HOST APPLY QUEUED` });
+    }
+  };
+
   const startPlaytest = (): void => {
     if (inspectorFocus() || mapFocus()) {
       setNotice({ kind: "bad", text: "FINISH OR CANCEL THE ACTIVE FIELD BEFORE PLAY" });
       return;
     }
     finishActiveInput();
+    setProposalOpen(false);
+    clearProposalSelection();
     const e = editor();
     const cell = playtestStartCell(e, playStartCell());
     const candidate = buildPlaytestProject(e, cell);
@@ -614,6 +1018,8 @@ export function EditorApp(): JSX.Element {
 
   const toggleLayer = (): void => {
     finishActiveInput();
+    setProposalOpen(false);
+    clearProposalSelection();
     const e = editor();
     if (eventMode()) {
       setEventMode(false);
@@ -649,6 +1055,7 @@ export function EditorApp(): JSX.Element {
     else if (id === "mapprev") switchMap(-1);
     else if (id === "mapnext") switchMap(1);
     else if (id === "map") toggleMapInspector();
+    else if (id === "proposals") toggleProposalPanel();
     else if (id === "play") startPlaytest();
     else if (id === "state") toggleCarryMode();
     else if (id === "undo") {
@@ -702,6 +1109,8 @@ export function EditorApp(): JSX.Element {
       return;
     }
     resetInspectorRows();
+    setProposalOpen(false);
+    clearProposalSelection();
     setMapInspectorOpen(false);
     setInspectorOpen(true);
   };
@@ -1077,6 +1486,8 @@ export function EditorApp(): JSX.Element {
     if (pendingPick()) return; // picking owns the canvas
     // the two inspectors are mutually exclusive (they share the canvas area)
     setInspectorOpen(false);
+    setProposalOpen(false);
+    clearProposalSelection();
     setDeleteRefs(null);
     setMapReferencePage(0);
     setMapInspectorOpen(true);
@@ -1383,6 +1794,33 @@ export function EditorApp(): JSX.Element {
       return;
     }
 
+    if (proposalOpen()) {
+      if (m.d && !pointerDown) {
+        pointerDown = "event";
+        if (y < HEADER_H) {
+          const hit = hitAt(x, y);
+          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+        } else if (x < PAL_W && y < vp().h - STATUS_H) {
+          const proposal = selectedProposal() === null ? undefined : pendingProposals()[selectedProposal()!];
+          const action = hitProposalPanel(
+            x,
+            y - HEADER_H,
+            vp().h - HEADER_H - STATUS_H,
+            pendingProposals().length,
+            proposal?.hunks.length ?? 0,
+            proposal !== undefined,
+            proposalScroll(),
+          );
+          if (action) activateProposal(action);
+        }
+      } else if (!m.d) {
+        pointerDown = false;
+        const hit = hitAt(x, y);
+        setHover(hit?.kind === "cell" ? { x: hit.tx, y: hit.ty } : null);
+      }
+      return;
+    }
+
     if (m.d) {
       const erase = m.b === 2 || m.sh === true;
       const kind: "paint" | "erase" = erase ? "erase" : "paint";
@@ -1515,6 +1953,39 @@ export function EditorApp(): JSX.Element {
     // comes from the mouse and cmd-key chords. The gamepad fallback (no
     // companion) keeps the full button vocabulary.
     const pointerMode = svc !== null;
+    if (proposalOpen()) {
+      if (!pointerMode) {
+        const selectedIndex = selectedProposal();
+        if (selectedIndex === null) {
+          if (edge & BTN.UP) setProposalScroll((value) => Math.max(0, value - 1));
+          if (edge & BTN.DOWN) setProposalScroll((value) => Math.min(Math.max(0, pendingProposals().length - 1), value + 1));
+          if (edge & BTN.CIRCLE) selectProposalAt(proposalScroll());
+          if (edge & BTN.CROSS) toggleProposalPanel();
+        } else {
+          const proposal = pendingProposals()[selectedIndex];
+          if (proposal) {
+            let hunk = selectedProposalHunk();
+            if (edge & BTN.UP) hunk = Math.max(0, hunk - 1);
+            if (edge & BTN.DOWN) hunk = Math.min(proposal.hunks.length - 1, hunk + 1);
+            if (hunk !== selectedProposalHunk()) {
+              setSelectedProposalHunk(hunk);
+              const visible = proposalVisibleRows(vp().h - HEADER_H - STATUS_H, true);
+              if (hunk < proposalScroll()) setProposalScroll(hunk);
+              else if (hunk >= proposalScroll() + visible) setProposalScroll(hunk - visible + 1);
+              locateProposalHunk(proposal, hunk);
+            }
+            if (edge & BTN.CIRCLE) activateProposal({ kind: "accept" });
+            if (edge & BTN.CROSS) activateProposal({ kind: "reject" });
+            if (edge & BTN.START) activateProposal({ kind: "accept-all" });
+            if (edge & BTN.SELECT) activateProposal({ kind: "back" });
+          }
+        }
+        if (edge & BTN.SQUARE) activateHeader(HEADER_ORDER.indexOf("undo"));
+        if (edge & BTN.TRIANGLE) activateHeader(HEADER_ORDER.indexOf("redo"));
+      }
+      prevButtons = buttons;
+      return;
+    }
     if (inspectorOpen() || mapInspectorOpen()) {
       if (!pointerMode) {
         if (edge & BTN.CROSS) {
@@ -1672,6 +2143,7 @@ export function EditorApp(): JSX.Element {
 
   // --- per-frame pump -----------------------------------------------------
   onFrame((buttons) => {
+    settlePendingHostSave();
     if (playProject()) {
       if (svc) {
         for (const line of svc.poll()) {
@@ -1714,9 +2186,27 @@ export function EditorApp(): JSX.Element {
               text: `HOST FILE REJECTED: ${loaded.errors[0]!.path} ${loaded.errors[0]!.msg}`,
             });
           }
+        } else if (line.t === "proposals" && Array.isArray(line.proposals)) {
+          try {
+            const incoming = line.proposals.map(parseProposal);
+            batch(() => {
+              setProposals(incoming);
+              clearProposalSelection();
+              setNotice({ kind: "info", text: `LOADED ${incoming.filter((proposal) => !proposalComplete(proposal)).length} PROPOSAL(S)` });
+            });
+          } catch (error) {
+            setNotice({ kind: "bad", text: `PROPOSALS REJECTED: ${error instanceof Error ? error.message : String(error)}` });
+          }
         } else if (line.t === "mouse") {
           handleMouseLine(line);
         } else if (line.t === "scroll" && typeof line.dy === "number") {
+          if (proposalOpen()) {
+            const proposal = selectedProposal() === null ? undefined : pendingProposals()[selectedProposal()!];
+            const count = proposal?.hunks.length ?? pendingProposals().length;
+            const visible = proposalVisibleRows(vp().h - HEADER_H - STATUS_H, proposal !== undefined);
+            setProposalScroll((value) => Math.max(0, Math.min(Math.max(0, count - visible), value + Math.sign(line.dy!))));
+            continue;
+          }
           if (inspectorOpen()) {
             const layout = inspectorLayout();
             const amount = Math.sign(line.dy) * 36;
@@ -1800,6 +2290,7 @@ export function EditorApp(): JSX.Element {
     savedText: savedText(),
     loadNotice: loadNotice(),
     hostFile: hostFile(),
+    pendingHostSave: pendingHostSave(),
     eventMode: eventMode(),
     passMode: passMode(),
     passTool: passTool(),
@@ -1810,6 +2301,14 @@ export function EditorApp(): JSX.Element {
     deleteRefs: deleteRefs(),
     mapReferencePage: mapReferencePage(),
     pendingPick: pendingPick(),
+    proposalOpen: proposalOpen(),
+    proposals: proposals(),
+    pendingProposals: pendingProposals(),
+    proposalAssessments: proposalAssessments(),
+    selectedProposal: selectedProposal(),
+    selectedProposalHunk: selectedProposalHunk(),
+    proposalPreview: proposalPreview(),
+    hostSaveGuard: hostSaveGuard(),
     eventPlacement: eventPlacement(),
     inspectorSelection: inspectorSelection(),
     inspectorFocus: inspectorFocus(),
@@ -1940,7 +2439,16 @@ export function EditorApp(): JSX.Element {
         <>
           {banner() ? <Banner width={Math.max(0, vp().w - PAL_W)} /> : null}
 
-          {eventMode() ? (
+          {proposalOpen() ? (
+            <ProposalPanel
+              proposals={pendingProposals()}
+              assessments={proposalAssessments()}
+              selectedProposal={selectedProposal()}
+              selectedHunk={selectedProposalHunk()}
+              scroll={proposalScroll()}
+              panelH={vp().h - HEADER_H - STATUS_H}
+            />
+          ) : eventMode() ? (
             <EventPanel
               selected={selectedEvent()}
               cursorTool={cursor().zone === "palette" ? cursor().slot : -1}
@@ -1977,6 +2485,9 @@ export function EditorApp(): JSX.Element {
             eventMode={eventMode()}
             selectedEventId={editor().selectedEventId}
             dragPreview={dragPreview()}
+            proposalTiles={proposalPreview().tiles}
+            proposalEvents={proposalPreview().events}
+            proposalMaps={proposalPreview().maps}
             hover={hover()}
             cursorZone={cursor().zone}
             cursor={cursor().zone === "canvas" ? { x: cursor().tx, y: cursor().ty } : { x: -99, y: -99 }}
@@ -2026,7 +2537,8 @@ function headerLabel(
   if (id === "mapprev") return "<";
   if (id === "mapnext") return ">";
   if (id === "map") return "MAP";
-  if (id === "play") return "PLAY";
+  if (id === "proposals") return width < 40 ? "AI" : "PROPOSALS";
+  if (id === "play") return width < 32 ? "GO" : "PLAY";
   if (id === "state") return width < 36 ? (carryPrevious ? "L" : "F") : carryPrevious ? "STATE LAST" : "STATE FRESH";
   if (id === "undo") return "UNDO";
   if (id === "redo") return "REDO";

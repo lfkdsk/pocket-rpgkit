@@ -257,6 +257,11 @@ What it does today:
   every transfer reference with a pageable command location and asks for a
   second confirm); inspector-local notices keep crop lists and save errors
   visible;
+- review AI edit proposals from **PROPOSALS**: inspect author/rationale and
+  per-hunk conflict state, locate each hunk, preview proposed tiles as
+  translucent art and event changes as color-coded boxes, then accept or
+  reject one hunk or accept every clean hunk; one accept action is one undo
+  step and rejection never edits the document;
 - undo/redo, one step per tile stroke or event/map transaction, 64 steps
   deep (header buttons or Cmd+Z / Cmd+Shift+Z);
 - switch between a document's maps; the palette shows the sheets the
@@ -295,8 +300,12 @@ file, by default a working copy in `dist/editor/` seeded from the
 example (the example games build their documents from code, and
 `bun run gen-assets` rewrites `data/*.json`). Without the companion (the wasm sim,
 a browser) the editor runs from buttons behind a visible banner.
+The launcher also bridges `<project.json>.proposals/` into the editor's
+sandboxed `data.fs` and writes review decisions back while the window is
+open. Fully reviewed proposals move to the sidecar's `archive/` directory.
 `bun run build:editor` builds the sim bundle alone; the editor's tests include
-`tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, the two-size event
+`tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, the proposal review
+golden in `tests/editor-proposal-sim.test.ts`, the two-size event
 inspector/runtime round trip in `tests/editor-event-sim.test.ts`, and the
 real-GameView play/debug goldens in `tests/editor-playtest-sim.test.ts`.
 [`docs/editor-tutorial.md`](docs/editor-tutorial.md) follows one small
@@ -310,7 +319,7 @@ examples' `ATTRIBUTION.md` files.
 `rpgkit-edit` exposes the editor's pure model as a stable JSON-in/JSON-out
 interface. It is meant for scripts and coding agents that should edit project
 documents without joining the running game or editor process. Every request
-parses and validates the input document first. Every effective mutation is
+parses and validates the input document first. Every effective project mutation is
 validated again, returns JSON Pointer changes with before/after values and an
 `rpgkit-edit/patch-v1` reversible patch, and atomically replaces the file.
 `--dry-run` follows the same path but never writes. The full parameter,
@@ -335,11 +344,87 @@ jq '{patch:.patch}' preview.json > apply.json
 bun run rpgkit-edit save --file game/data/project.json --json @apply.json
 ```
 
+For human-reviewed AI work, group typed edit operations into explicit hunks
+and create a proposal instead of mutating the project:
+
+```json
+{
+  "id": "agent-welcome-path-1",
+  "title": "Clarify the welcome path",
+  "rationale": "Guide the player toward the elder without changing collision.",
+  "author": "local-agent",
+  "hunks": [
+    {
+      "id": "entrance-tiles",
+      "summary": "Brighten two entrance tiles",
+      "operations": [
+        {
+          "command": "paint-rect",
+          "args": {
+            "map": "village",
+            "layer": "ground",
+            "x": 4,
+            "y": 6,
+            "width": 2,
+            "height": 1,
+            "tile": "town.43"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+```sh
+bun run rpgkit-edit propose --file game/data/project.json \
+  --json @welcome-proposal.json
+bun run rpgkit-edit list-proposals --file game/data/project.json
+bun run rpgkit-edit show-proposal --file game/data/project.json \
+  --json '{"id":"agent-welcome-path-1"}'
+bun run rpgkit-edit withdraw-proposal --file game/data/project.json \
+  --json '{"id":"agent-welcome-path-1"}'
+```
+
+`propose --dry-run` returns the complete validated proposal without writing
+the project or sidecar. A normal `propose` writes exactly one JSON file to
+`<project.json>.proposals/`; it still never edits the project. Operations
+inside one hunk run in order and may depend on one another. Every hunk starts
+from the same proposal base, and paths may not overlap across hunks, so the
+editor can review them independently. The stored `baseHash` is the project's
+semantic SHA-256 at creation time.
+
+The editor compares every hunk's recorded `before` values with the live
+document. Unrelated changes remain clean even when the whole-document hash is
+stale; a changed target value becomes a conflict and disables acceptance.
+Accepted/rejected decisions are stored on each hunk. A partially reviewed
+proposal stays in the pending directory; once every hunk has a decision it
+moves to `archive/`. An agent can poll `show-proposal`: read
+`result.proposal.hunks[].decision.status` for `accepted` or `rejected`, and
+`result.archived` for completion. Rejections are persisted independently of
+unsaved document edits. For acceptance, the desktop bridge rechecks the hunk
+against the latest host file, applies it there with a byte-checked atomic
+write, and only then records the decision. Unrelated external edits survive;
+same-target drift resets the queued acceptance so it can be regenerated.
+The bridge publishes an explicit managed-save capability and the host file's
+semantic hash separately from the guest-writable review session. SAVE waits for
+a queued acceptance to reach
+that host revision, then sends an exact-source compare-and-swap request through
+the editor's isolated `data.fs`; the bridge performs the replacement under the
+same project lock as direct edits and acceptance. A stale full-document write
+is refused, including when the bridge preserved an external edit; reload the
+editor to continue from that merged document. Sidecar transitions use
+tokenized per-proposal locks, independent concurrent decisions merge, and an
+interrupted pending-to-archive transition is repaired on load.
+If bridge initialization fails after publishing the capability, managed SAVE
+fails closed; companions without that marker retain their legacy save channel.
+
 The command set is `open`, `list-maps`, `list-events`, `list-pages`,
 `list-commands`, `update-map`, `paint-tile`, `paint-rect`, `fill-region`,
 `paint-passage`, `add-event`,
 `update-event`, `delete-event`, `add-page`, `update-page`, `delete-page`,
-`insert-command`, `delete-command`, `update-command`, `validate`, and `save`.
+`insert-command`, `delete-command`, `update-command`, `validate`, `save`,
+`propose`, `list-proposals`, `show-proposal`, and `withdraw-proposal`.
 Mutations use the same tile strokes, event/page transactions, recursive
 command addresses and field parsers as the visual editor. A schema-valid
 sharded `ProjectShell` can be opened and its `mapIndex` listed; map payload
@@ -375,7 +460,12 @@ claude mcp add --scope project rpgkit-edit -- \
 The server implements MCP initialization, ping, `tools/list`, and
 `tools/call`. stdout is reserved for newline-delimited JSON-RPC; domain errors
 are returned as structured tool errors, while malformed requests use standard
-JSON-RPC error codes.
+JSON-RPC error codes. Proposal lifecycle uses
+`rpgkit_proposal_create`, `rpgkit_proposals_list`,
+`rpgkit_proposal_show`, and `rpgkit_proposal_withdraw`; these are separate
+from project-editing tools because proposal creation and withdrawal touch only
+the sidecar queue. Their parameters, responses, errors, and full lifecycle
+examples are in the [edit API reference](docs/edit-api.md#ai-proposal-lifecycle).
 
 ## QA checks
 

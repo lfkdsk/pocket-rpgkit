@@ -936,6 +936,34 @@ function commitStructural(
   };
 }
 
+/** Commit an already-validated whole-project replacement as exactly one
+ * undo step. Proposal review uses this after applying one or many hunks in
+ * memory. The active map/event are retained by stable id when possible. */
+export function commitProjectReplacement(state: EditorState, project: Project): EditorState {
+  const activeMap = currentMap(state);
+  const activeMapId = activeMap.id;
+  const activeEventId = state.selectedEventId;
+  return commitStructural(state, (next) => {
+    // The caller owns validation; cloning here still keeps its value from
+    // aliasing history or the live editor state.
+    next = cloneJson(project);
+    let mapIndex = next.maps.findIndex((map) => map.id === activeMapId);
+    if (mapIndex < 0) mapIndex = Math.max(0, Math.min(state.mapIndex, next.maps.length - 1));
+    const map = next.maps[mapIndex]!;
+    const event = activeEventId === null
+      ? undefined
+      : (map.events ?? []).find((candidate) => candidate.id === activeEventId);
+    return {
+      project: next,
+      mapIndex,
+      selectedEventId: event?.id ?? null,
+      selectedPageIndex: event
+        ? clampInteger(state.selectedPageIndex, 0, event.pages.length - 1)
+        : 0,
+    };
+  }) ?? state;
+}
+
 /** Unwrap a structural result, turning a stroke-open refusal into an error. */
 function structural(state: EditorState, next: EditorState | null): StructuralResult {
   return next === null

@@ -34,8 +34,8 @@ The window opens on the Sunstone project's **village** map:
 
 - The **header** holds, from left to right: the **LAYER** button (shows the
   current mode), **DOC** (switch bundled documents), **<** / **>** (switch
-  maps), **MAP** (map inspector), **PLAY**, **STATE FRESH/LAST**, **UNDO**,
-  **REDO**, and **SAVE**.
+  maps), **MAP** (map inspector), **PROPOSALS** (AI change review), **PLAY**,
+  **STATE FRESH/LAST**, **UNDO**, **REDO**, and **SAVE**.
 - The **tile palette** on the left shows every cell of the sheets the current
   map declares, eight columns wide. Slot 0 (top-left, red X) is the eraser.
 - The **canvas** shows up to a 20×14-cell window onto the map, 16 pixels per

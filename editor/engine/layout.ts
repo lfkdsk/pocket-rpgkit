@@ -139,7 +139,7 @@ export type Layer = "ground" | "upper";
 
 // Header buttons (y 2..18).
 export interface ButtonGeom extends FrameGeom {
-  id: "layer" | "doc" | "mapprev" | "mapnext" | "map" | "play" | "state" | "undo" | "redo" | "save";
+  id: "layer" | "doc" | "mapprev" | "mapnext" | "map" | "proposals" | "play" | "state" | "undo" | "redo" | "save";
 }
 
 export function headerButtons(vpW: number): ButtonGeom[] {
@@ -149,15 +149,25 @@ export function headerButtons(vpW: number): ButtonGeom[] {
   const save = mk("save", vpW - 4 - 52, 52);
   const redo = mk("redo", save.x - 4 - 44, 44);
   const undo = mk("undo", redo.x - 4 - 44, 44);
-  const stateX = 236;
+  // At the 400px minimum viewport the three review/play controls collapse to
+  // compact labels, while wider windows retain the original descriptive
+  // widths. Keep four pixels between controls and the right-aligned edit row.
+  const toolsX = 188;
+  const toolsWidth = Math.max(48, undo.x - 4 - toolsX - 8);
+  const proposalWidth = Math.min(56, Math.max(20, toolsWidth - 28));
+  const playWidth = Math.min(44, Math.max(20, toolsWidth - proposalWidth - 8));
+  const stateWidth = Math.min(88, Math.max(8, toolsWidth - proposalWidth - playWidth));
+  const playX = toolsX + proposalWidth + 4;
+  const stateX = playX + playWidth + 4;
   return [
     mk("layer", 4, 44),
     mk("doc", 52, 36),
     mk("mapprev", 92, 20),
     mk("mapnext", 116, 20),
     mk("map", 140, 44),
-    mk("play", 188, 44),
-    mk("state", stateX, Math.min(88, Math.max(8, undo.x - 4 - stateX))),
+    mk("proposals", toolsX, proposalWidth),
+    mk("play", playX, playWidth),
+    mk("state", stateX, stateWidth),
     undo,
     redo,
     save,

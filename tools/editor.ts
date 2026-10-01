@@ -13,7 +13,7 @@
 // The host runs with the rpgkit-editor companion that editor/pocket.json
 // declares, plus --file: it forwards the real mouse and keyboard to the
 // editor as svc lines, sends the file's text as a {t:"load"} line at boot,
-// and writes every {t:"save"} line back to that file (tmp file + rename).
+// while the data.fs bridge commits SAVE requests with an exact-source CAS.
 // Build and host flags come from tools/lib/desktop.ts, like the examples.
 //
 // By default the editor works on a copy in dist/editor/, seeded from the
@@ -24,6 +24,10 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { DEFAULT_SOURCE, EDITOR_SOURCES } from "../editor/sources.ts";
 import { DESKTOP_TARGET, buildForDesktop, runDesktopHost } from "./lib/desktop.ts";
+import {
+  editorProposalBridgePaths,
+  syncEditorProposalBridge,
+} from "./lib/editor-proposal-bridge.ts";
 
 const root = resolve(import.meta.dir, "..");
 
@@ -58,4 +62,32 @@ if (!existsSync(file)) {
   console.log(`editor: seeded ${file} from ${source.document}`);
 }
 console.log(`editor: SAVE writes ${relative(root, file) || file}`);
-await runDesktopHost(build, ["--file", file, ...rest]);
+if (rest.includes("--data-root")) {
+  throw new Error("editor: --data-root is managed by the proposal bridge");
+}
+const bridge = editorProposalBridgePaths(root, build.plan.app.id, file);
+let lastBridgeStatus = "";
+const syncProposals = (): void => {
+  try {
+    const result = syncEditorProposalBridge(file, bridge.sessionFile, bridge.hostStateFile);
+    const status = result.conflicts.length > 0
+      ? `refused ${result.conflicts.length} conflicting acceptance(s)`
+      : `${result.pending} pending, ${result.persisted} review update(s)`;
+    if ((result.conflicts.length > 0 || result.persisted > 0) && status !== lastBridgeStatus) {
+      console.log(`editor: proposal bridge ${status}`);
+    }
+    lastBridgeStatus = status;
+  } catch (error) {
+    const status = `error: ${error instanceof Error ? error.message : String(error)}`;
+    if (status !== lastBridgeStatus) console.error(`editor: proposal bridge ${status}`);
+    lastBridgeStatus = status;
+  }
+};
+syncProposals();
+const bridgeTimer = setInterval(syncProposals, 200);
+try {
+  await runDesktopHost(build, ["--data-root", bridge.dataRoot, "--file", file, ...rest]);
+} finally {
+  clearInterval(bridgeTimer);
+  syncProposals();
+}

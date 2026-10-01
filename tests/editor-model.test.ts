@@ -505,7 +505,7 @@ describe("editor layout geometry", () => {
   test("header buttons partition the top strip and never overlap", () => {
     const bs = headerButtons(480);
     expect(bs.map((b) => b.id)).toEqual([
-      "layer", "doc", "mapprev", "mapnext", "map", "play", "state", "undo", "redo", "save",
+      "layer", "doc", "mapprev", "mapnext", "map", "proposals", "play", "state", "undo", "redo", "save",
     ]);
     for (let i = 1; i < bs.length; i++) {
       expect(bs[i]!.x).toBeGreaterThanOrEqual(bs[i - 1]!.x + bs[i - 1]!.w);

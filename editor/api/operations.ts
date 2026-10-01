@@ -4,7 +4,6 @@
 // owns wire-level argument checks, stable addresses, diffs and reversible
 // patches; it does not duplicate the editor's mutation rules.
 
-import { createHash } from "node:crypto";
 import type {
   Command,
   GameEvent,
@@ -17,6 +16,8 @@ import type {
   TileId,
 } from "../../src/engine/types.ts";
 import { validateMapDefStructure } from "../../src/engine/map-repository.ts";
+import { sha256Text } from "../../src/engine/map-repository.ts";
+import { canonicalJson } from "../../src/engine/save.ts";
 import {
   commandAddressKey,
   flattenCommands,
@@ -532,21 +533,8 @@ export function diffJson(before: unknown, after: unknown, path = ""): EditChange
   return [{ path, before: present(before), after: present(after) }];
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new EditApiError("INVALID_JSON_VALUE", "value is not representable as JSON");
-    return encoded;
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(value as Record<string, unknown>)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`)
-    .join(",")}}`;
-}
-
 export function semanticHash(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+  return sha256Text(canonicalJson(value));
 }
 
 function assertJsonValue(value: unknown, path: string, ancestors = new Set<object>()): asserts value is JsonValue {
@@ -568,7 +556,7 @@ function assertJsonValue(value: unknown, path: string, ancestors = new Set<objec
   ancestors.delete(value);
 }
 
-function patchFor(before: Project, after: Project): EditPatch {
+export function createEditPatch(before: Project, after: Project): EditPatch {
   return {
     format: "rpgkit-edit/patch-v1",
     beforeHash: semanticHash(before),
@@ -589,7 +577,7 @@ function parsePatchSide(value: unknown, path: string): PatchValue {
   return { exists: true, value: cloneJson(value.value) };
 }
 
-function parsePatch(value: unknown): EditPatch {
+export function parseEditPatch(value: unknown): EditPatch {
   if (!isRecord(value) || value.format !== "rpgkit-edit/patch-v1") {
     throw new EditApiError("INVALID_PATCH", "patch format must be rpgkit-edit/patch-v1", "$.patch.format", "rpgkit-edit/patch-v1", isRecord(value) ? value.format : value);
   }
@@ -616,6 +604,10 @@ function parsePatch(value: unknown): EditPatch {
   return { format: value.format, beforeHash: value.beforeHash, afterHash: value.afterHash, changes };
 }
 
+export function patchSideAt(root: unknown, path: string): PatchValue {
+  return sideAt(root, pointerTokens(path));
+}
+
 function sideAt(root: unknown, tokens: readonly string[]): PatchValue {
   if (tokens.length === 0) return present(root);
   let cursor: unknown = root;
@@ -637,7 +629,7 @@ function sideAt(root: unknown, tokens: readonly string[]): PatchValue {
   return isRecord(cursor) && own(cursor, last) ? present(cursor[last]) : ABSENT;
 }
 
-function sameSide(a: PatchValue, b: PatchValue): boolean {
+export function samePatchSide(a: PatchValue, b: PatchValue): boolean {
   return a.exists === b.exists && (!a.exists || (b.exists && semanticEqual(a.value, b.value)));
 }
 
@@ -689,7 +681,7 @@ export function applyEditPatch(
   patchValue: unknown,
   direction: "forward" | "reverse" = "forward",
 ): Project {
-  const patch = parsePatch(patchValue);
+  const patch = parseEditPatch(patchValue);
   const expectedHash = direction === "forward" ? patch.beforeHash : patch.afterHash;
   const resultHash = direction === "forward" ? patch.afterHash : patch.beforeHash;
   const actualHash = semanticHash(project);
@@ -702,14 +694,40 @@ export function applyEditPatch(
       actualHash,
     );
   }
+  const next = applyEditChanges(project, patch.changes, direction);
+  const actualResultHash = semanticHash(next);
+  if (actualResultHash !== resultHash) {
+    throw new EditApiError("INVALID_PATCH", "patch result hash does not match its declared result", "$.patch", resultHash, actualResultHash);
+  }
+  return next;
+}
+
+/** Apply a subset of reversible changes after checking every local before
+ * value. Unlike applyEditPatch this deliberately has no whole-document hash
+ * precondition, so independently clean proposal hunks can be rebased over
+ * unrelated edits. The resulting project still passes every normal edit
+ * validation gate. */
+export function applyEditChanges(
+  project: Project,
+  rawChanges: readonly EditChange[],
+  direction: "forward" | "reverse" = "forward",
+): Project {
+  // Reuse the strict wire parser instead of accepting richer in-memory
+  // objects that could not have arrived through CLI/MCP JSON.
+  const changes = parseEditPatch({
+    format: "rpgkit-edit/patch-v1",
+    beforeHash: "0".repeat(64),
+    afterHash: "0".repeat(64),
+    changes: rawChanges,
+  }).changes;
   let next: unknown = cloneJson(project);
-  const changes = direction === "forward" ? patch.changes : [...patch.changes].reverse();
-  for (const change of changes) {
+  const ordered = direction === "forward" ? changes : [...changes].reverse();
+  for (const change of ordered) {
     const tokens = pointerTokens(change.path);
     const expected = direction === "forward" ? change.before : change.after;
     const replacement = direction === "forward" ? change.after : change.before;
     const actual = sideAt(next, tokens);
-    if (!sameSide(actual, expected)) {
+    if (!samePatchSide(actual, expected)) {
       throw new EditApiError(
         "PATCH_CHANGE_MISMATCH",
         `patch precondition failed at ${change.path || "$"}`,
@@ -720,15 +738,11 @@ export function applyEditPatch(
     }
     next = setSide(next, tokens, replacement);
   }
-  const actualResultHash = semanticHash(next);
-  if (actualResultHash !== resultHash) {
-    throw new EditApiError("INVALID_PATCH", "patch result hash does not match its declared result", "$.patch", resultHash, actualResultHash);
-  }
-  validateEdited(next as Project);
+  validateEditedProject(next as Project);
   return next as Project;
 }
 
-function validateEdited(project: Project): void {
+export function validateEditedProject(project: Project): void {
   const errors = validateProject(project);
   if (errors.length === 0) errors.push(...structuralErrors(project));
   if (errors.length > 0) {
@@ -1152,7 +1166,7 @@ function mutate(command: EditCommandName, project: Project, args: Record<string,
 
   if (command === "save") {
     const direction = enumArg(args, "direction", ["forward", "reverse"] as const, "forward");
-    const patch = parsePatch(args.patch);
+    const patch = parseEditPatch(args.patch);
     const edited = applyEditPatch(project, patch, direction);
     return {
       project: edited,
@@ -1292,8 +1306,8 @@ export function executeEditOperation(
 
     const inline = requireInline(project);
     const mutation = mutate(command, inline, args);
-    validateEdited(mutation.project);
-    const patch = patchFor(inline, mutation.project);
+    validateEditedProject(mutation.project);
+    const patch = createEditPatch(inline, mutation.project);
     const output = serializeProjectPreservingSource(source, inline, mutation.project);
     const response: EditSuccess = {
       ok: true,

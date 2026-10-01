@@ -15,7 +15,8 @@ import {
 } from "../engine/event-canvas.ts";
 import { TILE, mapOffset, type FrameGeom } from "../engine/layout.ts";
 import type { DensePassage, DenseUpper } from "../engine/model.ts";
-import { INK, MARKER } from "./panels.tsx";
+import type { ProposalEventPreview, ProposalMapPreview, ProposalTilePreview } from "../proposals/types.ts";
+import { ACCENT, BAD, GOOD, INK, MARKER } from "./panels.tsx";
 
 /** One-sided edge rules for one map cell (from its ground tile's sheet). */
 export interface CellEdges {
@@ -45,6 +46,9 @@ export interface CanvasProps {
   selectedEventId?: string | null;
   /** Temporary clamped origin for an event currently being dragged. */
   dragPreview?: EventDragPreview | null;
+  proposalTiles?: readonly ProposalTilePreview[];
+  proposalEvents?: readonly ProposalEventPreview[];
+  proposalMaps?: readonly ProposalMapPreview[];
   /** Crosshair tile in world coords, or null when the pointer is elsewhere. */
   hover: { x: number; y: number } | null;
   cursorZone: "canvas" | "palette" | "header";
@@ -104,6 +108,11 @@ export function edgeArrowRects(edges: CellEdges | null): ArrowRect[] {
 }
 
 export function Canvas(props: CanvasProps): JSX.Element {
+  const previewMap = createMemo(() => (props.proposalMaps ?? []).find((map) => map.mapId === props.map.id));
+  // Keep cropped live cells visible, while extending the review surface far
+  // enough to show tiles/events authored in a proposed new row or column.
+  const previewWidth = createMemo(() => Math.max(props.map.width, previewMap()?.width ?? props.map.width));
+  const previewHeight = createMemo(() => Math.max(props.map.height, previewMap()?.height ?? props.map.height));
   // Dense fixed-size ground window: one tile id (or null) per screen cell,
   // row-major. <Index> keeps one Image per screen slot and its item signal
   // compares by value, so a repaint re-binds exactly the painted cell and a
@@ -142,8 +151,8 @@ export function Canvas(props: CanvasProps): JSX.Element {
   // Smaller-than-window maps center inside the frame (the runtime's
   // centerOffset/letterbox rule; engine/layout.mapOffset, floor split —
   // hitTest applies the same offset to pointer hits).
-  const offX = createMemo(() => mapOffset(props.map.width, props.cols) * TILE);
-  const offY = createMemo(() => mapOffset(props.map.height, props.rows) * TILE);
+  const offX = createMemo(() => mapOffset(previewWidth(), props.cols) * TILE);
+  const offY = createMemo(() => mapOffset(previewHeight(), props.rows) * TILE);
 
   const eventKeys = createMemo<string[]>(() => {
     const preview = props.dragPreview;
@@ -188,6 +197,22 @@ export function Canvas(props: CanvasProps): JSX.Element {
     return out;
   });
 
+  const proposalTiles = (layer: "ground" | "upper") => (props.proposalTiles ?? []).filter((tile) =>
+    tile.mapId === props.map.id && tile.layer === layer &&
+    tile.x >= 0 && tile.x < previewWidth() && tile.y >= 0 && tile.y < previewHeight() &&
+    tile.x >= props.camX && tile.x < props.camX + props.cols &&
+    tile.y >= props.camY && tile.y < props.camY + props.rows);
+  const proposalEventRects = createMemo(() => {
+    const viewport = {
+      camX: props.camX, camY: props.camY, cols: props.cols, rows: props.rows,
+      width: previewWidth(), height: previewHeight(),
+    };
+    return (props.proposalEvents ?? []).filter((event) => event.mapId === props.map.id).flatMap((event) => {
+      const rect = visibleEventRect(event, viewport);
+      return rect ? [{ ...rect, kind: event.kind }] : [];
+    });
+  });
+
   return (
     <View
       class="absolute"
@@ -215,8 +240,8 @@ export function Canvas(props: CanvasProps): JSX.Element {
           posType: 1,
           insetL: offX(),
           insetT: offY(),
-          width: Math.min(props.map.width, props.cols) * TILE,
-          height: Math.min(props.map.height, props.rows) * TILE,
+          width: Math.min(previewWidth(), props.cols) * TILE,
+          height: Math.min(previewHeight(), props.rows) * TILE,
           bgColor: "#14161e",
         }}
         debugName="editor-map"
@@ -237,6 +262,23 @@ export function Canvas(props: CanvasProps): JSX.Element {
           )}
         </Index>
 
+        <For each={proposalTiles("ground")}>
+          {(ghost) => ghost.tile === null ? (
+            <View
+              class="absolute"
+              style={{ posType: 1, insetL: (ghost.x - props.camX) * TILE, insetT: (ghost.y - props.camY) * TILE, width: TILE, height: TILE, bgColor: BAD, opacity: 0.45, borderWidth: 1, borderColor: "#ffffff" }}
+              debugName="editor-proposal-tile-ground"
+            />
+          ) : (
+            <Image
+              class="absolute"
+              style={{ posType: 1, insetL: (ghost.x - props.camX) * TILE, insetT: (ghost.y - props.camY) * TILE, width: TILE, height: TILE, opacity: 0.55 }}
+              src={keyOf(ghost.tile)}
+              debugName="editor-proposal-tile-ground"
+            />
+          )}
+        </For>
+
         <Index each={upperTiles()}>
           {(tile, i) => (
             <Image
@@ -252,6 +294,23 @@ export function Canvas(props: CanvasProps): JSX.Element {
             />
           )}
         </Index>
+
+        <For each={proposalTiles("upper")}>
+          {(ghost) => ghost.tile === null ? (
+            <View
+              class="absolute"
+              style={{ posType: 1, insetL: (ghost.x - props.camX) * TILE, insetT: (ghost.y - props.camY) * TILE, width: TILE, height: TILE, bgColor: BAD, opacity: 0.45, borderWidth: 1, borderColor: "#ffffff" }}
+              debugName="editor-proposal-tile-upper"
+            />
+          ) : (
+            <Image
+              class="absolute"
+              style={{ posType: 1, insetL: (ghost.x - props.camX) * TILE, insetT: (ghost.y - props.camY) * TILE, width: TILE, height: TILE, opacity: 0.55 }}
+              src={keyOf(ghost.tile)}
+              debugName="editor-proposal-tile-upper"
+            />
+          )}
+        </For>
 
         {/* Event markers draw above both tile layers, translucent, so an event
             under an opaque star tile (meadow's flowerbed) stays visible and the
@@ -281,6 +340,29 @@ export function Canvas(props: CanvasProps): JSX.Element {
                   !
                 </Text>
               </View>
+            );
+          }}
+        </For>
+
+        <For each={proposalEventRects()}>
+          {(event) => {
+            const color = event.kind === "added" ? GOOD : event.kind === "deleted" ? BAD : event.kind === "moved" ? "#60a5fa" : ACCENT;
+            return (
+              <View
+                class="absolute"
+                style={{
+                  posType: 1,
+                  insetL: event.vx * TILE,
+                  insetT: event.vy * TILE,
+                  width: event.w * TILE,
+                  height: event.h * TILE,
+                  bgColor: color,
+                  borderWidth: 2,
+                  borderColor: color,
+                  opacity: 0.55,
+                }}
+                debugName={`editor-proposal-event-${event.kind}-${event.id}`}
+              />
             );
           }}
         </For>

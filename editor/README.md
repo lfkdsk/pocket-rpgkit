@@ -91,6 +91,19 @@ a guard test.
   button. Click it, switch maps with **<**/**>**, click any cell, and the
   command's map/x/y/dir fill from the canvas. The map/x/y/dir fields stay
   text-editable, so `$variable` operands still work.
+- **AI proposal review**: **PROPOSALS** opens the validated sidecar queue.
+  The list shows title, author, pending hunk count, and live conflict state.
+  Selecting a proposal shows its rationale and hunks, locates the chosen hunk
+  on its map, overlays proposed ground/upper tiles at partial opacity, and
+  marks added events with translucent green boxes, deleted events in red,
+  moved events in blue, and other event changes in amber. **ACCEPT**,
+  **REJECT**, and **ALL** review
+  hunks independently. Conflicting hunks cannot be accepted; an acceptance
+  (including several hunks through ALL) is one undo step, while rejection does
+  not touch the project.
+  Agents create, list, inspect, and withdraw queue entries through the four
+  proposal CLI/MCP operations documented in the
+  [edit API reference](../docs/edit-api.md#ai-proposal-lifecycle).
 - **Open and save**: the document is parsed and checked against
   `src/data/schema.json` on load, and again before every save, which
   refuses an invalid export with the first schema error in the status bar.
@@ -121,9 +134,36 @@ bun run editor meadow -- --quit-after 600    # extra host flags pass through
 (macos-app on a Mac, linux-app elsewhere), builds the bundle into
 `dist/<target>/editor.{js,pak}`, builds the Rust host with
 `cargo build --release`, and starts it with the `rpgkit-editor` companion
-and `--file`. The host forwards the real mouse and keyboard to the editor,
-sends the file's text at boot, and writes each SAVE (header button or
-Cmd+S) back to that file through a temp file and a rename.
+and `--file`. The host forwards the real mouse and keyboard to the editor and
+sends the file's text at boot. For this managed launcher, SAVE (header button
+or Cmd+S) is handed to the bridge through `data.fs` rather than sent to the
+generic host writer.
+
+The launcher derives the proposal queue at `<file>.proposals/`, snapshots its
+validated pending JSON into the editor's project-specific `data.fs`, and
+reconciles changes every 200 ms while the window is open. This preserves the
+guest filesystem boundary: the PocketJS app never receives arbitrary host
+paths. Review updates may add hunk decisions but cannot rewrite proposal
+metadata or edit changes. Rejections are recorded without waiting for a
+document save. For acceptance, the launcher rechecks the hunk against the
+latest host file, applies it with a byte-checked atomic replacement, and then
+records the decision; unrelated external edits are retained and target
+conflicts are refused. Per-proposal locks merge independent reviewers, and an
+interrupted archive move is repaired on the next load. Once every hunk is
+accepted or rejected, the launcher moves the proposal to
+`<file>.proposals/archive/`.
+
+The bridge first writes an explicit managed-save capability marker, then a
+separate, host-owned semantic-hash snapshot into the editor data root. After an
+acceptance, SAVE stays disabled until that snapshot
+confirms the expected host apply. Every managed SAVE carries the exact source
+hash that the editor loaded; the bridge compares it and replaces the file while
+holding the same project lock used by direct agent edits and proposal
+acceptance. A stale save is rejected and asks for a reload, so the check and
+write cannot straddle another cooperating writer. Dead locks are moved to
+token-specific reaper tombstones so concurrent recovery cannot remove a new
+owner's lock. If bridge initialization later fails, the marker makes SAVE fail
+closed; a generic companion without the marker keeps its legacy save channel.
 
 **Working copies.** The examples author their projects in code
 (`examples/sunstone/game-data.ts`, `examples/meadow/mini-project.ts`);
@@ -152,7 +192,9 @@ paints, selects or activates, **CROSS** erases/deletes, **SQUARE**/**TRIANGLE**
 undo/redo, **L**/**R** switch maps, **SELECT** cycles the editing mode, and
 **START** saves. **DOC** cycles the bundled documents. Detailed inspector
 field entry uses the desktop companion's pointer and keyboard; button-only
-mode can close the inspector with CROSS. On a host with `data.fs` a save goes to
+mode can close the inspector with CROSS. In proposal review, CIRCLE accepts,
+CROSS rejects, START accepts all clean hunks, and SELECT returns to the queue.
+On a host with `data.fs` a save goes to
 `projects/<id>.json` under the app's data root and wins over the bundled
 copy at the next boot; with neither channel the save is refused with a
 visible notice.
@@ -161,7 +203,9 @@ visible notice.
 
 ```sh
 bun run build:editor        # dist/editor.{js,pak} for the sim tests
-bun test tests/editor-model.test.ts tests/editor-sim.test.ts tests/editor-event-sim.test.ts tests/editor-playtest-sim.test.ts
+bun test tests/editor-model.test.ts tests/editor-sim.test.ts \
+  tests/editor-event-sim.test.ts tests/editor-proposal-sim.test.ts \
+  tests/editor-playtest-sim.test.ts
 bun editor/gen-assets.ts    # regenerate the editor's baked inputs
 ```
 
@@ -174,7 +218,8 @@ The sim suite drives both input modes on the wasm sim host with semantic
 pixel checks (banner, palette art and selection, tile art, multi-cell event
 selection, inspector controls at 480×272 and 720×480, and letterbox
 hit-testing), svc save/load and typed-character lines, the data.fs store, a
-byte-identical no-edit round trip, and a click-authored speaking NPC whose
+byte-identical no-edit round trip, proposal ghost golden and per-hunk
+accept/reject/undo/persistence flow, and a click-authored speaking NPC whose
 saved action page is triggered by the runtime interpreter. The playtest sim
 suite additionally exercises unsaved map art through the real `GameView`,
 selected-cell starts, STOP/undo continuity, live page switching, LAST/FRESH
@@ -187,6 +232,8 @@ editor/
   editor.tsx, app.tsx   entry and shell (header, palette, canvas, status)
   svc.ts                the rpgkit-editor companion channel (svc lines)
   store.ts              data.fs project documents (gamepad mode)
+  proposals/model.ts    portable validation, conflict, apply and preview
+  proposals/store.ts    data.fs proposal-session transport
   sources.ts            which example documents and sheets the cooker reads
   gen-assets.ts         the cooker (below)
   api/                  the editor-api package surface: file adapter,
@@ -198,6 +245,7 @@ editor/
   engine/event-fields.ts validated page/condition/command field adapters
   engine/event-layout.ts responsive inspector geometry and hit-testing
   engine/event-canvas.ts event footprint, selection and drag geometry
+  engine/proposal-layout.ts proposal panel geometry and hit-testing
   engine/layout.ts      map/sidebar geometry and pointer hit-testing
   engine/map-layout.ts  map inspector geometry
   engine/cursor.ts      buttons-mode cursor reducer
@@ -207,6 +255,7 @@ editor/
   engine/textures.ts    tile id -> baked image key
   ui/canvas.tsx         map window: tiles, event footprints and cursors
   ui/event-inspector.tsx pages, conditions and recursive command UI
+  ui/proposal-panel.tsx queue, rationale, hunk states and review controls
   ui/map-inspector.tsx  map properties, sheets and map management
   ui/pass-panel.tsx     PASS-mode brushes and one-way edge tools
   ui/playtest.tsx       GameView, STOP/DEBUG chrome and live state panel

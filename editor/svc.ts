@@ -18,9 +18,11 @@
 //   {t:"scroll",dy}             wheel scrolls the tile palette
 //   {t:"ch",s}                  typed text (including IME output)
 //   {t:"paste",text}            pasted text
+//   {t:"proposals",proposals}   optional external proposal queue snapshot
 //
 // guest → host lines:
-//   {t:"save",text}             persist the exported document
+//   {t:"save",text}             legacy save when no managed data.fs bridge exists
+//   {t:"proposal-review",proposal} persist one proposal's hunk decisions
 
 import { getOps } from "@pocketjs/framework";
 
@@ -84,14 +86,20 @@ export type HostLine = {
   dy?: number;
   s?: string;
   text?: string;
+  proposals?: unknown;
+  proposal?: unknown;
 };
 
 export interface Svc {
   /** Drain this frame's host lines (one poll per frame, per the HostOps
    *  contract). */
   poll(): HostLine[];
-  /** Persist the exported document through the host channel. */
+  /** Persist through a generic host channel. The managed editor launcher uses
+   *  the data.fs compare-and-swap bridge instead. */
   save(text: string): void;
+  /** Notify an enhanced companion that review metadata changed. The stock
+   * desktop launcher also mirrors this through data.fs. */
+  reviewProposal(proposal: unknown): void;
 }
 
 type SvcLine =
@@ -156,6 +164,9 @@ export function connectSvc(): Svc | null {
     },
     save(text) {
       send(JSON.stringify({ t: "save", text }));
+    },
+    reviewProposal(proposal) {
+      send(JSON.stringify({ t: "proposal-review", proposal }));
     },
   };
 }

@@ -2,3 +2,7 @@ export * from "./types.ts";
 export * from "./operations.ts";
 export * from "./file.ts";
 export * from "./tools.ts";
+export * from "./proposals.ts";
+export * from "./proposal-tools.ts";
+export * from "../proposals/types.ts";
+export * from "../proposals/model.ts";

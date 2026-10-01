@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pocket-rpgkit.dev/schema/edit-proposal-v1.json",
+  "title": "Pocket RPG Kit edit proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "rationale", "author", "createdAt", "baseHash", "hunks"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "rationale": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "author": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{3})?Z$"
+    },
+    "baseHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hunks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/hunk" }
+    }
+  },
+  "$defs": {
+    "side": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exists"],
+          "properties": { "exists": { "const": false } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exists", "value"],
+          "properties": { "exists": { "const": true }, "value": {} }
+        }
+      ]
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "before", "after"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^(?:$|/)" },
+        "before": { "$ref": "#/$defs/side" },
+        "after": { "$ref": "#/$defs/side" }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "decidedAt"],
+      "properties": {
+        "status": { "enum": ["accepted", "rejected"] },
+        "decidedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{3})?Z$"
+        }
+      }
+    },
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "summary", "changes"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/change" }
+        },
+        "decision": { "$ref": "#/$defs/decision" }
+      }
+    }
+  }
+}

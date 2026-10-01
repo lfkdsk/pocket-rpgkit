@@ -10,6 +10,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { validateSchema } from "../../src/engine/schema-validate.ts";
 import { runFileEdit, type FileEditRequest } from "../../editor/api/file.ts";
 import { EDIT_TOOL_BY_NAME, EDIT_TOOLS, type EditToolDefinition } from "../../editor/api/tools.ts";
+import { runProposalFileCommand, type ProposalFileRequest } from "../../editor/api/proposals.ts";
+import {
+  PROPOSAL_TOOL_BY_NAME,
+  PROPOSAL_TOOLS,
+  type ProposalToolDefinition,
+} from "../../editor/api/proposal-tools.ts";
 import { CHECK_TOOLS, CheckArgsError, CheckLoadError, type CheckTool } from "../rpgkit-check/src/registry.ts";
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -50,7 +56,14 @@ function resultResponse(id: JsonRpcId, result: unknown): JsonRpcResponse {
   return { jsonrpc: "2.0", id, result };
 }
 
-function publicTool(definition: EditToolDefinition): Record<string, unknown> {
+type ToolDefinition = EditToolDefinition | ProposalToolDefinition;
+export const RPGKIT_TOOLS: readonly (ToolDefinition | CheckTool)[] = [
+  ...EDIT_TOOLS,
+  ...PROPOSAL_TOOLS,
+  ...CHECK_TOOLS,
+];
+
+function publicTool(definition: ToolDefinition): Record<string, unknown> {
   return {
     name: definition.name,
     title: definition.title,
@@ -58,7 +71,7 @@ function publicTool(definition: EditToolDefinition): Record<string, unknown> {
     inputSchema: definition.inputSchema,
     annotations: {
       readOnlyHint: !definition.mutates,
-      destructiveHint: definition.mutates,
+      destructiveHint: definition.kind === "proposal" ? definition.destructive : definition.mutates,
       idempotentHint: !definition.mutates,
       openWorldHint: false,
     },
@@ -164,11 +177,11 @@ async function callCheckTool(id: JsonRpcId, name: string, args: Record<string, u
 function parseToolRequest(
   params: unknown,
   root: string,
-): { definition: EditToolDefinition; request: FileEditRequest } | { error: string; details?: unknown } {
+): { definition: ToolDefinition; request: FileEditRequest | ProposalFileRequest } | { error: string; details?: unknown } {
   if (!isRecord(params) || typeof params.name !== "string") {
     return { error: "tools/call params must contain a string name" };
   }
-  const definition = EDIT_TOOL_BY_NAME.get(params.name);
+  const definition = EDIT_TOOL_BY_NAME.get(params.name) ?? PROPOSAL_TOOL_BY_NAME.get(params.name);
   if (!definition) return { error: `unknown tool ${JSON.stringify(params.name)}` };
   const input = params.arguments ?? {};
   const errors = validateSchema(definition.inputSchema, input);
@@ -178,7 +191,7 @@ function parseToolRequest(
   return {
     definition,
     request: {
-      command: definition.command,
+      command: definition.command as never,
       file: file as string,
       args,
       dryRun: dryRun === true,
@@ -222,7 +235,13 @@ export async function dispatchMcpMessage(value: unknown, root = process.cwd()): 
   if (request.method === "ping") return resultResponse(id, {});
   if (request.method === "tools/list") {
     if (request.params !== undefined && !isRecord(request.params)) return errorResponse(id, -32602, "Invalid params: tools/list params must be an object");
-    return resultResponse(id, { tools: [...EDIT_TOOLS.map(publicTool), ...CHECK_TOOLS.map(publicCheckTool)] });
+    return resultResponse(id, {
+      tools: [
+        ...EDIT_TOOLS.map(publicTool),
+        ...PROPOSAL_TOOLS.map(publicTool),
+        ...CHECK_TOOLS.map(publicCheckTool),
+      ],
+    });
   }
   if (request.method === "tools/call") {
     if (!isRecord(request.params) || typeof request.params.name !== "string") {
@@ -236,7 +255,9 @@ export async function dispatchMcpMessage(value: unknown, root = process.cwd()): 
     const parsed = parseToolRequest(request.params, root);
     if ("error" in parsed) return errorResponse(id, -32602, `Invalid params: ${parsed.error}`, parsed.details);
     try {
-      const response = runFileEdit(parsed.request);
+      const response = parsed.definition.kind === "proposal"
+        ? runProposalFileCommand(parsed.request as ProposalFileRequest)
+        : runFileEdit(parsed.request as FileEditRequest);
       const text = JSON.stringify(response);
       return resultResponse(id, {
         content: [{ type: "text", text }],

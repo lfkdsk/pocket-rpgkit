@@ -178,7 +178,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(before.editor.project.maps[0].ground[8 * 20 + 5]).toBe("town.1");
     expect(before.playStartCell).toEqual({ mapId: "village", x: 4, y: 8 });
 
-    click(inbox, world, 210, 10); // PLAY
+    click(inbox, world, 270, 10); // PLAY
     for (let i = 0; i < 3; i++) frame(world);
 
     const playing = probes.state();
@@ -235,7 +235,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(debugProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, 210, 10); // PLAY
+    click(inbox, world, 270, 10); // PLAY
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(0);
 
@@ -256,17 +256,17 @@ simDescribe("editor in-memory playtest", () => {
 
     click(inbox, world, 28, 11); // STOP captures the switch/variable banks
     expect(probes.state().hasLastPlayState).toBe(true);
-    click(inbox, world, 280, 10); // STATE -> LAST
+    click(inbox, world, 310, 10); // STATE -> LAST
     expect(probes.state().carryPrevious).toBe(true);
-    click(inbox, world, 210, 10);
+    click(inbox, world, 270, 10);
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.sw.switches["debug-page-active"]).toBe(true);
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(1);
 
     click(inbox, world, 28, 11);
-    click(inbox, world, 280, 10); // STATE -> FRESH
+    click(inbox, world, 310, 10); // STATE -> FRESH
     expect(probes.state().carryPrevious).toBe(false);
-    click(inbox, world, 210, 10);
+    click(inbox, world, 270, 10);
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.sw.switches["debug-page-active"]).toBeUndefined();
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(0);
@@ -283,7 +283,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(fallbackProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, 210, 10);
+    click(inbox, world, 270, 10);
     for (let i = 0; i < 5; i++) frame(world);
     const playing = probes.state();
     expect(playing.playIssues.map((issue: { kind: string }) => issue.kind)).toEqual([
@@ -315,7 +315,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(debugProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, 210, 10);
+    click(inbox, world, 270, 10);
     for (let i = 0; i < 3; i++) frame(world);
     const game = world.render().slice();
     expect(treeHas(world.getTree(), "editor-playtest-root")).toBe(true);

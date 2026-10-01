@@ -20,7 +20,19 @@ export interface Cursor {
   button: number;
 }
 
-export const HEADER_ORDER = ["layer", "doc", "mapprev", "mapnext", "map", "play", "state", "undo", "redo", "save"] as const;
+export const HEADER_ORDER = [
+  "layer",
+  "doc",
+  "mapprev",
+  "mapnext",
+  "map",
+  "proposals",
+  "play",
+  "state",
+  "undo",
+  "redo",
+  "save",
+] as const;
 export type HeaderButton = (typeof HEADER_ORDER)[number];
 
 export function initialCursor(tx: number, ty: number): Cursor {

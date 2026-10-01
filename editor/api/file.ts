@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { executeEditOperation } from "./operations.ts";
 import type { FileEditResponse } from "./types.ts";
+import { FileLockBusyError, withFileLock } from "./lock.ts";
 
 export interface FileEditRequest {
   command: string;
@@ -44,9 +45,29 @@ function ioFailure(
   };
 }
 
-class WriteConflictError extends Error {}
+export class WriteConflictError extends Error {}
 
-function atomicWrite(path: string, text: string, expectedSource: string): void {
+export function projectFileLockPath(path: string): string {
+  return `${path}.rpgkit-edit.lock`;
+}
+
+/** Serialize cooperating direct edits and proposal acceptance across the
+ * complete compare-and-replace window. */
+export function withProjectFileLock<T>(path: string, run: () => T): T {
+  try {
+    return withFileLock(projectFileLockPath(path), run);
+  } catch (error) {
+    if (error instanceof FileLockBusyError) {
+      throw new WriteConflictError("another writer currently owns the project file lock");
+    }
+    throw error;
+  }
+}
+
+/** Atomically replace one project file only while its source bytes still
+ * match the revision the caller read. Shared by direct edits and proposal
+ * acceptance so neither path can silently overwrite a newer revision. */
+export function atomicWriteProjectFile(path: string, text: string, expectedSource: string): void {
   const mode = statSync(path).mode;
   const temporary = `${path}.rpgkit-edit-${process.pid}-${randomUUID()}.tmp`;
   try {
@@ -93,7 +114,7 @@ export function runFileEdit(request: FileEditRequest): FileEditResponse {
   let written = false;
   if (!dryRun && execution.response.changed && execution.output !== undefined) {
     try {
-      atomicWrite(file, execution.output, source);
+      withProjectFileLock(file, () => atomicWriteProjectFile(file, execution.output!, source));
       written = true;
     } catch (error) {
       return ioFailure(

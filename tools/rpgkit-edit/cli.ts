@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { EDIT_COMMANDS } from "../../editor/api/types.ts";
 import { runFileEdit } from "../../editor/api/file.ts";
+import { PROPOSAL_COMMANDS, runProposalFileCommand } from "../../editor/api/proposals.ts";
 
 export interface CliOptions {
   command: string;
@@ -16,11 +17,12 @@ export const CLI_USAGE = `Usage:
   bun run rpgkit-edit <command> --file <project.json> [--json '<args>'] [--dry-run]
 
 Commands:
-  ${EDIT_COMMANDS.join("\n  ")}
+  ${[...EDIT_COMMANDS, ...PROPOSAL_COMMANDS].join("\n  ")}
 
---json accepts an inline JSON object or @path/to/args.json. Mutating commands
-save atomically by default. --dry-run returns the same validated diff and
-reversible patch without changing the file.`;
+--json accepts an inline JSON object or @path/to/args.json. Edit mutations
+save atomically by default and return a reversible patch. Proposal commands
+operate on the adjacent proposal queue. --dry-run validates and returns the
+result without writing the project or sidecar.`;
 
 function optionValue(argv: readonly string[], index: number, name: string): { value: string; consumed: number } {
   const argument = argv[index]!;
@@ -75,7 +77,14 @@ export function runCli(argv: readonly string[]): number {
       process.stdout.write(`${CLI_USAGE}\n`);
       return 0;
     }
-    const response = runFileEdit(options);
+    const response = (PROPOSAL_COMMANDS as readonly string[]).includes(options.command)
+      ? runProposalFileCommand({
+          command: options.command as (typeof PROPOSAL_COMMANDS)[number],
+          file: options.file,
+          args: options.args,
+          dryRun: options.dryRun,
+        })
+      : runFileEdit(options);
     process.stdout.write(`${JSON.stringify(response)}\n`);
     return response.ok ? 0 : 1;
   } catch (error) {

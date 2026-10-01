@@ -2,9 +2,11 @@
 
 `rpgkit-edit` exposes the editor's pure document model as a stable
 JSON-in/JSON-out command line, for scripts and coding agents. Every request
-parses and validates the input document first; every effective mutation is
-validated again, returns JSON Pointer changes with before/after values and a
-reversible `rpgkit-edit/patch-v1` patch, and atomically replaces the file.
+parses and validates the input document first; every effective project mutation
+is validated again, returns JSON Pointer changes with before/after values and a
+reversible `rpgkit-edit/patch-v1` patch, and atomically replaces the project
+file. Proposal commands instead manage review sidecars without directly
+editing the project.
 
 The same operations are available as MCP tools; see [MCP tools](#mcp-tools).
 
@@ -18,7 +20,8 @@ The commands are `open`, `list-maps`, `list-events`, `list-pages`,
 `list-commands`, `update-map`, `paint-tile`, `paint-rect`, `fill-region`,
 `paint-passage`, `add-event`, `update-event`, `delete-event`, `add-page`,
 `update-page`, `delete-page`, `insert-command`, `delete-command`,
-`update-command`, `validate`, and `save`.
+`update-command`, `validate`, `save`, `propose`, `list-proposals`,
+`show-proposal`, and `withdraw-proposal`.
 
 ### Common flags
 
@@ -26,12 +29,14 @@ The commands are `open`, `list-maps`, `list-events`, `list-pages`,
 | --- | --- |
 | `--file <path>` | project document. Required for every command. |
 | `--json <json>` | arguments object: an inline JSON string or `@path/to/args.json`. Defaults to `{}`. |
-| `--dry-run` | mutating commands only: run the full validation/diff/patch path but never write. |
+| `--dry-run` | project mutations and proposal create/withdraw: run full validation but do not write the project or sidecar. Read commands accept it only as a reported no-op. |
 | `--help`, `-h` | print usage, exit 0. |
 
 ## Response envelope
 
 Every command prints exactly one JSON object on stdout.
+This subsection describes project read/edit commands; proposal commands use
+the [proposal envelope](#proposal-request-and-validation) below.
 
 Success:
 
@@ -401,6 +406,183 @@ $ bun run rpgkit-edit save --file examples/sunstone/data/sunstone.json --json @r
 {"ok":true,"changed":true,"result":{"direction":"reverse","beforeHash":"76b5f5ca537e…","afterHash":"01fb89c775a8…"}}
 ```
 
+## AI proposal lifecycle
+
+The proposal commands put typed edits into a human-review queue instead of
+changing the project immediately. An inline project `game.json` owns the
+sidecar directory `game.json.proposals/`; completed reviews move to its
+`archive/` directory. Creating, listing with live assessment, showing, and
+editor review currently require an inline project; those operations fail on a
+sharded shell with `READ_ONLY_PROJECT_SHELL`. Withdrawal only validates and
+removes an existing pending sidecar. Creating or withdrawing a proposal
+changes only the sidecar. Accepting and rejecting hunks happens in the desktop
+editor, not in these four commands.
+
+### Proposal request and validation
+
+`propose` takes this arguments object:
+
+```json
+{
+  "id": "docs-demo",
+  "title": "Paint one tile",
+  "rationale": "Demonstrate proposal review.",
+  "author": "docs",
+  "createdAt": "2026-10-01T00:00:00.000Z",
+  "hunks": [
+    {
+      "id": "tile",
+      "summary": "Change one entrance tile",
+      "operations": [
+        {
+          "command": "paint-tile",
+          "args": { "map": "village", "x": 0, "y": 0, "tile": "town.1" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+- Proposal and hunk ids match
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`. `title` and `author` are 1–160
+  characters, `rationale` is 1–4000, and `summary` is 1–240.
+- `createdAt` is optional. When present it is an ISO UTC timestamp; when
+  omitted the command supplies the current time.
+- `hunks` and every hunk's `operations` must be non-empty. Operations may use
+  `update-map`, `paint-tile`, `paint-rect`, `fill-region`, `paint-passage`,
+  `add-event`, `update-event`, `delete-event`, `add-page`, `update-page`,
+  `delete-page`, `insert-command`, `delete-command`, or `update-command`.
+  Read commands, `save`, and proposal commands cannot be nested in a hunk.
+- Operations inside one hunk run in order. Every hunk starts from the same
+  original project, must make a semantic change, and must not overlap another
+  hunk's JSON Pointer paths. The stored proposal replaces `operations` with
+  validated reversible `changes` and records the project's semantic
+  `baseHash`.
+
+Proposal success has a separate envelope from direct project edits:
+
+```json
+{
+  "ok": true,
+  "command": "propose",
+  "file": "/absolute/path/game.json",
+  "proposalDirectory": "/absolute/path/game.json.proposals",
+  "dryRun": false,
+  "written": true,
+  "result": {}
+}
+```
+
+`written` means that this command changed the sidecar queue. It never means
+that the project file was edited. `propose --dry-run` still builds and
+validates the complete proposal and checks for an id collision, but returns
+`written: false` and creates nothing. `list-proposals` and `show-proposal`
+always return `written: false`; `withdraw-proposal --dry-run` validates that a
+pending proposal exists without deleting it.
+
+Proposal failure uses the same one-object stdout contract:
+
+```json
+{
+  "ok": false,
+  "command": "show-proposal",
+  "file": "/absolute/path/game.json",
+  "dryRun": false,
+  "written": false,
+  "error": { "code": "PROPOSAL_NOT_FOUND", "message": "proposal \"missing\" does not exist" }
+}
+```
+
+The following four examples were run consecutively against a fresh copy of
+Sunstone. The `jq` filters omit absolute temporary paths and large proposal
+payloads, but the displayed JSON is the actual output. The project SHA-256 was
+unchanged before and after the lifecycle.
+
+Save the request above as `proposal.json`, then prepare the disposable copy:
+
+```sh
+DEMO_DIR="$(mktemp -d)"
+cp examples/sunstone/data/sunstone.json "$DEMO_DIR/game.json"
+PROPOSAL="$(jq -c . proposal.json)"
+```
+
+### `propose`
+
+Args: `id`, `title`, `rationale`, `author`, and `hunks` are required;
+`createdAt` is optional. `result` is `{ path, proposal }`, where `path` is the
+new pending sidecar and `proposal` contains `baseHash` plus generated changes.
+Normal mode atomically creates one sidecar; `--dry-run` writes nothing.
+
+```sh
+$ bun run rpgkit-edit propose --file "$DEMO_DIR/game.json" --json "$PROPOSAL" \
+    | jq -c '{ok,command,dryRun,written,result:{path:(.result.path|split("/")|last),proposal:{id:.result.proposal.id,baseHash:.result.proposal.baseHash,hunks:(.result.proposal.hunks|map({id,changeCount:(.changes|length)}))}}}'
+{"ok":true,"command":"propose","dryRun":false,"written":true,"result":{"path":"docs-demo.json","proposal":{"id":"docs-demo","baseHash":"57b33669a8c5a2302462507cf558970ebdbf230ca5101b71b52290e355285fe5","hunks":[{"id":"tile","changeCount":1}]}}}
+```
+
+Command-specific errors are `INVALID_PROPOSAL_REQUEST` (shape or required
+field), `INVALID_PROPOSAL_OPERATION` (not an editing operation),
+`PROPOSAL_OPERATION_FAILED` (an edit failed; its error is in `details`),
+`EMPTY_PROPOSAL_HUNK`, `INVALID_PROPOSAL`, and
+`PROPOSAL_ALREADY_EXISTS`. A duplicate id, for example, returns
+`{"code":"PROPOSAL_ALREADY_EXISTS","message":"proposal \"docs-demo\" already exists"}`.
+
+### `list-proposals`
+
+Args: none. `result` is the pending queue ordered by `createdAt` then id. Each
+row is `{ id, title, author, createdAt, hunkCount, pendingHunks, assessment }`.
+`assessment` contains `baseMatches`, `hasConflicts`, and hunk rows whose
+`state` is `clean`, `already-applied`, `partially-applied`, or `conflict`.
+
+```sh
+$ bun run rpgkit-edit list-proposals --file "$DEMO_DIR/game.json" \
+    | jq -c '{ok,command,dryRun,written,result:(.result|map({id,hunkCount,pendingHunks,assessment:{baseMatches:.assessment.baseMatches,hasConflicts:.assessment.hasConflicts,states:(.assessment.hunks|map(.state))}}))}'
+{"ok":true,"command":"list-proposals","dryRun":false,"written":false,"result":[{"id":"docs-demo","hunkCount":1,"pendingHunks":1,"assessment":{"baseMatches":true,"hasConflicts":false,"states":["clean"]}}]}
+```
+
+The arguments object must be empty; extra fields fail with
+`INVALID_ARGUMENT`. A malformed sidecar fails the whole list with
+`INVALID_PROPOSAL` instead of being silently skipped.
+
+### `show-proposal`
+
+Args: `id` (required). `result` is
+`{ path, archived, proposal, assessment }`. Pending hunks omit `decision`;
+after editor review, each decision has `status: "accepted"` or
+`"rejected"`. The command searches pending first and then `archive/`, so an
+agent can poll until `archived` becomes true.
+
+```sh
+$ bun run rpgkit-edit show-proposal --file "$DEMO_DIR/game.json" --json '{"id":"docs-demo"}' \
+    | jq -c '{ok,command,dryRun,written,result:{archived:.result.archived,id:.result.proposal.id,decisions:(.result.proposal.hunks|map(.decision.status?)),states:(.result.assessment.hunks|map(.state))}}'
+{"ok":true,"command":"show-proposal","dryRun":false,"written":false,"result":{"archived":false,"id":"docs-demo","decisions":[null],"states":["clean"]}}
+```
+
+An absent or non-string id is `INVALID_PROPOSAL_REQUEST`, an unsafe id is
+`INVALID_PROPOSAL_ID`, extra fields are `INVALID_ARGUMENT`, and an id found in
+neither location is `PROPOSAL_NOT_FOUND`.
+
+### `withdraw-proposal`
+
+Args: `id` (required). Only a pending proposal can be withdrawn. Normal mode
+deletes its sidecar and returns `{ id, withdrawn: true }`; `--dry-run` returns
+the same result with top-level `dryRun: true, written: false` and leaves it in
+the queue.
+
+```sh
+$ bun run rpgkit-edit withdraw-proposal --file "$DEMO_DIR/game.json" --json '{"id":"docs-demo"}' \
+    | jq -c '{ok,command,dryRun,written,result}'
+{"ok":true,"command":"withdraw-proposal","dryRun":false,"written":true,"result":{"id":"docs-demo","withdrawn":true}}
+```
+
+Argument errors match `show-proposal`. A missing or already archived id is
+`PROPOSAL_NOT_FOUND`; a live storage lock is `PROPOSAL_BUSY`.
+
+`propose`, `list-proposals`, and `show-proposal` can also report
+`READ_ONLY_PROJECT_SHELL`. All four can report `UNSAFE_PROPOSAL_PATH`,
+`PROPOSAL_IO_ERROR`, and, when constrained by an MCP root,
+`PATH_OUTSIDE_ROOT`.
+
 ## The `rpgkit-edit/patch-v1` envelope
 
 ```json
@@ -432,16 +614,16 @@ $ bun run rpgkit-edit save --file examples/sunstone/data/sunstone.json --json @r
 | code | meaning |
 | --- | --- |
 | 0 | success |
-| 1 | edit failure: the response is `{ "ok": false, "error": … }` (unknown command, not found, out of bounds, last page, patch mismatch, and so on) |
+| 1 | edit/proposal domain failure: the response is `{ "ok": false, "error": … }` (unknown command, not found, conflict, invalid proposal, patch mismatch, and so on) |
 | 2 | CLI usage error: missing `--file`, malformed `--json`, unknown flag; stdout is a `CLI_USAGE` error object |
 
 ## MCP tools
 
 The MCP server (`bun run rpgkit-edit:mcp`, or
 `bun tools/rpgkit-edit/mcp.ts --root <project-dir>`) speaks newline-delimited
-JSON-RPC 2.0 over stdio and mounts both the edit tools and the QA check
-tools (see [qa-checks.md](qa-checks.md)). Every tool takes a `file` argument
-that must resolve inside `--root`; mutating tools also take `dryRun`.
+JSON-RPC 2.0 over stdio and mounts edit, proposal, and QA check tools (see
+[qa-checks.md](qa-checks.md)). Every tool takes a `file` argument that must
+resolve inside `--root`; mutating tools also take `dryRun`.
 
 | MCP tool | CLI command | required args | optional args |
 | --- | --- | --- | --- |
@@ -466,6 +648,50 @@ that must resolve inside `--root`; mutating tools also take `dryRun`.
 | `rpgkit_command_update` | `update-command` | `file`, `map`, `event`, `page`, `address`, `field`, `value` | `dryRun` |
 | `rpgkit_project_validate` | `validate` | `file` | — |
 | `rpgkit_project_save` | `save` | `file`, `patch` | `direction`, `dryRun` |
+| `rpgkit_proposal_create` | `propose` | `file`, `id`, `title`, `rationale`, `author`, `hunks` | `createdAt`, `dryRun` |
+| `rpgkit_proposals_list` | `list-proposals` | `file` | — |
+| `rpgkit_proposal_show` | `show-proposal` | `file`, `id` | — |
+| `rpgkit_proposal_withdraw` | `withdraw-proposal` | `file`, `id` | `dryRun` |
+
+Proposal tool arguments have the same constraints as their CLI command.
+`rpgkit_proposal_create` is annotated as a non-destructive sidecar mutation,
+`rpgkit_proposal_withdraw` as destructive, and list/show as read-only. A
+list call may nevertheless finish crash recovery by moving an already-decided
+pending sidecar into `archive/`. A successful `tools/call` result wraps the
+same CLI envelope twice:
+
+```json
+{
+  "content": [{ "type": "text", "text": "{\"ok\":true,...}" }],
+  "structuredContent": { "ok": true, "command": "propose", "written": true, "result": {} },
+  "isError": false
+}
+```
+
+A proposal domain failure is still a JSON-RPC result, with the failure
+envelope in `structuredContent` and `isError: true`. A proposal/edit file
+outside `--root` follows that path with `PATH_OUTSIDE_ROOT`. Input that fails
+the tool's JSON Schema or names an unknown tool uses JSON-RPC `-32602`; an
+unexpected server exception uses `-32603`.
+
+These normalized excerpts came from one real stdio session. Only the absolute
+temporary path, an unrelated queue row, and large proposal fields are
+shortened; each arrow's object is the corresponding `structuredContent`
+result.
+
+```text
+rpgkit_proposal_create({file:"/work/demo/game.json",id:"docs-mcp",title:"Paint one tile through MCP",rationale:"Demonstrate the MCP proposal lifecycle.",author:"docs",createdAt:"2026-10-01T00:01:00.000Z",hunks:[{id:"tile",summary:"Change one entrance tile",operations:[{command:"paint-tile",args:{map:"village",x:1,y:0,tile:"town.1"}}]}]})
+→ {ok:true,command:"propose",dryRun:false,written:true,result:{proposal:{id:"docs-mcp",hunks:[{id:"tile",changes:[...]}]}}}
+
+rpgkit_proposals_list({file:"/work/demo/game.json"})
+→ {ok:true,command:"list-proposals",dryRun:false,written:false,result:[{id:"docs-mcp",pendingHunks:1,assessment:{baseMatches:true,hasConflicts:false,hunks:[{id:"tile",state:"clean",conflicts:[]}]}}]}
+
+rpgkit_proposal_show({file:"/work/demo/game.json",id:"docs-mcp"})
+→ {ok:true,command:"show-proposal",dryRun:false,written:false,result:{archived:false,proposal:{id:"docs-mcp"},assessment:{baseMatches:true,hasConflicts:false}}}
+
+rpgkit_proposal_withdraw({file:"/work/demo/game.json",id:"docs-mcp"})
+→ {ok:true,command:"withdraw-proposal",dryRun:false,written:true,result:{id:"docs-mcp",withdrawn:true}}
+```
 
 Register it with an absolute script path and root, for example:
 
