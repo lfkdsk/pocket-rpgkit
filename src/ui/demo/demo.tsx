@@ -16,6 +16,7 @@ import type {
 import { Panel } from "../Panel.tsx";
 import { resolveUiTheme, type UiTheme } from "../theme.ts";
 import {
+  chapterTapeFrames,
   demoMaps,
   loadDemoChapter,
   loadDemoWarp,
@@ -177,7 +178,8 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
   let externalAction: (() => void) | null = null;
   let pending: { action: () => void; ready: boolean; error?: unknown } | null = null;
 
-  const autoplayChapters = (): DemoChapter[] => chapters.filter((chapter) => (chapter.tape?.length ?? 0) > 0);
+  // Listing never resolves a provider: rows are reactive and re-evaluate.
+  const autoplayChapters = (): DemoChapter[] => chapters.filter((chapter) => chapterTapeFrames(chapter) !== 0);
   const rows = (): DemoRow[] => {
     switch (page()) {
       case "chapters":

@@ -73,6 +73,51 @@ describe("ui/demo pure runtime", () => {
     expect(auto.attract.status().demoFrame).toBe(3);
   });
 
+  test("a provider tape is resolved on selection, never at validation", () => {
+    const forest = snapshotAt("forest", 10, 13);
+    let calls = 0;
+    const tape = [0, 0, BTN_RIGHT];
+    const chapter = {
+      id: "forest",
+      title: "Forest",
+      snapshot: forest,
+      tape: () => { calls++; return tape; },
+    };
+
+    // Validation must not resolve the provider: a pak-backed tape costs
+    // nothing at boot, however large it is.
+    expect(() => validateDemoOptions({ chapters: [chapter] })).not.toThrow();
+    expect(calls).toBe(0);
+
+    // Selection resolves it once; autoplay advances through the same frames.
+    const auto = mounted();
+    loadDemoChapter(auto.host, chapter, true, 4);
+    expect(calls).toBe(1);
+    expect(auto.attract.status()).toMatchObject({ phase: "attract", demoFrame: 0 });
+    auto.attract.step(0);
+    expect(auto.attract.status().demoFrame).toBe(3);
+  });
+
+  test("a chapter timelineFrame lands the suffix replay on the global timeline", () => {
+    const forest = snapshotAt("forest", 10, 13);
+    // The snapshot's per-map clock is not the global timeline; a chapter
+    // authored mid-tape supplies the global frame so the suffix replay
+    // matches a full replay's frame count.
+    forest.interp.frame = 5;
+    const chapter = {
+      id: "forest",
+      title: "Forest",
+      snapshot: forest,
+      timelineFrame: 1000,
+      tape: [0, 0, BTN_RIGHT],
+    };
+    const { attract, host } = mounted();
+    loadDemoChapter(host, chapter, false, 1);
+    expect(attract.state.frame).toBe(1000);
+    attract.step(0);
+    expect(attract.state.frame).toBe(1001);
+  });
+
   test("a malformed snapshot is refused without replacing the live state", () => {
     const bad = snapshotAt("forest", 10, 13);
     bad.player.px++;

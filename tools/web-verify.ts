@@ -39,7 +39,7 @@
 //             over postMessage, starts at a tile, reads state, injects
 //             walking input, refuses bad JSON, and ignores a non-allowlisted
 //             origin; the host is then driven same-origin and its native
-//             canvas captured
+//             canvas captured (only when the site includes the preview app)
 // Any console error, uncaught exception or failed request fails the run.
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
@@ -1424,228 +1424,233 @@ async function main(): Promise<void> {
     expect("subpath: every request stays under the prefix", outside.length === 0, outside.length ? outside.map((r) => r.url).join(", ") : `${requests.length - before} requests`);
 
     // ---- preview protocol demo ----
-    // The demo page on the root server embeds the preview host from the
-    // subpath server (a different origin) and allowlists its own origin.
-    phase = "preview";
-    const rootOrigin = new URL(rootBase).origin;
-    const previewHost = `${subBase}preview/`;
-    await navigate(`${rootBase}preview-demo.html`);
-    await waitFor("preview demo page", "window.__previewDemo");
-    await evaluate(`__previewDemo.connect(${JSON.stringify(previewHost)}, ${JSON.stringify([rootOrigin])})`);
-    await waitFor("preview host ready", "__previewDemo.ready()");
+    // Only a site built with the preview app has preview-demo.html and
+    // preview/ (tools/web.ts adds both for the kit site); a game site
+    // that never opts in has nothing to check here.
+    if (games.some((game) => game.id === "preview")) {
+      // The demo page on the root server embeds the preview host from the
+      // subpath server (a different origin) and allowlists its own origin.
+      phase = "preview";
+      const rootOrigin = new URL(rootBase).origin;
+      const previewHost = `${subBase}preview/`;
+      await navigate(`${rootBase}preview-demo.html`);
+      await waitFor("preview demo page", "window.__previewDemo");
+      await evaluate(`__previewDemo.connect(${JSON.stringify(previewHost)}, ${JSON.stringify([rootOrigin])})`);
+      await waitFor("preview host ready", "__previewDemo.ready()");
 
-    // A notification sent before any project is loaded must stay contained:
-    // the host's backend throws not-loaded, but the dispatcher swallows it
-    // instead of letting it escape into the host page's event loop.
-    const errorsBeforeInput = consoleErrors.length;
-    await evaluate(`__previewDemo.post({ protocol: "rpgkit-preview/v1", type: "input", buttons: 1 })`);
-    await sleep(300);
-    expect(
-      "preview: an input notification before load produces no console error",
-      consoleErrors.length === errorsBeforeInput,
-      consoleErrors.length === errorsBeforeInput ? "clean" : consoleErrors.slice(errorsBeforeInput).join("\n"),
-    );
+      // A notification sent before any project is loaded must stay contained:
+      // the host's backend throws not-loaded, but the dispatcher swallows it
+      // instead of letting it escape into the host page's event loop.
+      const errorsBeforeInput = consoleErrors.length;
+      await evaluate(`__previewDemo.post({ protocol: "rpgkit-preview/v1", type: "input", buttons: 1 })`);
+      await sleep(300);
+      expect(
+        "preview: an input notification before load produces no console error",
+        consoleErrors.length === errorsBeforeInput,
+        consoleErrors.length === errorsBeforeInput ? "clean" : consoleErrors.slice(errorsBeforeInput).join("\n"),
+      );
 
-    const load = await evaluate<any>(`__previewDemo.loadSample()`);
-    expect(
-      "preview: load sample document",
-      load?.maps?.[0]?.id === "yard" && load?.start?.map === "yard",
-      JSON.stringify(load),
-    );
+      const load = await evaluate<any>(`__previewDemo.loadSample()`);
+      expect(
+        "preview: load sample document",
+        load?.maps?.[0]?.id === "yard" && load?.start?.map === "yard",
+        JSON.stringify(load),
+      );
 
-    const start = await evaluate<any>(`__previewDemo.startAt("yard", 2, 2, "down")`);
-    expect(
-      "preview: start at a tile",
-      start?.map === "yard" && start?.x === 2 && start?.y === 2,
-      JSON.stringify(start),
-    );
+      const start = await evaluate<any>(`__previewDemo.startAt("yard", 2, 2, "down")`);
+      expect(
+        "preview: start at a tile",
+        start?.map === "yard" && start?.x === 2 && start?.y === 2,
+        JSON.stringify(start),
+      );
 
-    const stateBefore = await evaluate<any>(`__previewDemo.readState()`);
-    expect(
-      "preview: state summary",
-      stateBefore?.map === "yard" && typeof stateBefore?.switches === "object" && stateBefore?.gold === 10,
-      JSON.stringify(stateBefore),
-    );
+      const stateBefore = await evaluate<any>(`__previewDemo.readState()`);
+      expect(
+        "preview: state summary",
+        stateBefore?.map === "yard" && typeof stateBefore?.switches === "object" && stateBefore?.gold === 10,
+        JSON.stringify(stateBefore),
+      );
 
-    await evaluate(`__previewDemo.press("RIGHT", 30)`);
-    await sleep(700); // let the injected 31-frame tape play out
-    const after = await evaluate<any>(`__previewDemo.readState()`);
-    expect(
-      "preview: injected input walks",
-      after?.px !== stateBefore?.px || after?.x !== stateBefore?.x,
-      `px ${stateBefore?.px} -> ${after?.px}`,
-    );
-    await screenshot("preview-demo-running");
+      await evaluate(`__previewDemo.press("RIGHT", 30)`);
+      await sleep(700); // let the injected 31-frame tape play out
+      const after = await evaluate<any>(`__previewDemo.readState()`);
+      expect(
+        "preview: injected input walks",
+        after?.px !== stateBefore?.px || after?.x !== stateBefore?.x,
+        `px ${stateBefore?.px} -> ${after?.px}`,
+      );
+      await screenshot("preview-demo-running");
 
-    const bad = await evaluate<any>(
-      `__previewDemo.loadText("{not json").catch((e) => ({ ok: false, error: { code: String(e.message).split(":")[0] } }))`,
-    );
-    expect("preview: bad JSON is refused", bad?.ok === false && bad.error?.code === "bad-document", JSON.stringify(bad));
+      const bad = await evaluate<any>(
+        `__previewDemo.loadText("{not json").catch((e) => ({ ok: false, error: { code: String(e.message).split(":")[0] } }))`,
+      );
+      expect("preview: bad JSON is refused", bad?.ok === false && bad.error?.code === "bad-document", JSON.stringify(bad));
 
-    // Re-embed without allowlisting the page's origin: requests are dropped,
-    // so the demo's send times out. The reconnect reloads the host page.
-    await evaluate(`__previewDemo.connect(${JSON.stringify(previewHost)}, [])`);
-    await waitFor("preview host ready again", "__previewDemo.ready()");
-    let rejected = false;
-    try {
-      await evaluate(`__previewDemo.send("state", {}, 2500)`);
-    } catch {
-      rejected = true;
+      // Re-embed without allowlisting the page's origin: requests are dropped,
+      // so the demo's send times out. The reconnect reloads the host page.
+      await evaluate(`__previewDemo.connect(${JSON.stringify(previewHost)}, [])`);
+      await waitFor("preview host ready again", "__previewDemo.ready()");
+      let rejected = false;
+      try {
+        await evaluate(`__previewDemo.send("state", {}, 2500)`);
+      } catch {
+        rejected = true;
+      }
+      expect("preview: a non-allowlisted origin gets no reply", rejected, "the state request was answered");
+
+      // Re-allow the origin, load again (the reconnect reloaded the host), then
+      // drive the host same-origin and capture its native canvas.
+      await evaluate(`__previewDemo.connect(${JSON.stringify(previewHost)}, ${JSON.stringify([rootOrigin])})`);
+      await waitFor("preview host ready a third time", "__previewDemo.ready()");
+      const again = await evaluate<any>(`__previewDemo.loadSample()`);
+      expect("preview: channel works after re-allow", again?.maps?.[0]?.id === "yard", JSON.stringify(again));
+      const sample = await evaluate<string>(`document.getElementById("sample-project").textContent.trim()`);
+
+      // ---- wire limits: exact budget accepted, one byte over refused ----
+      // The padded document is built in the page (not shipped over CDP); the
+      // pad length is measured with the same structural counter the host
+      // bundles, so the accepted case lands exactly on the budget.
+      {
+        const padFor = (id: string, extra: number) =>
+          PREVIEW_LIMITS.maxMessageBytes -
+          previewMessageBytes({ protocol: "rpgkit-preview/v1", type: "load", requestId: id, document: sample }) +
+          extra;
+        const padExact = padFor("b1-exact", 0);
+        const paddedCount = previewMessageBytes({
+          ...{ protocol: "rpgkit-preview/v1", type: "load", requestId: "b1-exact", document: sample },
+          document: sample.replace("{", `{${" ".repeat(padExact)}`),
+        });
+        expect("preview: limit math lands exactly on the budget", paddedCount === PREVIEW_LIMITS.maxMessageBytes, `${paddedCount} bytes`);
+        const exact = await evaluate<any>(
+          `__previewDemo.request({ protocol: "rpgkit-preview/v1", type: "load", requestId: "b1-exact", document: document.getElementById("sample-project").textContent.trim().replace("{", "{" + " ".repeat(${padExact})) })`,
+        );
+        expect("preview: a document exactly at the byte budget loads", exact?.maps?.[0]?.id === "yard", JSON.stringify(exact).slice(0, 160));
+        const padOver = padFor("b1-over", 1);
+        const overReply = await evaluate<any>(
+          `__previewDemo.request({ protocol: "rpgkit-preview/v1", type: "load", requestId: "b1-over", document: document.getElementById("sample-project").textContent.trim().replace("{", "{" + " ".repeat(${padOver})) }).catch((e) => ({ ok: false, error: { code: String(e.message).split(":")[0] } }))`,
+        );
+        expect(
+          "preview: a document one byte over the budget is too-large",
+          overReply?.ok === false && overReply.error?.code === "too-large",
+          JSON.stringify(overReply).slice(0, 160),
+        );
+      }
+
+      // ---- wire limits: chapter count, tape length, snapshot bytes ----
+      const refuseLoad = async (label: string, chapters: unknown) => {
+        const reply = await evaluate<any>(
+          `__previewDemo.request(${JSON.stringify({ protocol: "rpgkit-preview/v1", type: "load", requestId: `b1-${label}`, document: sample, chapters })})` +
+            `.catch((e) => ({ ok: false, error: { code: String(e.message).split(":")[0] } }))`,
+        );
+        expect(`preview: ${label} is too-large`, reply?.ok === false && reply.error?.code === "too-large", JSON.stringify(reply).slice(0, 160));
+      };
+      await refuseLoad(
+        "one chapter over the count limit",
+        Array.from({ length: PREVIEW_LIMITS.maxChapters + 1 }, (_, i) => ({ id: `c${i}`, title: "t", snapshot: "s" })),
+      );
+      await refuseLoad(
+        "one frame over the tape length limit",
+        [{ id: "c0", title: "t", snapshot: "s", tape: new Array<number>(PREVIEW_LIMITS.maxChapterTapeLength + 1).fill(0) }],
+      );
+      await refuseLoad(
+        "one byte over the snapshot size limit",
+        [{ id: "c0", title: "t", snapshot: "s".repeat(PREVIEW_LIMITS.maxSnapshotBytes + 1) }],
+      );
+
+      // ---- chapter restore and tape playback on the real host ----
+      // A snapshot taken headlessly from the same document (its authored
+      // start) is handed to the host as a chapter with a tape. The chapter
+      // start must restore the snapshot exactly; the tape must then play.
+      {
+        const loaded = loadProject(sample);
+        expect("preview: headless snapshot document loads", loaded.errors.length === 0, loaded.errors[0]?.msg ?? "clean");
+        const session = createSession(loaded.project);
+        const atStart = startSession(loaded.project, session, createSwitchState(), null);
+        const snapshot = createSessionSnapshot(session, atStart, 0);
+        const tape = new Array<number>(30).fill(0x0020); // RIGHT for 30 frames, then release
+        tape.push(0);
+        const chapter = { id: "restore", title: "Restore point", snapshot, tape };
+        await evaluate(`__previewDemo.startAt("yard", 2, 2, "down")`);
+        const away = await evaluate<any>(`__previewDemo.readState()`);
+        expect("preview: walked away from the start", away?.x === 2 && away?.y === 2, JSON.stringify(away));
+        const withChapter = await evaluate<any>(
+          `__previewDemo.request(${JSON.stringify({ protocol: "rpgkit-preview/v1", type: "load", requestId: "ch-load", document: sample, chapters: [chapter] })})`,
+        );
+        expect("preview: load with a chapter", withChapter?.maps?.[0]?.id === "yard", JSON.stringify(withChapter).slice(0, 160));
+        const started = await evaluate<any>(
+          `__previewDemo.request(${JSON.stringify({ protocol: "rpgkit-preview/v1", type: "start", requestId: "ch-start", chapter: "restore" })})`,
+        );
+        expect(
+          "preview: chapter start restores the snapshot",
+          started?.x === 5 && started?.y === 5 && started?.dir === "up",
+          JSON.stringify(started),
+        );
+        await sleep(900); // let the 31-frame tape play out
+        const played = await evaluate<any>(`__previewDemo.readState()`);
+        expect(
+          "preview: the chapter tape plays after restore",
+          (played?.px ?? 0) > 5 * 16 || (played?.x ?? 0) > 5,
+          `px ${played?.px}, x ${played?.x}`,
+        );
+      }
+
+      // ---- reference frontend: same-origin spoofs are ignored ----
+      // A second window on the host's own origin forges a ready event and a
+      // reply. The demo must only accept hostFrame.contentWindow as a source.
+      {
+        const sameOriginHost = `${rootBase}preview/`;
+        await evaluate(`__previewDemo.connect(${JSON.stringify(sameOriginHost)}, [])`);
+        await waitFor("preview host ready (same-origin)", "__previewDemo.ready()");
+        await evaluate(`__previewDemo.loadSample()`);
+        const spoof = await evaluate<string>(`(async () => {
+          const nextId = __previewDemo.nextRequestId();
+          const spoof = document.createElement("iframe");
+          spoof.style.display = "none";
+          document.body.appendChild(spoof);
+          await new Promise((resolve) => { spoof.onload = resolve; spoof.srcdoc = "<!doctype html><body>spoof</body>"; });
+          const readyLines = () => [...document.getElementById("log").children].filter((d) => d.textContent.indexOf("ready:") === 0).length;
+          const before = readyLines();
+          // Forged ready from the wrong (same-origin) window.
+          spoof.contentWindow.eval("parent.postMessage({protocol:'rpgkit-preview/v1',type:'event',event:'ready',version:1},'*')");
+          // Queue a real request, then forge its reply from the spoof window in
+          // the same task, so the forged reply is queued before the host answers.
+          const pending = __previewDemo.request({ protocol: "rpgkit-preview/v1", type: "state", requestId: nextId }, 5000);
+          spoof.contentWindow.eval("parent.postMessage({protocol:'rpgkit-preview/v1',type:'reply',requestId:'" + nextId + "',ok:true,result:{forged:true}},'*')");
+          const settled = await pending.then((v) => ({ v })).catch((e) => ({ e: e.message }));
+          const after = readyLines();
+          spoof.remove();
+          return JSON.stringify({ before, after, settled });
+        })()`);
+        const parsed = JSON.parse(spoof);
+        expect(
+          "preview: a forged ready from another same-origin window is ignored",
+          parsed.after === parsed.before,
+          `ready lines ${parsed.before} -> ${parsed.after}`,
+        );
+        expect(
+          "preview: a forged reply from another same-origin window is ignored",
+          parsed.settled?.v?.map === "yard" && !JSON.stringify(parsed.settled).includes("forged"),
+          JSON.stringify(parsed.settled).slice(0, 160),
+        );
+      }
+
+      phase = "preview-canvas";
+      await navigate(previewHost);
+      await waitFor("preview host running", `globalThis.__pocketPlayer?.state === "running" && __pocketPlayer.frames > 30`);
+      await evaluate(`__rpgkitPreview.load(${JSON.stringify(sample)})`);
+      await evaluate(`__rpgkitPreview.start({ kind: "tile", map: "yard", x: 5, y: 5, dir: "up" })`);
+      await sleep(1000);
+      const direct = await evaluate<any>(`__rpgkitPreview.state()`);
+      expect("preview: same-origin direct drive", direct?.map === "yard" && direct?.x === 5 && direct?.y === 5, JSON.stringify(direct));
+      await canvasShot("preview-canvas");
+      const stop = await evaluate<any>(`__rpgkitPreview.stop()`);
+      expect("preview: stop", stop === undefined || stop === null, JSON.stringify(stop));
+      const idle = await evaluate<any>(
+        `(() => { try { return __rpgkitPreview.state(); } catch (e) { return { ok: false, error: { code: e.code || String(e.message).split(":")[0] } }; } })()`,
+      );
+      expect("preview: state after stop is not-loaded", idle?.ok === false && idle.error?.code === "not-loaded", JSON.stringify(idle));
+      await screenshot("preview-demo");
     }
-    expect("preview: a non-allowlisted origin gets no reply", rejected, "the state request was answered");
-
-    // Re-allow the origin, load again (the reconnect reloaded the host), then
-    // drive the host same-origin and capture its native canvas.
-    await evaluate(`__previewDemo.connect(${JSON.stringify(previewHost)}, ${JSON.stringify([rootOrigin])})`);
-    await waitFor("preview host ready a third time", "__previewDemo.ready()");
-    const again = await evaluate<any>(`__previewDemo.loadSample()`);
-    expect("preview: channel works after re-allow", again?.maps?.[0]?.id === "yard", JSON.stringify(again));
-    const sample = await evaluate<string>(`document.getElementById("sample-project").textContent.trim()`);
-
-    // ---- wire limits: exact budget accepted, one byte over refused ----
-    // The padded document is built in the page (not shipped over CDP); the
-    // pad length is measured with the same structural counter the host
-    // bundles, so the accepted case lands exactly on the budget.
-    {
-      const padFor = (id: string, extra: number) =>
-        PREVIEW_LIMITS.maxMessageBytes -
-        previewMessageBytes({ protocol: "rpgkit-preview/v1", type: "load", requestId: id, document: sample }) +
-        extra;
-      const padExact = padFor("b1-exact", 0);
-      const paddedCount = previewMessageBytes({
-        ...{ protocol: "rpgkit-preview/v1", type: "load", requestId: "b1-exact", document: sample },
-        document: sample.replace("{", `{${" ".repeat(padExact)}`),
-      });
-      expect("preview: limit math lands exactly on the budget", paddedCount === PREVIEW_LIMITS.maxMessageBytes, `${paddedCount} bytes`);
-      const exact = await evaluate<any>(
-        `__previewDemo.request({ protocol: "rpgkit-preview/v1", type: "load", requestId: "b1-exact", document: document.getElementById("sample-project").textContent.trim().replace("{", "{" + " ".repeat(${padExact})) })`,
-      );
-      expect("preview: a document exactly at the byte budget loads", exact?.maps?.[0]?.id === "yard", JSON.stringify(exact).slice(0, 160));
-      const padOver = padFor("b1-over", 1);
-      const overReply = await evaluate<any>(
-        `__previewDemo.request({ protocol: "rpgkit-preview/v1", type: "load", requestId: "b1-over", document: document.getElementById("sample-project").textContent.trim().replace("{", "{" + " ".repeat(${padOver})) }).catch((e) => ({ ok: false, error: { code: String(e.message).split(":")[0] } }))`,
-      );
-      expect(
-        "preview: a document one byte over the budget is too-large",
-        overReply?.ok === false && overReply.error?.code === "too-large",
-        JSON.stringify(overReply).slice(0, 160),
-      );
-    }
-
-    // ---- wire limits: chapter count, tape length, snapshot bytes ----
-    const refuseLoad = async (label: string, chapters: unknown) => {
-      const reply = await evaluate<any>(
-        `__previewDemo.request(${JSON.stringify({ protocol: "rpgkit-preview/v1", type: "load", requestId: `b1-${label}`, document: sample, chapters })})` +
-          `.catch((e) => ({ ok: false, error: { code: String(e.message).split(":")[0] } }))`,
-      );
-      expect(`preview: ${label} is too-large`, reply?.ok === false && reply.error?.code === "too-large", JSON.stringify(reply).slice(0, 160));
-    };
-    await refuseLoad(
-      "one chapter over the count limit",
-      Array.from({ length: PREVIEW_LIMITS.maxChapters + 1 }, (_, i) => ({ id: `c${i}`, title: "t", snapshot: "s" })),
-    );
-    await refuseLoad(
-      "one frame over the tape length limit",
-      [{ id: "c0", title: "t", snapshot: "s", tape: new Array<number>(PREVIEW_LIMITS.maxChapterTapeLength + 1).fill(0) }],
-    );
-    await refuseLoad(
-      "one byte over the snapshot size limit",
-      [{ id: "c0", title: "t", snapshot: "s".repeat(PREVIEW_LIMITS.maxSnapshotBytes + 1) }],
-    );
-
-    // ---- chapter restore and tape playback on the real host ----
-    // A snapshot taken headlessly from the same document (its authored
-    // start) is handed to the host as a chapter with a tape. The chapter
-    // start must restore the snapshot exactly; the tape must then play.
-    {
-      const loaded = loadProject(sample);
-      expect("preview: headless snapshot document loads", loaded.errors.length === 0, loaded.errors[0]?.msg ?? "clean");
-      const session = createSession(loaded.project);
-      const atStart = startSession(loaded.project, session, createSwitchState(), null);
-      const snapshot = createSessionSnapshot(session, atStart, 0);
-      const tape = new Array<number>(30).fill(0x0020); // RIGHT for 30 frames, then release
-      tape.push(0);
-      const chapter = { id: "restore", title: "Restore point", snapshot, tape };
-      await evaluate(`__previewDemo.startAt("yard", 2, 2, "down")`);
-      const away = await evaluate<any>(`__previewDemo.readState()`);
-      expect("preview: walked away from the start", away?.x === 2 && away?.y === 2, JSON.stringify(away));
-      const withChapter = await evaluate<any>(
-        `__previewDemo.request(${JSON.stringify({ protocol: "rpgkit-preview/v1", type: "load", requestId: "ch-load", document: sample, chapters: [chapter] })})`,
-      );
-      expect("preview: load with a chapter", withChapter?.maps?.[0]?.id === "yard", JSON.stringify(withChapter).slice(0, 160));
-      const started = await evaluate<any>(
-        `__previewDemo.request(${JSON.stringify({ protocol: "rpgkit-preview/v1", type: "start", requestId: "ch-start", chapter: "restore" })})`,
-      );
-      expect(
-        "preview: chapter start restores the snapshot",
-        started?.x === 5 && started?.y === 5 && started?.dir === "up",
-        JSON.stringify(started),
-      );
-      await sleep(900); // let the 31-frame tape play out
-      const played = await evaluate<any>(`__previewDemo.readState()`);
-      expect(
-        "preview: the chapter tape plays after restore",
-        (played?.px ?? 0) > 5 * 16 || (played?.x ?? 0) > 5,
-        `px ${played?.px}, x ${played?.x}`,
-      );
-    }
-
-    // ---- reference frontend: same-origin spoofs are ignored ----
-    // A second window on the host's own origin forges a ready event and a
-    // reply. The demo must only accept hostFrame.contentWindow as a source.
-    {
-      const sameOriginHost = `${rootBase}preview/`;
-      await evaluate(`__previewDemo.connect(${JSON.stringify(sameOriginHost)}, [])`);
-      await waitFor("preview host ready (same-origin)", "__previewDemo.ready()");
-      await evaluate(`__previewDemo.loadSample()`);
-      const spoof = await evaluate<string>(`(async () => {
-        const nextId = __previewDemo.nextRequestId();
-        const spoof = document.createElement("iframe");
-        spoof.style.display = "none";
-        document.body.appendChild(spoof);
-        await new Promise((resolve) => { spoof.onload = resolve; spoof.srcdoc = "<!doctype html><body>spoof</body>"; });
-        const readyLines = () => [...document.getElementById("log").children].filter((d) => d.textContent.indexOf("ready:") === 0).length;
-        const before = readyLines();
-        // Forged ready from the wrong (same-origin) window.
-        spoof.contentWindow.eval("parent.postMessage({protocol:'rpgkit-preview/v1',type:'event',event:'ready',version:1},'*')");
-        // Queue a real request, then forge its reply from the spoof window in
-        // the same task, so the forged reply is queued before the host answers.
-        const pending = __previewDemo.request({ protocol: "rpgkit-preview/v1", type: "state", requestId: nextId }, 5000);
-        spoof.contentWindow.eval("parent.postMessage({protocol:'rpgkit-preview/v1',type:'reply',requestId:'" + nextId + "',ok:true,result:{forged:true}},'*')");
-        const settled = await pending.then((v) => ({ v })).catch((e) => ({ e: e.message }));
-        const after = readyLines();
-        spoof.remove();
-        return JSON.stringify({ before, after, settled });
-      })()`);
-      const parsed = JSON.parse(spoof);
-      expect(
-        "preview: a forged ready from another same-origin window is ignored",
-        parsed.after === parsed.before,
-        `ready lines ${parsed.before} -> ${parsed.after}`,
-      );
-      expect(
-        "preview: a forged reply from another same-origin window is ignored",
-        parsed.settled?.v?.map === "yard" && !JSON.stringify(parsed.settled).includes("forged"),
-        JSON.stringify(parsed.settled).slice(0, 160),
-      );
-    }
-
-    phase = "preview-canvas";
-    await navigate(previewHost);
-    await waitFor("preview host running", `globalThis.__pocketPlayer?.state === "running" && __pocketPlayer.frames > 30`);
-    await evaluate(`__rpgkitPreview.load(${JSON.stringify(sample)})`);
-    await evaluate(`__rpgkitPreview.start({ kind: "tile", map: "yard", x: 5, y: 5, dir: "up" })`);
-    await sleep(1000);
-    const direct = await evaluate<any>(`__rpgkitPreview.state()`);
-    expect("preview: same-origin direct drive", direct?.map === "yard" && direct?.x === 5 && direct?.y === 5, JSON.stringify(direct));
-    await canvasShot("preview-canvas");
-    const stop = await evaluate<any>(`__rpgkitPreview.stop()`);
-    expect("preview: stop", stop === undefined || stop === null, JSON.stringify(stop));
-    const idle = await evaluate<any>(
-      `(() => { try { return __rpgkitPreview.state(); } catch (e) { return { ok: false, error: { code: e.code || String(e.message).split(":")[0] } }; } })()`,
-    );
-    expect("preview: state after stop is not-loaded", idle?.ok === false && idle.error?.code === "not-loaded", JSON.stringify(idle));
-    await screenshot("preview-demo");
   } catch (error) {
     failures.push({ check: phase, message: error instanceof Error ? error.message : String(error) });
     console.log(`  FAIL ${phase}: ${error instanceof Error ? error.message : error}`);

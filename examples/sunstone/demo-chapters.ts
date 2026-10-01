@@ -1,7 +1,9 @@
 // Sunstone's opt-in demo menu data. Save codes are generated from safe
 // points in journey.ts; tests regenerate and compare them so story edits
-// cannot silently stale a chapter. Tape suffixes begin on the next source
-// frame after each saved milestone.
+// cannot silently stale a chapter. Every chapter windows the one recorded
+// tape: its suffix begins on the next source frame after the saved milestone,
+// and timelineFrame puts the restored state back on the full run's global
+// frame (a save carries only the per-map clock, reset by each transfer).
 
 import { expandTapeRuns } from "../../src/engine/tape.ts";
 import type { DemoOptions } from "../../src/ui/demo/index.ts";
@@ -33,13 +35,17 @@ export const SUNSTONE_DEMO: DemoOptions = {
       id: "forest",
       title: "Whispering Wood",
       snapshot: SUNSTONE_DEMO_CODES.forest,
-      tape: fullTape.slice(SUNSTONE_DEMO_ORIGINS.forest),
+      tape: fullTape,
+      tapeStart: SUNSTONE_DEMO_ORIGINS.forest,
+      timelineFrame: SUNSTONE_DEMO_ORIGINS.forest,
     },
     {
       id: "cave",
       title: "Cave gate",
       snapshot: SUNSTONE_DEMO_CODES.cave,
-      tape: fullTape.slice(SUNSTONE_DEMO_ORIGINS.cave),
+      tape: fullTape,
+      tapeStart: SUNSTONE_DEMO_ORIGINS.cave,
+      timelineFrame: SUNSTONE_DEMO_ORIGINS.cave,
     },
   ],
   warp: {

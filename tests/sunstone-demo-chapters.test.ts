@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { AttractController } from "../src/engine/attract.ts";
 import { canonicalJson, createSessionSnapshot, decodeSaveCode, encodeSaveCode } from "../src/engine/save.ts";
 import { createSession, startSession } from "../src/engine/session.ts";
-import { loadDemoChapter } from "../src/ui/demo/runtime.ts";
+import { chapterTape, loadDemoChapter } from "../src/ui/demo/runtime.ts";
+import type { DemoChapter } from "../src/ui/demo/types.ts";
 import type { GameViewDemoHost } from "../src/ui/demo-contract.ts";
 import { buildGame } from "../examples/sunstone/game-data.ts";
 import { playWinningRun } from "../examples/sunstone/journey.ts";
@@ -54,9 +55,40 @@ describe("Sunstone demo chapters", () => {
     expect(SUNSTONE_DEMO_CODES.cave as string).toBe(generated.cave);
 
     const chapters = Object.fromEntries(SUNSTONE_DEMO.chapters.map((chapter) => [chapter.id, chapter]));
-    expect(chapters.village!.tape).toEqual(run.masks);
-    expect(chapters.forest!.tape).toEqual(run.masks.slice(SUNSTONE_DEMO_ORIGINS.forest));
-    expect(chapters.cave!.tape).toEqual(run.masks.slice(SUNSTONE_DEMO_ORIGINS.cave));
+    expect(chapterTape(chapters.village!)).toEqual(run.masks);
+    expect(chapterTape(chapters.forest!)).toEqual(run.masks.slice(SUNSTONE_DEMO_ORIGINS.forest));
+    expect(chapterTape(chapters.cave!)).toEqual(run.masks.slice(SUNSTONE_DEMO_ORIGINS.cave));
+    // Suffixes start on the source frame after the saved milestone, and
+    // all three chapters window the one recorded tape.
+    expect(SUNSTONE_DEMO_ORIGINS.forest as number).toBe(run.milestones.forest + 1);
+    expect(SUNSTONE_DEMO_ORIGINS.cave as number).toBe(run.milestones.cave + 1);
+    expect(chapters.forest!.tape).toBe(chapters.village!.tape);
+    expect(chapters.cave!.tape).toBe(chapters.village!.tape);
+  });
+
+  test("every chapter's suffix replay ends on the full replay's terminal state", () => {
+    const replay = (chapter: DemoChapter, hz: number): { state: string; frame: number } => {
+      const { attract, host } = mounted(hz);
+      loadDemoChapter(host, chapter, true, 1);
+      const frames = chapterTape(chapter).length;
+      let hostFrames = 0;
+      while (attract.status().demoFrame < frames) {
+        attract.step(0);
+        if (++hostFrames > 20_000) throw new Error(`${chapter.id} autoplay did not finish at ${hz} Hz`);
+      }
+      return { state: canonicalJson(attract.state), frame: attract.state.frame };
+    };
+    const run = playWinningRun(60);
+    const [village, ...resumed] = SUNSTONE_DEMO.chapters as DemoChapter[];
+    for (const hz of [60, 20]) {
+      const full = replay(village!, hz);
+      expect(full.frame).toBe(run.masks.length);
+      for (const chapter of resumed) {
+        const suffix = replay(chapter, hz);
+        expect({ id: chapter.id, hz, frame: suffix.frame }).toEqual({ id: chapter.id, hz, frame: full.frame });
+        expect(suffix.state).toBe(full.state);
+      }
+    }
   });
 
   test("the real cave tape reaches byte-identical state at every host rate and speed", () => {
@@ -67,7 +99,7 @@ describe("Sunstone demo chapters", () => {
         const { attract, host } = mounted(hz);
         loadDemoChapter(host, chapter, true, speed);
         let hostFrames = 0;
-        while (attract.status().demoFrame < chapter.tape!.length) {
+        while (attract.status().demoFrame < chapterTape(chapter).length) {
           attract.step(0);
           if (++hostFrames > 2_000) throw new Error(`cave autoplay did not finish at ${hz} Hz / ${speed}x`);
         }

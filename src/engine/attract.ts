@@ -455,7 +455,7 @@ export class AttractController {
   loadState(
     restored: SessionState,
     held: number,
-    tape: readonly number[] = [],
+    tape: ArrayLike<number> & Iterable<number> = [],
     autoplay = false,
     speed: AttractSpeed = 1,
   ): SessionState {

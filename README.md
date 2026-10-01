@@ -1481,7 +1481,9 @@ const demoOptions: DemoOptions = {
       id: "cave",
       title: "Cave gate",
       snapshot: caveSaveCode,
-      tape: fullTape.slice(caveSourceOrigin),
+      tape: fullTape,                // shared, not copied
+      tapeStart: caveSourceOrigin,   // first input after the snapshot
+      timelineFrame: caveSourceOrigin,
     },
   ],
   warp: {
@@ -1505,7 +1507,23 @@ A chapter snapshot must be an ordinary validated safe-point `SaveSnapshot` or
 URL-safe save code. Its optional `tape` is the 60 Hz u16 button stream whose
 first mask follows that snapshot; the snapshot's `held` field seeds the first
 button edge. A bad code, invalid snapshot, missing map or unsafe landing is
-shown in the overlay and leaves the current session untouched. Autoplay speed
+shown in the overlay and leaves the current session untouched.
+
+Chapters that resume one long recording can share it: `tapeStart` is the
+index of the chapter's first input in `tape`, and the optional `tapeFrames`
+limits the window (default: the rest of the tape). `tape` may also be a
+provider function, `() => frames`, returning a plain array or a typed array
+such as `Uint16Array`. A provider is not called at boot or when the autoplay
+page is listed; the first selection of a chapter that names it calls it once,
+and every chapter naming the same function shares that result (a typed array
+is windowed without copying). Declare `tapeFrames` on provider chapters so the
+autoplay page knows their length without decoding. A provider that throws is
+shown in the overlay and retried on the next selection. A save carries only
+the per-map interpreter clock, which a transfer resets; set `timelineFrame` to
+the chapter's global frame in the recording so a suffix replay ends on the
+same state as a full replay.
+
+Autoplay speed
 changes how many session steps one host frame folds and renders only the last;
 the ordered input stream, takeover behavior, **L** rewind and terminal state do
 not change.

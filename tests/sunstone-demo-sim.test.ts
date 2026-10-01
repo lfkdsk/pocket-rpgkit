@@ -10,6 +10,11 @@ import { DEFAULT_UI_THEME } from "../src/ui/theme.ts";
 import type { SessionState } from "../src/engine/session.ts";
 import type { RpgkitDemoHook } from "../src/ui/demo/index.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
+import { SUNSTONE_DEMO_ORIGINS } from "../examples/sunstone/demo-chapters.ts";
+
+// Chapters resume on the full run's global frame (timelineFrame).
+const FOREST: number = SUNSTONE_DEMO_ORIGINS.forest;
+const CAVE: number = SUNSTONE_DEMO_ORIGINS.cave;
 
 const preflight = appPreflight("sunstone");
 if (!preflight.ok) console.warn(`sunstone demo sim tests skipped: ${preflight.reason}`);
@@ -114,15 +119,15 @@ simDescribe("Sunstone opt-in demo menu through the built bundle", () => {
     expect(state()).toEqual(before);
     expect(hook.current()).toEqual({ chapter: "village", map: "village", autoplay: false, speed: 1 });
     tick(world, 0);
-    expect(state()).toMatchObject({ mapId: "forest", frame: 0, move: { tx: 10, ty: 13 } });
+    expect(state()).toMatchObject({ mapId: "forest", frame: FOREST, move: { tx: 10, ty: 13 } });
     expect(hook.current()).toEqual({ chapter: "forest", map: "forest", autoplay: false, speed: 1 });
 
     hook.autoplay("cave", 4);
     tick(world, 0);
-    expect(state()).toMatchObject({ mapId: "cave", frame: 0, move: { tx: 9, ty: 11 } });
+    expect(state()).toMatchObject({ mapId: "cave", frame: CAVE, move: { tx: 9, ty: 11 } });
     expect(hook.current()).toEqual({ chapter: "cave", map: "cave", autoplay: true, speed: 4 });
     tick(world, 0);
-    expect(state().frame).toBe(4);
+    expect(state().frame).toBe(CAVE + 4);
 
     hook.warp("village", 9, 9);
     tick(world, 0);
@@ -134,7 +139,7 @@ simDescribe("Sunstone opt-in demo menu through the built bundle", () => {
 simDescribe("Sunstone demo boot requests", () => {
   test("chapter and map requests apply before the first session fold", async () => {
     await boot({ chapter: "forest" });
-    expect(state()).toMatchObject({ mapId: "forest", frame: 0, move: { tx: 10, ty: 13 } });
+    expect(state()).toMatchObject({ mapId: "forest", frame: FOREST, move: { tx: 10, ty: 13 } });
     expect(state().sw.items["thorn-key"]).toBe(1);
     expect(demoHook().current()).toMatchObject({ chapter: "forest", map: "forest", autoplay: false });
 
@@ -146,9 +151,9 @@ simDescribe("Sunstone demo boot requests", () => {
 
   test("autoplay speed is active on the first host frame", async () => {
     const world = await boot({ autoplay: "cave", speed: "4" });
-    expect(state()).toMatchObject({ mapId: "cave", frame: 0, move: { tx: 9, ty: 11, phase: 0 } });
+    expect(state()).toMatchObject({ mapId: "cave", frame: CAVE, move: { tx: 9, ty: 11, phase: 0 } });
     tick(world, 0);
-    expect(state()).toMatchObject({ mapId: "cave", frame: 4, move: { phase: 4 } });
+    expect(state()).toMatchObject({ mapId: "cave", frame: CAVE + 4, move: { phase: 4 } });
   });
 
   test("a bad request is a visible menu error and leaves the fresh world unchanged", async () => {

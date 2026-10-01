@@ -97,8 +97,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // shared bytes; narrowing the list to one identity and naming the accepted
 // identities in the refusal message saves 180 of them.
 // Applying same-tick place/moveRoute requests in command order adds 2,745
-// shared interpreter/session bytes.
-const EXPECTED_BYTES = 775_301;
+// shared interpreter/session bytes. Sunstone's opted-in demo menu adds lazy
+// tape providers, a global timelineFrame and a shared tape cache (2,461).
+const EXPECTED_BYTES = 777_762;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

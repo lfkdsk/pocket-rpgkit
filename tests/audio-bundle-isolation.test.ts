@@ -39,9 +39,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // message saves 314 bytes in Meadow and the WAV fixture and 180 in Sunstone.
 // Applying same-tick place/moveRoute requests in command order (with the
 // publish-time target page) adds 2,745 shared interpreter/session bytes to
-// all three. Re-measure after every shared-path change.
+// all three. Sunstone's opted-in demo menu adds lazy tape providers, a global
+// timelineFrame and a once-per-provider shared tape cache (2,461 bytes);
+// Meadow and the WAV fixture do not opt into the demo menu.
+// Re-measure after every shared-path change.
 const EXPECTED_MEADOW_BYTES = 502_622;
-const EXPECTED_SUNSTONE_QOA_BYTES = 775_301;
+const EXPECTED_SUNSTONE_QOA_BYTES = 777_762;
 const EXPECTED_WAV_FIXTURE_BYTES = 640_833;
 
 const HOST_AUDIO_NEEDLES = [

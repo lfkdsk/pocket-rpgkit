@@ -6,6 +6,8 @@ export type {
   DemoCurrent,
   DemoOptions,
   DemoSpawn,
+  DemoTapeFrames,
+  DemoTapeProvider,
   DemoWarpOptions,
   RpgkitDemoHook,
 } from "./types.ts";

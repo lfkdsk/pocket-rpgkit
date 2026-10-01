@@ -11,7 +11,7 @@ import { acquireSessionMap, startSession, type SessionState } from "../../engine
 import type { Dir, Facing, MapDef, ProjectSource } from "../../engine/types.ts";
 import { isProjectShell } from "../../engine/map-repository.ts";
 import type { GameViewDemoHost } from "../demo-contract.ts";
-import type { DemoChapter, DemoOptions, DemoSpawn } from "./types.ts";
+import type { DemoChapter, DemoOptions, DemoSpawn, DemoTapeFrames, DemoTapeProvider } from "./types.ts";
 
 export const DEMO_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 
@@ -33,11 +33,30 @@ export function validateDemoOptions(options: DemoOptions): void {
     if (typeof chapter.title !== "string" || chapter.title.trim().length === 0) {
       throw new TypeError(`demo: chapters[${index}].title must be non-empty`);
     }
-    for (let frame = 0; frame < (chapter.tape?.length ?? 0); frame++) {
-      const mask = chapter.tape![frame];
-      if (!Number.isInteger(mask) || mask! < 0 || mask! > 0xffff) {
-        throw new RangeError(`demo: chapters[${index}].tape[${frame}] must be a u16 button mask`);
+    // A provider tape is resolved on first selection; its frames are not
+    // walked at boot so a pak-backed tape costs nothing until it is used.
+    const tape = chapter.tape;
+    if (tape !== undefined && typeof tape !== "function") {
+      for (let frame = 0; frame < tape.length; frame++) {
+        const mask = tape[frame];
+        if (!Number.isInteger(mask) || mask! < 0 || mask! > 0xffff) {
+          throw new RangeError(`demo: chapters[${index}].tape[${frame}] must be a u16 button mask`);
+        }
       }
+    }
+    for (const field of ["tapeStart", "tapeFrames"] as const) {
+      const value = chapter[field];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new RangeError(`demo: chapters[${index}].${field} must be a non-negative safe integer`);
+      }
+    }
+    if (tape !== undefined && typeof tape !== "function" &&
+      (chapter.tapeStart ?? 0) + (chapter.tapeFrames ?? 0) > tape.length) {
+      throw new RangeError(`demo: chapters[${index}] tape window ends past the tape`);
+    }
+    if (chapter.timelineFrame !== undefined &&
+      (!Number.isSafeInteger(chapter.timelineFrame) || chapter.timelineFrame < 0)) {
+      throw new RangeError(`demo: chapters[${index}].timelineFrame must be a non-negative safe integer`);
     }
   }
   const open = options.openButton ?? BTN.SELECT;
@@ -65,6 +84,47 @@ export function decodeDemoSnapshot(host: GameViewDemoHost, value: SaveSnapshot |
   const reason = validateSnapshot(value);
   if (reason !== null) throw new SaveError("shape", `save state is invalid: ${reason}`);
   return cloneSnapshot(value);
+}
+
+// One decoded tape per provider function, shared by every chapter that
+// names it. Weak, so a dropped DemoOptions releases its tapes.
+const resolvedTapes = new WeakMap<DemoTapeProvider, DemoTapeFrames>();
+
+function resolveTape(tape: readonly number[] | DemoTapeProvider): DemoTapeFrames {
+  if (typeof tape !== "function") return tape;
+  let resolved = resolvedTapes.get(tape);
+  if (resolved === undefined) {
+    resolved = tape();
+    if (!resolved || typeof resolved.length !== "number") throw new TypeError("demo: tape provider must return an array of frames");
+    resolvedTapes.set(tape, resolved);
+  }
+  return resolved;
+}
+
+/** Frame count the autoplay page can know without resolving a provider:
+ *  exact for inline tapes and declared windows, otherwise null. */
+export function chapterTapeFrames(chapter: DemoChapter): number | null {
+  const tape = chapter.tape;
+  if (tape === undefined) return 0;
+  if (chapter.tapeFrames !== undefined) return chapter.tapeFrames;
+  if (typeof tape === "function") return null;
+  return Math.max(0, tape.length - (chapter.tapeStart ?? 0));
+}
+
+/** Resolve a chapter's input window. A provider is called at most once and
+ *  its tape shared; a typed-array tape is windowed without copying. */
+export function chapterTape(chapter: DemoChapter): DemoTapeFrames {
+  if (chapter.tape === undefined) return [];
+  const tape = resolveTape(chapter.tape);
+  const start = chapter.tapeStart ?? 0;
+  const end = chapter.tapeFrames === undefined ? tape.length : start + chapter.tapeFrames;
+  if (end > tape.length) {
+    throw new RangeError(`chapter ${JSON.stringify(chapter.id)} tape window ${start}..${end} ends past ${tape.length} frames`);
+  }
+  if (start === 0 && end === tape.length) return tape;
+  return ArrayBuffer.isView(tape)
+    ? (tape as unknown as Uint16Array).subarray(start, end)
+    : Array.prototype.slice.call(tape, start, end) as number[];
 }
 
 function firstStandable(host: GameViewDemoHost, map: MapDef): DemoSpawn {
@@ -128,10 +188,15 @@ export function loadDemoChapter(
   autoplay: boolean,
   speed: AttractSpeed,
 ): SessionState {
-  if (autoplay && !chapter.tape?.length) throw new Error(`chapter ${JSON.stringify(chapter.id)} has no autoplay tape`);
+  const tape = chapterTape(chapter);
+  if (autoplay && tape.length === 0) throw new Error(`chapter ${JSON.stringify(chapter.id)} has no autoplay tape`);
   const snapshot = decodeDemoSnapshot(host, chapter.snapshot);
   const restored = restoreSessionSnapshot(host.session, snapshot);
-  return host.attract.loadState(restored, snapshot.held, chapter.tape ?? [], autoplay, speed);
+  // The snapshot carries only the per-map interpreter clock; a chapter
+  // authored mid-tape supplies the global reducer frame so its suffix
+  // replay lands on the same timeline as a full replay.
+  if (chapter.timelineFrame !== undefined) restored.frame = chapter.timelineFrame;
+  return host.attract.loadState(restored, snapshot.held, tape, autoplay, speed);
 }
 
 export function loadDemoWarp(

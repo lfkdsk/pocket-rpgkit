@@ -438,11 +438,12 @@ simDescribe("sunstone — render budget", () => {
     // 767,170 B measured. Choice-row icons add 4,364 B of shared schema,
     // reducer and DialogBox hook code (the icon box itself is opt-in):
     // 771,534 B. The compatible schema identity list adds about 1 KB, and
-    // applying same-tick place/route requests in command order adds 2,745 B:
-    // 775,301 B measured. The ui/demo and ui/audio
-    // input-graph tests separately prove non-opted-in code stays out; the
-    // bound keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(778_000);
+    // applying same-tick place/route requests in command order adds 2,745 B;
+    // demo tape providers, timelineFrame and the shared, windowed chapter tape
+    // add 2,461 B of opted-in demo code: 777,762 B measured. The ui/demo and
+    // ui/audio input-graph tests separately prove non-opted-in code stays out;
+    // the bound keeps a narrow margin so an accidental bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(780_000);
   });
 });
 
