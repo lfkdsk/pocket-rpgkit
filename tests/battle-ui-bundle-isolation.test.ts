@@ -81,8 +81,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // the lazy CLUT8 image cache stays in the opt-in pocket-rpgkit/ui/image entry.
 // The PSP work ported from lfkdsk/pocketjs-tuxemon#1 adds 5,196 shared
 // PocketJS framework bytes (bounded host image residency, deferred frame
-// queue release, externally indexed pak support).
-const EXPECTED_BYTES = 736_187;
+// queue release, externally indexed pak support). Dropping the duplicate
+// scene clone at the GameView boundary saves 87 shared bytes.
+const EXPECTED_BYTES = 736_100;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

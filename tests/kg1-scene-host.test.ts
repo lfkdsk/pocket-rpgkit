@@ -834,7 +834,8 @@ describe("KG1 generic scene host", () => {
     });
     expect(prepareSessionMapStep(registered, "map-b")).toBe(false); // stage
     expect(prepareSessionMapStep(registered, "map-b")).toBe(false); // acquire + assert
-    expect(prepareSessionMapStep(registered, "map-b")).toBe(true); // compile
+    expect(prepareSessionMapStep(registered, "map-b")).toBe(false); // world
+    expect(prepareSessionMapStep(registered, "map-b")).toBe(true); // passage
     // The prepared map publishes through acquireSessionMap at the transfer
     // boundary, with the scene registration already validated.
     expect(acquireSessionMap(registered, "map-b").id).toBe("map-b");

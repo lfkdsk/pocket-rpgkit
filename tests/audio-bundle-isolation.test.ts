@@ -26,9 +26,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // demo menu (chapter codes, tape suffixes, page hook); the small audio
 // fixture opts into WAV playback. KV2's per-map actor pool adds shared
 // GameView bytes to all three. Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 471_164;
-const EXPECTED_SUNSTONE_QOA_BYTES = 736_187;
-const EXPECTED_WAV_FIXTURE_BYTES = 603_495;
+const EXPECTED_MEADOW_BYTES = 471_111;
+const EXPECTED_SUNSTONE_QOA_BYTES = 736_100;
+const EXPECTED_WAV_FIXTURE_BYTES = 603_408;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",
