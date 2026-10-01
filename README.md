@@ -28,8 +28,9 @@ the parts an RPG-Maker-style game needs without any specific game:
   attract-tape override loader;
 - **build-time asset pipelines** (`tools/lib/`) — tile sheets to baked
   512px PSM_4444 canvases and chunks, or 256px CLUT8+RLE streamed chunks,
-  native animated-tile atlases, 16×16 or 16×32 static walker frames, and
-  the `GameAssets` manifest a game mounts;
+  one-image CLUT8+PackBits entries loaded only when shown, native animated-tile
+  atlases, 16×16 or 16×32 static walker frames, and the `GameAssets` manifest
+  a game mounts;
 - **the format** (`src/data/schema.json`, v1; changes recorded in
   `src/data/CHANGELOG.md`);
 - **five examples** (`examples/`), each a PocketJS app with its own art
@@ -210,7 +211,7 @@ bun install
 bun test                 # reducer/format/controller suites; sim cases skip
 bun run build:wasm       # one-time: compile the vendored sim core
 bun run build:example    # build showcase and the other examples, editor and test fixtures into dist/
-bun test                 # 1486 tests incl. sim journeys and pixel goldens
+bun test                 # full suite incl. sim journeys and pixel goldens
 bunx tsc --noEmit        # typecheck, exit 0
 bun run desktop sunstone # build for the desktop host and open a window
                          # (also: grow, wander, meadow; needs a Rust toolchain)
@@ -521,20 +522,42 @@ is normative and `src/engine/types.ts` carries the matching TypeScript types.
 ### Large projects: maps as on-demand entries
 
 Small games keep using an inline `project.maps` array. A large game can use
-`splitProjectMaps(project)` from `tools/lib/map-project.ts` to emit a compact
-`ProjectShell` plus one canonical JSON entry per map. The shell replaces
-`maps` with `mapIndex`; every index record carries the map id, dimensions,
-entry name and SHA-256. Both output order and bytes are stable, so importers
-can write `files` directly to independent files or addressable pak data
-entries.
+`splitProjectMaps(project)` from `tools/lib/map-project.ts` to emit a small
+`ProjectShell` plus one independently addressable entry per map. The shell
+replaces `maps` with `mapIndex`; every index record carries the map id,
+dimensions, entry name and SHA-256. Both output order and bytes are stable, so
+importers can write `files` directly to independent files or addressable pak
+data entries.
+
+Entries default to canonical JSON. Large importers can select the reversible
+`rpgkit-map/1` transport, or let the splitter choose it only when smaller:
+
+```ts
+const split = splitProjectMaps(project, { entryEncoding: "auto" });
+// "json" keeps the historical format; "compact" encodes every map.
+for (const file of split.files) writePakData(file.path, file.bytes);
+```
+
+The compact encoder dictionaries tile ids, chooses sparse/RLE/raw spellings
+per layer, and replaces repeated event/command object keys with a per-map key
+table. `decode(encode(map))` has the same canonical JSON as the input. This is
+an entry transport only: `ProjectShell`, `MapDef`, saves, `mapManifestHash`,
+and `MAP_SCHEMA_HASH` keep their existing meanings. `auto` uses `.rkm` entry
+names by default even when a small individual map stays JSON; entries identify
+themselves by content, not by their extension. Run
+`tools/slim-map-quickjs-bench.sh` to compare JSON and compact first-visit cost
+inside PocketJS's desktop QuickJS guest. This narrow benchmark uses an
+in-memory `readText` source and intentionally excludes filesystem I/O and
+checksum verification, isolating parse, compact decode, and repository
+structural validation.
 
 At runtime, pass the shell and a repository together:
 
 ```ts
 import { readFileSync } from "@pocketjs/framework/fs";
-import { createJsonMapRepository } from "./vendor/pocket-rpgkit/src/engine/map-repository.ts";
+import { createMapRepository } from "pocket-rpgkit/engine";
 
-const repository = createJsonMapRepository(project.mapIndex, {
+const repository = createMapRepository(project.mapIndex, {
   read: (entry) => readFileSync(entry),
   readText: (entry) => readFileSync(entry, "utf8"),
 });
@@ -546,15 +569,18 @@ mount(() => <GameView
 />);
 ```
 
-The splitter fully validates every map and escapes non-ASCII characters as
-JSON `\uXXXX` sequences, making each entry stable ASCII bytes. When a source
-provides `readText`, the repository prefers it and skips guest-side byte
-decoding. Otherwise `read` remains the compatible path: bytes use bounded 8 KiB
-`String.fromCharCode` chunks, and a hand-authored entry containing bytes above
-`0x7f` falls back to strict UTF-8 decoding. Entry SHA-256 remains the digest of
-the exact UTF-8 bytes; text sources re-encode their string for the same check
-without canonicalizing or normalizing it. A synchronous source is trusted like
-the application bundle and skips the entry SHA-256 by default;
+The splitter fully validates every map. Both canonical JSON and compact output
+escape non-ASCII characters as JSON `\uXXXX` sequences, making each entry
+stable ASCII bytes. `createMapRepository` (and its historical
+`createJsonMapRepository` name) parses either transport automatically after
+reading it. When a source provides `readText`, the repository prefers it and
+skips guest-side byte decoding. Otherwise `read` remains the compatible path:
+bytes use bounded 8 KiB `String.fromCharCode` chunks, and a hand-authored entry
+containing bytes above `0x7f` falls back to strict UTF-8 decoding. Entry
+SHA-256 remains the digest of the exact encoded UTF-8 bytes; text sources
+re-encode their string for the same check without canonicalizing or
+normalizing it. A synchronous source is trusted like the application bundle
+and skips the entry SHA-256 by default;
 pass `{ verify: true }` as the third argument to recheck it. A source with
 `prepare` defaults to checksum verification because it normally crosses a
 network boundary. Runtime loading checks compilation-critical structure by
@@ -949,9 +975,10 @@ screen; the registered scene component mounts on first use and likewise
 stays mounted (hidden) between battles, so scene entry/exit frames pay no
 mount/unmount cost. The optional effects component is a permanent root sibling
 of both visibility gates, so a battle BGM swap and map-BGM restoration do not
-remount the audio driver. The battle component
-receives only `{ state, width, height }`, so every visible animation cursor
-must be in battle state:
+remount the audio driver. The battle component receives
+`{ state, width, height, active }`; `active` is false while the once-mounted
+scene is hidden, so resource scopes can release the completed battle's
+textures. Every visible animation cursor must still be in battle state:
 
 ```tsx
 mount(() => <GameView
@@ -1001,10 +1028,11 @@ dialog behavior.
 
 ### Battle UI kit (`pocket-rpgkit/ui/battle`)
 
-`BattleSceneComponent` (above) receives only `{ state, width, height }`, so
-every widget it draws from must be a pure function of that JSON and the
-resolution — no signal seeded from a clock, `Date.now()`, or a host frame
-count. `src/ui/battle/` is a small kit of such widgets for the screens a
+`BattleSceneComponent` (above) receives `{ state, width, height, active }`, so
+every visible widget it draws from must be a pure function of that JSON and
+the resolution — no signal seeded from a clock, `Date.now()`, or a host frame
+count. `active` is a resource-lifecycle edge, not an animation clock.
+`src/ui/battle/` is a small kit of such widgets for the screens a
 turn-based battle actually needs, built on the same primitives DialogBox and
 Panel already use (`ui/list-window.ts`'s scroll window, `ui/theme.ts`'s
 palette):
@@ -1034,6 +1062,69 @@ palette):
   atlases cycle off the host's own vblank clock, which a save/rewind cannot
   carry).
 
+`SpriteSlot`, `FrameStrip`, and the general `LazyImage` component from the
+opt-in `pocket-rpgkit/ui/image` entry accept either the historical `ui:img`
+string or an on-demand single-tile descriptor:
+
+```ts
+const HERO = {
+  kind: "tile",
+  ref: "ui:tile.battle/hero#0",
+  sourceWidth: 128,
+  sourceHeight: 128,
+} as const;
+```
+
+The build-side `encodeClut8Tile(name, { width, height, rgba })` helper in
+`tools/lib/clut8.ts` returns that descriptor, the `ui:tile.<name>` pak key, a
+complete one-tile TILESET blob, and a quantization report. Write the blob as a
+raw pak entry, for example:
+
+```json
+[
+  { "key": "ui:tile.battle/hero", "file": "assets/battle/hero.pkts" }
+]
+```
+
+Dimensions must be powers of two from 1 through 512. Images with at most 256
+canonical colours round-trip exactly (a transparent image reserves palette
+index zero and therefore has 255 opaque/translucent slots); wider palettes are
+reduced deterministically by frequency and nearest RGBA colour, with the error
+reported to the cooker. The index stream uses PocketJS's PackBits TILESET
+format. Unlike `ui:img`, the host does not upload it at boot:
+
+```tsx
+import {
+  createBattleImageCache,
+  NO_EFFECT,
+  SpriteSlot,
+} from "pocket-rpgkit/ui/battle";
+
+function BattleScreen(props: BattleSceneViewProps) {
+  const images = createBattleImageCache(() => props.active, {
+    maxEntries: 24,
+    maxBytes: 3 * 1024 * 1024,
+  });
+  return <SpriteSlot
+    src={HERO}
+    cache={images}
+    active={props.active}
+    x={24} y={80} width={128} height={128}
+    effect={NO_EFFECT}
+    nowTick={0}
+  />;
+}
+```
+
+The cache reference-counts mounted borrowers and keeps released frames in a
+deterministic unpinned LRU (defaults: 32 entries and 4 MiB of palette/index
+backing). `createBattleImageCache` frees the whole battle working set when
+`active` becomes false. Passing no cache gives one `LazyImage` an isolated
+eight-entry cache. Existing string sources still use the eager `ui:img` path
+unchanged. Byte accounting uses the dimensions in the cooker-produced
+descriptor; applications that hand-author descriptors must keep those values
+identical to the TILESET header.
+
 Because every widget is this kind of pure function, a battle scene inherits
 the kit's L-key rewind and 60/30/20/4 Hz determinism for free, the same way
 the map layer does (`engine/attract.ts` restores a canonical keyframe and
@@ -1052,7 +1143,8 @@ pixel checks, and the Hz/determinism proofs).
 ## Using it in your own project
 
 The published package exports the engine surface (`pocket-rpgkit`), the
-Solid components (`pocket-rpgkit/ui`), the opt-in WAV/QOA bridge
+Solid components (`pocket-rpgkit/ui`), the opt-in lazy image path
+(`pocket-rpgkit/ui/image`), the opt-in WAV/QOA bridge
 (`pocket-rpgkit/ui/audio`), the battle UI kit (`pocket-rpgkit/ui/battle`),
 the demo controls (`pocket-rpgkit/ui/demo`),
 the host adapters (`pocket-rpgkit/host`), and the schema
@@ -1534,7 +1626,8 @@ src/engine/      pure runtime (types, motion-clock, movement, passability,
 src/data/        schema.json (normative) + CHANGELOG
 src/ui/          GameView, ChunkLayer, StreamedChunkLayer, AnimatedTiles,
                  DialogBox, PlayerSprite, SaveMenu, Panel, theme
-                 (UiTheme, speaker prefixes)
+                 (UiTheme, speaker prefixes), plus the opt-in LazyImage and
+                 tile-texture cache entry
 src/ui/audio/    opt-in WAV/QOA host bridge and streaming QOA decoder
 src/ui/battle/   state-driven battle UI kit (StatBar, CommandGrid, ListMenu,
                  MessageBand, SpriteSlot, FrameStrip, effects.ts tick math);
@@ -1542,8 +1635,9 @@ src/ui/battle/   state-driven battle UI kit (StatBar, CommandGrid, ListMenu,
                  games that register battle/battleScene
 src/host/        data.fs save adapter, attract-tape loader
 tools/lib/       game-agnostic baking pipelines (bake.ts, chunks.ts,
-                 stream.ts, animated.ts), deterministic QOA encoding, and
-                 the desktop-host build/launch helper (desktop.ts)
+                 stream.ts, animated.ts, compact-map.ts, clut8.ts),
+                 deterministic QOA encoding, and the desktop-host
+                 build/launch helper (desktop.ts)
 tools/           example/editor build driver, desktop and editor launchers,
                  macOS packager (package-macos.ts), web site builder
                  (web.ts, web/, web-verify.ts)

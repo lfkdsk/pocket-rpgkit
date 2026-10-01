@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./engine": "./src/engine/index.ts",
     "./ui": "./src/ui/index.ts",
+    "./ui/image": "./src/ui/image.ts",
     "./ui/battle": "./src/ui/battle/index.ts",
     "./ui/demo": "./src/ui/demo/index.ts",
     "./ui/audio": "./src/ui/audio/index.ts",

@@ -20,6 +20,6 @@ export const GAME_ASSETS: GameAssets = {
 
 /** Battle-scene-only art (src/ui/battle demo): not part of GameAssets. */
 export const KB4_ART = {
-  player: "assets/battler-player.png",
-  enemy: "assets/battler-enemy.png",
-};
+  player: {"kind":"tile","ref":"ui:tile.kb4-battle/player#0","sourceWidth":64,"sourceHeight":64},
+  enemy: {"kind":"tile","ref":"ui:tile.kb4-battle/enemy#0","sourceWidth":64,"sourceHeight":64},
+} as const;

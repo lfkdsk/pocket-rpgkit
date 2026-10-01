@@ -7,6 +7,7 @@
 
 import PROJECT_SCHEMA from "../data/schema.json";
 import { startupProfileMark } from "../startup-profile.ts";
+import { decodeCompactMap, isCompactMapValue } from "./compact-map.ts";
 import { canonicalJson, utf8Encode } from "./save.ts";
 import { validateSchema, type VError } from "./schema-validate.ts";
 import type {
@@ -389,8 +390,9 @@ export interface JsonMapRepositoryOptions {
 }
 
 /** A runtime-validated repository over local strings/bytes or asynchronously
- * prepared web entries. Parsed maps are evicted exactly when releaseExcept
- * requests it. */
+ * prepared web entries. Entries may be canonical MapDef JSON or the
+ * self-describing rpgkit-map/1 compact JSON transport. Parsed maps are
+ * evicted exactly when releaseExcept requests it. */
 export function createJsonMapRepository(
   entries: readonly MapIndexEntry[],
   source: MapEntrySource,
@@ -429,9 +431,12 @@ export function createJsonMapRepository(
       : sha256Bytes(staged.input)) !== meta.sha256) {
       throw new Error(`map repository: checksum mismatch for ${id} (${meta.entry})`);
     }
-    if (options.validate === "full") validateMapDef(staged.value);
-    else validateMapDefStructure(staged.value);
-    const map = staged.value as MapDef;
+    const decoded = isCompactMapValue(staged.value)
+      ? decodeCompactMap(staged.value)
+      : staged.value;
+    if (options.validate === "full") validateMapDef(decoded);
+    else validateMapDefStructure(decoded);
+    const map = decoded as MapDef;
     if (map.id !== meta.id || map.width !== meta.width || map.height !== meta.height) {
       throw new Error(`map repository: metadata mismatch for ${id}`);
     }
@@ -461,3 +466,7 @@ export function createJsonMapRepository(
     } : {}),
   };
 }
+
+/** Format-neutral name for new code. The historical export remains source-
+ * compatible; both accept JSON and rpgkit-map/1 entries. */
+export const createMapRepository = createJsonMapRepository;

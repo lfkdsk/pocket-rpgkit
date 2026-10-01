@@ -15,7 +15,7 @@
 // fully deterministic sequence safe to replay at every Hz.
 
 import { describe, expect, test } from "bun:test";
-import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
+import { decodePng, unpack } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { fnv1a } from "../vendor/pocketjs/hosts/sim/sim.ts";
 // Imported straight from effects.ts, NOT the src/ui/battle barrel: the
@@ -186,6 +186,76 @@ async function bootToLoseMessage(
 }
 
 simDescribe("KB4 battle UI kit: golden frames + semantic pixel proofs", () => {
+  test("battle art is absent at boot, loaded once on entry, and freed on exit", async () => {
+    let uploads = 0;
+    const frees: number[] = [];
+    const imageOps: { kind: "set" | "free"; node?: number; handle: number }[] = [];
+    const world = await bootGameWorld(
+      appBundle("kb4-battle"),
+      60,
+      { __kb4Setup: SETUP },
+      (ops) => {
+        const upload = ops.uploadImgEntry as (blob: Uint8Array) => number;
+        const free = ops.freeTexture as (handle: number) => void;
+        const setImage = (ops.setImage as (node: number, handle: number) => void).bind(ops);
+        ops.uploadImgEntry = (blob: Uint8Array): number => {
+          uploads++;
+          return upload.call(ops, blob);
+        };
+        ops.freeTexture = (handle: number): void => {
+          frees.push(handle);
+          imageOps.push({ kind: "free", handle });
+          free.call(ops, handle);
+        };
+        ops.setImage = (node: number, handle: number): void => {
+          imageOps.push({ kind: "set", node, handle });
+          setImage(node, handle);
+        };
+      },
+      { width: 480, height: 272 },
+    );
+
+    const eagerUploads = uploads;
+    expect(eagerUploads).toBe(3); // map ground/upper + the walker, never battle art
+    pump(world, 1);
+    expect(uploads).toBe(eagerUploads + 2);
+    pump(world, seconds(60, 2));
+    pump(world, 1, BTN_CIRCLE);
+    pump(world, 1);
+    pump(world, 1, BTN_CIRCLE);
+    pump(world, seconds(60, 2));
+    pump(world, 1, BTN_CIRCLE);
+    pump(world, seconds(60, 2));
+    pump(world, 1, BTN_CIRCLE);
+    pump(world, seconds(60, 2));
+    pump(world, 1, BTN_CIRCLE);
+    pump(world, 2);
+    expect(world.probes().state.scene).toBeNull();
+    expect(uploads).toBe(eagerUploads + 2);
+    expect(frees).toHaveLength(2);
+    expect(new Set(frees).size).toBe(2);
+    for (const handle of frees) {
+      const freeAt = imageOps.findIndex((op) => op.kind === "free" && op.handle === handle);
+      let attachAt = -1;
+      for (let index = 0; index < freeAt; index++) {
+        if (imageOps[index]!.kind === "set" && imageOps[index]!.handle === handle) attachAt = index;
+      }
+      expect(attachAt).toBeGreaterThanOrEqual(0);
+      const node = imageOps[attachAt]!.node;
+      const detachAt = imageOps.findIndex((op, index) =>
+        index > attachAt && index < freeAt && op.kind === "set" && op.node === node && op.handle === -1);
+      expect(detachAt, `texture ${handle} must detach before free`).toBeGreaterThan(attachAt);
+    }
+  }, 30_000);
+
+  test("the built pak contains lazy TILESET battlers and no eager battler IMG", async () => {
+    const bytes = new Uint8Array(await Bun.file(`${appBundle("kb4-battle")}.pak`).arrayBuffer());
+    const keys = unpack(bytes).map((entry) => entry.key);
+    expect(keys).toContain("ui:tile.kb4-battle/enemy");
+    expect(keys).toContain("ui:tile.kb4-battle/player");
+    expect(keys.some((key) => key.includes("battler-enemy.png") || key.includes("battler-player.png"))).toBe(false);
+  });
+
   test("480x272: pinned frame hashes across the win sequence", async () => {
     const { hashes } = await playToWin(60);
     expect(hashes).toEqual({
@@ -263,8 +333,8 @@ simDescribe("KB4 battle UI kit: golden frames + semantic pixel proofs", () => {
       const i = (barY * width + x) * 4;
       return [frame[i]!, frame[i + 1]!, frame[i + 2]!];
     };
-    expect(pixelAt(barX0 + Math.max(0, expectedFill - 2))).toEqual(fillColour);
-    expect(pixelAt(barX0 + Math.min(SPRITE_SIZE - 1, expectedFill + 2))).not.toEqual(fillColour);
+    expect(pixelAt(barX0 + expectedFill - 1)).toEqual(fillColour);
+    expect(pixelAt(barX0 + expectedFill)).not.toEqual(fillColour);
   }, 30_000);
 
   test("the enemy sprite's shake offset matches shakeOffsetX exactly, pixel for pixel", async () => {
@@ -337,11 +407,10 @@ simDescribe("KB4 battle UI kit: golden frames + semantic pixel proofs", () => {
     const expectBlend = (colour: readonly [number, number, number], opacity: number): number[] =>
       colour.map((c, i) => Math.round(bg[i]! * (1 - opacity) + c * opacity));
 
-    // Local row 2 (body colour at rest, well above the mark stripe at rows
-    // 20-28) has already sunk past this global row once sinkY > 0...
-    expect(at(restX + 2, restY + 2)).toEqual([...bg]);
-    // ...and the same body-colour row, now `sinkY` px lower, is faded.
-    const sunk = at(restX + 2, restY + 2 + pose.sinkY);
+    // The exact top edge moves by sinkY: the preceding row is background,
+    // while source row zero appears at the computed edge with faded colour.
+    expect(at(restX + 2, restY + pose.sinkY - 1)).toEqual([...bg]);
+    const sunk = at(restX + 2, restY + pose.sinkY);
     const blended = expectBlend(bodyColour, pose.opacity);
     for (let c = 0; c < 3; c++) expect(Math.abs(sunk[c]! - blended[c]!)).toBeLessThanOrEqual(2);
   }, 30_000);
@@ -583,14 +652,25 @@ simDescribe("KB4 battle UI kit: scene input contract", () => {
  *  KB4_BATTLE_UPDATE_GOLDENS is set) and asserts it matches what's there —
  *  the human-eyeball checkpoints in the "manual visual check" describe
  *  block below. */
-async function golden(name: string, frame: Uint8Array): Promise<void> {
+async function golden(name: string, frame: Uint8Array, width = 480, height = 272): Promise<void> {
   const url = new URL(`./goldens/kb4-battle.${name}.png`, import.meta.url);
-  if (process.env.KB4_BATTLE_UPDATE_GOLDENS) await Bun.write(url, encodePNG(frame, 480, 272));
+  if (process.env.KB4_BATTLE_UPDATE_GOLDENS) await Bun.write(url, encodePNG(frame, width, height));
   const bytes = new Uint8Array(await Bun.file(url).arrayBuffer());
   expect(frame).toEqual(decodePng(bytes).rgba);
 }
 
 simDescribe("KB4 battle UI kit: manual visual check", () => {
+  test("writes the indexed command frame at 960x544", async () => {
+    const world = await bootGameWorld(
+      appBundle("kb4-battle"), 60, { __kb4Setup: SETUP }, undefined, { width: 960, height: 544 },
+    );
+    pump(world, 1);
+    pump(world, seconds(60, 2));
+    pump(world, 1, BTN_CIRCLE);
+    pump(world, 1);
+    await golden("indexed.960", world.render().slice(), 960, 544);
+  }, 30_000);
+
   test("writes the win-sequence frames as PNGs (for the human eyeball, not asserted)", async () => {
     const world = await bootGameWorld(appBundle("kb4-battle"), 60, { __kb4Setup: SETUP }, undefined, { width: 480, height: 272 });
     pump(world, 10);

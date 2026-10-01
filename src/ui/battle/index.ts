@@ -27,3 +27,13 @@ export { ListMenu, type ListMenuRow, type ListMenuProps } from "./ListMenu.tsx";
 export { MessageBand, type MessageBandProps } from "./MessageBand.tsx";
 export { SpriteSlot, type SpriteSlotProps } from "./SpriteSlot.tsx";
 export { FrameStrip, type FrameStripProps } from "./FrameStrip.tsx";
+export { createBattleImageCache } from "./image-cache.ts";
+export {
+  LazyImage,
+  TileTextureCache,
+  type LazyImageProps,
+  type RpgImageSource,
+  type TileImageSource,
+  type TileTextureCacheOptions,
+  type TileTextureCacheStats,
+} from "../LazyImage.tsx";

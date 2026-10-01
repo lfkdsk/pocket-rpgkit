@@ -642,7 +642,9 @@ export interface Project {
 }
 
 /** One independently addressable map payload in a sharded project. The
- * checksum is SHA-256 over canonical UTF-8 JSON for the MapDef. */
+ * checksum is SHA-256 over the entry's exact UTF-8 bytes. Entries may be
+ * canonical MapDef JSON or the self-describing compact transport; the path
+ * intentionally does not select the decoder. */
 export interface MapIndexEntry {
   id: string;
   width: number;

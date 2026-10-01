@@ -7,12 +7,12 @@
 // carry, so a state-dependent effect must swap discrete image keys the
 // same way PlayerSprite chooses a walk pose.
 
-import { Image } from "@pocketjs/framework/components";
+import { LazyImage, type RpgImageSource, type TileTextureCache } from "../LazyImage.tsx";
 import { frameIndexAt } from "./effects.ts";
 
 export interface FrameStripProps {
   /** Baked frame image keys, in playback order. */
-  frames: readonly string[];
+  frames: readonly RpgImageSource[];
   /** Reference ticks each frame holds. */
   frameTicks: number;
   startTick: number;
@@ -24,6 +24,8 @@ export interface FrameStripProps {
   height: number;
   zIndex?: number;
   debugName?: string;
+  cache?: TileTextureCache;
+  active?: boolean;
 }
 
 export function FrameStrip(props: FrameStripProps) {
@@ -32,9 +34,11 @@ export function FrameStrip(props: FrameStripProps) {
   const src = () => props.frames[index()] ?? "";
 
   return (
-    <Image
+    <LazyImage
       class="absolute"
       src={src()}
+      cache={props.cache}
+      active={props.active}
       style={{
         posType: 1,
         insetL: props.x,

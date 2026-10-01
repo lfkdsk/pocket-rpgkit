@@ -82,7 +82,9 @@ The links point to where each feature is described in detail.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Large projects split into a map shell plus maps loaded on demand from the pak | Done | [Large projects](../README.md#large-projects-maps-as-on-demand-entries) |
+| Reversible compact map entries | Done | `rpgkit-map/1` dictionaries/RLE tile layers and repeated event keys; the repository auto-detects compact or JSON entries, while `auto` cooking keeps only smaller encodings. See [Large projects](../README.md#large-projects-maps-as-on-demand-entries) |
 | Packaged maps read as text through the host's native read, with a fallback | Done | [Host map source](../src/engine/README.md#host-map-source-on-demand-maps) |
+| Lazy indexed images | Done | General and battle image components can load one-tile CLUT8+PackBits entries on demand through a bounded LRU and free a battle's working set on exit; legacy eager `ui:img` sources remain supported. See [Battle UI kit](../README.md#battle-ui-kit-pocket-rpgkituibattle) |
 | Endless generated world | Done | The `examples/wander` example |
 
 ## Editor

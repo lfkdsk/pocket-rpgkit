@@ -46,5 +46,5 @@ for label in main candidate candidate main; do
   js="$scratch/$label.js"
   PR1_BENCH_JS="$js" PR1_BENCH_LABEL="$label" "$bin" \
     pr1_quickjs_bench::tick_fold --ignored --exact --nocapture 2>&1 \
-    | grep -E '^(PR1_QJS|test result)'
+    | grep -oE '(PR1_QJS|test result).*$'
 done

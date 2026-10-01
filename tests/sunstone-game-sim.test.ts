@@ -430,7 +430,7 @@ simDescribe("sunstone — render budget", () => {
     // AI2's optional trace, KB6 kept-alive scenes, battle audio restoration,
     // DEMO1's explicitly opted-in menu, save validation, chapter codes, tape
     // suffixes and live page hook, and 10,219 B of shared PocketJS code from
-    // the upstream rebase: 712,728 B measured. The ui/demo and ui/audio
+    // the upstream rebase: 712,836 B measured. The ui/demo and ui/audio
     // input-graph tests separately prove non-opted-in code stays out; the
     // bound keeps a narrow margin so an accidental bundle-in still trips it.
     expect(jsBytes).toBeLessThan(720_000);

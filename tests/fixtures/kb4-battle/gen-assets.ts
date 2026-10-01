@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { encodePNG } from "../../../vendor/pocketjs/tests/png.ts";
 import { bakeMapChunks, groundChunkAsset, upperChunkAsset } from "../../../tools/lib/chunks.ts";
+import { encodeClut8Tile } from "../../../tools/lib/clut8.ts";
 import { CHUNK_PX, TILE } from "../../../src/engine/tiles.ts";
 import { MAP, MAP_ID, MAP_SIZE } from "./fixture-data.ts";
 
@@ -56,8 +57,24 @@ function battler(body: Rgba, mark: Rgba): Uint8Array {
 }
 const playerName = "assets/battler-player.png";
 const enemyName = "assets/battler-enemy.png";
-writeFileSync(join(HERE, playerName), encodePNG(battler([214, 90, 74, 255], [20, 12, 10, 255]), SPRITE_SIZE, SPRITE_SIZE));
-writeFileSync(join(HERE, enemyName), encodePNG(battler([74, 150, 214, 255], [10, 16, 20, 255]), SPRITE_SIZE, SPRITE_SIZE));
+const playerRgba = battler([214, 90, 74, 255], [20, 12, 10, 255]);
+const enemyRgba = battler([74, 150, 214, 255], [10, 16, 20, 255]);
+writeFileSync(join(HERE, playerName), encodePNG(playerRgba, SPRITE_SIZE, SPRITE_SIZE));
+writeFileSync(join(HERE, enemyName), encodePNG(enemyRgba, SPRITE_SIZE, SPRITE_SIZE));
+const playerTile = encodeClut8Tile("kb4-battle/player", {
+  width: SPRITE_SIZE, height: SPRITE_SIZE, rgba: playerRgba,
+});
+const enemyTile = encodeClut8Tile("kb4-battle/enemy", {
+  width: SPRITE_SIZE, height: SPRITE_SIZE, rgba: enemyRgba,
+});
+const playerTileFile = "assets/battler-player.pkts";
+const enemyTileFile = "assets/battler-enemy.pkts";
+writeFileSync(join(HERE, playerTileFile), playerTile.blob);
+writeFileSync(join(HERE, enemyTileFile), enemyTile.blob);
+writeFileSync(join(HERE, "pak.json"), JSON.stringify([
+  { key: enemyTile.key, file: enemyTileFile },
+  { key: playerTile.key, file: playerTileFile },
+], null, 2) + "\n");
 
 const groundNames = Array.from({ length: chunkCount }, (_, i) => groundChunkAsset(MAP_ID, i, chunkCount));
 const upperNames = Array.from({ length: chunkCount }, (_, i) => upperChunkAsset(MAP_ID, i, chunkCount));
@@ -85,9 +102,9 @@ writeFileSync(
     `};\n\n` +
     `/** Battle-scene-only art (src/ui/battle demo): not part of GameAssets. */\n` +
     `export const KB4_ART = {\n` +
-    `  player: ${q(playerName)},\n` +
-    `  enemy: ${q(enemyName)},\n` +
-    `};\n`,
+    `  player: ${JSON.stringify(playerTile.descriptor)},\n` +
+    `  enemy: ${JSON.stringify(enemyTile.descriptor)},\n` +
+    `} as const;\n`,
 );
 
-console.log(`kb4-battle fixture: ${MAP_SIZE.width}x${MAP_SIZE.height} map, 1 ground/upper chunk, 2 battler portraits`);
+console.log(`kb4-battle fixture: ${MAP_SIZE.width}x${MAP_SIZE.height} map, 1 ground/upper chunk, 2 lazy CLUT8 battler portraits`);

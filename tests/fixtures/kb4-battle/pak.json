@@ -1,0 +1,10 @@
+[
+  {
+    "key": "ui:tile.kb4-battle/enemy",
+    "file": "assets/battler-enemy.pkts"
+  },
+  {
+    "key": "ui:tile.kb4-battle/player",
+    "file": "assets/battler-player.pkts"
+  }
+]

@@ -650,6 +650,9 @@ export interface BattleSceneViewProps {
   state: JsonValue;
   width: number;
   height: number;
+  /** False while the once-mounted scene is hidden between battles. Resource
+   * scopes use this edge to release the completed battle's texture pins. */
+  active: boolean;
 }
 
 export type BattleSceneComponent = Component<BattleSceneViewProps>;
@@ -1425,6 +1428,7 @@ export function GameView(props: GameViewProps) {
                 state={battleViewState()!}
                 width={viewport().w}
                 height={viewport().h}
+                active={sceneActive()}
               />
             </ProfileMount>
           ) : null}

@@ -12,6 +12,7 @@ import { View } from "@pocketjs/framework/components";
 import type { BattleSceneViewProps } from "../../../src/ui/GameView.tsx";
 import {
   CommandGrid,
+  createBattleImageCache,
   ListMenu,
   MessageBand,
   StatBar,
@@ -33,6 +34,7 @@ import { KB4_ART } from "./assets-game.ts";
 const SPRITE_SIZE = 64;
 
 export function Kb4BattleScene(props: BattleSceneViewProps) {
+  const imageCache = createBattleImageCache(() => props.active, { maxEntries: 4 });
   const state = () => demoState(props.state);
   const nowTick = () => state().nowTick;
   const playerHp = () => tweenAt(playerHpTween(state()), nowTick());
@@ -56,6 +58,8 @@ export function Kb4BattleScene(props: BattleSceneViewProps) {
     >
       <SpriteSlot
         src={KB4_ART.enemy}
+        cache={imageCache}
+        active={props.active}
         x={props.width - SPRITE_SIZE - 24}
         y={24}
         width={SPRITE_SIZE}
@@ -80,6 +84,8 @@ export function Kb4BattleScene(props: BattleSceneViewProps) {
 
       <SpriteSlot
         src={KB4_ART.player}
+        cache={imageCache}
+        active={props.active}
         x={24}
         y={props.height - SPRITE_SIZE - 72}
         width={SPRITE_SIZE}

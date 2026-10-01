@@ -330,6 +330,14 @@ SHA-256 before parsing and defaults to true only for sources that expose
 full schema) and `"full"` revalidates every acquired map. The repository
 caches parsed maps; `releaseExcept(ids)` evicts every other entry.
 
+Despite its historical name, `createJsonMapRepository` accepts both ordinary
+MapDef JSON and self-identifying `rpgkit-map/1` compact entries; new code may
+use its format-neutral `createMapRepository` alias. The compact transport is
+decoded to the ordinary MapDef before the same structure/full validation and
+metadata checks. The index SHA-256 always covers the entry's exact encoded
+bytes, so JSON and compact builds naturally have different package identities
+without changing `MAP_SCHEMA_HASH`.
+
 ## Extensions and battle scenes
 
 `createSession(project, hz, options)` accepts these options:
@@ -453,10 +461,11 @@ Tuxemon:
 - the absolute interpreter clock remains rate-stable while relative wait and
   typewriter timers are shifted with it, so paused commands do not elapse;
 - `GameView` keeps the map/dialog tree mounted but hides it, and renders the
-  registered battle component from `{ state, width, height }` only; a parked
-  map modal remains in reducer state, but the scene owns confirm/cancel until
-  it closes. The optional effects component stays mounted outside both scene
-  visibility gates.
+  registered battle component from `{ state, width, height, active }` only;
+  `active` is false while the once-mounted scene is hidden so it can release
+  scoped resources. A parked map modal remains in reducer state, but the scene
+  owns confirm/cancel until it closes. The optional effects component stays
+  mounted outside both scene visibility gates.
 
 Pass `scene: { worldContinues: true }` to `createSession`, `GameView`, or
 `AttractController` to opt into background map simulation. Any battle request

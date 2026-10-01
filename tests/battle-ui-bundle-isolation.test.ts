@@ -18,10 +18,11 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SUNSTONE_JS = join(ROOT, "dist", "sunstone.js");
+const MEADOW_JS = join(ROOT, "dist", "meadow.js");
 
-const preflight = existsSync(SUNSTONE_JS)
+const preflight = existsSync(SUNSTONE_JS) && existsSync(MEADOW_JS)
   ? { ok: true as const }
-  : { ok: false as const, reason: `missing ${SUNSTONE_JS} — run \`bun run build:example sunstone\`` };
+  : { ok: false as const, reason: "run `bun run build:example sunstone meadow`" };
 if (!preflight.ok) console.warn(`battle-ui bundle isolation test skipped: ${preflight.reason}`);
 const maybeTest = preflight.ok ? test : test.skip;
 
@@ -76,7 +77,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // prove that the Sunstone bundle does not pull in battle UI.
 // KV2's per-map actor pool (grow-only slots, battle-gated map animation
 // and balloon layers) adds 2,301 shared GameView bytes.
-const EXPECTED_BYTES = 712_728;
+// SLIM-K adds 108 shared bytes (compact-map detection on the map read path);
+// the lazy CLUT8 image cache stays in the opt-in pocket-rpgkit/ui/image entry.
+const EXPECTED_BYTES = 712_836;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
@@ -93,6 +96,8 @@ describe("KB4 does not reach games that never opt into battle", () => {
       "barFillWidth",
       "kb4-battle-scene",
       "CommandGrid",
+      "TileTextureCache:",
+      "pinned working set exceeds",
     ]) {
       expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
     }

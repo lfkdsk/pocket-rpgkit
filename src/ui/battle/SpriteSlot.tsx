@@ -5,11 +5,12 @@
 // two renders of the same props are pixel-identical (the rewind/multi-Hz
 // contract every KB4 piece keeps).
 
-import { Image } from "@pocketjs/framework/components";
+import { LazyImage, type RpgImageSource, type TileTextureCache } from "../LazyImage.tsx";
 import { faintPose, flashOpacity, shakeOffsetX, type SpriteEffect } from "./effects.ts";
 
 export interface SpriteSlotProps {
-  src: string;
+  /** Legacy eager image key, or an on-demand TILESET image descriptor. */
+  src: RpgImageSource;
   /** Top-left of the slot at rest, before any effect offset. */
   x: number;
   y: number;
@@ -23,6 +24,10 @@ export interface SpriteSlotProps {
   faintSink?: number;
   zIndex?: number;
   debugName?: string;
+  /** Share one cache across a battle to deduplicate and LRU-retain frames. */
+  cache?: TileTextureCache;
+  /** Pass BattleSceneViewProps.active for kept-alive battle subtrees. */
+  active?: boolean;
 }
 
 export function SpriteSlot(props: SpriteSlotProps) {
@@ -32,9 +37,11 @@ export function SpriteSlot(props: SpriteSlotProps) {
   const opacity = () => flash() * faint().opacity;
 
   return (
-    <Image
+    <LazyImage
       class="absolute"
       src={props.src}
+      cache={props.cache}
+      active={props.active}
       style={{
         posType: 1,
         insetL: props.x + dx(),
