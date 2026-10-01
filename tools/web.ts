@@ -28,8 +28,9 @@
 // the browser), site.css, the landing page and games.json.
 //
 // Card text comes from the metadata table in <project-root>/web.json, keyed
-// by game id: title, one-line description, preview image, controls, what
-// the pointer does. Every field is optional. A game with no entry still
+// by game id: title, one-line description, preview image, controls, chapter
+// links, and what the pointer does. Every field is optional. A game with no
+// entry still
 // gets a card: its pocket.json title, the GameView controls, and a preview
 // rendered from its own bundle (tools/web/preview.ts). If that render
 // fails, the card simply has no picture.
@@ -88,6 +89,14 @@ export interface WebControl {
   action: string;
 }
 
+export interface WebChapter {
+  /** Stable id handed to the game as ?chapter=<id>. */
+  id: string;
+  title: string;
+  /** Whether this chapter has a tape that can start from the web player. */
+  autoplay?: boolean;
+}
+
 /** One row of the metadata table. Every field is optional. */
 export interface WebGameEntry {
   /** pocket.json, relative to the project root, when it is not found by id. */
@@ -97,6 +106,8 @@ export interface WebGameEntry {
   /** Preview image (PNG), relative to the project root. */
   preview?: string;
   controls?: WebControl[];
+  /** Named entry points into this game, shown as links on its card. */
+  chapters?: WebChapter[];
   /** What the mouse or a finger does, if anything. */
   pointer?: string;
   /** Longer plain-text points shown only on the player page. */
@@ -148,6 +159,7 @@ export interface WebGame {
   title: string;
   description: string;
   controls: WebControl[];
+  chapters: WebChapter[];
   pointer?: string;
   features?: string[];
   featured?: boolean;
@@ -244,6 +256,28 @@ function validateEntry(id: string, entry: WebGameEntry, source: string): void {
     withKeys(entry.keys);
   } catch (error) {
     throw new Error(`web: ${source}: games.${id}.keys: ${error instanceof Error ? error.message : error}`);
+  }
+  if (entry.chapters !== undefined && !Array.isArray(entry.chapters)) {
+    throw new Error(`web: ${source}: games.${id}.chapters is a list`);
+  }
+  const chapterIds = new Set<string>();
+  for (const [index, chapter] of (entry.chapters ?? []).entries()) {
+    if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) {
+      throw new Error(`web: ${source}: games.${id}.chapters[${index}] is an object`);
+    }
+    if (typeof chapter.id !== "string" || !ID.test(chapter.id)) {
+      throw new Error(`web: ${source}: games.${id}.chapters[${index}].id is not a usable chapter id`);
+    }
+    if (chapterIds.has(chapter.id)) {
+      throw new Error(`web: ${source}: games.${id}.chapters has duplicate id "${chapter.id}"`);
+    }
+    chapterIds.add(chapter.id);
+    if (typeof chapter.title !== "string" || chapter.title.trim().length === 0) {
+      throw new Error(`web: ${source}: games.${id}.chapters[${index}].title must be non-empty text`);
+    }
+    if (chapter.autoplay !== undefined && typeof chapter.autoplay !== "boolean") {
+      throw new Error(`web: ${source}: games.${id}.chapters[${index}].autoplay is a boolean`);
+    }
   }
   for (const control of entry.controls ?? []) {
     const buttons = control.buttons ?? (control.button ? [control.button] : []);
@@ -380,6 +414,11 @@ export function resolveGame(projectRoot: string, config: WebSiteConfig, id: stri
     title: entry.title ?? shortTitle(plan.app.title, config.title),
     description: entry.description ?? "",
     controls: [...(entry.controls ?? DEFAULT_CONTROLS)],
+    chapters: (entry.chapters ?? []).map(({ id, title, autoplay }) => ({
+      id,
+      title,
+      ...(autoplay !== undefined ? { autoplay } : {}),
+    })),
     ...(entry.pointer ? { pointer: entry.pointer } : {}),
     ...(entry.features ? { features: [...entry.features] } : {}),
     ...(entry.featured !== undefined ? { featured: entry.featured } : {}),
@@ -477,11 +516,54 @@ export interface Card {
   preview?: Size;
 }
 
+function chaptersNav(game: WebGame): string | undefined {
+  if (game.chapters.length === 0) return undefined;
+  const links = game.chapters.map(({ id, title }) => {
+    const query = new URLSearchParams({ chapter: id }).toString();
+    const href = `${encodeURIComponent(game.id)}/?${query}`;
+    return `<li><a href="${escapeHtml(href)}">${escapeHtml(title)}</a></li>`;
+  });
+  return [
+    `<nav class="chapters" aria-label="${escapeHtml(`${game.title} chapters`)}">`,
+    "<span>Chapters:</span>",
+    `<ul>${links.join("")}</ul>`,
+    "</nav>",
+  ].join("\n");
+}
+
+/** Same-page controls for a running opt-in demo. Links remain functional
+ * deep-link fallbacks when the game does not install the demo hook. */
+function playerDemoControls(game: WebGame): string | undefined {
+  if (game.chapters.length === 0) return undefined;
+  const chapters = game.chapters.map(({ id, title, autoplay }) => {
+    const href = `?${new URLSearchParams({ chapter: id })}`;
+    return `<a class="demo-button" role="button" aria-pressed="false" data-demo-chapter="${escapeHtml(id)}" data-demo-autoplay="${autoplay === true}" href="${escapeHtml(href)}">${escapeHtml(title)}</a>`;
+  });
+  const firstAutoplay = game.chapters.find((chapter) => chapter.autoplay)?.id;
+  const speeds = firstAutoplay ? ([1, 2, 4] as const).map((speed) => {
+    const href = `?${new URLSearchParams({ autoplay: firstAutoplay, speed: String(speed) })}`;
+    return `<a class="demo-button demo-speed" role="button" aria-pressed="false" data-demo-speed="${speed}" href="${escapeHtml(href)}">${speed}×</a>`;
+  }) : [];
+  return [
+    '<section class="demo-controls" data-demo-controls aria-labelledby="demo-controls-heading">',
+    '<h2 id="demo-controls-heading">Demo controls</h2>',
+    '<div class="demo-control-row"><span>Chapter</span><div class="demo-buttons">',
+    ...chapters,
+    "</div></div>",
+    ...(speeds.length > 0
+      ? ['<div class="demo-control-row"><span>Autoplay</span><div class="demo-buttons">', ...speeds, "</div></div>"]
+      : []),
+    `<p class="demo-help">Jump instantly without reloading.${speeds.length > 0 ? " Autoplay starts the selected chapter at the chosen speed." : ""}</p>`,
+    "</section>",
+  ].join("\n");
+}
+
 /** The landing page at the site root. */
 export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
   const showcase = (site.showcase ?? []).map(showcaseCard);
   const articles = cards.map(({ game, preview }) => {
     const href = `${game.id}/`;
+    const chapterNav = chaptersNav(game);
     const shot = preview
       ? `<img src="${game.id}/preview.png" width="${preview[0]}" height="${preview[1]}" alt="" loading="lazy">`
       : `<span class="no-preview">${escapeHtml(game.title)}</span>`;
@@ -492,6 +574,7 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
       `<h2><a href="${href}">${escapeHtml(game.title)}</a></h2>`,
       ...(game.description ? [`<p class="description">${escapeHtml(game.description)}</p>`] : []),
       controlsTable(game.controls, game.pointer, game.keymap),
+      ...(chapterNav ? [chapterNav] : []),
       `<p><a class="play" href="${href}">Play in the browser</a></p>`,
       "</div>",
       "</article>",
@@ -547,6 +630,7 @@ function showcaseCard(entry: ShowcaseEntry): string {
 /** One game's player page, <site>/<id>/index.html. */
 export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig, credits: boolean): string {
   const shape = config.viewport.policy === "fixed" ? config.viewport.logical : config.viewport.default;
+  const demoControls = playerDemoControls(game);
   const footer = [
     ...(credits ? ['Art credits and licenses: <a href="ATTRIBUTION.txt">ATTRIBUTION.txt</a>.'] : []),
     `Built with <a href="${escapeHtml(site.source ?? "https://github.com/lfkdsk/pocketjs-rpgkit")}">${escapeHtml(site.title)}</a> ` +
@@ -569,6 +653,7 @@ export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig
     "</div>",
     "</div>",
     '<p class="caption">Keys reach the game while it has focus: it takes focus when the page loads and whenever you click it.</p>',
+    ...(demoControls ? [demoControls] : []),
     padHtml(game.controls, game.keymap),
     '<section class="info">',
     ...(game.description ? [`<p class="description">${escapeHtml(game.description)}</p>`] : []),

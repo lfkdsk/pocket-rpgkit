@@ -65,7 +65,7 @@ export const SYSTEM_HALLS: HallDefinition[] = [
         "CURATOR: Leave the controls idle for ten seconds.",
         "The recorded tour visits every room at every rate.",
       ),
-      text("Press any key to take over; press L to rewind.", "SELECT hands control back to the tour."),
+      text("Press any key to take over; press L to rewind.", "SELECT opens chapters and map warp."),
       { op: "switch", id: "showcase.attract.explained", value: true },
     ],
   },

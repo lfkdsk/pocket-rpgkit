@@ -23,11 +23,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // optional fiber trace and KB6's kept-alive scene presentation. Moving
 // src/ui/audio out of the checkout and rebuilding still produces the same
 // default bundle: host playback remains absent until an app explicitly
-// imports the separate audio entry below. Rebasing PocketJS onto upstream
-// main adds 10,219 shared bytes to Sunstone and 10,217 to this fixture from
-// motion/MicroTS contracts, devtools, frame dispatch, and clock glue.
-const EXPECTED_SUNSTONE_BYTES = 578_252;
-const EXPECTED_AUDIO_FIXTURE_BYTES = 563_951;
+// imports the separate audio entry below. DEMO1's opt-in Sunstone hook and
+// KAU1's merged shared GameView seam, plus the PocketJS upstream rebase
+// (10,219 shared bytes from motion/MicroTS contracts, devtools, frame
+// dispatch and clock glue), bring the exact builds to the values below
+// without pulling the WAV driver into Sunstone.
+const EXPECTED_SUNSTONE_BYTES = 686_415;
+const EXPECTED_AUDIO_FIXTURE_BYTES = 566_875;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

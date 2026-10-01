@@ -20,8 +20,8 @@ the parts an RPG-Maker-style game needs without any specific game:
   colour theme, and `DialogBox` shows speaker portraits;
 - **attract mode** (`src/engine/attract.ts`) — after 10 idle seconds a
   recorded playthrough replays from a clean world; any button takes over
-  on that very frame, **L** rewinds 3 virtual seconds, **SELECT** hands
-  the session back to the demo. Demo and player input are one u16 stream,
+  on that very frame, **L** rewinds 3 virtual seconds, and **SELECT** hands
+  the session back to the demo (or opens the optional demo menu). Demo and player input are one u16 stream,
   so rewind undoes the player's moves exactly like the tape's. Runtime-only,
   bounded keyframes make a long-tape rewind fold only a short suffix;
 - **host adapters** (`src/host/`) — the `data.fs` save slot store and the
@@ -56,7 +56,7 @@ links each demonstration to its authoring source.
 | | |
 | --- | --- |
 | ![Sunstone attract takeover](tests/goldens/sunstone-attract.700.png) | ![Grown village, snow biome](tests/goldens/grow.2028.png) |
-| **`examples/sunstone`** — *The Sunstone of Bramble Hollow*, a three-map RPG (village → forest → cave: key chest, rune stone, thorn and iron gates, the relic). Idle for 10 s and it plays itself from a frozen 539-frame winning tape; press any button to take over mid-demo, **L** to rewind. | **`examples/grow`** — four settlements grow to the right from one seeded rule set (roads, homes, fields, residents) through grass, mud, sand and snow. Scrub the timeline (**L/R**, touch, or mouse drag) to any tick — each is a pure re-grow — **SQUARE** for a new seed, **CIRCLE** to walk into the finished village, which is played as a generated `rpgkit-project/v1` document. |
+| **`examples/sunstone`** — *The Sunstone of Bramble Hollow*, a three-map RPG (village → forest → cave: key chest, rune stone, thorn and iron gates, the relic). Idle for 10 s and it plays itself from a frozen 539-frame winning tape; press any button to take over mid-demo, **L** to rewind, or **SELECT** for chapters, map warp and autoplay speed. | **`examples/grow`** — four settlements grow to the right from one seeded rule set (roads, homes, fields, residents) through grass, mud, sand and snow. Scrub the timeline (**L/R**, touch, or mouse drag) to any tick — each is a pure re-grow — **SQUARE** for a new seed, **CIRCLE** to walk into the finished village, which is played as a generated `rpgkit-project/v1` document. |
 
 On the macOS desktop host (`bun run desktop sunstone`, `bun run desktop
 grow`; Metal, captured on an Apple M5 Pro):
@@ -955,6 +955,7 @@ pixel checks, and the Hz/determinism proofs).
 The published package exports the engine surface (`pocket-rpgkit`), the
 Solid components (`pocket-rpgkit/ui`), the opt-in WAV bridge
 (`pocket-rpgkit/ui/audio`), the battle UI kit (`pocket-rpgkit/ui/battle`),
+the demo controls (`pocket-rpgkit/ui/demo`),
 the host adapters (`pocket-rpgkit/host`), and the schema
 (`pocket-rpgkit/schema`). The
 in-repo examples import the sources relatively, because PocketJS's build
@@ -1035,6 +1036,95 @@ they never enter the `rpgkit-save/v1` envelope, so the save format is unchanged.
 Run `tools/kr2-quickjs-bench.sh` to measure short/100k-frame rewind latency and
 the periodic-capture spike in PocketJS's desktop QuickJS guest; scratch files
 default to `${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/kr2-quickjs`.
+
+### Demo controls (`pocket-rpgkit/ui/demo`)
+
+The optional demo entry adds a three-page overlay to `GameView`: start from a
+chapter, warp to any project map, or autoplay a chapter at 1×, 2× or 4×. It is
+separate from `pocket-rpgkit/ui`, so a game that does not import it does not
+bundle the menu, save decoder or demo runtime. **SELECT** opens it by default;
+left/right changes pages, up/down selects a row, **CIRCLE** activates it and
+**CROSS** closes it. The world folds zero reducer frames while the menu is
+open.
+
+```tsx
+import { GameView } from "pocket-rpgkit/ui";
+import { createDemo, type DemoOptions } from "pocket-rpgkit/ui/demo";
+
+const demoOptions: DemoOptions = {
+  chapters: [
+    {
+      id: "village",
+      title: "Village beginning",
+      snapshot: villageSaveCode, // SaveSnapshot is accepted too
+      tape: fullTape,
+    },
+    {
+      id: "cave",
+      title: "Cave gate",
+      snapshot: caveSaveCode,
+      tape: fullTape.slice(caveSourceOrigin),
+    },
+  ],
+  warp: {
+    spawns: {
+      village: { x: 9, y: 9, dir: "up" },
+      cave: { x: 9, y: 10, dir: "up" },
+    },
+  },
+  // openButton: BTN.SELECT,
+};
+
+mount(() => <GameView
+  project={project}
+  assets={GAME_ASSETS}
+  attractTape={fullTape}
+  demo={createDemo(demoOptions)}
+/>);
+```
+
+A chapter snapshot must be an ordinary validated safe-point `SaveSnapshot` or
+URL-safe save code. Its optional `tape` is the 60 Hz u16 button stream whose
+first mask follows that snapshot; the snapshot's `held` field seeds the first
+button edge. A bad code, invalid snapshot, missing map or unsafe landing is
+shown in the overlay and leaves the current session untouched. Autoplay speed
+changes how many session steps one host frame folds and renders only the last;
+the ordered input stream, takeover behavior, **L** rewind and terminal state do
+not change.
+
+The map page lists every `Project.maps` entry by display name, or every
+`ProjectShell.mapIndex` id. A configured spawn must be in bounds, terrain-
+standable and free of an authored event. Without one, the runtime picks the
+first such tile in row-major order. Warp acts like a transfer: it keeps the
+current switches, variables, self switches, items, gold and extension state,
+but starts a fresh visit to the destination map. The menu therefore warns that
+the retained story state may not make sense on the chosen map.
+
+When `demo` is enabled, the web page accepts these links:
+
+- `?chapter=<id>` — restore a chapter for live play;
+- `?map=<id>&x=<tile>&y=<tile>` — warp, with `x` and `y` supplied together;
+- `?autoplay=<id>&speed=2` — autoplay at speed `1`, `2` or `4`.
+
+`tools/web.ts` reads optional `chapters: [{ "id": "cave", "title": "Cave" }]`
+metadata from a game's `web.json` entry and places chapter links beneath its
+card. Before evaluating the game bundle, the web player exposes the supported
+query strings as `globalThis.__rpgkitBoot`; custom hosts and tests may inject
+the same object. Unknown parameters are ignored, while conflicting or invalid
+demo values become a visible error. Current PocketJS desktop hosts do not pass
+argv or environment variables into the guest, so desktop builds have the menu
+but no launch-parameter equivalent. This limitation does not affect web links,
+save points or replay determinism.
+
+On the web player page, the same chapter metadata renders as HTML buttons next
+to the game. Clicking one jumps the running game to that chapter **without
+reloading the page**: while `demo` is enabled the runtime registers
+`globalThis.__rpgkitDemo` with `jump(id)`, `warp(map, x, y)`,
+`autoplay(id, speed)` and `current()`, and the page calls it in place. The
+active chapter and autoplay speed stay highlighted, including after a jump
+made from the in-game menu. When the hook is absent (for example a game built
+without `demo`), the same buttons fall back to the `?chapter=` reload links
+above, so the metadata keeps working everywhere.
 
 Saves are FNV-checksummed envelopes over a safe-point snapshot (mover on a
 tile boundary, no modal, no parked request, no active scene). Hosts with `data.fs` write

@@ -17,6 +17,8 @@
       "pocket-rpgkit": ["./src/index.ts"],
       "pocket-rpgkit/engine": ["./src/engine/index.ts"],
       "pocket-rpgkit/ui": ["./src/ui/index.ts"],
+      "pocket-rpgkit/ui/battle": ["./src/ui/battle/index.ts"],
+      "pocket-rpgkit/ui/demo": ["./src/ui/demo/index.ts"],
       "pocket-rpgkit/host": ["./src/host/index.ts"]
     }
   },

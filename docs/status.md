@@ -72,6 +72,7 @@ The links point to where each feature is described in detail.
 | --- | --- | --- |
 | Save slots and save codes | Done | Slots use `data.fs` on desktop; the web falls back to save codes. Loaded snapshots are validated |
 | Attract mode | Done | Plays a tape after 10 idle seconds; any button takes over, **L** rewinds 3 virtual seconds, using bounded keyframes |
+| Demo controls and web deep links | Done | Opt-in chapter starts, safe map warp and 1×/2×/4× autoplay through [`pocket-rpgkit/ui/demo`](../README.md#demo-controls-pocket-rpgkituidemo); web supports chapter/map/autoplay query links and on-page chapter buttons that jump the running game without a reload, falling back to the links when the game has no demo hook. Desktop has the menu but no guest argv/environment launch bridge |
 | Byte-identical replays on every host and simulation rate | Done | No wall clock and no `Math.random` in the engine |
 
 ## Maps and resources

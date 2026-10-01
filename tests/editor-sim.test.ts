@@ -631,9 +631,10 @@ simDescribe("editor budget", () => {
     // and KS1's embedded command schema/read-only summaries: 608,486 B.
     // E3 intentionally adds the production GameView/session renderer to the
     // editor-only entry plus its debug adapter, and KAU1 adds the audio schema
-    // plus read-only audio command/condition summaries; measured total:
-    // 1,038,828 B. The separate Sunstone isolation gate proves games do
-    // not pay for it.
-    expect(js).toBeLessThan(1_050_000);
+    // plus read-only audio command/condition summaries. The PocketJS upstream
+    // rebase adds the same 10,219 shared bytes as Sunstone, and DEMO1's shared
+    // GameView demo seam adds a little more; measured total: 1,051,993 B. The
+    // separate Sunstone isolation gate proves games do not pay for it.
+    expect(js).toBeLessThan(1_060_000);
   });
 });

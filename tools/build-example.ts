@@ -71,7 +71,14 @@ async function buildExamples(wanted: string[]): Promise<void> {
     if (!existsSync(entry)) throw new Error(`build-example: missing ${entry}`);
     const gen = join(appDir(name), "gen-assets.ts");
     if (isFixture(name) && existsSync(gen)) await run([process.execPath, gen]);
-    await run([process.execPath, buildTs, entry, `--project-root=${root}`, `--outdir=${join(root, "dist")}`]);
+    await run([
+      process.execPath,
+      buildTs,
+      entry,
+      `--project-root=${root}`,
+      `--outdir=${join(root, "dist")}`,
+      `--inputs-file=${join(root, "dist", `${name}.inputs.json`)}`,
+    ]);
     if (name === "ui-theme" || name === "meadow") {
       for (const density of WEB_DENSITY_FIXTURES) {
         await run([

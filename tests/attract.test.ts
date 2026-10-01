@@ -484,6 +484,85 @@ describe("D1 — one published tape is complete-state portable across host rates
   });
 });
 
+describe("demo chapter origins and playback speed", () => {
+  test("an empty initial tape stays in live play until a chapter is loaded", () => {
+    const c = new AttractController(project, [], { hz: 60, idleFrames: 2 });
+    for (let frame = 0; frame < 10; frame++) c.step(0);
+    expect(c.status().phase).toBe("play");
+    c.step(BTN_SELECT);
+    expect(c.status().phase).toBe("play");
+
+    c.step(0); // release SELECT so loading does not inherit a transport edge
+    c.loadState(startSession(project, c.getSession()), 0, [0, 0], true, 2);
+    expect(c.status().phase).toBe("attract");
+    c.step(0);
+    expect(c.status().demoFrame).toBe(2);
+  });
+
+  test("1x, 2x, and 4x consume the same tape into byte-identical state", () => {
+    const tape = Array<number>(32).fill(0);
+    const terminal = ([1, 2, 4] as const).map((speed) => {
+      const c = controller(60, [], { endHoldFrames: 60_000 });
+      const origin = startSession(project, c.getSession());
+      origin.sw.switches["chapter.loaded"] = true;
+      origin.interp.sw = origin.sw;
+      c.loadState(origin, 0, tape, true, speed);
+      while (c.status().demoFrame < tape.length) c.step(0);
+      expect(c.getPlaybackSpeed()).toBe(speed);
+      expect(c.inputLog).toHaveLength(tape.length);
+      return c.state;
+    });
+    expect(terminal[1]).toEqual(terminal[0]);
+    expect(terminal[2]).toEqual(terminal[0]);
+  });
+
+  test("a loaded chapter is the clean loop and rewind origin", () => {
+    const c = new AttractController(project, [], {
+      hz: 60,
+      endHoldFrames: 60_000,
+      rewindSeconds: 1 / 60,
+    });
+    const origin = startSession(project, c.getSession());
+    origin.sw.variables["chapter"] = 2;
+    origin.interp.sw = origin.sw;
+    c.loadState(origin, BTN_RIGHT, [BTN_RIGHT, 0, BTN_UP], true);
+    const canonical = structuredClone(c.state);
+    expect(c.foldedMask()).toBe(BTN_RIGHT);
+
+    c.step(BTN_CROSS); // takeover gesture still folds tape[0]
+    c.step(BTN_LTRIGGER); // one-frame rewind returns to the chapter origin
+    expect(c.state).toEqual(canonical);
+    expect(c.foldedMask()).toBe(BTN_RIGHT);
+    expect(c.status().demoFrame).toBe(0);
+
+    c.startAttract();
+    c.step(0);
+    const oracle = new AttractController(project, [], { hz: 60 });
+    oracle.loadState(structuredClone(canonical), BTN_RIGHT, [BTN_RIGHT], true);
+    oracle.step(0);
+    expect(c.state).toEqual(oracle.state);
+  });
+
+  test("menu-consumed held input is synchronized without folding", () => {
+    const c = controller(60, Array<number>(8).fill(0));
+    c.startAttract();
+    c.syncLiveButtons(BTN_CROSS);
+    const before = c.state;
+    c.step(BTN_CROSS);
+    expect(c.status().phase).toBe("attract");
+    expect(c.state).not.toBe(before);
+    expect(c.status().demoFrame).toBe(1);
+  });
+
+  test("invalid speeds and tape masks are rejected before replacement", () => {
+    const c = controller(60, []);
+    const before = c.state;
+    expect(() => c.setPlaybackSpeed(3 as 1)).toThrow(/1, 2, or 4/);
+    expect(() => c.loadState(startSession(project, c.getSession()), 0, [0x10000], true)).toThrow(/u16/);
+    expect(c.state).toBe(before);
+  });
+});
+
 // --- D3 grown-world play mode ----------------------------------------------
 // The grow demo has no tape and never auto-attracts: attractEnabled:false,
 // startPlay() enters play directly, idle does nothing, SELECT invokes

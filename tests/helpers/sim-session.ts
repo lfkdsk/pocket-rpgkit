@@ -17,6 +17,8 @@ interface GameGlobals {
   ui?: unknown;
   __rpgSessionState?: SessionState;
   __rpgGameCamera?: CameraState;
+  __rpgkitBoot?: unknown;
+  __rpgkitDemo?: unknown;
   __rpgSimSessionToken?: object;
 }
 
@@ -34,6 +36,8 @@ const globals = globalThis as GameGlobals;
 export function resetGameGlobals(): void {
   delete globals.__rpgSessionState;
   delete globals.__rpgGameCamera;
+  delete globals.__rpgkitBoot;
+  delete globals.__rpgkitDemo;
   delete globals.__rpgSimSessionToken;
 }
 

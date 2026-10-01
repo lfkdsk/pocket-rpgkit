@@ -113,6 +113,7 @@ export function attractReadHoldSeconds(chars: number): number {
 }
 
 export type AttractPhase = "attract" | "play";
+export type AttractSpeed = 1 | 2 | 4;
 
 export interface AttractOptions {
   /** Virtual frames per second; seconds-based timings derive from it. */
@@ -248,8 +249,12 @@ export class AttractController {
   private readonly rewindFrames: number;
   private readonly keyframeIntervalFrames: number;
   private readonly keyframeMaxBytes: number;
-  private readonly attractEnabled: boolean;
+  private attractEnabled: boolean;
   private readonly onSelect?: () => void;
+  private tape: readonly number[];
+  private originState: SessionState | null = null;
+  private originHeld = 0;
+  private playbackSpeed: AttractSpeed = 1;
 
   state: SessionState;
   phase: AttractPhase = "play";
@@ -302,8 +307,9 @@ export class AttractController {
   loopReset = false;
   rewound = false;
 
-  constructor(project: ProjectSource, private readonly tape: readonly number[], opts: AttractOptions) {
+  constructor(project: ProjectSource, tape: readonly number[], opts: AttractOptions) {
     this.project = project;
+    this.tape = tape;
     this.hz = opts.hz ?? 60;
     this.attractEnabled = opts.attractEnabled ?? true;
     this.timelineHz = this.attractEnabled ? (opts.tapeHz ?? ATTRACT_TAPE_HZ) : this.hz;
@@ -421,6 +427,63 @@ export class AttractController {
     };
   }
 
+  /** Source steps folded per host frame while the tape owns input. Kept
+   * separate from status() so adding demo controls does not change the
+   * observable status shape of existing attract-mode games. */
+  getPlaybackSpeed(): AttractSpeed {
+    return this.playbackSpeed;
+  }
+
+  /** Change only presentation throughput. The reducer still receives the
+   * same ordered u16 stream, so a tape's terminal state is speed-invariant. */
+  setPlaybackSpeed(speed: AttractSpeed): void {
+    if (speed !== 1 && speed !== 2 && speed !== 4) {
+      throw new RangeError("attract: playback speed must be 1, 2, or 4");
+    }
+    this.playbackSpeed = speed;
+  }
+
+  /** Replace the clean origin used by chapter playback and rewind. Callers
+   * must pass a state produced by the ordinary validated restore path. */
+  loadState(
+    restored: SessionState,
+    held: number,
+    tape: readonly number[] = [],
+    autoplay = false,
+    speed: AttractSpeed = 1,
+  ): SessionState {
+    if (!Number.isInteger(held) || held < 0 || held > 0xffff) {
+      throw new RangeError("attract: held input must be a u16 button mask");
+    }
+    for (let i = 0; i < tape.length; i++) {
+      const mask = tape[i];
+      if (!Number.isInteger(mask) || mask! < 0 || mask! > 0xffff) {
+        throw new RangeError(`attract: tape[${i}] must be a u16 button mask`);
+      }
+    }
+    this.setPlaybackSpeed(speed);
+    acquireSessionMap(this.session, restored.mapId);
+    releaseSessionMapsExcept(this.session, [restored.mapId]);
+    const nextOrigin = deepClone(restored);
+    this.originState = nextOrigin;
+    this.originHeld = held >>> 0;
+    this.tape = [...tape];
+    this.attractEnabled = this.tape.length > 0;
+    this.resetTimeline(
+      autoplay && this.attractEnabled ? "attract" : "play",
+      deepClone(nextOrigin),
+      false,
+    );
+    return this.state;
+  }
+
+  /** Menu overlays consume raw buttons without folding a world frame. Keep
+   * transport-edge history aligned so closing a menu cannot look like a
+   * takeover or rewind press on the next frame. */
+  syncLiveButtons(mask: number): void {
+    this.lastLive = mask >>> 0;
+  }
+
   private result(): FoldResult {
     return { state: this.state, status: this.status() };
   }
@@ -448,17 +511,23 @@ export class AttractController {
     this.stage = 0;
   }
 
-  /** Fresh playthrough state and an empty unified input stream. The loop
-   *  reset and attract entry both go through here, so no folded residue
-   *  survives between plays. */
-  startAttract(): void {
-    this.loopReset = true;
-    this.phase = "attract";
+  private cleanOrigin(): SessionState {
+    if (!this.originState) return startSession(this.project, this.session);
+    acquireSessionMap(this.session, this.originState.mapId);
+    releaseSessionMapsExcept(this.session, [this.originState.mapId]);
+    return deepClone(this.originState);
+  }
+
+  private resetTimeline(phase: AttractPhase, origin: SessionState, loopReset: boolean): void {
+    this.loopReset = loopReset;
+    this.phase = phase;
     this.idle = 0;
     this.controlNotice = 0;
-    this.state = startSession(this.project, this.session);
+    this.rewindNotice = 0;
+    this.state = origin;
     this.logLength = 0;
-    this.lastFolded = 0;
+    this.lastFolded = this.originHeld;
+    this.lastLive = 0;
     this.demoFrame = 0;
     this.endHold = 0;
     this.resetDisplay();
@@ -471,6 +540,13 @@ export class AttractController {
     this.keyframeEvictions = 0;
     this.lastRefoldFrames = 0;
     this.lastRefoldStart = 0;
+  }
+
+  /** Fresh playthrough state and an empty unified input stream. The loop
+   *  reset and attract entry both go through here, so no folded residue
+   *  survives between plays. A loaded chapter becomes the clean origin. */
+  startAttract(): void {
+    this.resetTimeline("attract", this.cleanOrigin(), true);
   }
 
   /** Begin live play immediately from the current clean world (D3: the
@@ -617,9 +693,9 @@ export class AttractController {
       previous = keyframe.lastFolded;
       start = keyframe.timelineFrame;
     } else {
-      state = startSession(this.project, this.session);
+      state = this.cleanOrigin();
       worldAnimationTick = 0;
-      previous = 0;
+      previous = this.originHeld;
       start = 0;
     }
     let folded = 0;
@@ -666,7 +742,7 @@ export class AttractController {
     this.displayTicks = keyframe?.displayTicks ?? 0;
     this.pacingTicks = keyframe?.pacingTicks ?? 0;
     this.stage = keyframe?.stage ?? 0;
-    this.lastFolded = keyframe?.lastFolded ?? 0;
+    this.lastFolded = keyframe?.lastFolded ?? this.originHeld;
     this.firstDivergence = keyframe?.firstDivergence ?? Infinity;
     let exactReadHold = keyframe?.readHold ?? 0;
     for (let i = start; i < target; i++) {
@@ -822,8 +898,8 @@ export class AttractController {
       // (attractEnabled:false) there is no demo; the callback returns to
       // the growth/timeline screen instead.
       if (livePressed & BTN_SELECT) {
-        if (!this.attractEnabled && this.onSelect) {
-          this.onSelect();
+        if (!this.attractEnabled || this.tape.length === 0) {
+          if (this.onSelect) this.onSelect();
           return this.result();
         }
         if (this.firstDivergence === Infinity) {
@@ -839,7 +915,7 @@ export class AttractController {
 
       if (live === 0) {
         this.idle++;
-        if (this.attractEnabled && this.idle >= this.idleFrames) {
+        if (this.attractEnabled && this.tape.length > 0 && this.idle >= this.idleFrames) {
           // The idle frame that crosses the threshold starts attract from
           // a CLEAN world; it folds nothing itself, so attract frame 0 is
           // the next step.
@@ -882,7 +958,7 @@ export class AttractController {
   }
 
   private foldAttract(): void {
-    this.carry += this.timelineHz;
+    this.carry += this.timelineHz * this.playbackSpeed;
     while (this.phase === "attract" && this.carry >= this.hz) {
       this.carry -= this.hz;
       const beforeDemo = this.demoFrame;

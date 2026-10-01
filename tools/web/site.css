@@ -239,6 +239,48 @@ table.controls td { padding: 4px 0; color: var(--muted); }
   text-align: center;
 }
 
+.demo-controls {
+  max-width: 720px;
+  margin: 16px auto 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.demo-controls h2 { margin: 0 0 10px; font-size: 16px; }
+.demo-control-row {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.demo-control-row + .demo-control-row { margin-top: 9px; }
+.demo-control-row > span { padding-top: 5px; color: var(--muted); font-size: 13px; }
+.demo-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.demo-button {
+  display: inline-block;
+  padding: 4px 9px;
+  border: 1px solid #3a4352;
+  border-radius: 4px;
+  background: #1c212b;
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+}
+.demo-button:hover { border-color: var(--accent); color: #ffd98a; }
+.demo-button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.demo-speed { min-width: 42px; text-align: center; }
+.demo-help { margin: 9px 0 0; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 520px) {
+  .demo-control-row { grid-template-columns: 1fr; gap: 4px; }
+  .demo-control-row > span { padding-top: 0; }
+}
+
 .info {
   max-width: 720px;
   margin: 20px auto 0;

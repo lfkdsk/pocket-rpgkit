@@ -152,7 +152,7 @@ export function lobbyMap(halls: readonly HallDefinition[]): MapDef {
             prompt: "What would you like to know?",
             options: [
               { text: "How to explore", commands: [text("Walk onto a numbered door.", "In each room, talk to its glowing curator.")] },
-              { text: "Controls", commands: [text("DPAD walks. A confirms. B cancels.", "L rewinds. SELECT returns to the tour.")] },
+              { text: "Controls", commands: [text("DPAD walks. A confirms. B cancels.", "L rewinds. SELECT opens demo controls.")] },
               { text: "Begin", commands: [text("Every demonstration is safe to repeat.", "The return gate is beside each entrance.")] },
             ],
           },

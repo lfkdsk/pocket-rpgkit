@@ -8,6 +8,20 @@
       "description": "A walkable exhibition of the runtime: twelve focused halls demonstrate screen effects, map animation, movement, extensions, battles, shops, streamed maps, themes, saves and deterministic replay.",
       "featured": true,
       "viewport": "fixed",
+      "chapters": [
+        { "id": "showcase-screen-effects", "title": "1. Screen Effects" },
+        { "id": "showcase-map-animations", "title": "2. Map Animations" },
+        { "id": "showcase-runtime-visuals", "title": "3. Runtime Appearance and Layers" },
+        { "id": "showcase-movement-controls", "title": "4. Movement Controls & Routes" },
+        { "id": "showcase-extensions", "title": "5. Extensions & Live Choices" },
+        { "id": "showcase-battle", "title": "6. Battle Processing" },
+        { "id": "showcase-shop", "title": "7. Buy, Sell & Stock" },
+        { "id": "hall-streaming", "title": "8. Streamed World" },
+        { "id": "hall-theme", "title": "9. Themes & Portraits" },
+        { "id": "showcase-input-and-idle", "title": "10. Input Locks & World Idle" },
+        { "id": "hall-save", "title": "11. Saves & Save Codes" },
+        { "id": "hall-attract", "title": "12. Attract Tour & Rewind" }
+      ],
       "features": [
         "1. Screen Effects — screenFade / screenTint / screenFlash / screenShake / camera / balloon / screenBackdrop",
         "2. Map Animations — mapAnim / stopAnim",
@@ -41,7 +55,7 @@
         },
         {
           "button": "SELECT",
-          "action": "Return to the automatic tour"
+          "action": "Demo menu"
         }
       ],
       "rasterDensity": 2
@@ -79,6 +93,23 @@
       "description": "A three-map adventure through a village, a forest and a cave. Leave it alone for 10 seconds and it plays itself; press any key to take over.",
       "preview": "tests/goldens/sunstone-attract.699.png",
       "viewport": "fixed",
+      "chapters": [
+        {
+          "id": "village",
+          "title": "Village",
+          "autoplay": true
+        },
+        {
+          "id": "forest",
+          "title": "Forest",
+          "autoplay": true
+        },
+        {
+          "id": "cave",
+          "title": "Cave",
+          "autoplay": true
+        }
+      ],
       "controls": [
         {
           "button": "DPAD",
@@ -94,7 +125,7 @@
         },
         {
           "button": "SELECT",
-          "action": "Hand the game back to the demo"
+          "action": "Demo menu"
         }
       ],
       "rasterDensity": 2

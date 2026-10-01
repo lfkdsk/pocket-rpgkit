@@ -11,6 +11,7 @@ import { simulationHz } from "@pocketjs/framework/clock";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { createOsk } from "@pocketjs/framework/osk";
 import { GameView } from "../../src/ui/GameView.tsx";
+import { createDemo } from "../../src/ui/demo/index.ts";
 import { SaveMenu } from "../../src/ui/SaveMenu.tsx";
 import type { MenuState } from "../../src/engine/save-menu.ts";
 import type { SessionState } from "../../src/engine/session.ts";
@@ -27,6 +28,7 @@ import { SHOWCASE_EXTENSIONS } from "./extensions.ts";
 import { showcaseBattleRules } from "./showcase-battle-rules.ts";
 import { ShowcaseBattleScene } from "./showcase-battle.tsx";
 import { SHOWCASE_TOUR_RUNS } from "./demo-tape.ts";
+import { createShowcaseDemo } from "./demo-chapters.ts";
 
 const MIDNIGHT: Partial<UiTheme> = {
   border: "#53c8e8",
@@ -67,6 +69,7 @@ function ShowcaseApp() {
     extensions: SHOWCASE_EXTENSIONS,
     battle: showcaseBattleRules,
   });
+  const demo = createDemo(createShowcaseDemo(project, saveSession));
   const [sunrise, setSunrise] = createSignal(false);
   const [menu, setMenu] = createSignal<MenuState>({ kind: "closed" });
   const [saveCode, setSaveCode] = createSignal("");
@@ -84,6 +87,13 @@ function ShowcaseApp() {
     setSunrise(state.sw.switches["showcase.theme.alt"] === true);
     const raw = state.sw.variables["showcase.save.request"];
     const request = typeof raw === "number" ? raw : 0;
+    if (request < handledRequest) {
+      handledRequest = request;
+      pendingRequest = request;
+      saveDemoFrame = -1;
+      setMenu({ kind: "closed" });
+      setSaveCode("");
+    }
     if (request > handledRequest) pendingRequest = request;
 
     if (pendingRequest > handledRequest && canSave(state.move, state.interp, state.scene)) {
@@ -124,6 +134,7 @@ function ShowcaseApp() {
         battle={showcaseBattleRules}
         battleScene={ShowcaseBattleScene}
         attractTape={loadAttractTape(SHOWCASE_TOUR_RUNS).masks}
+        demo={demo}
         theme={theme()}
         faces={{ CURATOR: SHOWCASE_ART.face }}
         onStreamStats={(layer, stats) => { diagnostics.stream[layer] = stats; }}

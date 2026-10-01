@@ -8,6 +8,7 @@ import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { fnv1a } from "../vendor/pocketjs/hosts/sim/sim.ts";
 import type { SessionState } from "../src/engine/session.ts";
+import type { RpgkitDemoHook } from "../src/ui/demo/index.ts";
 import { SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 import {
@@ -70,8 +71,8 @@ async function golden(name: string, frame: Uint8Array): Promise<string> {
 class SimDriver {
   private constructor(readonly world: BoundGameWorld) {}
 
-  static async boot(): Promise<SimDriver> {
-    const driver = new SimDriver(await bootGameWorld(appBundle("showcase"), 60));
+  static async boot(extraGlobals?: Record<string, unknown>): Promise<SimDriver> {
+    const driver = new SimDriver(await bootGameWorld(appBundle("showcase"), 60, extraGlobals));
     for (let frame = 0; frame < 8; frame++) driver.step();
     return driver;
   }
@@ -150,6 +151,17 @@ async function pinned(name: keyof typeof pins, frame: Uint8Array): Promise<void>
 }
 
 simDescribe("showcase rendered feature gallery", () => {
+  test("a chapter boot restores the selected showroom entrance", async () => {
+    const d = await SimDriver.boot({ __rpgkitBoot: { chapter: "hall-streaming" } });
+    expect(d.state).toMatchObject({
+      mapId: "hall-streaming",
+      move: { tx: 2, ty: 12, px: 32, py: 192, facing: 2 },
+      sw: { gold: 80 },
+    });
+    const hook = (globalThis as { __rpgkitDemo?: RpgkitDemoHook }).__rpgkitDemo!;
+    expect(hook.current()).toMatchObject({ chapter: "hall-streaming", map: "hall-streaming", autoplay: false });
+  });
+
   test("lobby has two portal rows, a guide, a directory sign, and a 16x32 player", async () => {
     const d = await SimDriver.boot();
     const frame = d.frame();

@@ -70,7 +70,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // (2,191), devtools (2,163), frame dispatch (741), and clock/contract glue
 // (490). The exact combined size is re-measured after every shared-path
 // change.
-const EXPECTED_BYTES = 578_252;
+// Sunstone's opt-in demo configuration, three chapter save codes and live
+// page hook combine with KAU1's shared audio/effects state path. Demo and
+// audio isolation are pinned separately; the identifiers below continue to
+// prove that the Sunstone bundle does not pull in battle UI.
+const EXPECTED_BYTES = 686_415;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

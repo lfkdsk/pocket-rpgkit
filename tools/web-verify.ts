@@ -189,7 +189,9 @@ async function main(): Promise<void> {
   const chrome = await launchChrome(profile);
   const cdp = await Cdp.connect(chrome.ws);
   let phase = "startup";
+  let loadEvents = 0;
 
+  cdp.on("Page.loadEventFired", () => { loadEvents++; });
   cdp.on("Runtime.consoleAPICalled", (p) => {
     if (p.type === "error" || p.type === "assert") {
       consoleErrors.push(`[${phase}] console.${p.type}: ${p.args.map((a: any) => a.value ?? a.description).join(" ")}`);
@@ -298,7 +300,7 @@ async function main(): Promise<void> {
     const target = (await frames()) + count;
     await waitFor(`frame ${target}`, `__pocketPlayer.frames >= ${target}`, count * 50 + 5_000);
   };
-  const VK: Record<string, number> = { ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Enter: 13, KeyZ: 90, KeyL: 76 };
+  const VK: Record<string, number> = { ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Enter: 13, KeyZ: 90, KeyL: 76, ShiftLeft: 16 };
   const key = (type: "keyDown" | "keyUp", code: string) =>
     cdp.send("Input.dispatchKeyEvent", { type, code, key: code.replace(/^Key/, "").toLowerCase().replace(/^arrow/, "Arrow"), windowsVirtualKeyCode: VK[code] ?? 0 });
   const holdKey = async (code: string, count: number) => {
@@ -306,6 +308,23 @@ async function main(): Promise<void> {
     await waitFrames(count);
     await key("keyUp", code);
   };
+  const clickElement = async (selector: string) => {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: "center" })`);
+    await sleep(50);
+    const point = await toClientOf(selector);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+  };
+  const installNoReloadSentinel = () => evaluate(`globalThis.__demoClickSentinel = {
+    player: globalThis.__pocketPlayer,
+    canvas: document.getElementById("screen"),
+    frames: globalThis.__pocketPlayer.frames,
+  }`);
+  const noReloadSentinel = () => evaluate<{ stable: boolean; advanced: boolean }>(`({
+    stable: globalThis.__demoClickSentinel?.player === globalThis.__pocketPlayer &&
+      globalThis.__demoClickSentinel?.canvas === document.getElementById("screen"),
+    advanced: globalThis.__pocketPlayer.frames > globalThis.__demoClickSentinel?.frames,
+  })`);
   /** Logical game pixel -> page CSS pixel, from the canvas rectangle. */
   const toClient = async (x: number, y: number) =>
     evaluate<{ x: number; y: number }>(`(() => {
@@ -363,6 +382,30 @@ async function main(): Promise<void> {
     if (games.some((g) => g.id === "showcase")) {
       await openGame(rootBase, "showcase");
       await checkRuns("showcase");
+      const showcaseLoads = loadEvents;
+      const showcaseErrors = consoleErrors.length;
+      await installNoReloadSentinel();
+      await clickElement('[data-demo-chapter="hall-streaming"]');
+      await waitFor("showcase HTML chapter jump", `__rpgSessionState.mapId === "hall-streaming" &&
+        __rpgSessionState.move.tx === 2 && __rpgSessionState.move.ty === 12 &&
+        document.querySelector('[data-demo-chapter="hall-streaming"]').getAttribute("aria-current") === "true"`);
+      const showcaseStable = await noReloadSentinel();
+      const showcaseCurrent = await evaluate<string[]>(`[...document.querySelectorAll('[data-demo-chapter][aria-current="true"]')].map((button) => button.dataset.demoChapter)`);
+      expect(
+        "showcase: page chapter button jumps without reload",
+        showcaseStable.stable && showcaseStable.advanced && loadEvents === showcaseLoads && showcaseCurrent.join() === "hall-streaming",
+        `stable ${showcaseStable.stable}, frames advanced ${showcaseStable.advanced}, loads ${showcaseLoads} -> ${loadEvents}, current ${showcaseCurrent.join()}`,
+      );
+      expect(
+        "showcase: page chapter jump has no console error",
+        consoleErrors.length === showcaseErrors,
+        `${consoleErrors.length - showcaseErrors} new error(s)`,
+      );
+      await screenshot("showcase-page-controls", true);
+
+      // Reload once after the no-navigation assertion so the pre-existing
+      // walk-through still starts in the authored lobby.
+      await openGame(rootBase, "showcase");
       type ShowcasePosition = { mapId: string; tx: number; ty: number; moving: boolean; modal: string | null };
       const showcasePosition = () => evaluate<ShowcasePosition>(`(({ mapId, move, interp }) => ({
         mapId, tx: move.tx, ty: move.ty, moving: move.moving, modal: interp.modal?.kind ?? null,
@@ -461,6 +504,69 @@ async function main(): Promise<void> {
     if (games.some((g) => g.id === "sunstone")) {
       await openGame(rootBase, "sunstone");
       await checkRuns("sunstone");
+      const sunstoneLoads = loadEvents;
+      const sunstoneErrors = consoleErrors.length;
+      await installNoReloadSentinel();
+      await clickElement('[data-demo-chapter="cave"]');
+      await waitFor("sunstone HTML chapter jump", `__rpgSessionState.mapId === "cave" &&
+        __rpgSessionState.move.tx === 9 && __rpgSessionState.move.ty === 11 &&
+        __rpgSessionState.sw.switches["rune-lit"] === true &&
+        __rpgSessionState.sw.items["thorn-key"] === 1 &&
+        document.querySelector('[data-demo-chapter="cave"]').getAttribute("aria-current") === "true"`);
+
+      // The in-game menu shares the same runtime. The HTML highlight must
+      // follow a menu-driven Cave -> Forest jump, not just its own click.
+      await evaluate(`document.getElementById("stage").focus()`);
+      await holdKey("ShiftLeft", 2);
+      await holdKey("ArrowUp", 2);
+      await holdKey("KeyZ", 2);
+      await waitFor("in-game chapter highlight", `__rpgSessionState.mapId === "forest" &&
+        document.querySelector('[data-demo-chapter="forest"]').getAttribute("aria-current") === "true"`);
+
+      const beforeFastFrame = await evaluate<number>("__rpgSessionState.frame");
+      await clickElement('[data-demo-speed="4"]');
+      await waitFor("4x page autoplay", `globalThis.__rpgkitDemo?.current().chapter === "forest" &&
+        globalThis.__rpgkitDemo?.current().autoplay === true &&
+        globalThis.__rpgkitDemo?.current().speed === 4 &&
+        document.querySelector('[data-demo-speed="4"]').getAttribute("aria-pressed") === "true"`);
+      await waitFrames(2);
+      const afterFastFrame = await evaluate<number>("__rpgSessionState.frame");
+      const sunstoneStable = await noReloadSentinel();
+      const sunstoneCurrent = await evaluate<string[]>(`[...document.querySelectorAll('[data-demo-chapter][aria-current="true"]')].map((button) => button.dataset.demoChapter)`);
+      expect(
+        "sunstone: page controls and in-game menu stay synchronized without reload",
+        sunstoneStable.stable && sunstoneStable.advanced && loadEvents === sunstoneLoads && sunstoneCurrent.join() === "forest",
+        `stable ${sunstoneStable.stable}, frames advanced ${sunstoneStable.advanced}, loads ${sunstoneLoads} -> ${loadEvents}, current ${sunstoneCurrent.join()}`,
+      );
+      expect(
+        "sunstone: 4x page autoplay advances the chapter tape",
+        afterFastFrame - beforeFastFrame >= 4,
+        `reducer frame ${beforeFastFrame} -> ${afterFastFrame}`,
+      );
+      expect(
+        "sunstone: page demo controls have no console error",
+        consoleErrors.length === sunstoneErrors,
+        `${consoleErrors.length - sunstoneErrors} new error(s)`,
+      );
+      await screenshot("sunstone-page-controls", true);
+
+      // Progressive enhancement: without a guest hook, the same anchor
+      // performs its documented query reload and the new game consumes it.
+      const fallbackLoads = loadEvents;
+      await evaluate(`globalThis.__rpgkitDemo = undefined`);
+      await clickElement('[data-demo-chapter="village"]');
+      await waitFor("chapter link reload fallback", `location.search === "?chapter=village" &&
+        globalThis.__pocketPlayer?.state === "running" && __rpgSessionState?.mapId === "village" &&
+        globalThis.__rpgkitDemo?.current().chapter === "village"`);
+      const fallbackHref = await evaluate<string>("location.href");
+      expect(
+        "sunstone: missing hook falls back to a chapter reload",
+        loadEvents > fallbackLoads,
+        `loads ${fallbackLoads} -> ${loadEvents}, ${fallbackHref}`,
+      );
+
+      // Start the original attract/takeover checks from a fresh default URL.
+      await openGame(rootBase, "sunstone");
       await canvasShot("sunstone-start");
       const pos = () =>
         evaluate<{ px: number; py: number; mapId: string; modal: boolean }>(

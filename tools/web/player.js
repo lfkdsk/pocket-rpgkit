@@ -45,6 +45,7 @@ import {
   __packTouchWide,
   createTouchHitFacts,
 } from "../../vendor/pocketjs/framework/src/touch.ts";
+import { rpgkitBootFromSearch } from "./boot.ts";
 import { fitViewport } from "./fit.ts";
 import { BTN } from "./keys.ts";
 
@@ -194,6 +195,7 @@ class Player {
     this.bindKeys();
     this.bindPointer();
     this.bindPad();
+    this.bindDemoControls();
   }
 
   async boot() {
@@ -219,6 +221,8 @@ class Player {
     globalThis.__pak = pak;
     globalThis.__simHz = config.simHz ?? 60;
     globalThis.__pocketApp = config.app;
+    globalThis.__rpgkitBoot = rpgkitBootFromSearch(location.search);
+    globalThis.__rpgkitDemo = undefined;
     globalThis.frame = undefined;
     new Function(`${source}\n//# sourceURL=${config.app}.js`)();
     if (typeof globalThis.frame !== "function") {
@@ -300,6 +304,7 @@ class Player {
     this.frameFn(this.buttons(), ANALOG_CENTER, packed, hits);
     this.wasm.tick();
     this.frames++;
+    this.syncDemoControls();
   }
 
   paint() {
@@ -468,6 +473,97 @@ class Player {
       element.addEventListener("lostpointercapture", release);
       element.addEventListener("contextmenu", (event) => event.preventDefault());
     }
+  }
+
+  // ---- HTML demo controls ------------------------------------------------
+
+  demoHook() {
+    const hook = globalThis.__rpgkitDemo;
+    return hook && typeof hook.jump === "function" && typeof hook.autoplay === "function" && typeof hook.current === "function"
+      ? hook
+      : null;
+  }
+
+  replaceDemoQuery(values) {
+    const url = new URL(location.href);
+    url.search = "";
+    for (const [key, value] of Object.entries(values)) url.searchParams.set(key, String(value));
+    history.replaceState(history.state, "", url);
+  }
+
+  syncDemoControls() {
+    const root = document.querySelector("[data-demo-controls]");
+    if (!root) return;
+    const hook = this.demoHook();
+    let current = null;
+    if (hook) {
+      try {
+        current = hook.current();
+      } catch {
+        current = null;
+      }
+    }
+    const boot = rpgkitBootFromSearch(location.search);
+    const chapter = typeof current?.chapter === "string"
+      ? current.chapter
+      : typeof boot.chapter === "string"
+        ? boot.chapter
+        : typeof boot.autoplay === "string" ? boot.autoplay : null;
+    const speed = current?.speed ?? (boot.speed === "2" ? 2 : boot.speed === "4" ? 4 : 1);
+    root.dataset.hook = hook ? "ready" : "fallback";
+    root.dataset.chapter = chapter ?? "";
+    root.dataset.speed = String(speed);
+    for (const button of root.querySelectorAll("[data-demo-chapter]")) {
+      const active = button.dataset.demoChapter === chapter;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+      if (active) button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
+    }
+    const activeChapter = root.querySelector(`[data-demo-chapter="${CSS.escape(chapter ?? "")}"][data-demo-autoplay="true"]`);
+    const fallbackChapter = activeChapter?.dataset.demoChapter ?? root.querySelector('[data-demo-chapter][data-demo-autoplay="true"]')?.dataset.demoChapter;
+    for (const button of root.querySelectorAll("[data-demo-speed]")) {
+      const active = Number(button.dataset.demoSpeed) === speed;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+      if (fallbackChapter) {
+        button.href = `?${new URLSearchParams({ autoplay: fallbackChapter, speed: button.dataset.demoSpeed })}`;
+      }
+    }
+  }
+
+  bindDemoControls() {
+    const root = document.querySelector("[data-demo-controls]");
+    if (!root) return;
+    for (const button of root.querySelectorAll("[data-demo-chapter]")) {
+      button.addEventListener("click", (event) => {
+        const hook = this.demoHook();
+        if (!hook) return;
+        event.preventDefault();
+        const id = button.dataset.demoChapter;
+        hook.jump(id);
+        this.replaceDemoQuery({ chapter: id });
+        this.syncDemoControls();
+      });
+    }
+    for (const button of root.querySelectorAll("[data-demo-speed]")) {
+      button.addEventListener("click", (event) => {
+        const hook = this.demoHook();
+        if (!hook) return;
+        const current = hook.current();
+        const currentButton = current.chapter
+          ? root.querySelector(`[data-demo-chapter="${CSS.escape(current.chapter)}"][data-demo-autoplay="true"]`)
+          : null;
+        const id = currentButton?.dataset.demoChapter ?? root.querySelector('[data-demo-chapter][data-demo-autoplay="true"]')?.dataset.demoChapter;
+        if (!id) return;
+        event.preventDefault();
+        const speed = Number(button.dataset.demoSpeed);
+        hook.autoplay(id, speed);
+        this.replaceDemoQuery({ autoplay: id, speed });
+        this.syncDemoControls();
+      });
+    }
+    this.syncDemoControls();
   }
 
   // ---- sizing -------------------------------------------------------------

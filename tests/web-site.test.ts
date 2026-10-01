@@ -21,6 +21,7 @@ import {
   type WebGame,
 } from "../tools/web.ts";
 import { fitViewport, type ViewportConfig } from "../tools/web/fit.ts";
+import { rpgkitBootFromSearch } from "../tools/web/boot.ts";
 import { verifyPlanHash } from "../vendor/pocketjs/framework/src/manifest/plan.ts";
 import { BTN, KEYMAP, keyMasks, keysFor, withKeys } from "../tools/web/keys.ts";
 
@@ -85,6 +86,7 @@ describe("games", () => {
     expect(resolveGame(KIT_ROOT, { title: "Pocket RPG Kit" }, "meadow").title).toBe("Mini Meadow");
     expect(game.description).toBe("");
     expect(game.preview).toBeUndefined();
+    expect(game.chapters).toEqual([]);
     expect(game.controls.map((c) => c.button)).toEqual(["DPAD", "CIRCLE", "CROSS"]);
   });
 
@@ -99,6 +101,16 @@ describe("games", () => {
     expect(parse({ games: { meadow: { controls: [{ button: "TURBO", action: "x" }] } } })).toThrow(/known button/);
     expect(parse({ games: { meadow: { keys: { KeyA: "TURBO" } } } })).toThrow(/not a button/);
     expect(parse({ games: { meadow: { viewport: "stretch" } } })).toThrow(/"fixed" or "dynamic"/);
+    expect(parse({ games: { meadow: { chapters: {} } } })).toThrow(/chapters is a list/);
+    expect(parse({ games: { meadow: { chapters: [null] } } })).toThrow(/chapters\[0\] is an object/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "bad/id", title: "Bad" }] } } })).toThrow(/usable chapter id/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "  " }] } } })).toThrow(/non-empty text/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "One" }, { id: "intro", title: "Again" }] } } })).toThrow(/duplicate id/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", autoplay: "yes" }] } } })).toThrow(/autoplay is a boolean/);
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction" }] } } })).not.toThrow();
+    expect(parse({ games: { meadow: { chapters: [{ id: "intro", title: "Introduction", autoplay: true }] } } })()).toEqual({
+      games: { meadow: { chapters: [{ id: "intro", title: "Introduction", autoplay: true }] } },
+    });
     expect(parse({ games: { meadow: { features: "one room" } } })).toThrow(/features is a list of text/);
     expect(parse({ games: { meadow: { features: ["one room", 2] } } })).toThrow(/features is a list of text/);
     expect(parse({ games: { meadow: { featured: "yes" } } })).toThrow(/featured is a boolean/);
@@ -142,6 +154,20 @@ describe("pages", () => {
     }
     for (const url of urls(html)) expect(url.startsWith("/") || url.startsWith("./..")).toBe(false);
     expect(urls(html)).toContain("site.css");
+  });
+
+  test("chapter links stay under their game and escape their labels", () => {
+    const sunstone = games.find((game) => game.id === "sunstone")!;
+    expect(sunstone.chapters.map(({ id }) => id)).toEqual(["village", "forest", "cave"]);
+    expect(sunstone.controls.find(({ button }) => button === "SELECT")?.action).toBe("Demo menu");
+    const escaped = {
+      ...sunstone,
+      chapters: [{ id: "village", title: "Village & <home>" }],
+    };
+    const html = renderLanding(site, [{ game: escaped }, { game: games.find((game) => game.id === "meadow")! }]);
+    expect(html).toContain('href="sunstone/?chapter=village">Village &amp; &lt;home&gt;</a>');
+    expect(html).not.toContain('href="?chapter=');
+    expect(html.match(/class="chapters"/g)).toHaveLength(1);
   });
 
   test("showcase entries are cards linked to their own site, after featured local games", () => {
@@ -214,12 +240,52 @@ describe("pages", () => {
     }
   });
 
+  test("player pages expose progressive chapter and autoplay controls", () => {
+    const sunstone = games.find((game) => game.id === "sunstone")!;
+    expect(sunstone.chapters).toEqual([
+      { id: "village", title: "Village", autoplay: true },
+      { id: "forest", title: "Forest", autoplay: true },
+      { id: "cave", title: "Cave", autoplay: true },
+    ]);
+    const html = renderPlayer(site, sunstone, playerConfig(sunstone), true);
+    expect(html.match(/data-demo-chapter=/g)).toHaveLength(3);
+    expect(html.match(/data-demo-speed=/g)).toHaveLength(3);
+    expect(html).toContain('data-demo-chapter="cave" data-demo-autoplay="true" href="?chapter=cave"');
+    expect(html).toContain('data-demo-speed="4" href="?autoplay=village&amp;speed=4"');
+    expect(html).toContain('role="button" aria-pressed="false"');
+
+    const meadow = games.find((game) => game.id === "meadow")!;
+    expect(renderPlayer(site, meadow, playerConfig(meadow), true)).not.toContain("data-demo-controls");
+
+    const showcase = games.find((game) => game.id === "showcase")!;
+    expect(showcase.chapters.map(({ id }) => id)).toEqual([
+      "showcase-screen-effects",
+      "showcase-map-animations",
+      "showcase-runtime-visuals",
+      "showcase-movement-controls",
+      "showcase-extensions",
+      "showcase-battle",
+      "showcase-shop",
+      "hall-streaming",
+      "hall-theme",
+      "showcase-input-and-idle",
+      "hall-save",
+      "hall-attract",
+    ]);
+    expect(showcase.controls.find(({ button }) => button === "SELECT")?.action).toBe("Demo menu");
+    const showcaseHtml = renderPlayer(site, showcase, playerConfig(showcase), true);
+    expect(showcaseHtml.match(/data-demo-chapter=/g)).toHaveLength(12);
+    expect(showcaseHtml).toContain('data-demo-chapter="hall-streaming"');
+    expect(showcaseHtml).not.toContain("data-demo-speed=");
+  });
+
   test("text is escaped and the settings cannot close their script tag", () => {
     const game = {
       ...games[0]!,
       title: "<b>A&B</b>",
       description: '"</script>"',
       features: ["One & two", "<script>three</script>"],
+      chapters: [{ id: "escaped", title: "Chapter <one>", autoplay: false }],
     };
     const html = renderPlayer(site, game, { ...playerConfig(game), app: "</script><x>" }, false);
     expect(html).toContain("&lt;b&gt;A&amp;B&lt;/b&gt;");
@@ -227,6 +293,7 @@ describe("pages", () => {
     expect(html).toContain("<ol class=\"features\">");
     expect(html).toContain("<li>One &amp; two</li>");
     expect(html).toContain("<li>&lt;script&gt;three&lt;/script&gt;</li>");
+    expect(html).toContain(">Chapter &lt;one&gt;</a>");
     expect(html.match(/<\/script>/g)!.length).toBe(2);
     expect(html).not.toContain("ATTRIBUTION.txt");
   });
@@ -237,6 +304,19 @@ describe("pages", () => {
     expect(html).toContain("<kbd>←</kbd> <kbd>→</kbd></th><td>Step the timeline");
     expect(html).toContain("<kbd>A</kbd> <kbd>Enter</kbd> <kbd>Z</kbd></th><td>Walk into the finished village");
     expect(html).toContain('data-button="TRIANGLE">X</button>');
+  });
+});
+
+describe("boot query", () => {
+  test("keeps the supported deep-link values as strings", () => {
+    expect(rpgkitBootFromSearch("?chapter=forest")).toEqual({ chapter: "forest" });
+    expect(rpgkitBootFromSearch("?map=village&x=&y=12")).toEqual({ map: "village", x: "", y: "12" });
+    expect(rpgkitBootFromSearch("?autoplay=intro&speed=2")).toEqual({ autoplay: "intro", speed: "2" });
+  });
+
+  test("ignores unknown keys and treats decoded text only as data", () => {
+    expect(rpgkitBootFromSearch("?unknown=x&__proto__=bad")).toEqual({});
+    expect(rpgkitBootFromSearch("?chapter=%3C%2Fscript%3E&chapter=second")).toEqual({ chapter: "</script>" });
   });
 });
 

@@ -756,7 +756,7 @@
                           "op": "text",
                           "lines": [
                             "DPAD walks. A confirms. B cancels.",
-                            "L rewinds. SELECT returns to the tour."
+                            "L rewinds. SELECT opens demo controls."
                           ]
                         }
                       ]
@@ -10401,7 +10401,7 @@
                   "op": "text",
                   "lines": [
                     "Press any key to take over; press L to rewind.",
-                    "SELECT hands control back to the tour."
+                    "SELECT opens chapters and map warp."
                   ]
                 },
                 {

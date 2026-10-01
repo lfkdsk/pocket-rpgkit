@@ -5,6 +5,9 @@ Walk onto a numbered lobby portal, read the room label, then talk to its
 curator. Every demonstration can be triggered again; the glowing pad beside
 the entrance returns to the lobby.
 
+Press **SELECT** to open demo controls. Each hall is also a validated chapter
+entry, so the web player can jump straight to any showroom without reloading.
+
 | Room | What it demonstrates | Authoring source |
 | --- | --- | --- |
 | 1. Screen Effects | Fade, named tints, flash, shake, camera, balloons, backdrop | [`halls/presentation.ts`](halls/presentation.ts) |

@@ -99,6 +99,7 @@ import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChun
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
 import { startupProfileMark } from "../startup-profile.ts";
 import { frameProfileMark } from "../frame-profile.ts";
+import type { GameViewDemoConfig } from "./demo-contract.ts";
 
 type Sprites = Record<string, SpriteDef>;
 
@@ -616,6 +617,9 @@ export interface GameViewProps {
   /** One u16 button mask per 60 Hz source frame (engine/attract-tape.ts).
    *  Present: attract/takeover/rewind drive the fold. Absent: live play. */
   attractTape?: readonly number[];
+  /** Opt-in demo transport/menu runtime. Kept behind a factory so the base
+   * GameView has no dependency on a concrete ui/demo implementation. */
+  demo?: GameViewDemoConfig;
   /** DialogBox colours (ui/theme.ts); missing keys keep the kit default. */
   theme?: Partial<UiTheme>;
   /** DialogBox speaker portraits: NAME -> 64x64 image src. */
@@ -689,8 +693,8 @@ export function GameView(props: GameViewProps) {
   const hz = simulationHz();
   // The controller folds the published 60 Hz tape on its source timeline
   // and maps each host frame onto that timeline.
-  const attract = props.attractTape
-    ? new AttractController(project, [...props.attractTape], {
+  const attract = props.attractTape !== undefined || props.demo !== undefined
+    ? new AttractController(project, [...(props.attractTape ?? [])], {
         hz,
         maps: props.maps,
         extensions: props.extensions,
@@ -708,6 +712,18 @@ export function GameView(props: GameViewProps) {
       });
   startupProfileMark("game-view:session");
   let state: SessionState = attract ? attract.state : startSession(project, session);
+  const demoRuntime = props.demo
+    ? props.demo.create({
+        project,
+        session,
+        attract: attract!,
+        getState: () => state,
+      })
+    : null;
+  // A demo may synchronously load its initial validated chapter in create().
+  // Make that controller state the render boot state before deriving any map,
+  // camera, actor or scene model below.
+  if (demoRuntime) state = attract!.state;
   const readState = (): Readonly<SessionState> => state;
   startupProfileMark("game-view:state");
   globalThis.__rpgSessionState = state;
@@ -752,7 +768,7 @@ export function GameView(props: GameViewProps) {
   const [pose, setPose] = createSignal<WalkPose>(walkPose(state.move.phase));
   const [facing, setFacing] = createSignal<Facing>(state.move.facing);
   const [modal, setModal] = createSignal<Modal | null>(null);
-  const [demo, setDemo] = createSignal<AttractStatus | null>(null);
+  const [demo, setDemo] = createSignal<AttractStatus | null>(attract?.status() ?? null);
   const initialScene = cloneScene(state.scene);
   const [sceneActive, setSceneActive] = createSignal(initialScene !== null);
   // Visibility is deliberately separate from the renderer input. On exit the
@@ -882,6 +898,7 @@ export function GameView(props: GameViewProps) {
           edge[key] = true;
         };
   const actions = useActions(() => {
+    if (demoRuntime?.isOpen()) return {};
     // A full-screen scene is the sole foreground input owner. Map modals
     // remain parked in reducer state while the world is frozen, but must not
     // capture confirm/back until the scene closes and reveals them again.
@@ -918,82 +935,17 @@ export function GameView(props: GameViewProps) {
     error?: unknown;
   } | null = null;
 
-  onFrame((buttons) => {
-    frameProfileMark("frame:start");
-    const pressed = buttons & ~prevButtons;
-    const upEdge = !!(pressed & BTN.UP);
-    const downEdge = !!(pressed & BTN.DOWN);
-
-    // Pick up a desktop window resize before this frame's layout reads the
-    // centering offset (hostViewport stays the one runtime fact).
-    const nextViewport = hostViewport(getOps());
-    if (
-      nextViewport &&
-      (nextViewport.w !== viewport().w || nextViewport.h !== viewport().h)
-    ) {
-      setViewport({ w: nextViewport.w, h: nextViewport.h });
-    }
-
-    // Under attract the controller owns the fold: a tape mask or the live
-    // mask, takeover, rewind and the idle attract entry all resolve inside it.
-    const prev = state;
-    let status: AttractStatus | null = null;
-    if (blocked) {
-      if (blocked.error) throw blocked.error;
-      if (!blocked.ready) return;
-    }
-    const frameButtons = blocked?.buttons ?? buttons;
-    const input: SessionInput = blocked?.input ?? {
-      buttons: frameButtons,
-      confirmEdge: edge.confirm,
-      cancelEdge: edge.cancel,
-      upEdge,
-      downEdge,
-    };
-    try {
-      frameProfileMark("reducer:start");
-      if (attract) {
-        const result = attract.step(frameButtons);
-        state = result.state;
-        status = result.status;
-      } else {
-        state = stepSession(session, state, input);
-      }
-      frameProfileMark("reducer:end");
-      prevButtons = frameButtons;
-      if (blocked) props.onMapLoading?.(null);
-      blocked = null;
-    } catch (error) {
-      if (!(error instanceof MapNotReadyError) || !session.repository?.prepare) throw error;
-      const pending: NonNullable<typeof blocked> = {
-        buttons: frameButtons,
-        ...(attract ? {} : { input }),
-        ready: false,
-      };
-      blocked = pending;
-      props.onMapLoading?.(error.mapId);
-      void prepareSessionMap(session, error.mapId).then(
-        () => { pending.ready = true; },
-        (reason) => { pending.error = reason; },
-      );
-      return;
-    }
+  const syncPresentedState = (
+    prev: SessionState,
+    status: AttractStatus | null,
+    nextWorldAnimationTick: number,
+  ): void => {
     globalThis.__rpgSessionState = state;
-    edge.confirm = false;
-    edge.cancel = false;
 
-    const nextCamera = cameraFor(state);
-    camera = nextCamera;
+    camera = cameraFor(state);
     globalThis.__rpgGameCamera = camera;
 
     const op = fadeOpacity(state.fade);
-    const nextWorldAnimationTick = !hasAnimatedTiles
-      ? 0
-      : attract
-        ? attract.worldAnimationTick()
-        : prev.scene === null && state.scene === null
-          ? (worldAnimationTick() + session.ticksPerFrame) >>> 0
-          : worldAnimationTick();
     frameProfileMark("signals:start");
     const nextLayers = layerFingerprint(state);
     const nextScreen = screenFingerprint(state);
@@ -1040,6 +992,95 @@ export function GameView(props: GameViewProps) {
       }
     });
     frameProfileMark("signals:end");
+  };
+
+  onFrame((buttons) => {
+    frameProfileMark("frame:start");
+    const pressed = buttons & ~prevButtons;
+    const upEdge = !!(pressed & BTN.UP);
+    const downEdge = !!(pressed & BTN.DOWN);
+
+    // Pick up a desktop window resize before this frame's layout reads the
+    // centering offset (hostViewport stays the one runtime fact).
+    const nextViewport = hostViewport(getOps());
+    if (
+      nextViewport &&
+      (nextViewport.w !== viewport().w || nextViewport.h !== viewport().h)
+    ) {
+      setViewport({ w: nextViewport.w, h: nextViewport.h });
+    }
+
+    // Under attract the controller owns the fold: a tape mask or the live
+    // mask, takeover, rewind and the idle attract entry all resolve inside it.
+    const prev = state;
+    let status: AttractStatus | null = null;
+    if (blocked) {
+      if (blocked.error) throw blocked.error;
+      if (!blocked.ready) return;
+    }
+    if (!blocked && demoRuntime) {
+      const demoStep = demoRuntime.step(buttons, pressed);
+      if (demoStep.consumed || demoStep.stateChanged) {
+        // Menu/transport input owns this host frame. Keep both edge domains
+        // aligned while folding no reducer input; a restored chapter is
+        // presented directly, without an accidental extra world tick.
+        attract!.syncLiveButtons(buttons);
+        prevButtons = buttons;
+        edge.confirm = false;
+        edge.cancel = false;
+        if (demoStep.stateChanged) state = attract!.state;
+        syncPresentedState(prev, attract!.status(), attract!.worldAnimationTick());
+        frameProfileMark("frame:end");
+        return;
+      }
+    }
+    const frameButtons = blocked?.buttons ?? buttons;
+    const input: SessionInput = blocked?.input ?? {
+      buttons: frameButtons,
+      confirmEdge: edge.confirm,
+      cancelEdge: edge.cancel,
+      upEdge,
+      downEdge,
+    };
+    try {
+      frameProfileMark("reducer:start");
+      if (attract) {
+        const result = attract.step(frameButtons);
+        state = result.state;
+        status = result.status;
+      } else {
+        state = stepSession(session, state, input);
+      }
+      frameProfileMark("reducer:end");
+      prevButtons = frameButtons;
+      if (blocked) props.onMapLoading?.(null);
+      blocked = null;
+    } catch (error) {
+      if (!(error instanceof MapNotReadyError) || !session.repository?.prepare) throw error;
+      const pending: NonNullable<typeof blocked> = {
+        buttons: frameButtons,
+        ...(attract ? {} : { input }),
+        ready: false,
+      };
+      blocked = pending;
+      props.onMapLoading?.(error.mapId);
+      void prepareSessionMap(session, error.mapId).then(
+        () => { pending.ready = true; },
+        (reason) => { pending.error = reason; },
+      );
+      return;
+    }
+    edge.confirm = false;
+    edge.cancel = false;
+
+    const nextWorldAnimationTick = !hasAnimatedTiles
+      ? 0
+      : attract
+        ? attract.worldAnimationTick()
+        : prev.scene === null && state.scene === null
+          ? (worldAnimationTick() + session.ticksPerFrame) >>> 0
+          : worldAnimationTick();
+    syncPresentedState(prev, status, nextWorldAnimationTick);
     frameProfileMark("frame:end");
   });
 
@@ -1340,6 +1381,9 @@ export function GameView(props: GameViewProps) {
         style={{ posType: 1, bgColor: "#000000", opacity: fade() }}
         debugName="rpgkit-fade"
       />
+      {/* Opt-in demo chrome stays above the world/fade but below fatal
+          errors. Its implementation is supplied by the isolated demo entry. */}
+      {demoRuntime ? demoRuntime.render(props.theme) : null}
       <Show when={fatalError() !== null}>
         <View
           class="absolute inset-0 flex-col justify-center items-center"
