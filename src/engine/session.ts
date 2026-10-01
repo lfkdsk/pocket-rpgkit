@@ -514,7 +514,8 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
 }
 
 /** Perform at most one fixed preparation unit for a synchronous repository:
- * repository parse, repository validation, then world + passage compilation.
+ * repository parse, repository validation, world compilation, then passage
+ * compilation.
  * Completed data remains derived and unpublished until acquireSessionMap at
  * the original transfer boundary. */
 export function prepareSessionMapStep(sess: Session, id: string): boolean {
@@ -544,11 +545,17 @@ export function prepareSessionMapStep(sess: Session, id: string): boolean {
     }
     return false;
   }
-  if (!preparation.world || !preparation.table) {
-    const world = createWorld(preparation.map, sess.commonEvents, MOTION_HZ, sess.worldOptions);
-    const table = buildPassage(preparation.map, sess.sheets);
-    preparation.world = world;
-    preparation.table = table;
+  if (!preparation.world) {
+    preparation.world = createWorld(
+      preparation.map,
+      sess.commonEvents,
+      MOTION_HZ,
+      sess.worldOptions,
+    );
+    return false;
+  }
+  if (!preparation.table) {
+    preparation.table = buildPassage(preparation.map, sess.sheets);
   }
   return true;
 }

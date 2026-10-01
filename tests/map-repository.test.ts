@@ -18,6 +18,7 @@ import {
 import {
   acquireSessionMap,
   createSession,
+  prepareSessionMapStep,
   prepareSessionMap,
   startSession,
   stepSession,
@@ -402,6 +403,29 @@ describe("sharded map repository", () => {
     expect(state.mapId).toBe("map_01");
     expect(fullAcquires).toBe(0);
     expect([...session.maps.keys()]).toEqual(["map_01"]);
+  });
+
+  test("stages world and passage compilation in separate preparation units", () => {
+    const project = fixture();
+    const split = splitProjectMaps(project);
+    const files = new Map(split.entries.map((entry) => [entry.path, entry.bytes]));
+    const repository = createJsonMapRepository(split.shell.mapIndex, {
+      read: (entry) => files.get(entry),
+    });
+    const session = createSession(split.shell, 60, repository);
+
+    expect(prepareSessionMapStep(session, "map_01")).toBe(false); // parse
+    expect(prepareSessionMapStep(session, "map_01")).toBe(false); // validate
+    expect(prepareSessionMapStep(session, "map_01")).toBe(false); // world
+    expect(session.preparingMap?.world).toBeDefined();
+    expect(session.preparingMap?.table).toBeUndefined();
+    expect(prepareSessionMapStep(session, "map_01")).toBe(true); // passage
+    expect(session.preparingMap?.table).toBeDefined();
+    expect(session.maps.has("map_01")).toBe(false);
+
+    acquireSessionMap(session, "map_01");
+    expect(session.preparingMap).toBeNull();
+    expect(session.maps.has("map_01")).toBe(true);
   });
 
   test("fade-out preparation units are scheduled by reference ticks at every host hz", () => {
