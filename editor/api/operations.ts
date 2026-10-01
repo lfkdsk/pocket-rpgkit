@@ -35,6 +35,7 @@ import {
   commandFields,
   editCommandField,
 } from "../engine/event-fields.ts";
+import { eventEditorResources } from "../engine/event-resources.ts";
 import {
   addPage,
   canPaint,
@@ -1135,17 +1136,19 @@ function mutate(command: EditCommandName, project: Project, args: Record<string,
     if (!before) {
       throw new EditApiError("COMMAND_ADDRESS_NOT_FOUND", "command update address does not resolve to a command", "$.address", "existing command", selected.address);
     }
-    if (!isEditableCommand(before)) {
-      throw new EditApiError("READ_ONLY_COMMAND", `${before.op} commands are retained but cannot be field-edited`, "$.address", "editor-owned command", before.op);
+    const beforeOp = before.op;
+    if (!isEditableCommand(before as unknown)) {
+      throw new EditApiError("READ_ONLY_COMMAND", `${beforeOp} commands are retained but cannot be field-edited`, "$.address", "editor-owned command", beforeOp);
     }
     const field = stringArg(args, "field");
     const value = args.value;
     if (typeof value !== "string") {
       throw new EditApiError("INVALID_ARGUMENT", "command field values use their editor text spelling", "$.value", "string", value);
     }
+    const resources = eventEditorResources(project, selected.map);
     const editedField = editCommandField(before, field, value);
     if (!editedField.ok) {
-      const fields = commandFields(before).map((item) => item.key);
+      const fields = commandFields(before, resources).map((item) => item.key);
       throw new EditApiError(
         "INVALID_COMMAND_FIELD",
         `${field}: ${editedField.error}; legal fields for ${before.op}: ${fields.join(", ") || "(none)"}`,

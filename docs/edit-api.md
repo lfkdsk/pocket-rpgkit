@@ -171,8 +171,9 @@ Args: `map`, `event`, `page` (integer ≥ 0; all required). `result` is an
 array of flattened rows, one per command in the page's recursive tree:
 `{ address, commandAddress, key, depth, branch?, summary, readOnly, command }`.
 `commandAddress` is the structured `{ path, index }` form accepted by the
-command-editing commands. `readOnly` is true for ops the field editor does
-not own.
+command-editing commands. Every op in the current project schema is owned by
+the field editor, so its rows report `readOnly: false`; the flag remains for
+forward-compatible display of an unknown future op.
 
 ```sh
 $ bun run rpgkit-edit list-commands --file examples/sunstone/data/sunstone.json --json '{"map":"village","event":"elder","page":0}'
@@ -342,8 +343,8 @@ $ bun run rpgkit-edit delete-page --file examples/sunstone/data/sunstone.json --
 
 Args: `map`, `event`, `page`, `address` (`{ path, index }`; `index` may equal
 the list length), `command` (an object with a non-empty `op` string).
-Opaque runtime commands are inserted intact; the whole-project schema gate
-after the mutation decides validity.
+The command object is inserted intact; the whole-project schema gate after the
+mutation decides whether that op and payload are valid.
 
 ```sh
 $ bun run rpgkit-edit insert-command --file examples/sunstone/data/sunstone.json --dry-run \
@@ -366,19 +367,105 @@ $ bun run rpgkit-edit delete-command --file examples/sunstone/data/sunstone.json
 
 Args: `map`, `event`, `page`, `address`, `field` (non-empty string), `value`
 (string: the editor's text spelling, e.g. `"10"`, `"true"`, or
-newline-separated text lines). Only editor-owned ops are field-editable:
-`text`, `choices`, `switch`, `variable`, `selfSwitch`, `if`, `transfer`,
-`wait`, `gold`, `item`, `se`, `erase`, `exit`, `common`, `lockInput`,
-`unlockInput`, `place`, and `moveRoute`. Other ops fail with
+newline-separated text lines). Every command and condition kind in the current
+project schema is field-editable. A future unknown op fails with
 `READ_ONLY_COMMAND`; a bad field or value fails with `INVALID_COMMAND_FIELD`
-listing the legal fields.
+and lists the legal fields for the selected command.
 
-The audio ops `playBgm`, `fadeoutBgm`, `stopBgm`, `pauseBgm`, `resumeBgm`,
-`playBgs`, `fadeoutBgs`, `playMe`, `playSe`, `saveBgm`, and `replayBgm` are
-accepted by `insert-command`, returned intact by `list-commands`, and checked
-by whole-project validation. They are deliberately read-only for
-`update-command`, as is the `bgmPlaying` condition inside a page or `if`;
-field-level controls have not landed in the editor yet.
+Field names are literal and case-sensitive. The core forms are:
+
+| command | `field` spellings |
+| --- | --- |
+| `text` | `lines`, `cps` |
+| `choices` | `prompt`, `optionCount`, `option:<zero-based-index>`, `cancel` |
+| `switch` | `id`, `value` |
+| `variable` | `id`, `mode`, then `value`, `from`, or `min`/`max` as selected by the mode |
+| `selfSwitch` | `key`, `value` |
+| `if` | `if.kind`, the matching `if.<condition-field>` values below, and `else` |
+| `transfer` | `map`, `x`, `y`, `dir`, `fade`; variable operands use `$<variable-id>` |
+| `moveRoute` | `target`, `wait`, `steps`, `repeat`, `skippable`; `steps` is a comma-separated basic-step list |
+| `wait` | `seconds` |
+| `gold` | `set`, `amount` |
+| `item` | `item`, `set`, `count` |
+| legacy `se` | `name`, `volume`, `pitch` |
+| `common` | `id` |
+| `place` | `target`, `x`, `y`, `dir` |
+
+The movement, presentation, modal, extension, and battle forms use:
+
+| command | `field` spellings and text forms |
+| --- | --- |
+| `moveControl` | `target`, `control.kind`; `control.value` for value-bearing kinds, or `control.bounds` (`x,y,width,height`) and `control.frequency` for `wander` |
+| `appearance` | `target`, `sprite`, `opacity`, `visible`, `saveDefault` |
+| `layer` | `layer`, `visible`, `variant` |
+| `tileProperty` | `x`, `y`, `passage`, `enter`, `exit`; directions are a comma list, JSON array, `[]`, `null`, or `(unset)` |
+| `screenFade` | `direction`, `duration`, `color` (`r,g,b,a` or `(unset)`), `wait` |
+| `screenTint` | `layer`, `color.r`, `color.g`, `color.b`, `color.a`, `duration`, `wait` |
+| `screenFlash` | `color.r`, `color.g`, `color.b`, `color.a`, `intensity`, `duration`, `wait` |
+| `screenShake` | `strength`, `speed`, `duration`, `wait` |
+| `camera` | `target`, `duration`, `wait`; target is `player`, `this`, `event:<id>`, or `tile:<x>,<y>` |
+| `balloon` | `target`, `icon`, `duration`, `wait` |
+| `screenBackdrop` | `layer`, `variant` |
+| `shop` | `id`, `goods` (JSON array), `sell`, `sellList` |
+| `mapAnim` | `id`, `anim`, `placement`; then `x`/`y` for `tile` or `target` for `target`; also `follow`, `layer`, `loop`, `wait` |
+| `stopAnim` | `selector` (`all`, `id`, or `anim`), then the selected `id` or `anim` |
+| `ext` | `call`, `args` (JSON) |
+| `extChoice` | `call`, `args` (JSON), `prompt`, `cancel`, `write` (JSON object or `(unset)`) |
+| `battle` | `setup` (JSON) |
+
+Audio fields are `id`, `volume`, and `pitch` for `playBgm`, `playBgs`, and
+`playSe`; `playMe` also has `duration`; `fadeoutBgm` and `fadeoutBgs` have
+`duration`. `stopBgm`, `pauseBgm`, `resumeBgm`, `saveBgm`, `replayBgm`,
+`erase`, `exit`, `lockInput`, and `unlockInput` are supported but have no
+parameter fields.
+
+Changing `if.kind` installs a schema-valid default condition. The remaining
+condition fields are prefixed with `if.`:
+
+| condition kind | fields after the `if.` prefix |
+| --- | --- |
+| `switch` | `id`, `value` |
+| `variable` | `id`, `op`, `value` |
+| `selfSwitch` | `key`, `value` |
+| `item` | `id`, `count` |
+| `gold` | `amount` |
+| `facing` | `dir` |
+| `appearance` | `target`, `sprite` (`null` means the default sprite) |
+| `tileProperty` | `x`, `y`, `passage`, `enter`, `exit` |
+| `worldIdle` | `negate` |
+| `bgmPlaying` | `id` (`(any)` or an empty string omits it), `negate` |
+| `ext` | `call`, `args` (JSON) |
+
+The desktop inspector also edits every one of these condition kinds in a
+page's compound `condition.all` list. At the API level, `update-command`
+edits an `if`; `update-page` can replace a complete page condition.
+
+`(unset)` (or an empty value where accepted) removes an optional property.
+`null` is deliberately different on nullable appearance, layer, backdrop,
+and tile-property fields: it stores an explicit runtime reset. A field change
+is rejected when removing it would violate the schema, such as removing the
+last appearance or tile-property override. JSON-valued fields parse the
+field's string before schema validation, so JSON nested inside the command
+line argument must be escaped, for example:
+
+```sh
+$ bun run rpgkit-edit update-command --file game.json --dry-run \
+    --json '{"map":"field","event":"merchant","page":0,"address":{"path":[],"index":0},"field":"goods","value":"[{\"item\":\"potion\",\"price\":25}]"}'
+```
+
+The desktop inspector offers resource hints drawn from project maps, items,
+sprites, animations, audio ids and common events, plus already-authored layer
+variants, animation instance ids, and extension calls. These remain
+suggestions rather than closed enums because games can supply presentation
+layers and registered extensions outside project JSON.
+
+For nested insertion, the desktop add prompt accepts `<op>@win`,
+`<op>@lose`, and `<op>@escape` when a `battle` is selected. API clients use
+the structured battle path documented under [Addresses](#addresses).
+`extChoice` does not contain authored command branches: its rows are returned
+dynamically by the registered provider, and `write` only names result
+variables. There is no generic `scene` command in the current schema;
+`battle` is the authored command for the existing battle scene.
 
 ```sh
 $ bun run rpgkit-edit update-command --file examples/sunstone/data/sunstone.json --dry-run \

@@ -8,7 +8,7 @@ import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
 import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { createSession, startSession, stepSession } from "../src/engine/session.ts";
-import type { GameEvent, Project } from "../src/engine/types.ts";
+import type { Command, GameEvent, Project } from "../src/engine/types.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
 import { commandInspectorRows } from "../editor/engine/event-fields.ts";
 import {
@@ -40,6 +40,7 @@ const simDescribe = preflight.ok ? describe : describe.skip;
 installEditorSimIsolation();
 
 const SUNSTONE = BUNDLED_PROJECTS.find((document) => document.id === "sunstone")!;
+const MODERN_COMMAND_SCREENSHOT_PIN = "1c65b40a";
 type World = BoundEditorWorld;
 let live: World | null = null;
 const probes = () => live!.probes();
@@ -251,6 +252,137 @@ simDescribe("event editor pointer integration", () => {
       kind: "text",
       lines: ["Hello from the editor."],
     });
+  });
+
+  test("edits newer command fields, shows validation and resource hints, and authors battle branches", async () => {
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    const world = await bootSvc(inbox, outbox, 720, 480);
+    const project = JSON.parse(SUNSTONE.json) as Project;
+    const elder = project.maps[0]!.events!.find((event) => event.id === "elder")!;
+    elder.pages[0]!.commands = [
+      { op: "screenShake", strength: 2, speed: 4, duration: 0.5, wait: true },
+      { op: "item", item: "torch", set: "add", count: 1 },
+      { op: "battle", setup: null },
+    ];
+    expect(probes().inject(JSON.stringify(project))).toEqual({ ok: true });
+
+    enterEventMode(inbox, world);
+    click(inbox, world, ...cellPoint(720, 480, 9, 5)); // elder
+    click(inbox, world, ...eventToolPoint("edit"));
+    expect(probes().state().inspectorOpen).toBe(true);
+
+    const clearInput = (): void => {
+      const length = (probes().state().inputBuffer as string).length;
+      for (let i = 0; i < length; i++) key(inbox, world, "Backspace");
+    };
+    const command = (op: Command["op"]): Command => {
+      const found = selectedEvent().pages[0]!.commands.find((entry) => entry.op === op);
+      expect(found).toBeDefined();
+      return found!;
+    };
+    const commandRow = (op: Command["op"]) => {
+      const row = commandInspectorRows(selectedEvent().pages[0]!.commands).findIndex((entry) => entry.command.op === op);
+      expect(row).toBeGreaterThanOrEqual(0);
+      return { row, geometry: inspectorLayout(720, 480).commandRows[row]! };
+    };
+
+    // A newly editable screen-presentation command is changed only through
+    // the real pointer/text service path. Invalid input keeps the edit alive
+    // and must be visible in the event-inspector header, not a hidden status.
+    let shake = commandRow("screenShake");
+    const strength = shake.geometry.fields.find(
+      (field) => field.action.kind === "command-field" && field.action.field === "strength",
+    )!;
+    clickInspectorControl(inbox, world, strength);
+    clearInput();
+    typeText(inbox, world, "-1");
+    key(inbox, world, "Enter");
+    expect(command("screenShake")).toMatchObject({ strength: 2 });
+    expect(probes().state().inspectorFocus).toMatchObject({ kind: "command-field", field: "strength" });
+    expect(probes().state().notice).toEqual({ kind: "bad", text: "STRENGTH MUST BE AT LEAST 0" });
+    let tree = JSON.stringify(world.getTree());
+    expect(tree).toContain("event-inspector-edit-prompt");
+    expect(tree).toContain("STRENGTH MUST BE AT LEAST 0");
+    const validationFrame = world.render();
+    expect(validationFrame).toHaveLength(720 * 480 * 4);
+    expect(pixel(validationFrame, 720, strength.rect.x, HEADER_H + strength.rect.y)).toEqual([255, 210, 74, 255]);
+    const validationHash = fnv1a(validationFrame);
+    if (process.env.EDITOR_EVENT_UPDATE_GOLDENS) {
+      await Bun.write(
+        new URL("./goldens/editor-modern-commands.720x480.png", import.meta.url),
+        encodePNG(validationFrame, 720, 480),
+      );
+      console.log(`modern command editor golden 720x480: ${validationHash}`);
+    } else {
+      expect(validationHash).toBe(MODERN_COMMAND_SCREENSHOT_PIN);
+    }
+
+    clearInput();
+    typeText(inbox, world, "3");
+    key(inbox, world, "Enter");
+    expect(command("screenShake")).toMatchObject({ strength: 3, speed: 4, duration: 0.5, wait: true });
+    expect(probes().state().inspectorFocus).toBeNull();
+
+    // Resource-backed text fields remain directly editable, but focusing one
+    // exposes the deterministic project choices in the same visible header.
+    const item = commandRow("item");
+    const itemId = item.geometry.fields.find(
+      (field) => field.action.kind === "command-field" && field.action.field === "item",
+    )!;
+    clickInspectorControl(inbox, world, itemId);
+    expect(probes().state().notice).toMatchObject({ kind: "info" });
+    expect(probes().state().notice.text).toContain("PROJECT ITEMS:");
+    expect(probes().state().notice.text).toContain("THORN-KEY");
+    tree = JSON.stringify(world.getTree());
+    expect(tree).toContain("PROJECT ITEMS:");
+    expect(tree).toContain("THORN-KEY");
+    key(inbox, world, "Escape");
+
+    // Battle is also a newly editable command: edit its JSON payload through
+    // the field, then use every supported @branch spelling. The selected
+    // escape child is deleted through the visible DEL action afterward.
+    const battleBefore = commandRow("battle");
+    const setup = battleBefore.geometry.fields.find(
+      (field) => field.action.kind === "command-field" && field.action.field === "setup",
+    )!;
+    clickInspectorControl(inbox, world, setup);
+    clearInput();
+    typeText(inbox, world, '{"enemy":"slime"}');
+    key(inbox, world, "Enter");
+    expect(command("battle")).toMatchObject({ setup: { enemy: "slime" } });
+
+    const addInBattleBranch = (entry: string): void => {
+      const battle = commandRow("battle");
+      clickInspectorControl(inbox, world, battle.geometry.header);
+      const layout = inspectorLayout(720, 480);
+      const add = layout.commandActions.find(
+        (control) => control.action.kind === "command-action" && control.action.action === "add",
+      )!;
+      clickInspectorControl(inbox, world, add);
+      typeText(inbox, world, entry);
+      key(inbox, world, "Enter");
+    };
+    addInBattleBranch("text@win");
+    addInBattleBranch("switch@lose");
+    addInBattleBranch("wait@escape");
+
+    let battle = command("battle") as Extract<Command, { op: "battle" }>;
+    expect(battle.onWin).toEqual([{ op: "text", lines: [""] }]);
+    expect(battle.onLose).toEqual([{ op: "switch", id: "switch", value: true }]);
+    expect(battle.onEscape).toEqual([{ op: "wait", seconds: 1 }]);
+    expect(commandInspectorRows(selectedEvent().pages[0]!.commands).filter((row) => row.depth === 1).map((row) => row.branch)).toEqual([
+      "Win", "Lose", "Escape",
+    ]);
+
+    const del = inspectorLayout(720, 480).commandActions.find(
+      (control) => control.action.kind === "command-action" && control.action.action === "delete",
+    )!;
+    clickInspectorControl(inbox, world, del);
+    battle = command("battle") as Extract<Command, { op: "battle" }>;
+    expect(battle.onWin).toHaveLength(1);
+    expect(battle.onLose).toHaveLength(1);
+    expect(battle.onEscape).toEqual([]);
   });
 });
 

@@ -37,7 +37,7 @@ function switchCommand(id: string): Command {
 }
 
 describe("editor command tree", () => {
-  test("flattens nested branches in deterministic pre-order with addresses and read-only rows", () => {
+  test("flattens nested branches in deterministic pre-order with editable rows", () => {
     const commands: Command[] = [
       { op: "text", lines: ["root"] },
       {
@@ -93,19 +93,7 @@ describe("editor command tree", () => {
       "Lose",
       "Escape",
     ]);
-    expect(rows.map((row) => row.readOnly)).toEqual([
-      false,
-      false,
-      false,
-      false,
-      true,
-      false,
-      true,
-      true,
-      false,
-      false,
-      false,
-    ]);
+    expect(rows.every((row) => row.editable && !row.readOnly)).toBe(true);
     expect(rows[3]!.key).toBe("i1:then/c0:option:0#0");
     expect(getCommandList(commands, rows[3]!.address.path)).toBe(
       (commands[1] as Extract<Command, { op: "if" }>).then[0]!.op === "choices"
@@ -230,7 +218,7 @@ describe("editor command tree", () => {
     expect(validateProject(project)).toEqual([]);
   });
 
-  test("keeps shop, extension and battle payloads opaque when other commands change", () => {
+  test("keeps complex payloads intact when other commands change and permits owned updates", () => {
     const shop: Command = {
       op: "shop",
       id: "rare-shop",
@@ -251,7 +239,9 @@ describe("editor command tree", () => {
     expect(changed[2]).toBe(battle);
     expect(changed.slice(0, 3).map((command) => JSON.stringify(command))).toEqual(bytes);
 
-    expect(updateCommand(changed, root(1), switchCommand("replace-opaque"))).toBe(changed);
+    const replaced = updateCommand(changed, root(1), switchCommand("replace-extension"));
+    expect(replaced).not.toBe(changed);
+    expect(replaced[1]).toEqual(switchCommand("replace-extension"));
     const battleEdited = insertCommand(changed, commandAddress(battleBranchPath(root(2), "lose"), 0), { op: "exit" });
     const editedBattle = battleEdited[2] as Extract<Command, { op: "battle" }>;
     expect(editedBattle.setup).toBe(setup);
@@ -259,7 +249,7 @@ describe("editor command tree", () => {
     expect(JSON.stringify(editedBattle.setup)).toBe(JSON.stringify(setup));
   });
 
-  test("summarizes screen commands while preserving them as opaque read-only rows", () => {
+  test("summarizes screen commands and owns their rows", () => {
     const screen: Command[] = [
       { op: "screenFade", direction: "out", duration: 0.5 },
       { op: "screenTint", layer: "night", color: { r: 8, g: 16, b: 32, a: 96 }, duration: 1 },
@@ -270,7 +260,7 @@ describe("editor command tree", () => {
       { op: "screenBackdrop", layer: "cutscene", variant: "gradient-blue" },
     ];
     const rows = flattenCommands(screen);
-    expect(rows.every((row) => row.readOnly && !row.editable)).toBe(true);
+    expect(rows.every((row) => row.editable && !row.readOnly)).toBe(true);
     expect(rows.map((row) => row.summary)).toEqual([
       "Screen fade out 0.5s",
       "Screen tint night rgba(8,16,32,96) 1s",
@@ -285,10 +275,13 @@ describe("editor command tree", () => {
     const bytes = screen.map((command) => JSON.stringify(command));
     const changed = updateCommand(commands, root(screen.length), switchCommand("after"));
     expect(changed.slice(0, screen.length).map((command) => JSON.stringify(command))).toEqual(bytes);
-    expect(updateCommand(changed, root(0), switchCommand("forbidden"))).toBe(changed);
+    const edited = updateCommand(changed, root(0), (command) => command.op === "screenFade"
+      ? { ...command, duration: 2 }
+      : command);
+    expect(edited[0]).toEqual({ op: "screenFade", direction: "out", duration: 2 });
   });
 
-  test("summarizes audio commands while preserving them as opaque read-only rows", () => {
+  test("summarizes audio commands and owns their rows", () => {
     const audio: Command[] = [
       { op: "playBgm", id: "field", volume: 80, pitch: 90 },
       { op: "fadeoutBgm", duration: 1.5 },
@@ -303,7 +296,7 @@ describe("editor command tree", () => {
       { op: "replayBgm" },
     ];
     const rows = flattenCommands(audio);
-    expect(rows.every((row) => row.readOnly && !row.editable)).toBe(true);
+    expect(rows.every((row) => row.editable && !row.readOnly)).toBe(true);
     expect(rows.map((row) => row.summary)).toEqual([
       "Play BGM field",
       "Fade out BGM over 1.5s",
@@ -318,6 +311,26 @@ describe("editor command tree", () => {
       "Replay BGM",
     ]);
   });
+
+  test("summarizes movement control and map animation commands", () => {
+    const commands: Command[] = [
+      { op: "moveControl", target: { event: "guard" }, control: { kind: "speed", value: 6 } },
+      { op: "mapAnim", id: "spark-1", anim: "spark", x: 3, y: 4 },
+      { op: "mapAnim", id: "aura-1", anim: "aura", target: "player" },
+      { op: "stopAnim", id: "spark-1" },
+      { op: "stopAnim", anim: "aura" },
+      { op: "stopAnim" },
+    ];
+    expect(commands.map(commandSummary)).toEqual([
+      "Move control event guard: speed 6",
+      "Map animation spark as spark-1 on tile (3, 4)",
+      "Map animation aura as aura-1 on player",
+      "Stop map animation spark-1",
+      "Stop map animations using aura",
+      "Stop all map animations",
+    ]);
+    expect(flattenCommands(commands).every((row) => row.editable && !row.readOnly)).toBe(true);
+  });
 });
 
 describe("editor condition and route helpers", () => {
@@ -331,7 +344,10 @@ describe("editor condition and route helpers", () => {
       "Item item ×1",
       "Gold ≥ 0",
       "Facing down",
+      "Appearance this uses default sprite",
+      'Tile property (0, 0) {"passage":null}',
       "World is idle",
+      "Any BGM is playing",
       "Extension game.condition null",
     ]);
     expect(CONDITION_KINDS.map((kind) => defaultPageCondition(kind))).toEqual([
@@ -341,12 +357,15 @@ describe("editor condition and route helpers", () => {
       { item: "item" },
       { all: [{ kind: "gold", amount: 0 }] },
       { all: [{ kind: "facing", dir: "down" }] },
+      { all: [{ kind: "appearance", target: "this", sprite: null }] },
+      { all: [{ kind: "tileProperty", x: 0, y: 0, passage: null }] },
       { all: [{ kind: "worldIdle", negate: false }] },
+      { all: [{ kind: "bgmPlaying", negate: false }] },
       { all: [{ kind: "ext", call: "game.condition", args: null }] },
     ]);
   });
 
-  test("displays compound page clauses while preserving extension conditions", () => {
+  test("displays compound page clauses with editable extension conditions", () => {
     const ext: Condition = { kind: "ext", call: "quest.ready", args: { chapter: 4, flags: ["a", "b"] } };
     const pageCondition: PageCondition = {
       switch: "opened",
@@ -358,28 +377,36 @@ describe("editor condition and route helpers", () => {
     const clauses = pageConditionClauses(pageCondition);
     expect(clauses.map((clause) => clause.source)).toEqual(["switch", "selfSwitch", "variable", "item", "all", "all"]);
     expect(clauses[5]!.condition).toBe(ext);
-    expect(clauses[5]!.readOnly).toBe(true);
-    expect(isEditableCondition(ext)).toBe(false);
+    expect(clauses[5]!.readOnly).toBe(false);
+    expect(clauses[5]!.editable).toBe(true);
+    expect(isEditableCondition(ext)).toBe(true);
     expect(clauses[5]!.summary).toContain("quest.ready");
     expect(clauses[5]!.summary).toContain('"chapter":4');
     expect(pageConditionSummary(pageCondition)).toContain("Switch opened is ON AND Self switch B is ON");
     expect(pageConditionSummary()).toBe("Always");
   });
 
-  test("summarizes BGM conditions without making them editor-owned", () => {
+  test("summarizes BGM conditions as editor-owned", () => {
     const any: Condition = { kind: "bgmPlaying" };
     const specific: Condition = { kind: "bgmPlaying", id: "field", negate: true };
     expect(conditionSummary(any)).toBe("Any BGM is playing");
     expect(conditionSummary(specific)).toBe("BGM field is not playing");
-    expect(isEditableCondition(any)).toBe(false);
+    expect(isEditableCondition(any)).toBe(true);
 
     const clauses = pageConditionClauses({ all: [specific] });
     expect(clauses).toEqual([expect.objectContaining({
       condition: specific,
       summary: "BGM field is not playing",
-      editable: false,
-      readOnly: true,
+      editable: true,
+      readOnly: false,
     })]);
+  });
+
+  test("summarizes appearance and tile-property conditions", () => {
+    expect(conditionSummary({ kind: "appearance", target: { event: "guard" }, sprite: "armored" }))
+      .toBe("Appearance event guard uses armored");
+    expect(conditionSummary({ kind: "tileProperty", x: 2, y: 3, passage: "block", enter: ["left"] }))
+      .toBe('Tile property (2, 3) {"passage":"block","enter":["left"]}');
   });
 
   test("names every basic move-route step and safely displays advanced steps", () => {

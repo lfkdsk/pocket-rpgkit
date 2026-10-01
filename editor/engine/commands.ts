@@ -83,21 +83,51 @@ export const EDITABLE_COMMAND_OPS = [
   "selfSwitch",
   "if",
   "transfer",
+  "moveRoute",
+  "moveControl",
+  "appearance",
+  "layer",
+  "tileProperty",
+  "screenFade",
+  "screenTint",
+  "screenFlash",
+  "screenShake",
+  "camera",
+  "balloon",
+  "screenBackdrop",
   "wait",
   "gold",
   "item",
   "se",
+  "playBgm",
+  "fadeoutBgm",
+  "stopBgm",
+  "pauseBgm",
+  "resumeBgm",
+  "playBgs",
+  "fadeoutBgs",
+  "playMe",
+  "playSe",
+  "saveBgm",
+  "replayBgm",
   "erase",
   "exit",
   "common",
+  "shop",
+  "mapAnim",
+  "stopAnim",
   "lockInput",
   "unlockInput",
   "place",
-  "moveRoute",
+  "ext",
+  "extChoice",
+  "battle",
 ] as const;
 
 export type EditableCommandOp = (typeof EDITABLE_COMMAND_OPS)[number];
 export type EditableCommand = Extract<Command, { op: EditableCommandOp }>;
+type AssertNoMissing<T extends never> = T;
+type _EveryCommandOpIsOwned = AssertNoMissing<Exclude<Command["op"], EditableCommandOp>>;
 
 const EDITABLE_OP_SET: ReadonlySet<string> = new Set(EDITABLE_COMMAND_OPS);
 
@@ -107,9 +137,7 @@ export function isEditableCommand(command: unknown): command is EditableCommand 
 
 type CommandOf<Op extends EditableCommandOp> = Extract<Command, { op: Op }>;
 
-/** Schema-valid starting values for every command form the editor owns.
- * Shop, extension, battle and future commands are intentionally absent: they
- * remain visible and movable but read-only. */
+/** Schema-valid starting values for every command form the editor owns. */
 export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<Op> {
   let command: EditableCommand;
   switch (op) {
@@ -141,6 +169,47 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
     case "transfer":
       command = { op, map: "map", x: 0, y: 0, dir: "keep", fade: 0 };
       break;
+    case "moveRoute":
+      command = {
+        op,
+        target: "this",
+        wait: true,
+        route: { steps: [], repeat: false, skippable: false },
+      };
+      break;
+    case "moveControl":
+      command = { op, target: "this", control: { kind: "stop" } };
+      break;
+    case "appearance":
+      command = { op, target: "this", sprite: null };
+      break;
+    case "layer":
+      command = { op, layer: "layer", visible: true };
+      break;
+    case "tileProperty":
+      command = { op, x: 0, y: 0, passage: null };
+      break;
+    case "screenFade":
+      command = { op, direction: "out", duration: 0 };
+      break;
+    case "screenTint":
+      command = { op, layer: "tint", color: { r: 0, g: 0, b: 0, a: 0 }, duration: 0 };
+      break;
+    case "screenFlash":
+      command = { op, color: { r: 255, g: 255, b: 255, a: 255 }, intensity: 255, duration: 0 };
+      break;
+    case "screenShake":
+      command = { op, strength: 0, speed: 0, duration: 0 };
+      break;
+    case "camera":
+      command = { op, target: "player", duration: 0 };
+      break;
+    case "balloon":
+      command = { op, target: "this" };
+      break;
+    case "screenBackdrop":
+      command = { op, layer: "backdrop" };
+      break;
     case "wait":
       command = { op, seconds: 1 };
       break;
@@ -153,6 +222,23 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
     case "se":
       command = { op, name: "sound", volume: 100, pitch: 100 };
       break;
+    case "playBgm":
+    case "playBgs":
+    case "playSe":
+      command = { op, id: "audio", volume: 100, pitch: 100 };
+      break;
+    case "fadeoutBgm":
+    case "fadeoutBgs":
+      command = { op, duration: 0 };
+      break;
+    case "playMe":
+      command = { op, id: "audio", duration: 1, volume: 100, pitch: 100 };
+      break;
+    case "stopBgm":
+    case "pauseBgm":
+    case "resumeBgm":
+    case "saveBgm":
+    case "replayBgm":
     case "erase":
     case "exit":
     case "lockInput":
@@ -162,16 +248,26 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
     case "common":
       command = { op, id: "common" };
       break;
+    case "shop":
+      command = { op, id: "shop", goods: [{ item: "item" }] };
+      break;
+    case "mapAnim":
+      command = { op, id: "animation", anim: "animation", x: 0, y: 0 };
+      break;
+    case "stopAnim":
+      command = { op };
+      break;
     case "place":
       command = { op, target: "this", x: 0, y: 0, dir: "down" };
       break;
-    case "moveRoute":
-      command = {
-        op,
-        target: "this",
-        wait: true,
-        route: { steps: [], repeat: false, skippable: false },
-      };
+    case "ext":
+      command = { op, call: "game.command", args: null };
+      break;
+    case "extChoice":
+      command = { op, call: "game.choice", args: null, prompt: "" };
+      break;
+    case "battle":
+      command = { op, setup: null };
       break;
   }
   return command as CommandOf<Op>;
@@ -313,6 +409,10 @@ export function commandSummary(command: unknown): string {
       const count = Array.isArray(route.steps) ? route.steps.length : 0;
       return `Move route ${targetSummary(command.target)} (${count} step${count === 1 ? "" : "s"})`;
     }
+    case "moveControl": {
+      const control = isRecord(command.control) ? command.control : {};
+      return `Move control ${targetSummary(command.target)}: ${text(control.kind)}${control.value === undefined ? "" : ` ${jsonPreview(control.value)}`}`;
+    }
     case "shop":
       return `Shop ${text(command.id)} (${Array.isArray(command.goods) ? command.goods.length : 0} goods)`;
     case "ext":
@@ -343,6 +443,16 @@ export function commandSummary(command: unknown): string {
       return command.variant === undefined || command.variant === null
         ? `Close backdrop ${text(command.layer)}`
         : `Backdrop ${text(command.layer)} = ${text(command.variant)}`;
+    case "mapAnim": {
+      const at = command.target === undefined
+        ? `tile (${numberText(command.x)}, ${numberText(command.y)})`
+        : targetSummary(command.target);
+      return `Map animation ${text(command.anim)} as ${text(command.id)} on ${at}`;
+    }
+    case "stopAnim":
+      if (typeof command.id === "string") return `Stop map animation ${text(command.id)}`;
+      if (typeof command.anim === "string") return `Stop map animations using ${text(command.anim)}`;
+      return "Stop all map animations";
     case "battle":
       return `Battle ${jsonPreview(command.setup)}`;
     default:
@@ -689,12 +799,16 @@ export const CONDITION_KINDS = [
   "item",
   "gold",
   "facing",
+  "appearance",
+  "tileProperty",
   "worldIdle",
+  "bgmPlaying",
   "ext",
 ] as const;
 
 export type ConditionKind = (typeof CONDITION_KINDS)[number];
 type ConditionOf<Kind extends ConditionKind> = Extract<Condition, { kind: Kind }>;
+type _EveryConditionKindIsOwned = AssertNoMissing<Exclude<Condition["kind"], ConditionKind>>;
 
 export function defaultCondition<Kind extends ConditionKind>(kind: Kind): ConditionOf<Kind> {
   let condition: Condition;
@@ -717,7 +831,16 @@ export function defaultCondition<Kind extends ConditionKind>(kind: Kind): Condit
     case "facing":
       condition = { kind, dir: "down" };
       break;
+    case "appearance":
+      condition = { kind, target: "this", sprite: null };
+      break;
+    case "tileProperty":
+      condition = { kind, x: 0, y: 0, passage: null };
+      break;
     case "worldIdle":
+      condition = { kind, negate: false };
+      break;
+    case "bgmPlaying":
       condition = { kind, negate: false };
       break;
     case "ext":
@@ -727,13 +850,10 @@ export function defaultCondition<Kind extends ConditionKind>(kind: Kind): Condit
   return condition as ConditionOf<Kind>;
 }
 
-/** Audio-state, extension and future conditions are display/preserve-only in
- * the generic editor. */
 export function isEditableCondition(
   condition: unknown,
-): condition is Exclude<Condition, { kind: "bgmPlaying" | "ext" }> {
-  return isRecord(condition) && CONDITION_KINDS.includes(condition.kind as ConditionKind) &&
-    condition.kind !== "bgmPlaying" && condition.kind !== "ext";
+): condition is Condition {
+  return isRecord(condition) && CONDITION_KINDS.includes(condition.kind as ConditionKind);
 }
 
 export function conditionSummary(condition: unknown): string {
@@ -751,6 +871,10 @@ export function conditionSummary(condition: unknown): string {
       return `Gold ≥ ${numberText(condition.amount)}`;
     case "facing":
       return `Facing ${text(condition.dir)}`;
+    case "appearance":
+      return `Appearance ${targetSummary(condition.target)} uses ${condition.sprite === null ? "default sprite" : text(condition.sprite)}`;
+    case "tileProperty":
+      return `Tile property (${numberText(condition.x)}, ${numberText(condition.y)}) ${jsonPreview({ passage: condition.passage, enter: condition.enter, exit: condition.exit })}`;
     case "worldIdle":
       return condition.negate === true ? "World is busy" : "World is idle";
     case "bgmPlaying": {

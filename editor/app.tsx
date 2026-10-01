@@ -149,6 +149,7 @@ import {
   type EditableField,
   type InspectorCommandRow as EditableCommandRow,
 } from "./engine/event-fields.ts";
+import { eventEditorResources } from "./engine/event-resources.ts";
 import {
   createEventInspectorLayout,
   hitTestEventInspector,
@@ -401,9 +402,10 @@ export function EditorApp(): JSX.Element {
   const activePage = createMemo<Page | null>(() =>
     selectedEvent()?.pages[editor().selectedPageIndex] ?? null,
   );
-  const conditionRows = createMemo(() => flattenInspectorConditions(activePage() ?? undefined));
+  const inspectorResources = createMemo(() => eventEditorResources(editor().project, map()));
+  const conditionRows = createMemo(() => flattenInspectorConditions(activePage() ?? undefined, inspectorResources()));
   const commandRows = createMemo<EditableCommandRow[]>(() =>
-    commandInspectorRows(activePage()?.commands ?? []),
+    commandInspectorRows(activePage()?.commands ?? [], inspectorResources()),
   );
   const inspectorLayout = createMemo(() => {
     const event = selectedEvent();
@@ -1128,19 +1130,19 @@ export function EditorApp(): JSX.Element {
     if (!page?.condition || !row) return null;
     if (row.source.kind === "all") {
       const condition = page.condition.all?.[row.source.index];
-      return condition ? conditionFields(condition).find((field) => field.key === action.field) ?? null : null;
+      return condition ? conditionFields(condition, "", inspectorResources()).find((field) => field.key === action.field) ?? null : null;
     }
     if (row.source.key === "switch" && page.condition.switch !== undefined) {
-      return conditionFields({ kind: "switch", id: page.condition.switch }).find((field) => field.key === action.field) ?? null;
+      return conditionFields({ kind: "switch", id: page.condition.switch }, "", inspectorResources()).find((field) => field.key === action.field) ?? null;
     }
     if (row.source.key === "selfSwitch" && page.condition.selfSwitch !== undefined) {
-      return conditionFields({ kind: "selfSwitch", key: page.condition.selfSwitch }).find((field) => field.key === action.field) ?? null;
+      return conditionFields({ kind: "selfSwitch", key: page.condition.selfSwitch }, "", inspectorResources()).find((field) => field.key === action.field) ?? null;
     }
     if (row.source.key === "variable" && page.condition.variable !== undefined) {
-      return conditionFields({ kind: "variable", ...page.condition.variable }).find((field) => field.key === action.field) ?? null;
+      return conditionFields({ kind: "variable", ...page.condition.variable }, "", inspectorResources()).find((field) => field.key === action.field) ?? null;
     }
     if (row.source.key === "item" && page.condition.item !== undefined) {
-      return conditionFields({ kind: "item", id: page.condition.item, count: 1 }).find((field) => field.key === action.field) ?? null;
+      return conditionFields({ kind: "item", id: page.condition.item, count: 1 }, "", inspectorResources()).find((field) => field.key === action.field) ?? null;
     }
     return null;
   };
@@ -1270,10 +1272,11 @@ export function EditorApp(): JSX.Element {
     }
     setInspectorFocus(action);
     setInputBuffer(String(field.value ?? ""));
+    if (field.hint) setNotice({ kind: "info", text: field.hint.toUpperCase() });
   };
 
   const selectCommandKey = (commands: Page["commands"], key: string | null): void => {
-    const rows = commandInspectorRows(commands);
+    const rows = commandInspectorRows(commands, inspectorResources());
     const command = key === null ? null : rows.findIndex((row) => row.key === key);
     setInspectorSelection((selection) => ({
       ...selection,
@@ -2412,11 +2415,13 @@ export function EditorApp(): JSX.Element {
             height={vp().h - HEADER_H}
             event={selectedEvent()!}
             activePage={editor().selectedPageIndex}
+            conditionRows={conditionRows()}
             commandRows={commandRows()}
             selection={inspectorSelection()}
             focus={inspectorFocus()}
             inputBuffer={inputBuffer()}
             scroll={inspectorScroll()}
+            notice={notice()}
           />
         </View>
       ) : mapInspectorOpen() ? (

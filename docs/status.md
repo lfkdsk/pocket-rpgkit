@@ -65,7 +65,7 @@ The links point to where each feature is described in detail.
 | --- | --- | --- |
 | Battle scenes and battle UI kit | Done | A game registers a battle scene; `battle` parks the event until it ends and runs its win/lose/escape branch. The kit provides state-driven battle UI blocks; see [Battle UI kit](../README.md#battle-ui-kit-pocket-rpgkituibattle) |
 | The map world stays alive during battles | Done | Entering or leaving a battle does not rebuild the map. The map/dialog stay mounted but hidden; map clocks freeze by default, while battle audio can switch and restore without remounting its driver |
-| Generic full-screen game scenes and a name-input screen | Planned | In progress |
+| Generic full-screen game scenes and a name-input screen | Planned | In progress. The current project schema has no generic `scene` command; its only authored scene entry point is `battle` |
 | Menu and save access switches, game over, return to title | Planned | |
 
 ## Saves, rewind and demos
@@ -92,12 +92,12 @@ The links point to where each feature is described in detail.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Tile painting, passage overrides, one-way edges, undo/redo | Done | [Editor](../editor/README.md) |
-| Editing events, pages, conditions and command trees | Done | Newer commands are shown read-only: screen effects, map animations, movement control, audio, extensions |
+| Editing events, pages, conditions and command trees | Done | Every command and condition kind in the current project schema is editable; see [event command and condition editing](../editor/README.md#event-command-and-condition-editing) |
 | Map properties; new, duplicate and delete maps | Done | |
 | Play-test from the selected tile with a live debug panel | Done | Runs the unsaved document in the real `GameView`; the debug panel edits switches, variables, self switches, items and gold of the preview only and lists running pages and fibers. Unregistered extensions, battles and backdrops get visible stand-ins; see [Editor](../editor/README.md) |
 | Follow-along tutorial | Done | [Editor tutorial](editor-tutorial.md) builds an NPC, a second map and a play-test from launch to save, with regenerable screenshots and a guard test |
 | Large (sharded) projects and an editor in the browser | Planned | |
-| Editing UI for the newer commands | Planned | |
+| Editing UI for the newer commands | Done | Movement control, presentation, map animations, shops, audio, extensions, battle setup and battle-result branches; see [Editor](../editor/README.md#event-command-and-condition-editing) and [`update-command`](edit-api.md#update-command) |
 
 ## Scripting and agent tools
 

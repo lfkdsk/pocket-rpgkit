@@ -13,7 +13,8 @@ import {
   pageFieldDescriptors,
   pageRouteFieldDescriptors,
 } from "../editor/engine/event-fields.ts";
-import { EDITABLE_COMMAND_OPS, defaultCommand } from "../editor/engine/commands.ts";
+import { CONDITION_KINDS, EDITABLE_COMMAND_OPS, defaultCommand, defaultCondition } from "../editor/engine/commands.ts";
+import { eventEditorResources } from "../editor/engine/event-resources.ts";
 import { validateProject } from "../editor/engine/document.ts";
 import type { Command, Condition, Page, Project } from "../src/engine/types.ts";
 
@@ -30,7 +31,26 @@ function projectWith(commands: Command[], page: Partial<Page> = {}): Project {
     tileSize: 16,
     start: { map: "map", x: 0, y: 0, dir: "down" },
     sheets: [{ id: "town", pak: "chunks", cols: 1, rows: 1 }],
-    items: [{ id: "potion", name: "Potion", sprite: "town.0" }],
+    items: [
+      { id: "item", name: "Item", sprite: "town.0" },
+      { id: "potion", name: "Potion", sprite: "town.0" },
+    ],
+    sprites: {
+      hero: { kind: "image", src: "sprite:hero" },
+      npc: { kind: "image", src: "sprite:npc" },
+    },
+    animations: [
+      { id: "animation", sheet: "animation-sheet", count: 1, frameDuration: 0.1 },
+      { id: "spark", sheet: "spark-sheet", count: 2, frameDuration: 0.1 },
+    ],
+    audio: {
+      audio: "audio:wav.audio",
+      door: "audio:wav.door",
+      field: "audio:wav.field",
+      rain: "audio:wav.rain",
+      sound: "audio:wav.sound",
+      victory: "audio:wav.victory",
+    },
     commonEvents: [{ id: "ce", trigger: "none", commands: [] }],
     maps: [{
       id: "map", name: "Map", width: 2, height: 2, sheets: ["town"],
@@ -40,30 +60,51 @@ function projectWith(commands: Command[], page: Partial<Page> = {}): Project {
   };
 }
 
+const NEWER_COMMAND_FIELDS = [
+  ["moveControl", ["target", "control.kind"]],
+  ["appearance", ["target", "sprite", "opacity", "visible", "saveDefault"]],
+  ["layer", ["layer", "visible", "variant"]],
+  ["tileProperty", ["x", "y", "passage", "enter", "exit"]],
+  ["screenFade", ["direction", "duration", "color", "wait"]],
+  ["screenTint", ["layer", "color.r", "color.g", "color.b", "color.a", "duration", "wait"]],
+  ["screenFlash", ["color.r", "color.g", "color.b", "color.a", "intensity", "duration", "wait"]],
+  ["screenShake", ["strength", "speed", "duration", "wait"]],
+  ["camera", ["target", "duration", "wait"]],
+  ["balloon", ["target", "icon", "duration", "wait"]],
+  ["screenBackdrop", ["layer", "variant"]],
+  ["mapAnim", ["id", "anim", "placement", "x", "y", "follow", "layer", "loop", "wait"]],
+  ["stopAnim", ["selector"]],
+  ["shop", ["id", "goods", "sell", "sellList"]],
+  ["battle", ["setup"]],
+  ["ext", ["call", "args"]],
+  ["extChoice", ["call", "args", "prompt", "cancel", "write"]],
+  ["playBgm", ["id", "volume", "pitch"]],
+  ["fadeoutBgm", ["duration"]],
+  ["stopBgm", []],
+  ["pauseBgm", []],
+  ["resumeBgm", []],
+  ["playBgs", ["id", "volume", "pitch"]],
+  ["fadeoutBgs", ["duration"]],
+  ["playMe", ["id", "duration", "volume", "pitch"]],
+  ["playSe", ["id", "volume", "pitch"]],
+  ["saveBgm", []],
+  ["replayBgm", []],
+] as const;
+
 describe("event inspector command fields", () => {
-  test("lists fields for every editable command and leaves opaque commands read-only", () => {
+  test("describes every owned command, including all 28 newer operations", () => {
+    expect(NEWER_COMMAND_FIELDS).toHaveLength(28);
+    for (const [op, keys] of NEWER_COMMAND_FIELDS) {
+      const command = defaultCommand(op);
+      expect(commandFields(command).map((entry) => entry.key), op).toEqual([...keys]);
+      const [row] = commandInspectorRows([command]);
+      expect({ supported: row!.supported, readOnly: row!.readOnly }, op)
+        .toEqual({ supported: true, readOnly: false });
+    }
+
     const editable = EDITABLE_COMMAND_OPS.map((op) => defaultCommand(op));
-    const opaque: Command[] = [
-      { op: "shop", id: "s", goods: [{ item: "potion" }] },
-      { op: "ext", call: "game.test", args: { untouched: true } },
-      { op: "moveControl", target: "player", control: { kind: "speed", value: 6 } },
-      { op: "battle", setup: { enemy: "slime" } },
-      { op: "screenFade", direction: "out", duration: 1 },
-      { op: "screenTint", layer: "night", color: { r: 1, g: 2, b: 3, a: 4 }, duration: 1 },
-      { op: "screenFlash", color: { r: 5, g: 6, b: 7, a: 8 }, intensity: 128, duration: 0.2 },
-      { op: "screenShake", strength: 6, speed: 4, duration: 0.5 },
-      { op: "camera", target: { x: 3, y: 4 }, duration: 1 },
-      { op: "balloon", target: "player", icon: "alert" },
-      { op: "screenBackdrop", layer: "cutscene", variant: "blue" },
-    ];
-    const rows = commandInspectorRows([...editable, ...opaque]);
-    expect(rows.slice(0, editable.length).every((row) => row.supported && !row.readOnly)).toBe(true);
-    expect(rows.slice(editable.length).map((row) => [row.command.op, row.supported, row.fields.length])).toEqual([
-      ["shop", false, 0], ["ext", false, 0], ["moveControl", false, 0], ["battle", false, 0],
-      ["screenFade", false, 0], ["screenTint", false, 0], ["screenFlash", false, 0],
-      ["screenShake", false, 0], ["camera", false, 0], ["balloon", false, 0],
-      ["screenBackdrop", false, 0],
-    ]);
+    expect(commandInspectorRows(editable).every((row) => row.supported && !row.readOnly)).toBe(true);
+    expect(validateProject(projectWith(editable))).toEqual([]);
     expect(commandFields(defaultCommand("choices")).map((entry) => entry.key)).toEqual([
       "prompt", "optionCount", "option:0", "option:1", "cancel",
     ]);
@@ -117,42 +158,149 @@ describe("event inspector command fields", () => {
     expect(validateProject(projectWith(commands))).toEqual([]);
   });
 
-  test("rejects malformed values instead of creating invalid command data", () => {
-    expect(editCommandField(defaultCommand("wait"), "seconds", "0")).toMatchObject({ ok: false });
-    expect(editCommandField(defaultCommand("item"), "count", "100")).toMatchObject({ ok: false });
-    expect(editCommandField(defaultCommand("se"), "name", "Upper Case")).toMatchObject({ ok: false });
-    expect(editCommandField({ op: "ext", call: "game.keep", args: { x: 1 } }, "args", "{}"))
-      .toMatchObject({ ok: false, error: "ext is read-only" });
+  test("successfully edits every parameterized newer command and keeps the project valid", () => {
+    const cases: Array<{
+      op: (typeof NEWER_COMMAND_FIELDS)[number][0];
+      field: string;
+      raw: string;
+      expected: Record<string, unknown>;
+    }> = [
+      { op: "moveControl", field: "control.kind", raw: "speed", expected: { control: { kind: "speed", value: 4 } } },
+      { op: "appearance", field: "opacity", raw: "128", expected: { opacity: 128 } },
+      { op: "layer", field: "variant", raw: "mist", expected: { variant: "mist" } },
+      { op: "tileProperty", field: "enter", raw: "left,up", expected: { enter: ["left", "up"] } },
+      { op: "screenFade", field: "color", raw: "1,2,3,4", expected: { color: { r: 1, g: 2, b: 3, a: 4 } } },
+      { op: "screenTint", field: "color.r", raw: "64", expected: { color: { r: 64 } } },
+      { op: "screenFlash", field: "intensity", raw: "128", expected: { intensity: 128 } },
+      { op: "screenShake", field: "speed", raw: "2.5", expected: { speed: 2.5 } },
+      { op: "camera", field: "target", raw: "tile:1,2", expected: { target: { x: 1, y: 2 } } },
+      { op: "balloon", field: "icon", raw: "spark", expected: { icon: "spark" } },
+      { op: "screenBackdrop", field: "variant", raw: "night", expected: { variant: "night" } },
+      { op: "mapAnim", field: "placement", raw: "target", expected: { target: "player" } },
+      { op: "stopAnim", field: "selector", raw: "id", expected: { id: "animation" } },
+      { op: "shop", field: "goods", raw: '[{"item":"potion","price":7}]', expected: { goods: [{ item: "potion", price: 7 }] } },
+      { op: "battle", field: "setup", raw: '{"enemy":"slime"}', expected: { setup: { enemy: "slime" } } },
+      { op: "ext", field: "args", raw: '{"chapter":2}', expected: { args: { chapter: 2 } } },
+      { op: "extChoice", field: "write", raw: '{"index":"choice.index"}', expected: { write: { index: "choice.index" } } },
+      { op: "playBgm", field: "volume", raw: "70", expected: { volume: 70 } },
+      { op: "fadeoutBgm", field: "duration", raw: "1.5", expected: { duration: 1.5 } },
+      { op: "playBgs", field: "id", raw: "rain", expected: { id: "rain" } },
+      { op: "fadeoutBgs", field: "duration", raw: "0.5", expected: { duration: 0.5 } },
+      { op: "playMe", field: "duration", raw: "4", expected: { duration: 4 } },
+      { op: "playSe", field: "pitch", raw: "120", expected: { pitch: 120 } },
+    ];
+
+    const edited: Command[] = [];
+    for (const entry of cases) {
+      const result = editCommandField(defaultCommand(entry.op), entry.field, entry.raw);
+      expect(result.ok, `${entry.op}.${entry.field}`).toBe(true);
+      if (!result.ok) continue;
+      expect(result.value, `${entry.op}.${entry.field}`).toMatchObject(entry.expected);
+      edited.push(result.value);
+    }
+    edited.push(
+      defaultCommand("stopBgm"), defaultCommand("pauseBgm"), defaultCommand("resumeBgm"),
+      defaultCommand("saveBgm"), defaultCommand("replayBgm"),
+    );
+    expect(validateProject(projectWith(edited))).toEqual([]);
   });
 
-  test("shows audio command fields without exposing field edits", () => {
-    const audio: Command[] = [
-      { op: "playBgm", id: "field", volume: 80, pitch: 90 },
-      { op: "fadeoutBgm", duration: 1.5 },
-      { op: "stopBgm" },
-      { op: "pauseBgm" },
-      { op: "resumeBgm" },
-      { op: "playBgs", id: "rain" },
-      { op: "fadeoutBgs", duration: 0 },
-      { op: "playMe", id: "victory", duration: 4, volume: 75 },
-      { op: "playSe", id: "door", pitch: 120 },
-      { op: "saveBgm" },
-      { op: "replayBgm" },
+  test("rejects invalid JSON, ranges, enums, and schema-breaking edits", () => {
+    const cases: Array<{ name: string; command: Command; field: string; raw: string }> = [
+      { name: "move speed", command: { op: "moveControl", target: "this", control: { kind: "speed", value: 4 } }, field: "control.value", raw: "7" },
+      { name: "appearance range", command: defaultCommand("appearance"), field: "opacity", raw: "256" },
+      { name: "appearance save default invariant", command: defaultCommand("appearance"), field: "saveDefault", raw: "true" },
+      { name: "layer required alternative", command: defaultCommand("layer"), field: "visible", raw: "(unset)" },
+      { name: "tile coordinate", command: defaultCommand("tileProperty"), field: "x", raw: "-1" },
+      { name: "tile duplicate directions", command: defaultCommand("tileProperty"), field: "enter", raw: "left,left" },
+      { name: "fade color range", command: defaultCommand("screenFade"), field: "color", raw: "0,0,0,256" },
+      { name: "tint channel", command: defaultCommand("screenTint"), field: "color.a", raw: "-1" },
+      { name: "flash intensity", command: defaultCommand("screenFlash"), field: "intensity", raw: "256" },
+      { name: "shake strength", command: defaultCommand("screenShake"), field: "strength", raw: "-1" },
+      { name: "camera target", command: defaultCommand("camera"), field: "target", raw: "tile:-1,2" },
+      { name: "waited balloon invariant", command: defaultCommand("balloon"), field: "wait", raw: "true" },
+      { name: "backdrop layer", command: defaultCommand("screenBackdrop"), field: "layer", raw: "" },
+      { name: "shop JSON", command: defaultCommand("shop"), field: "goods", raw: "{" },
+      { name: "shop nonempty goods", command: defaultCommand("shop"), field: "goods", raw: "[]" },
+      { name: "map animation coordinate", command: defaultCommand("mapAnim"), field: "x", raw: "-1" },
+      { name: "map animation target", command: { ...defaultCommand("mapAnim"), target: "player", x: undefined, y: undefined } as Command, field: "target", raw: "this" },
+      { name: "stop animation id", command: { op: "stopAnim", id: "animation" }, field: "id", raw: "bad id" },
+      { name: "extension call", command: defaultCommand("ext"), field: "call", raw: "unnamespaced" },
+      { name: "extension JSON", command: defaultCommand("ext"), field: "args", raw: "[" },
+      { name: "choice write object", command: defaultCommand("extChoice"), field: "write", raw: "[]" },
+      { name: "choice write distinct", command: defaultCommand("extChoice"), field: "write", raw: '{"index":"v","key":"v"}' },
+      { name: "battle JSON", command: defaultCommand("battle"), field: "setup", raw: "{" },
+      { name: "BGM volume", command: defaultCommand("playBgm"), field: "volume", raw: "101" },
+      { name: "BGS pitch", command: defaultCommand("playBgs"), field: "pitch", raw: "49" },
+      { name: "ME duration", command: defaultCommand("playMe"), field: "duration", raw: "-1" },
+      { name: "SE id", command: defaultCommand("playSe"), field: "id", raw: "" },
+      { name: "fade duration", command: defaultCommand("fadeoutBgm"), field: "duration", raw: "-1" },
     ];
-    const rows = commandInspectorRows(audio);
-    expect(rows.every((row) => row.readOnly && !row.supported)).toBe(true);
-    expect(rows.map((row) => row.fields.map((entry) => entry.key))).toEqual([
-      ["id", "volume", "pitch"],
-      ["duration"],
-      [], [], [],
-      ["id", "volume", "pitch"],
-      ["duration"],
-      ["id", "duration", "volume", "pitch"],
-      ["id", "volume", "pitch"],
-      [], [],
-    ]);
-    expect(rows.flatMap((row) => row.fields).every((entry) => entry.readOnly)).toBe(true);
-    expect(editCommandField(audio[0]!, "volume", "50")).toMatchObject({ ok: false, error: "playBgm is read-only" });
+
+    for (const entry of cases) {
+      expect(editCommandField(entry.command, entry.field, entry.raw).ok, entry.name).toBe(false);
+    }
+    for (const op of ["stopBgm", "pauseBgm", "resumeBgm", "saveBgm", "replayBgm"] as const) {
+      expect(commandFields(defaultCommand(op))).toEqual([]);
+      expect(editCommandField(defaultCommand(op), "unknown", "x").ok, op).toBe(false);
+    }
+  });
+
+  test("preserves null versus omitted semantics for optional command fields", () => {
+    let appearance: Command = { op: "appearance", target: "player", sprite: "hero", opacity: 128, visible: true };
+    appearance = edit(appearance, "sprite", "null");
+    expect(appearance).toMatchObject({ sprite: null, opacity: 128, visible: true });
+    appearance = edit(appearance, "sprite", "(unset)");
+    expect(appearance).not.toHaveProperty("sprite");
+    appearance = edit(appearance, "opacity", "null");
+    expect(appearance).toHaveProperty("opacity", null);
+    appearance = edit(appearance, "opacity", "");
+    expect(appearance).not.toHaveProperty("opacity");
+    appearance = edit(appearance, "visible", "null");
+    expect(appearance).toHaveProperty("visible", null);
+    appearance = edit(appearance, "sprite", "hero");
+    appearance = edit(appearance, "visible", "(unset)");
+    expect(appearance).not.toHaveProperty("visible");
+
+    let layer: Command = { op: "layer", layer: "weather", visible: true, variant: "rain" };
+    layer = edit(layer, "visible", "null");
+    expect(layer).toHaveProperty("visible", null);
+    layer = edit(layer, "visible", "(unset)");
+    expect(layer).not.toHaveProperty("visible");
+    layer = edit(layer, "variant", "null");
+    expect(layer).toHaveProperty("variant", null);
+    layer = edit(layer, "visible", "true");
+    layer = edit(layer, "variant", "(unset)");
+    expect(layer).not.toHaveProperty("variant");
+
+    let tile: Command = { op: "tileProperty", x: 0, y: 0, passage: "block", enter: ["left"] };
+    tile = edit(tile, "passage", "null");
+    expect(tile).toHaveProperty("passage", null);
+    tile = edit(tile, "passage", "(unset)");
+    expect(tile).not.toHaveProperty("passage");
+    tile = edit(tile, "enter", "[]");
+    expect(tile).toHaveProperty("enter", []);
+    tile = edit(tile, "enter", "null");
+    expect(tile).toHaveProperty("enter", null);
+
+    let fade: Command = edit(defaultCommand("screenFade"), "color", "1,2,3,4");
+    fade = edit(fade, "color", "(unset)");
+    expect(fade).not.toHaveProperty("color");
+    let audio: Command = edit(defaultCommand("playBgm"), "volume", "70");
+    audio = edit(audio, "volume", "(unset)");
+    expect(audio).not.toHaveProperty("volume");
+    let backdrop: Command = edit(defaultCommand("screenBackdrop"), "variant", "null");
+    expect(backdrop).toHaveProperty("variant", null);
+    backdrop = edit(backdrop, "variant", "(unset)");
+    expect(backdrop).not.toHaveProperty("variant");
+    let animation: Command = edit(defaultCommand("mapAnim"), "loop", "true");
+    animation = edit(animation, "loop", "(unset)");
+    expect(animation).not.toHaveProperty("loop");
+    let choice: Command = edit(defaultCommand("extChoice"), "write", '{"index":"choice"}');
+    choice = edit(choice, "write", "(unset)");
+    expect(choice).not.toHaveProperty("write");
+
+    expect(validateProject(projectWith([appearance, layer, tile, fade, audio, backdrop, animation, choice]))).toEqual([]);
   });
 });
 
@@ -173,7 +321,7 @@ describe("event inspector page and condition fields", () => {
     expect(validateProject(projectWith([], page))).toEqual([]);
   });
 
-  test("adds, edits and deletes AND conditions while preserving ext payloads", () => {
+  test("adds, edits and deletes AND conditions while preserving unrelated payloads", () => {
     const ext: Condition = { kind: "ext", call: "quest.ready", args: { exact: [1, 2] } };
     let page: Page = { trigger: "action", condition: { switch: "legacy", all: [ext] }, commands: [] };
     page = addPageCondition(page, "gold");
@@ -182,35 +330,203 @@ describe("event inspector page and condition fields", () => {
     page = edited.ok ? edited.value : page;
     expect(page.condition?.all?.[0]).toBe(ext);
     expect(page.condition?.all?.[1]).toEqual({ kind: "gold", amount: 25 });
-    const refused = editPageConditionField(page, { kind: "all", index: 0 }, "args", "{}");
-    expect(refused).toMatchObject({ ok: false, error: "extension conditions are read-only" });
+    const extensionEdit = editPageConditionField(page, { kind: "all", index: 0 }, "args", '{"chapter":3}');
+    expect(extensionEdit.ok).toBe(true);
+    if (extensionEdit.ok) {
+      expect(extensionEdit.value.condition?.all?.[0]).toEqual({ kind: "ext", call: "quest.ready", args: { chapter: 3 } });
+    }
     page = deletePageCondition(page, { kind: "flat", key: "switch" });
     expect(page.condition).toEqual({ all: [ext, { kind: "gold", amount: 25 }] });
     page = deletePageCondition(page, { kind: "all", index: 1 });
     expect(page.condition?.all).toEqual([ext]);
   });
 
-  test("shows and preserves BGM conditions as read-only", () => {
-    const condition: Condition = { kind: "bgmPlaying", id: "field", negate: true };
-    expect(conditionFields(condition)).toEqual([
-      expect.objectContaining({ key: "id", value: "field", readOnly: true }),
-      expect.objectContaining({ key: "negate", value: true, readOnly: true }),
-    ]);
+  test("describes and edits all requested newer condition kinds", () => {
+    const descriptors = [
+      ["bgmPlaying", ["id", "negate"]],
+      ["appearance", ["target", "sprite"]],
+      ["tileProperty", ["x", "y", "passage", "enter", "exit"]],
+      ["worldIdle", ["negate"]],
+      ["ext", ["call", "args"]],
+    ] as const;
+    for (const [kind, keys] of descriptors) {
+      const fields = conditionFields(defaultCondition(kind));
+      expect(fields.map((entry) => entry.key), kind).toEqual([...keys]);
+      expect(fields.every((entry) => entry.readOnly !== true), kind).toBe(true);
+    }
 
-    const page: Page = { trigger: "action", condition: { all: [condition] }, commands: [] };
-    expect(editPageConditionField(page, { kind: "all", index: 0 }, "id", "other"))
-      .toMatchObject({ ok: false, error: "bgmPlaying conditions are read-only" });
-
-    const conditional: Command = { op: "if", if: condition, then: [] };
-    expect(commandFields(conditional)).toEqual([
-      expect.objectContaining({ key: "if.kind", readOnly: true }),
-      expect.objectContaining({ key: "if.id", readOnly: true }),
-      expect.objectContaining({ key: "if.negate", readOnly: true }),
-      expect.objectContaining({ key: "else" }),
+    let page: Page = {
+      trigger: "action",
+      condition: { all: descriptors.map(([kind]) => defaultCondition(kind)) },
+      commands: [],
+    };
+    const edits = [
+      [0, "id", "field"],
+      [1, "target", "event:event"],
+      [2, "enter", "left,up"],
+      [3, "negate", "true"],
+      [4, "args", '{"chapter":2}'],
+    ] as const;
+    for (const [index, fieldName, raw] of edits) {
+      const result = editPageConditionField(page, { kind: "all", index }, fieldName, raw);
+      expect(result.ok, `${descriptors[index]![0]}.${fieldName}`).toBe(true);
+      if (result.ok) page = result.value;
+    }
+    expect(page.condition?.all).toEqual([
+      { kind: "bgmPlaying", id: "field", negate: false },
+      { kind: "appearance", target: { event: "event" }, sprite: null },
+      { kind: "tileProperty", x: 0, y: 0, passage: null, enter: ["left", "up"] },
+      { kind: "worldIdle", negate: true },
+      { kind: "ext", call: "game.condition", args: { chapter: 2 } },
     ]);
-    expect(editCommandField(conditional, "if.kind", "switch"))
-      .toMatchObject({ ok: false, error: "bgmPlaying conditions are read-only" });
-    expect(editCommandField(conditional, "if.id", "other"))
-      .toMatchObject({ ok: false, error: "bgmPlaying conditions are read-only" });
+    expect(validateProject(projectWith([], page))).toEqual([]);
+
+    const conditional: Command = { op: "if", if: { kind: "bgmPlaying", id: "field" }, then: [] };
+    expect(commandFields(conditional).map((entry) => [entry.key, entry.readOnly ?? false])).toEqual([
+      ["if.kind", false], ["if.id", false], ["if.negate", false], ["else", false],
+    ]);
+    expect(editCommandField(conditional, "if.id", "rain"))
+      .toMatchObject({ ok: true, value: { if: { id: "rain" } } });
+  });
+
+  test("rejects invalid newer-condition values and schema-breaking omission", () => {
+    const cases: Array<{ name: string; condition: Condition; field: string; raw: string }> = [
+      { name: "BGM boolean", condition: defaultCondition("bgmPlaying"), field: "negate", raw: "maybe" },
+      { name: "appearance target", condition: defaultCondition("appearance"), field: "target", raw: "bad id" },
+      { name: "appearance sprite", condition: defaultCondition("appearance"), field: "sprite", raw: "" },
+      { name: "tile coordinate", condition: defaultCondition("tileProperty"), field: "x", raw: "-1" },
+      { name: "tile duplicate directions", condition: defaultCondition("tileProperty"), field: "exit", raw: "up,up" },
+      { name: "tile required comparison", condition: defaultCondition("tileProperty"), field: "passage", raw: "(unset)" },
+      { name: "world boolean", condition: defaultCondition("worldIdle"), field: "negate", raw: "maybe" },
+      { name: "extension call", condition: defaultCondition("ext"), field: "call", raw: "unnamespaced" },
+      { name: "extension JSON", condition: defaultCondition("ext"), field: "args", raw: "{" },
+    ];
+    for (const entry of cases) {
+      const page: Page = { trigger: "action", condition: { all: [entry.condition] }, commands: [] };
+      expect(editPageConditionField(page, { kind: "all", index: 0 }, entry.field, entry.raw).ok, entry.name)
+        .toBe(false);
+    }
+  });
+
+  test("preserves condition null, empty-list, and omitted meanings", () => {
+    let bgmPage: Page = { trigger: "action", condition: { all: [{ kind: "bgmPlaying", id: "field" }] }, commands: [] };
+    const anyBgm = editPageConditionField(bgmPage, { kind: "all", index: 0 }, "id", "(any)");
+    expect(anyBgm.ok).toBe(true);
+    if (anyBgm.ok) bgmPage = anyBgm.value;
+    expect(bgmPage.condition?.all?.[0]).not.toHaveProperty("id");
+
+    let tilePage: Page = {
+      trigger: "action",
+      condition: { all: [{ kind: "tileProperty", x: 0, y: 0, passage: "block", enter: ["left"] }] },
+      commands: [],
+    };
+    let result = editPageConditionField(tilePage, { kind: "all", index: 0 }, "passage", "null");
+    expect(result.ok).toBe(true);
+    if (result.ok) tilePage = result.value;
+    expect(tilePage.condition?.all?.[0]).toHaveProperty("passage", null);
+    result = editPageConditionField(tilePage, { kind: "all", index: 0 }, "passage", "(unset)");
+    expect(result.ok).toBe(true);
+    if (result.ok) tilePage = result.value;
+    expect(tilePage.condition?.all?.[0]).not.toHaveProperty("passage");
+    result = editPageConditionField(tilePage, { kind: "all", index: 0 }, "enter", "[]");
+    expect(result.ok).toBe(true);
+    if (result.ok) tilePage = result.value;
+    expect(tilePage.condition?.all?.[0]).toHaveProperty("enter", []);
+    result = editPageConditionField(tilePage, { kind: "all", index: 0 }, "enter", "null");
+    expect(result.ok).toBe(true);
+    if (result.ok) tilePage = result.value;
+    expect(tilePage.condition?.all?.[0]).toHaveProperty("enter", null);
+
+    const appearancePage: Page = { trigger: "action", condition: { all: [{ kind: "appearance", target: "player", sprite: "hero" }] }, commands: [] };
+    const reset = editPageConditionField(appearancePage, { kind: "all", index: 0 }, "sprite", "null");
+    expect(reset).toMatchObject({ ok: true, value: { condition: { all: [{ sprite: null }] } } });
+    expect(validateProject(projectWith([], bgmPage))).toEqual([]);
+    expect(validateProject(projectWith([], tilePage))).toEqual([]);
+    expect(reset.ok ? validateProject(projectWith([], reset.value)) : ["edit failed"]).toEqual([]);
+  });
+
+  test("all condition defaults are field-owned and schema-valid in one page", () => {
+    const all = CONDITION_KINDS.map((kind) => defaultCondition(kind));
+    expect(all.flatMap((condition) => conditionFields(condition)).every((entry) => entry.readOnly !== true)).toBe(true);
+    expect(validateProject(projectWith([], { condition: { all } }))).toEqual([]);
+  });
+});
+
+describe("event editor resource catalogs", () => {
+  test("collects deterministic project resources and attaches field options and hints", () => {
+    const commands: Command[] = [
+      { op: "layer", layer: "weather", variant: "rain" },
+      { op: "screenTint", layer: "overlay", color: { r: 0, g: 0, b: 0, a: 64 }, duration: 0 },
+      { op: "screenBackdrop", layer: "cutscene", variant: "night" },
+      { op: "mapAnim", id: "spark-instance", anim: "spark", x: 0, y: 0 },
+      { op: "ext", call: "quest.run", args: null },
+      { op: "extChoice", call: "party.pick", args: null, prompt: "Choose" },
+      { op: "if", if: { kind: "ext", call: "quest.ready", args: null }, then: [] },
+      { op: "shop", id: "shop", goods: [{ item: "potion", condition: { all: [{ kind: "ext", call: "shop.available", args: null }] } }] },
+      { op: "battle", setup: null, onWin: [{ op: "ext", call: "battle.win", args: null }] },
+    ];
+    const project = projectWith(commands, {
+      condition: { all: [{ kind: "ext", call: "page.ready", args: null }] },
+    });
+    project.commonEvents![0]!.commands = [{ op: "ext", call: "common.tick", args: null }];
+    project.maps[0]!.events!.push({ id: "guard", x: 1, y: 1, pages: [{ trigger: "action", commands: [] }] });
+    project.maps.push({
+      id: "z-map", name: "Other", width: 1, height: 1, sheets: ["town"], ground: ["town.0"],
+      events: [{ id: "remote", x: 0, y: 0, pages: [{ trigger: "action", commands: [] }] }],
+    });
+    expect(validateProject(project)).toEqual([]);
+
+    const resources = eventEditorResources(project, project.maps[0]);
+    expect(resources).toEqual({
+      maps: ["map", "z-map"],
+      items: ["item", "potion"],
+      sprites: ["hero", "npc"],
+      animations: ["animation", "spark"],
+      audio: ["audio", "door", "field", "rain", "sound", "victory"],
+      commonEvents: ["ce"],
+      events: ["event", "guard"],
+      layers: ["cutscene", "overlay", "weather"],
+      layerVariants: { cutscene: ["night"], weather: ["rain"] },
+      animationInstances: ["spark-instance"],
+      extensionCalls: ["battle.win", "common.tick", "page.ready", "party.pick", "quest.ready", "quest.run", "shop.available"],
+    });
+    expect(eventEditorResources(project).events).toEqual(["event", "guard", "remote"]);
+
+    const fieldCases: Array<{ command: Command; key: string; options: readonly string[] }> = [
+      { command: defaultCommand("transfer"), key: "map", options: resources.maps },
+      { command: defaultCommand("item"), key: "item", options: resources.items },
+      { command: defaultCommand("appearance"), key: "sprite", options: resources.sprites },
+      { command: { op: "layer", layer: "weather", variant: "rain" }, key: "layer", options: resources.layers },
+      { command: { op: "layer", layer: "weather", variant: "rain" }, key: "variant", options: ["rain"] },
+      { command: defaultCommand("screenTint"), key: "layer", options: resources.layers },
+      { command: defaultCommand("mapAnim"), key: "anim", options: resources.animations },
+      { command: { op: "stopAnim", id: "spark-instance" }, key: "id", options: resources.animationInstances },
+      { command: defaultCommand("ext"), key: "call", options: resources.extensionCalls },
+      { command: defaultCommand("playBgm"), key: "id", options: resources.audio },
+      { command: defaultCommand("common"), key: "id", options: resources.commonEvents },
+    ];
+    for (const entry of fieldCases) {
+      const descriptor = commandFields(entry.command, resources).find((field) => field.key === entry.key);
+      expect(descriptor, `${entry.command.op}.${entry.key}`).toBeDefined();
+      expect(descriptor?.options, `${entry.command.op}.${entry.key}`).toEqual(entry.options);
+      expect(descriptor?.hint?.length, `${entry.command.op}.${entry.key}`).toBeGreaterThan(0);
+    }
+
+    const conditionCases: Array<{ condition: Condition; key: string; options: readonly string[] }> = [
+      { condition: defaultCondition("item"), key: "id", options: resources.items },
+      { condition: defaultCondition("bgmPlaying"), key: "id", options: resources.audio },
+      { condition: defaultCondition("appearance"), key: "sprite", options: resources.sprites },
+      { condition: defaultCondition("ext"), key: "call", options: resources.extensionCalls },
+    ];
+    for (const entry of conditionCases) {
+      const descriptor = conditionFields(entry.condition, "", resources).find((field) => field.key === entry.key);
+      expect(descriptor, `${entry.condition.kind}.${entry.key}`).toBeDefined();
+      expect(descriptor?.options, `${entry.condition.kind}.${entry.key}`).toEqual(entry.options);
+      expect(descriptor?.hint?.length, `${entry.condition.kind}.${entry.key}`).toBeGreaterThan(0);
+    }
+
+    const noAnimations = commandFields(defaultCommand("mapAnim")).find((field) => field.key === "anim");
+    expect(noAnimations?.options).toEqual([]);
+    expect(noAnimations?.hint).toContain("No project animations");
   });
 });

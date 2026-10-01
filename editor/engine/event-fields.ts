@@ -6,13 +6,16 @@ import type {
   Command,
   Condition,
   Dir,
+  JsonValue,
   MoveRoute,
   Page,
   PageCondition,
+  ScreenColor,
   TransferCoordinate,
   TransferDirection,
   TransferMap,
 } from "../../src/engine/types.ts";
+import { validateSchema, type Schema } from "../../src/engine/schema-validate.ts";
 import {
   BASIC_MOVE_STEPS,
   CONDITION_KINDS,
@@ -24,6 +27,11 @@ import {
   type ConditionKind,
   type FlatCommandRow,
 } from "./commands.ts";
+import { PROJECT_SCHEMA } from "./projects.ts";
+import {
+  EMPTY_EVENT_EDITOR_RESOURCES,
+  type EventEditorResources,
+} from "./event-resources.ts";
 
 export type FieldKind = "text" | "integer" | "number" | "boolean" | "enum";
 
@@ -33,6 +41,8 @@ export interface EditableField {
   value: string | number | boolean | null;
   kind: FieldKind;
   options?: readonly string[];
+  /** Visible guidance for free-text fields, especially project resources. */
+  hint?: string;
   readOnly?: boolean;
 }
 
@@ -50,6 +60,14 @@ const VAR_MODES = [
 ] as const;
 const IDENTIFIER = /^[A-Za-z0-9_.-]+$/;
 const SOUND_ID = /^[a-z0-9_-]+$/;
+const EXTENSION_CALL = /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/;
+const OMIT = "(unset)";
+const NULL = "null";
+const OPTIONAL_BOOLEAN = [OMIT, "true", "false"] as const;
+const NULLABLE_BOOLEAN = [OMIT, "true", "false", NULL] as const;
+const OPTIONAL_PASSAGE = [OMIT, "pass", "block", NULL] as const;
+const COMMAND_SCHEMA = (PROJECT_SCHEMA as { $defs: { command: Schema } }).$defs.command;
+const CONDITION_SCHEMA = (PROJECT_SCHEMA as { $defs: { condition: Schema } }).$defs.condition;
 
 const field = (
   key: string,
@@ -58,7 +76,36 @@ const field = (
   kind: FieldKind = "text",
   options?: readonly string[],
   readOnly = false,
-): EditableField => ({ key, label, value, kind, ...(options ? { options } : {}), ...(readOnly ? { readOnly } : {}) });
+  hint?: string,
+): EditableField => ({
+  key,
+  label,
+  value,
+  kind,
+  ...(options ? { options } : {}),
+  ...(hint ? { hint } : {}),
+  ...(readOnly ? { readOnly } : {}),
+});
+
+function optionValue(value: unknown): string | number | boolean | null {
+  return value === undefined ? OMIT : value === null ? NULL : value as string | number | boolean;
+}
+
+function choicesHint(label: string, options: readonly string[]): string {
+  return options.length > 0
+    ? `${label}: ${options.join(", ")}`
+    : `No ${label.toLowerCase()} are declared in this project`;
+}
+
+function resourceField(
+  key: string,
+  label: string,
+  value: EditableField["value"],
+  options: readonly string[],
+  noun: string,
+): EditableField {
+  return field(key, label, value, "text", options, false, choicesHint(noun, options));
+}
 
 function good<T>(value: T): FieldEdit<T> {
   return { ok: true, value };
@@ -99,6 +146,123 @@ function identifier(raw: string, label: string, pattern = IDENTIFIER): FieldEdit
   return raw.length > 0 && pattern.test(raw) ? good(raw) : bad(`${label} has invalid characters`);
 }
 
+function jsonValue(raw: string, label: string): FieldEdit<JsonValue> {
+  try {
+    return good(JSON.parse(raw) as JsonValue);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message.replace(/^JSON\.parse: /, "") : String(error);
+    return bad(`${label} must be valid JSON (${reason})`);
+  }
+}
+
+function schemaError(value: unknown, schema: Schema): string | null {
+  const errors = validateSchema(PROJECT_SCHEMA as Schema, value, schema);
+  if (errors.length === 0) return null;
+  const first = errors[0]!;
+  return `${first.path}: ${first.msg}`;
+}
+
+function schemaCommand(command: Command): FieldEdit<Command> {
+  const error = schemaError(command, COMMAND_SCHEMA);
+  return error ? bad(`command does not match the project schema (${error})`) : good(command);
+}
+
+function schemaCondition(condition: Condition): FieldEdit<Condition> {
+  const error = schemaError(condition, CONDITION_SCHEMA);
+  return error ? bad(`condition does not match the project schema (${error})`) : good(condition);
+}
+
+function optionalBoolean(raw: string, label: string, nullable: boolean): FieldEdit<boolean | null | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  if (nullable && raw === NULL) return good(null);
+  const value = bool(raw);
+  return value === null ? bad(`${label} must be true, false${nullable ? ", null" : ""}, or ${OMIT}`) : good(value);
+}
+
+function optionalString(raw: string, label: string, nullable: boolean): FieldEdit<string | null | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  if (nullable && raw === NULL) return good(null);
+  return raw.length > 0 ? good(raw) : bad(`${label} is required`);
+}
+
+function optionalInteger(
+  raw: string,
+  label: string,
+  min?: number,
+  max?: number,
+  nullable = false,
+): FieldEdit<number | null | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  if (nullable && raw === NULL) return good(null);
+  return integer(raw, label, min, max);
+}
+
+function optionalNumber(raw: string, label: string, min?: number): FieldEdit<number | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  return finite(raw, label, min);
+}
+
+function setOptional<T extends object>(value: T, key: string, next: unknown): T {
+  const copy = { ...value } as unknown as Record<string, unknown>;
+  if (next === undefined) delete copy[key];
+  else copy[key] = next;
+  return copy as unknown as T;
+}
+
+function directionList(raw: string, label: string): FieldEdit<Dir[] | null | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  if (raw === NULL) return good(null);
+  if (raw === "[]" || raw.toLowerCase() === "none") return good([]);
+  let values: string[];
+  if (raw.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+        return bad(`${label} must be a JSON array of directions`);
+      }
+      values = parsed;
+    } catch {
+      return bad(`${label} must be a comma list or JSON array of directions`);
+    }
+  } else {
+    values = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  }
+  const invalid = values.find((value) => !DIRS.includes(value as Dir));
+  if (invalid) return bad(`${label} contains invalid direction ${invalid}`);
+  if (new Set(values).size !== values.length) return bad(`${label} directions must be unique`);
+  return good(values as Dir[]);
+}
+
+function directionListValue(value: Dir[] | null | undefined): string {
+  if (value === undefined) return OMIT;
+  if (value === null) return NULL;
+  return value.length === 0 ? "[]" : value.join(",");
+}
+
+function colorFields(color: ScreenColor, prefix = "color."): EditableField[] {
+  return (["r", "g", "b", "a"] as const).map((channel) =>
+    field(`${prefix}${channel}`, channel.toUpperCase(), color[channel], "integer"));
+}
+
+function editColor(color: ScreenColor, key: string, raw: string): FieldEdit<ScreenColor> {
+  if (!(key === "r" || key === "g" || key === "b" || key === "a")) return bad(`unknown color channel ${key}`);
+  const value = integer(raw, key, 0, 255);
+  return value.ok ? good({ ...color, [key]: value.value }) : value;
+}
+
+function cameraTarget(value: Extract<Command, { op: "camera" }>["target"]): string {
+  if (typeof value === "object" && "x" in value) return `tile:${value.x},${value.y}`;
+  return target(value);
+}
+
+function parseCameraTarget(raw: string): FieldEdit<Extract<Command, { op: "camera" }>["target"]> {
+  if (raw.startsWith("tile:")) {
+    const match = /^tile:(\d+),(\d+)$/.exec(raw);
+    return match ? good({ x: Number(match[1]), y: Number(match[2]) }) : bad("camera target tile must use tile:<x>,<y>");
+  }
+  return parseTarget(raw, true);
+}
+
 export function nextFieldValue(field: EditableField, delta = 1): string {
   if (field.kind === "boolean") return field.value === true || String(field.value).toLowerCase() === "true" ? "false" : "true";
   if (field.kind !== "enum" || !field.options?.length) return String(field.value ?? "");
@@ -122,7 +286,11 @@ function routeSteps(route: MoveRoute): string {
   return route.steps.map((step) => typeof step === "string" ? step : JSON.stringify(step)).join(",");
 }
 
-export function conditionFields(condition: Condition, prefix = ""): EditableField[] {
+export function conditionFields(
+  condition: Condition,
+  prefix = "",
+  resources: EventEditorResources = EMPTY_EVENT_EDITOR_RESOURCES,
+): EditableField[] {
   const p = (name: string) => `${prefix}${name}`;
   switch (condition.kind) {
     case "switch":
@@ -136,7 +304,7 @@ export function conditionFields(condition: Condition, prefix = ""): EditableFiel
     case "selfSwitch":
       return [field(p("key"), "KEY", condition.key, "enum", ["A", "B", "C", "D"]), field(p("value"), "VALUE", condition.value ?? true, "boolean", BOOLS)];
     case "item":
-      return [field(p("id"), "ITEM", condition.id), field(p("count"), "COUNT", condition.count, "integer")];
+      return [resourceField(p("id"), "ITEM", condition.id, resources.items, "Project items"), field(p("count"), "COUNT", condition.count, "integer")];
     case "gold":
       return [field(p("amount"), "AMOUNT", condition.amount, "integer")];
     case "facing":
@@ -145,22 +313,33 @@ export function conditionFields(condition: Condition, prefix = ""): EditableFiel
       return [field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS)];
     case "bgmPlaying":
       return [
-        field(p("id"), "BGM", condition.id ?? "(any)", "text", undefined, true),
-        field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS, true),
+        resourceField(p("id"), "BGM", condition.id ?? "(any)", resources.audio, "Project audio ids; use (any) for any BGM"),
+        field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS),
       ];
     case "ext":
-      return [field(p("call"), "CALL", condition.call, "text", undefined, true), field(p("args"), "ARGS", JSON.stringify(condition.args), "text", undefined, true)];
+      return [
+        resourceField(p("call"), "CALL", condition.call, resources.extensionCalls, "Authored extension calls"),
+        field(p("args"), "ARGS JSON", JSON.stringify(condition.args)),
+      ];
     case "appearance":
-      return [field(p("target"), "TARGET", JSON.stringify(condition.target), "text", undefined, true), field(p("sprite"), "SPRITE", condition.sprite ?? "null", "text", undefined, true)];
+      return [
+        field(p("target"), "TARGET", target(condition.target)),
+        resourceField(p("sprite"), "SPRITE", condition.sprite ?? NULL, resources.sprites, "Project sprites; use null for the default"),
+      ];
     case "tileProperty":
       return [
-        field(p("x"), "X", condition.x, "integer", undefined, true), field(p("y"), "Y", condition.y, "integer", undefined, true),
-        field(p("props"), "PROPS", JSON.stringify({ passage: condition.passage, enter: condition.enter, exit: condition.exit }), "text", undefined, true),
+        field(p("x"), "X", condition.x, "integer"), field(p("y"), "Y", condition.y, "integer"),
+        field(p("passage"), "PASSAGE", optionValue(condition.passage), "enum", OPTIONAL_PASSAGE),
+        field(p("enter"), "ENTER", directionListValue(condition.enter)),
+        field(p("exit"), "EXIT", directionListValue(condition.exit)),
       ];
   }
 }
 
-export function commandFields(command: Command): EditableField[] {
+export function commandFields(
+  command: Command,
+  resources: EventEditorResources = EMPTY_EVENT_EDITOR_RESOURCES,
+): EditableField[] {
   switch (command.op) {
     case "text":
       return [field("lines", "LINES", command.lines.join("\n")), field("cps", "CPS", command.cps ?? "", "integer")];
@@ -190,13 +369,13 @@ export function commandFields(command: Command): EditableField[] {
       const conditionReadOnly = !isEditableCondition(command.if);
       return [
         field("if.kind", "KIND", command.if.kind, "enum", CONDITION_KINDS, conditionReadOnly),
-        ...conditionFields(command.if, "if."),
+        ...conditionFields(command.if, "if.", resources),
         field("else", "ELSE", command.else !== undefined, "boolean", BOOLS),
       ];
     }
     case "transfer":
       return [
-        field("map", "MAP", operand(command.map)), field("x", "X", operand(command.x)),
+        resourceField("map", "MAP", operand(command.map), resources.maps, "Project maps"), field("x", "X", operand(command.x)),
         field("y", "Y", operand(command.y)), field("dir", "DIR", command.dir ? operand(command.dir) : "keep"),
         field("fade", "FADE", command.fade ?? "", "number"),
       ];
@@ -209,54 +388,184 @@ export function commandFields(command: Command): EditableField[] {
       ];
     case "wait": return [field("seconds", "SECONDS", command.seconds, "number")];
     case "gold": return [field("set", "MODE", command.set, "enum", ["add", "sub"]), field("amount", "AMOUNT", command.amount, "integer")];
-    case "item": return [field("item", "ITEM", command.item), field("set", "MODE", command.set, "enum", ["add", "sub"]), field("count", "COUNT", command.count, "integer")];
-    case "se": return [field("name", "NAME", command.name), field("volume", "VOLUME", command.volume ?? "", "integer"), field("pitch", "PITCH", command.pitch ?? "", "integer")];
+    case "item": return [resourceField("item", "ITEM", command.item, resources.items, "Project items"), field("set", "MODE", command.set, "enum", ["add", "sub"]), field("count", "COUNT", command.count, "integer")];
+    case "se": return [resourceField("name", "NAME", command.name, resources.audio, "Project audio ids"), field("volume", "VOLUME", command.volume ?? "", "integer"), field("pitch", "PITCH", command.pitch ?? "", "integer")];
     case "playBgm":
     case "playBgs":
     case "playSe":
       return [
-        field("id", "ID", command.id, "text", undefined, true),
-        field("volume", "VOLUME", command.volume ?? "", "integer", undefined, true),
-        field("pitch", "PITCH", command.pitch ?? "", "integer", undefined, true),
+        resourceField("id", "ID", command.id, resources.audio, "Project audio ids"),
+        field("volume", "VOLUME", command.volume ?? "", "integer"),
+        field("pitch", "PITCH", command.pitch ?? "", "integer"),
       ];
     case "playMe":
       return [
-        field("id", "ID", command.id, "text", undefined, true),
-        field("duration", "DURATION", command.duration, "number", undefined, true),
-        field("volume", "VOLUME", command.volume ?? "", "integer", undefined, true),
-        field("pitch", "PITCH", command.pitch ?? "", "integer", undefined, true),
+        resourceField("id", "ID", command.id, resources.audio, "Project audio ids"),
+        field("duration", "DURATION", command.duration, "number"),
+        field("volume", "VOLUME", command.volume ?? "", "integer"),
+        field("pitch", "PITCH", command.pitch ?? "", "integer"),
       ];
     case "fadeoutBgm":
     case "fadeoutBgs":
-      return [field("duration", "DURATION", command.duration, "number", undefined, true)];
-    case "common": return [field("id", "ID", command.id)];
+      return [field("duration", "DURATION", command.duration, "number")];
+    case "common": return [resourceField("id", "ID", command.id, resources.commonEvents, "Common events")];
     case "place": return [field("target", "TARGET", target(command.target)), field("x", "X", command.x, "integer"), field("y", "Y", command.y, "integer"), field("dir", "DIR", command.dir ?? "down", "enum", DIRS)];
     case "erase":
     case "exit":
     case "lockInput":
     case "unlockInput": return [];
-    case "shop":
-    case "ext":
-    case "extChoice":
-    case "moveControl":
+    case "moveControl": {
+      const fields = [
+        field("target", "TARGET", target(command.target)),
+        field("control.kind", "CONTROL", command.control.kind, "enum", [
+          "wander", "moveType", "stop", "speed", "run", "frequency", "directionFix", "through", "facingMode",
+        ]),
+      ];
+      switch (command.control.kind) {
+        case "wander":
+          fields.push(
+            field("control.bounds", "BOUNDS", command.control.bounds
+              ? `${command.control.bounds.x},${command.control.bounds.y},${command.control.bounds.width},${command.control.bounds.height}`
+              : OMIT),
+            field("control.frequency", "FREQUENCY", command.control.frequency ?? OMIT, "integer"),
+          );
+          break;
+        case "moveType":
+          fields.push(field("control.value", "VALUE", command.control.value, "enum", ["page", "static", "approach"]));
+          break;
+        case "speed":
+        case "frequency":
+          fields.push(field("control.value", "VALUE", command.control.value, "integer"));
+          break;
+        case "run":
+        case "directionFix":
+        case "through":
+          fields.push(field("control.value", "VALUE", command.control.value, "boolean", BOOLS));
+          break;
+        case "facingMode":
+          fields.push(field("control.value", "VALUE", command.control.value, "enum", ["followMovement", "locked", "scripted"]));
+          break;
+        case "stop":
+          break;
+      }
+      return fields;
+    }
     case "appearance":
+      return [
+        field("target", "TARGET", target(command.target)),
+        resourceField("sprite", "SPRITE", optionValue(command.sprite), resources.sprites, `Project sprites; use ${NULL} to reset or ${OMIT} to leave unchanged`),
+        field("opacity", "OPACITY", optionValue(command.opacity), "text", undefined, false, `0-255, ${NULL}, or ${OMIT}`),
+        field("visible", "VISIBLE", optionValue(command.visible), "enum", NULLABLE_BOOLEAN),
+        field("saveDefault", "SAVE DEFAULT", command.saveDefault ?? false, "boolean", BOOLS),
+      ];
     case "layer":
+      return [
+        resourceField("layer", "LAYER", command.layer, resources.layers, "Authored presentation layers"),
+        field("visible", "VISIBLE", optionValue(command.visible), "enum", NULLABLE_BOOLEAN),
+        resourceField("variant", "VARIANT", optionValue(command.variant), resources.layerVariants[command.layer] ?? [], `Authored variants for ${command.layer}; use ${NULL} to reset or ${OMIT} to leave unchanged`),
+      ];
     case "tileProperty":
+      return [
+        field("x", "X", command.x, "integer"), field("y", "Y", command.y, "integer"),
+        field("passage", "PASSAGE", optionValue(command.passage), "enum", OPTIONAL_PASSAGE),
+        field("enter", "ENTER", directionListValue(command.enter), "text", undefined, false, `Comma-separated directions, [], ${NULL}, or ${OMIT}`),
+        field("exit", "EXIT", directionListValue(command.exit), "text", undefined, false, `Comma-separated directions, [], ${NULL}, or ${OMIT}`),
+      ];
     case "screenFade":
+      return [
+        field("direction", "DIRECTION", command.direction, "enum", ["out", "in"]),
+        field("duration", "DURATION", command.duration, "number"),
+        field("color", "COLOR", command.color === undefined ? OMIT : `${command.color.r},${command.color.g},${command.color.b},${command.color.a}`),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "screenTint":
+      return [
+        resourceField("layer", "LAYER", command.layer, resources.layers, "Authored presentation layers"),
+        ...colorFields(command.color),
+        field("duration", "DURATION", command.duration, "number"),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "screenFlash":
+      return [
+        ...colorFields(command.color),
+        field("intensity", "INTENSITY", command.intensity, "integer"),
+        field("duration", "DURATION", command.duration, "number"),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "screenShake":
+      return [
+        field("strength", "STRENGTH", command.strength, "number"),
+        field("speed", "SPEED", command.speed, "number"),
+        field("duration", "DURATION", command.duration, "number"),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "camera":
+      return [
+        field("target", "TARGET", cameraTarget(command.target), "text", undefined, false, "player, this, event:<id>, or tile:<x>,<y>"),
+        field("duration", "DURATION", command.duration, "number"),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "balloon":
+      return [
+        field("target", "TARGET", target(command.target)),
+        resourceField("icon", "ICON", command.icon ?? OMIT, resources.animations, `Project animations; use ${OMIT} to clear`),
+        field("duration", "DURATION", command.duration ?? OMIT, "number", undefined, false, `Non-negative seconds or ${OMIT}`),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "screenBackdrop":
+      return [
+        resourceField("layer", "LAYER", command.layer, resources.layers, "Authored backdrop layers"),
+        resourceField("variant", "BACKGROUND", optionValue(command.variant), resources.layerVariants[command.layer] ?? [], `Authored backgrounds for ${command.layer}; use ${NULL} or ${OMIT} to close`),
+      ];
+    case "shop":
+      return [
+        field("id", "ID", command.id),
+        field("goods", "GOODS JSON", JSON.stringify(command.goods), "text", resources.items, false, choicesHint("Project item ids", resources.items)),
+        field("sell", "SELL", command.sell ?? true, "boolean", BOOLS),
+        field("sellList", "SELL LIST", command.sellList ?? "disable", "enum", ["disable", "hide"]),
+      ];
     case "mapAnim":
+      return [
+        field("id", "INSTANCE", command.id),
+        resourceField("anim", "ANIMATION", command.anim, resources.animations, "Project animations"),
+        field("placement", "PLACEMENT", command.target === undefined ? "tile" : "target", "enum", ["tile", "target"]),
+        ...(command.target === undefined
+          ? [field("x", "X", command.x ?? 0, "integer"), field("y", "Y", command.y ?? 0, "integer")]
+          : [field("target", "TARGET", target(command.target))]),
+        field("follow", "FOLLOW", command.follow ?? true, "boolean", BOOLS),
+        field("layer", "LAYER", command.layer ?? "above", "enum", ["below", "above"]),
+        field("loop", "LOOP", command.loop ?? OMIT, "enum", OPTIONAL_BOOLEAN),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "stopAnim":
+      return [
+        field("selector", "SELECTOR", command.id !== undefined ? "id" : command.anim !== undefined ? "anim" : "all", "enum", ["all", "id", "anim"]),
+        ...(command.id !== undefined
+          ? [resourceField("id", "INSTANCE", command.id, resources.animationInstances, "Authored animation instance ids")]
+          : command.anim !== undefined
+            ? [resourceField("anim", "ANIMATION", command.anim, resources.animations, "Project animations")]
+            : []),
+      ];
+    case "ext":
+      return [
+        resourceField("call", "CALL", command.call, resources.extensionCalls, "Authored extension calls"),
+        field("args", "ARGS JSON", JSON.stringify(command.args)),
+      ];
+    case "extChoice":
+      return [
+        resourceField("call", "CALL", command.call, resources.extensionCalls, "Authored extension calls"),
+        field("args", "ARGS JSON", JSON.stringify(command.args)),
+        field("prompt", "PROMPT", command.prompt),
+        field("cancel", "CANCEL", command.cancel ?? false, "boolean", BOOLS),
+        field("write", "WRITE JSON", command.write === undefined ? OMIT : JSON.stringify(command.write), "text", undefined, false, `Object with index/key/cancelled variable ids, or ${OMIT}`),
+      ];
+    case "battle":
+      return [field("setup", "SETUP JSON", JSON.stringify(command.setup))];
     case "stopBgm":
     case "pauseBgm":
     case "resumeBgm":
     case "saveBgm":
-    case "replayBgm":
-    case "battle": return [];
+    case "replayBgm": return [];
   }
 }
 
@@ -265,17 +574,18 @@ export type InspectorCommandRow = FlatCommandRow & {
   supported: boolean;
 };
 
-export function commandInspectorRows(commands: readonly Command[]): InspectorCommandRow[] {
+export function commandInspectorRows(
+  commands: readonly Command[],
+  resources: EventEditorResources = EMPTY_EVENT_EDITOR_RESOURCES,
+): InspectorCommandRow[] {
   return flattenCommands(commands).map((row) => ({
     ...row,
-    fields: commandFields(row.command),
+    fields: commandFields(row.command, resources),
     supported: isEditableCommand(row.command),
   }));
 }
 
-function editCondition(condition: Condition, key: string, raw: string): FieldEdit<Condition> {
-  if (condition.kind === "ext") return bad("extension conditions are read-only");
-  if (condition.kind === "bgmPlaying") return bad("bgmPlaying conditions are read-only");
+function editConditionUnchecked(condition: Condition, key: string, raw: string): FieldEdit<Condition> {
   if (condition.kind === "switch") {
     if (key === "id") return identifier(raw, "switch id").ok ? good({ ...condition, id: raw }) : bad("switch id has invalid characters");
     if (key === "value") { const value = bool(raw); return value === null ? bad("value must be true or false") : good({ ...condition, value }); }
@@ -295,8 +605,56 @@ function editCondition(condition: Condition, key: string, raw: string): FieldEdi
     const value = enumValue(raw, DIRS, "direction"); return value.ok ? good({ ...condition, dir: value.value }) : value;
   } else if (condition.kind === "worldIdle" && key === "negate") {
     const value = bool(raw); return value === null ? bad("negate must be true or false") : good({ ...condition, negate: value });
+  } else if (condition.kind === "bgmPlaying") {
+    if (key === "id") {
+      if (raw === "(any)" || raw.trim() === "") return good(setOptional(condition, "id", undefined));
+      return good({ ...condition, id: raw });
+    }
+    if (key === "negate") {
+      const value = bool(raw); return value === null ? bad("negate must be true or false") : good({ ...condition, negate: value });
+    }
+  } else if (condition.kind === "ext") {
+    if (key === "call") {
+      const value = identifier(raw, "extension call", EXTENSION_CALL);
+      return value.ok ? good({ ...condition, call: value.value }) : value;
+    }
+    if (key === "args") {
+      const value = jsonValue(raw, "extension args");
+      return value.ok ? good({ ...condition, args: value.value }) : value;
+    }
+  } else if (condition.kind === "appearance") {
+    if (key === "target") {
+      const value = parseTarget(raw, true);
+      return value.ok ? good({ ...condition, target: value.value }) : value;
+    }
+    if (key === "sprite") {
+      if (raw === NULL) return good({ ...condition, sprite: null });
+      return raw.length > 0 ? good({ ...condition, sprite: raw }) : bad("sprite is required; use null for the default");
+    }
+  } else if (condition.kind === "tileProperty") {
+    if (key === "x" || key === "y") {
+      const value = integer(raw, key, 0);
+      return value.ok ? good({ ...condition, [key]: value.value }) : value;
+    }
+    if (key === "passage") {
+      const value = raw === OMIT || raw.trim() === ""
+        ? good(undefined)
+        : raw === NULL
+          ? good(null)
+          : enumValue(raw, ["pass", "block"] as const, "passage");
+      return value.ok ? good(setOptional(condition, key, value.value)) : value;
+    }
+    if (key === "enter" || key === "exit") {
+      const value = directionList(raw, key);
+      return value.ok ? good(setOptional(condition, key, value.value)) : value;
+    }
   }
   return bad(`field ${key} is not editable`);
+}
+
+function editCondition(condition: Condition, key: string, raw: string): FieldEdit<Condition> {
+  const edited = editConditionUnchecked(condition, key, raw);
+  return edited.ok ? schemaCondition(edited.value) : edited;
 }
 
 function parseTarget(raw: string, allowPlayer: boolean): FieldEdit<"player" | "this" | { event: string }> {
@@ -318,8 +676,44 @@ function parseSteps(raw: string, requireOne: boolean): FieldEdit<BasicMoveStep[]
   return unknown ? bad(`unsupported move step ${unknown}`) : good(steps as BasicMoveStep[]);
 }
 
-export function editCommandField(command: Command, key: string, raw: string): FieldEdit<Command> {
-  if (!isEditableCommand(command)) return bad(`${command.op} is read-only`);
+function commaIntegers(
+  raw: string,
+  label: string,
+  count: number,
+  ranges: readonly { min: number; max?: number }[],
+): FieldEdit<number[]> {
+  const parts = raw.split(",").map((part) => part.trim());
+  if (parts.length !== count) return bad(`${label} must contain ${count} comma-separated integers`);
+  const values: number[] = [];
+  for (let index = 0; index < parts.length; index++) {
+    const parsed = integer(parts[index]!, `${label} value ${index + 1}`, ranges[index]!.min, ranges[index]!.max);
+    if (!parsed.ok) return parsed;
+    values.push(parsed.value);
+  }
+  return good(values);
+}
+
+function parseOptionalColor(raw: string): FieldEdit<ScreenColor | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  const values = commaIntegers(raw, "color", 4, [
+    { min: 0, max: 255 }, { min: 0, max: 255 }, { min: 0, max: 255 }, { min: 0, max: 255 },
+  ]);
+  return values.ok
+    ? good({ r: values.value[0]!, g: values.value[1]!, b: values.value[2]!, a: values.value[3]! })
+    : values;
+}
+
+function parseWanderBounds(raw: string): FieldEdit<{ x: number; y: number; width: number; height: number } | undefined> {
+  if (raw === OMIT || raw.trim() === "") return good(undefined);
+  const values = commaIntegers(raw, "bounds", 4, [
+    { min: 0 }, { min: 0 }, { min: 1 }, { min: 1 },
+  ]);
+  return values.ok
+    ? good({ x: values.value[0]!, y: values.value[1]!, width: values.value[2]!, height: values.value[3]! })
+    : values;
+}
+
+function editCommandFieldUnchecked(command: Command, key: string, raw: string): FieldEdit<Command> {
   switch (command.op) {
     case "text": {
       if (key === "lines") {
@@ -384,9 +778,6 @@ export function editCommandField(command: Command, key: string, raw: string): Fi
       break;
     }
     case "if": {
-      if ((key === "if.kind" || key.startsWith("if.")) && !isEditableCondition(command.if)) {
-        return bad(`${command.if.kind} conditions are read-only`);
-      }
       if (key === "if.kind") {
         const kind = enumValue(raw, CONDITION_KINDS, "condition kind");
         return kind.ok ? good({ ...command, if: defaultCondition(kind.value) }) : kind;
@@ -424,6 +815,218 @@ export function editCommandField(command: Command, key: string, raw: string): Fi
       if (key === "repeat" || key === "skippable") { const value = bool(raw); return value === null ? bad(`${key} must be true or false`) : good({ ...command, route: { ...command.route, [key]: value } }); }
       break;
     }
+    case "moveControl": {
+      if (key === "target") {
+        const value = parseTarget(raw, true);
+        return value.ok ? good({ ...command, target: value.value }) : value;
+      }
+      if (key === "control.kind") {
+        const kind = enumValue(raw, [
+          "wander", "moveType", "stop", "speed", "run", "frequency", "directionFix", "through", "facingMode",
+        ] as const, "control kind");
+        if (!kind.ok) return kind;
+        switch (kind.value) {
+          case "wander": return good({ ...command, control: { kind: "wander" } });
+          case "moveType": return good({ ...command, control: { kind: "moveType", value: "page" } });
+          case "stop": return good({ ...command, control: { kind: "stop" } });
+          case "speed": return good({ ...command, control: { kind: "speed", value: 4 } });
+          case "run": return good({ ...command, control: { kind: "run", value: false } });
+          case "frequency": return good({ ...command, control: { kind: "frequency", value: 3 } });
+          case "directionFix": return good({ ...command, control: { kind: "directionFix", value: false } });
+          case "through": return good({ ...command, control: { kind: "through", value: false } });
+          case "facingMode": return good({ ...command, control: { kind: "facingMode", value: "followMovement" } });
+        }
+      }
+      if (command.control.kind === "wander") {
+        if (key === "control.bounds") {
+          const value = parseWanderBounds(raw);
+          return value.ok ? good({ ...command, control: setOptional(command.control, "bounds", value.value) }) : value;
+        }
+        if (key === "control.frequency") {
+          const value = optionalInteger(raw, "frequency", 1, 5);
+          return value.ok ? good({ ...command, control: setOptional(command.control, "frequency", value.value) }) : value;
+        }
+      }
+      if (key === "control.value") {
+        switch (command.control.kind) {
+          case "moveType": {
+            const value = enumValue(raw, ["page", "static", "approach"] as const, "move type");
+            return value.ok ? good({ ...command, control: { ...command.control, value: value.value } }) : value;
+          }
+          case "speed": {
+            const value = integer(raw, "speed", 1, 6);
+            return value.ok ? good({ ...command, control: { ...command.control, value: value.value as 1 | 2 | 3 | 4 | 5 | 6 } }) : value;
+          }
+          case "frequency": {
+            const value = integer(raw, "frequency", 1, 5);
+            return value.ok ? good({ ...command, control: { ...command.control, value: value.value as 1 | 2 | 3 | 4 | 5 } }) : value;
+          }
+          case "run":
+          case "directionFix":
+          case "through": {
+            const value = bool(raw);
+            return value === null ? bad("value must be true or false") : good({ ...command, control: { ...command.control, value } });
+          }
+          case "facingMode": {
+            const value = enumValue(raw, ["followMovement", "locked", "scripted"] as const, "facing mode");
+            return value.ok ? good({ ...command, control: { ...command.control, value: value.value } }) : value;
+          }
+          case "wander":
+          case "stop":
+            break;
+        }
+      }
+      break;
+    }
+    case "appearance": {
+      if (key === "target") {
+        const value = parseTarget(raw, true);
+        return value.ok ? good({ ...command, target: value.value }) : value;
+      }
+      if (key === "sprite") {
+        const value = optionalString(raw, "sprite", true);
+        return value.ok ? good(setOptional(command, "sprite", value.value)) : value;
+      }
+      if (key === "opacity") {
+        const value = optionalInteger(raw, "opacity", 0, 255, true);
+        return value.ok ? good(setOptional(command, "opacity", value.value)) : value;
+      }
+      if (key === "visible") {
+        const value = optionalBoolean(raw, "visible", true);
+        return value.ok ? good(setOptional(command, "visible", value.value)) : value;
+      }
+      if (key === "saveDefault") {
+        const value = bool(raw);
+        return value === null ? bad("saveDefault must be true or false") : good({ ...command, saveDefault: value });
+      }
+      break;
+    }
+    case "layer": {
+      if (key === "layer") return raw.length > 0 ? good({ ...command, layer: raw }) : bad("layer is required");
+      if (key === "visible") {
+        const value = optionalBoolean(raw, "visible", true);
+        return value.ok ? good(setOptional(command, "visible", value.value)) : value;
+      }
+      if (key === "variant") {
+        const value = optionalString(raw, "variant", true);
+        return value.ok ? good(setOptional(command, "variant", value.value)) : value;
+      }
+      break;
+    }
+    case "tileProperty": {
+      if (key === "x" || key === "y") {
+        const value = integer(raw, key, 0);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "passage") {
+        const value: FieldEdit<"pass" | "block" | null | undefined> = raw === OMIT || raw.trim() === ""
+          ? good(undefined)
+          : raw === NULL
+            ? good(null)
+            : enumValue(raw, ["pass", "block"] as const, "passage");
+        return value.ok ? good(setOptional(command, key, value.value)) : value;
+      }
+      if (key === "enter" || key === "exit") {
+        const value = directionList(raw, key);
+        return value.ok ? good(setOptional(command, key, value.value)) : value;
+      }
+      break;
+    }
+    case "screenFade": {
+      if (key === "direction") {
+        const value = enumValue(raw, ["out", "in"] as const, "direction");
+        return value.ok ? good({ ...command, direction: value.value }) : value;
+      }
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      if (key === "color") {
+        const value = parseOptionalColor(raw);
+        return value.ok ? good(setOptional(command, "color", value.value)) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      break;
+    }
+    case "screenTint":
+    case "screenFlash": {
+      if (key.startsWith("color.")) {
+        const value = editColor(command.color, key.slice(6), raw);
+        return value.ok ? good({ ...command, color: value.value }) : value;
+      }
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      if (command.op === "screenTint" && key === "layer") {
+        return raw.length > 0 ? good({ ...command, layer: raw }) : bad("layer is required");
+      }
+      if (command.op === "screenFlash" && key === "intensity") {
+        const value = integer(raw, "intensity", 0, 255);
+        return value.ok ? good({ ...command, intensity: value.value }) : value;
+      }
+      break;
+    }
+    case "screenShake": {
+      if (key === "strength" || key === "speed" || key === "duration") {
+        const value = finite(raw, key, 0);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      break;
+    }
+    case "camera": {
+      if (key === "target") {
+        const value = parseCameraTarget(raw);
+        return value.ok ? good({ ...command, target: value.value }) : value;
+      }
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      break;
+    }
+    case "balloon": {
+      if (key === "target") {
+        const value = parseTarget(raw, true);
+        return value.ok ? good({ ...command, target: value.value }) : value;
+      }
+      if (key === "icon") {
+        const value = optionalString(raw, "icon", false);
+        return value.ok ? good(setOptional(command, "icon", value.value)) : value;
+      }
+      if (key === "duration") {
+        const value = optionalNumber(raw, "duration", 0);
+        return value.ok ? good(setOptional(command, "duration", value.value)) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      break;
+    }
+    case "screenBackdrop": {
+      if (key === "layer") return raw.length > 0 ? good({ ...command, layer: raw }) : bad("layer is required");
+      if (key === "variant") {
+        const value = optionalString(raw, "variant", true);
+        return value.ok ? good(setOptional(command, "variant", value.value)) : value;
+      }
+      break;
+    }
     case "wait": { if (key === "seconds") { const value = finite(raw, "seconds", Number.MIN_VALUE, 30); return value.ok ? good({ ...command, seconds: value.value }) : value; } break; }
     case "gold": {
       if (key === "set") { const value = enumValue(raw, ["add", "sub"] as const, "mode"); return value.ok ? good({ ...command, set: value.value }) : value; }
@@ -445,6 +1048,36 @@ export function editCommandField(command: Command, key: string, raw: string): Fi
       }
       break;
     }
+    case "playBgm":
+    case "playBgs":
+    case "playSe": {
+      if (key === "id") return raw.length > 0 ? good({ ...command, id: raw }) : bad("audio id is required");
+      if (key === "volume" || key === "pitch") {
+        const value = optionalInteger(raw, key, key === "volume" ? 0 : 50, key === "volume" ? 100 : 150);
+        return value.ok ? good(setOptional(command, key, value.value)) : value;
+      }
+      break;
+    }
+    case "playMe": {
+      if (key === "id") return raw.length > 0 ? good({ ...command, id: raw }) : bad("audio id is required");
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      if (key === "volume" || key === "pitch") {
+        const value = optionalInteger(raw, key, key === "volume" ? 0 : 50, key === "volume" ? 100 : 150);
+        return value.ok ? good(setOptional(command, key, value.value)) : value;
+      }
+      break;
+    }
+    case "fadeoutBgm":
+    case "fadeoutBgs": {
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      break;
+    }
     case "common": return key === "id" && raw ? good({ ...command, id: raw }) : bad("common event id is required");
     case "place": {
       if (key === "target") { const value = parseTarget(raw, false); return value.ok ? good({ ...command, target: value.value === "player" ? "this" : value.value }) : value; }
@@ -452,12 +1085,147 @@ export function editCommandField(command: Command, key: string, raw: string): Fi
       if (key === "dir") { const value = enumValue(raw, DIRS, "direction"); return value.ok ? good({ ...command, dir: value.value }) : value; }
       break;
     }
+    case "shop": {
+      if (key === "id") {
+        const value = identifier(raw, "shop id");
+        return value.ok ? good({ ...command, id: value.value }) : value;
+      }
+      if (key === "goods") {
+        const value = jsonValue(raw, "shop goods");
+        return value.ok ? good({ ...command, goods: value.value as unknown as Extract<Command, { op: "shop" }>["goods"] }) : value;
+      }
+      if (key === "sell") {
+        const value = bool(raw);
+        return value === null ? bad("sell must be true or false") : good({ ...command, sell: value });
+      }
+      if (key === "sellList") {
+        const value = enumValue(raw, ["disable", "hide"] as const, "sell list");
+        return value.ok ? good({ ...command, sellList: value.value }) : value;
+      }
+      break;
+    }
+    case "mapAnim": {
+      if (key === "id" || key === "anim") {
+        const value = identifier(raw, key);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "placement") {
+        const value = enumValue(raw, ["tile", "target"] as const, "placement");
+        if (!value.ok) return value;
+        if (value.value === "target") {
+          const { x: _x, y: _y, ...rest } = command;
+          return good({ ...rest, target: "player" });
+        }
+        const { target: _target, ...rest } = command;
+        return good({ ...rest, x: 0, y: 0 });
+      }
+      if (key === "x" || key === "y") {
+        if (command.target !== undefined) return bad("x/y are only editable for tile placement");
+        const value = integer(raw, key, 0);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "target") {
+        if (command.target === undefined) return bad("target is only editable for target placement");
+        const value = parseTarget(raw, true);
+        if (!value.ok) return value;
+        if (value.value === "this") return bad("animation target must be player or event:<id>");
+        return good({ ...command, target: value.value });
+      }
+      if (key === "follow" || key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad(`${key} must be true or false`) : good({ ...command, [key]: value });
+      }
+      if (key === "loop") {
+        const value = optionalBoolean(raw, "loop", false);
+        return value.ok ? good(setOptional(command, "loop", value.value)) : value;
+      }
+      if (key === "layer") {
+        const value = enumValue(raw, ["below", "above"] as const, "layer");
+        return value.ok ? good({ ...command, layer: value.value }) : value;
+      }
+      break;
+    }
+    case "stopAnim": {
+      if (key === "selector") {
+        const value = enumValue(raw, ["all", "id", "anim"] as const, "selector");
+        if (!value.ok) return value;
+        if (value.value === "id") return good({ op: "stopAnim", id: "animation" });
+        if (value.value === "anim") return good({ op: "stopAnim", anim: "animation" });
+        return good({ op: "stopAnim" });
+      }
+      if (key === "id" && command.id !== undefined) {
+        const value = identifier(raw, "animation instance id");
+        return value.ok ? good({ op: "stopAnim", id: value.value }) : value;
+      }
+      if (key === "anim" && command.anim !== undefined) {
+        const value = identifier(raw, "animation id");
+        return value.ok ? good({ op: "stopAnim", anim: value.value }) : value;
+      }
+      break;
+    }
+    case "ext": {
+      if (key === "call") {
+        const value = identifier(raw, "extension call", EXTENSION_CALL);
+        return value.ok ? good({ ...command, call: value.value }) : value;
+      }
+      if (key === "args") {
+        const value = jsonValue(raw, "extension args");
+        return value.ok ? good({ ...command, args: value.value }) : value;
+      }
+      break;
+    }
+    case "extChoice": {
+      if (key === "call") {
+        const value = identifier(raw, "extension choice call", EXTENSION_CALL);
+        return value.ok ? good({ ...command, call: value.value }) : value;
+      }
+      if (key === "args") {
+        const value = jsonValue(raw, "extension choice args");
+        return value.ok ? good({ ...command, args: value.value }) : value;
+      }
+      if (key === "prompt") return raw.length <= 52 ? good({ ...command, prompt: raw }) : bad("prompt is longer than 52 characters");
+      if (key === "cancel") {
+        const value = bool(raw);
+        return value === null ? bad("cancel must be true or false") : good({ ...command, cancel: value });
+      }
+      if (key === "write") {
+        if (raw === OMIT || raw.trim() === "") return good(setOptional(command, "write", undefined));
+        const value = jsonValue(raw, "extension choice write");
+        if (!value.ok) return value;
+        if (value.value === null || Array.isArray(value.value) || typeof value.value !== "object") {
+          return bad("extension choice write must be a JSON object");
+        }
+        const destinations = Object.values(value.value);
+        if (new Set(destinations).size !== destinations.length) return bad("extension choice write destinations must be distinct");
+        return good({ ...command, write: value.value as Extract<Command, { op: "extChoice" }>["write"] });
+      }
+      break;
+    }
+    case "battle": {
+      if (key === "setup") {
+        const value = jsonValue(raw, "battle setup");
+        return value.ok ? good({ ...command, setup: value.value }) : value;
+      }
+      break;
+    }
     case "erase":
     case "exit":
     case "lockInput":
-    case "unlockInput": break;
+    case "unlockInput":
+    case "stopBgm":
+    case "pauseBgm":
+    case "resumeBgm":
+    case "saveBgm":
+    case "replayBgm": break;
   }
   return bad(`field ${key} is not editable for ${command.op}`);
+}
+
+/** Parse one editor text spelling and reject any result that violates the
+ * normative project schema before it can enter UI or CLI state. */
+export function editCommandField(command: Command, key: string, raw: string): FieldEdit<Command> {
+  const edited = editCommandFieldUnchecked(command, key, raw);
+  return edited.ok ? schemaCommand(edited.value) : edited;
 }
 
 export type ConditionSource =

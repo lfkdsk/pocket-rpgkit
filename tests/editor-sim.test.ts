@@ -636,8 +636,10 @@ simDescribe("editor budget", () => {
     // plus read-only audio command/condition summaries. The PocketJS upstream
     // rebase adds the same 10,219 shared bytes as Sunstone, and DEMO1's shared
     // GameView demo seam adds a little more. Together with the proposal queue,
-    // portable validation/apply model, review panel, ghost overlays, and the
-    // exact-revision host SAVE handshake, the merged editor is 1,118,080 B.
-    expect(js).toBeLessThan(1_130_000);
+    // portable validation/apply model, review panel, ghost overlays, the
+    // exact-revision host SAVE handshake, and E5's editable fields for every
+    // current command/condition with schema gates and resource hints (about
+    // 43,650 B), the merged editor is 1,170,206 B.
+    expect(js).toBeLessThan(1_180_000);
   });
 });

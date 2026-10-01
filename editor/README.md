@@ -25,18 +25,18 @@ a guard test.
   The inspector edits the display name, origin and footprint.
 - **Pages**: add, delete, copy and reorder pages; select the trigger, existing
   sprite key, facing, autonomous move type, `blocks`, and a basic movement
-  route. Conditions support the v1 flat forms and compound `all` clauses for
-  switches, variables, self switches, items, gold, facing and `worldIdle`.
-  Extension conditions are visible and retained as read-only payloads.
+  route. Conditions support the v1 flat forms and every current schema kind in
+  compound `all` clauses: switches, variables, self switches, items, gold,
+  facing, appearance, tile-property overrides, `worldIdle`, `bgmPlaying`, and
+  extension predicates.
 - **Commands**: the inspector shows the recursive command tree with indented
   `if`/`else`, choices/cancel, and battle-result branches. It can add, delete,
-  copy and reorder commands, and edit parameters for `text`, `choices`,
-  `switch`, `variable`, `selfSwitch`, `if`, `transfer`, `wait`, `gold`,
-  `item`, `se`, `erase`, `exit`, `common`, `lockInput`, `unlockInput`,
-  `place`, and basic `moveRoute`. In the add prompt, type an op such as
-  `text`; with a selected parent, `text@then`, `text@else`,
-  `text@option1`, `text@cancel`, or `text@win`/`@lose`/`@escape` inserts
-  directly into that branch.
+  copy and reorder commands, and edit every command kind in the current
+  project schema, including movement control, presentation, shops, map
+  animations, audio, extensions, and battle processing. In the add prompt,
+  type an op such as `text`; with a selected parent, `text@then`,
+  `text@else`, `text@option1`, `text@cancel`, or
+  `text@win`/`text@lose`/`text@escape` inserts directly into that branch.
 - **Undo/redo**: every tile drag and every event/page/condition/command
   transaction is one history step, 64 steps deep.
   **UNDO**/**REDO** in the header, or Cmd+Z / Cmd+Shift+Z / Cmd+Y (Cmd is
@@ -111,11 +111,46 @@ a guard test.
   source spans — including other event and map objects, their property order,
   and whitespace — are reused rather than reformatting the whole file.
 
+## Event command and condition editing
+
+The inspector owns every command and condition kind currently declared by
+`src/data/schema.json`. Parameterless commands such as `stopBgm`, `saveBgm`,
+`erase`, and `unlockInput` have no parameter rows, but can still be added,
+copied, moved, and deleted. Each accepted field change is checked against the
+same project schema before it enters editor state.
+
+Field text uses these common spellings:
+
+- Character targets are `player`, `this`, or `event:<id>`; camera targets may
+  also be `tile:<x>,<y>`. Basic routes and direction sets use comma-separated
+  values. Screen-fade colours and wander bounds use four comma-separated
+  integers.
+- `(unset)` removes an optional property. For nullable appearance, layer, and
+  tile-property fields, `null` is different: it authors a reset to the runtime
+  default. The inspector prevents removing the last field from commands or
+  conditions whose schema requires at least one override.
+- Fields labelled **JSON** accept JSON text. These include shop `goods`,
+  extension `args`, extension-choice `write`, battle `setup`, and extension
+  condition arguments. The edited command or condition must still satisfy the
+  project schema.
+- Project maps, items, sprites, animations, audio ids, common events,
+  previously authored layer/variant names, animation instance ids, and
+  extension calls appear as hints where relevant. They are suggestions, not a
+  replacement for validation or for game-provided resources that the project
+  document cannot enumerate.
+
+Only authored command arrays form branches. `if`, ordinary `choices`, and
+`battle` expose their respective branch lists; select a battle and use
+`<op>@win`, `<op>@lose`, or `<op>@escape` to insert into its result branches.
+`extChoice` is not an authored branch container: its rows come dynamically
+from the registered extension provider, while `write` describes optional
+result variables. The current project schema also has no generic `scene`
+command; `battle` is the authored entry point for the existing battle scene.
+
 Not yet: common-event lists, asset import, sheet-level `dirBlock`/`defaultPassage`
 editing (the PASS tools paint map `passage` overrides and sheet `dirEdges`
-only). `shop`, `ext`, and `battle` setup payloads and advanced
-object-shaped movement steps are shown and preserved but not edited
-in place; their existing branch commands remain navigable and reorderable.
+only), or structured controls for advanced object-shaped movement steps (the
+existing payloads remain preserved).
 
 ## Running
 

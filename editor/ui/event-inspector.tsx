@@ -4,6 +4,12 @@
 import { Text, View } from "@pocketjs/framework/components";
 import { createMemo, For } from "solid-js";
 import type { Condition, GameEvent, Page } from "../../src/engine/types.ts";
+import { isEditableCondition } from "../engine/commands.ts";
+import { conditionFields } from "../engine/event-fields.ts";
+import {
+  EMPTY_EVENT_EDITOR_RESOURCES,
+  type EventEditorResources,
+} from "../engine/event-resources.ts";
 import {
   createEventInspectorLayout,
   inspectorActionKey,
@@ -41,9 +47,7 @@ const ACCENT = "#ffd24a";
 const BRANCH = "#60a5fa";
 const READ_ONLY = "#8d3d52";
 
-/** Friendly names for screen-presentation commands. They stay opaque in this
- * v1 inspector, but an author can distinguish each preserved payload without
- * opening the project JSON. */
+/** Friendly names for screen-presentation commands in the editable rows. */
 const SCREEN_COMMAND_LABELS: Readonly<Record<string, string>> = Object.freeze({
   screenFade: "screen fade",
   screenTint: "screen tint",
@@ -72,11 +76,14 @@ export interface EventInspectorProps {
   activePage: number;
   /** Rows already flattened by the command-tree model. */
   commandRows: readonly InspectorCommandRow[];
+  /** Rows already flattened with the active project's resource hints. */
+  conditionRows: readonly InspectorConditionRow[];
   selection: EventInspectorSelection;
   /** An action object or inspectorActionKey(action). */
   focus: EventInspectorAction | string | null;
   inputBuffer: string;
   scroll: InspectorScrollOffsets;
+  notice?: { kind: "info" | "good" | "bad"; text: string };
 }
 
 function stringValue(value: unknown): string {
@@ -105,57 +112,19 @@ function field(key: string, label: string, value: InspectorField["value"], readO
   return { key, label, value, readOnly };
 }
 
-function conditionDetail(condition: Condition): { fields: InspectorField[]; readOnly: boolean } {
-  switch (condition.kind) {
-    case "switch":
-      return { fields: [field("id", "ID", condition.id), field("value", "VALUE", condition.value ?? true)], readOnly: false };
-    case "variable":
-      return {
-        fields: [field("id", "ID", condition.id), field("op", "OP", condition.op), field("value", "VALUE", condition.value)],
-        readOnly: false,
-      };
-    case "selfSwitch":
-      return { fields: [field("key", "KEY", condition.key), field("value", "VALUE", condition.value ?? true)], readOnly: false };
-    case "item":
-      return { fields: [field("id", "ITEM", condition.id), field("count", "COUNT", condition.count)], readOnly: false };
-    case "gold":
-      return { fields: [field("amount", "AMOUNT", condition.amount)], readOnly: false };
-    case "facing":
-      return { fields: [field("dir", "DIR", condition.dir)], readOnly: false };
-    case "worldIdle":
-      return { fields: [field("negate", "NEGATE", condition.negate ?? false)], readOnly: false };
-    case "bgmPlaying":
-      return {
-        fields: [
-          field("id", "ID", condition.id ?? "(any)", true),
-          field("negate", "NEGATE", condition.negate ?? false, true),
-        ],
-        readOnly: true,
-      };
-    case "ext":
-      return {
-        fields: [field("call", "CALL", condition.call, true), field("args", "ARGS", stringValue(condition.args), true)],
-        readOnly: true,
-      };
-    case "appearance":
-      return {
-        fields: [field("target", "TARGET", stringValue(condition.target), true), field("sprite", "SPRITE", condition.sprite ?? "null", true)],
-        readOnly: true,
-      };
-    case "tileProperty":
-      return {
-        fields: [
-          field("x", "X", condition.x, true), field("y", "Y", condition.y, true),
-          field("props", "PROPS", stringValue({ passage: condition.passage, enter: condition.enter, exit: condition.exit }), true),
-        ],
-        readOnly: true,
-      };
-  }
+function conditionDetail(
+  condition: Condition,
+  resources: EventEditorResources,
+): { fields: InspectorField[]; readOnly: boolean } {
+  return { fields: conditionFields(condition, "", resources), readOnly: !isEditableCondition(condition) };
 }
 
 /** Turn both v1 flat clauses and `all` clauses into one visible ordered list.
  * Source metadata lets the app map a selected row back to its authored slot. */
-export function flattenInspectorConditions(page: Page | undefined): InspectorConditionRow[] {
+export function flattenInspectorConditions(
+  page: Page | undefined,
+  resources: EventEditorResources = EMPTY_EVENT_EDITOR_RESOURCES,
+): InspectorConditionRow[] {
   const condition = page?.condition;
   if (!condition) return [];
   const rows: InspectorConditionRow[] = [];
@@ -201,7 +170,7 @@ export function flattenInspectorConditions(page: Page | undefined): InspectorCon
   }
   for (let index = 0; index < (condition.all?.length ?? 0); index++) {
     const clause = condition.all![index]!;
-    const detail = conditionDetail(clause);
+    const detail = conditionDetail(clause, resources);
     rows.push({
       key: `all:${index}`,
       kind: clause.kind,
@@ -479,19 +448,23 @@ function RowList(props: {
  * mutations, pointer dispatch and keyboard editing live in the app/model. */
 export function EventInspector(props: EventInspectorProps): JSX.Element {
   const activePage = createMemo(() => props.event.pages[props.activePage]);
-  const conditions = createMemo(() => flattenInspectorConditions(activePage()));
   const layout = createMemo(() => createEventInspectorLayout({
     width: props.width,
     height: props.height,
     pageCount: props.event.pages.length,
     activePage: props.activePage,
-    conditions: conditions(),
+    conditions: props.conditionRows,
     commands: props.commandRows,
     scroll: props.scroll,
   }));
   const focused = (action: EventInspectorAction) => isFocused(props.focus, action);
   const buffered = (action: EventInspectorAction, value: unknown) => focused(action) ? `${props.inputBuffer}_` : value;
   const editPrompt = createMemo(() => inspectorEditPrompt(props.focus, props.inputBuffer));
+  const headerMessage = createMemo(() => {
+    if (props.notice?.kind === "bad") return props.notice.text;
+    return editPrompt() ?? (props.focus && props.notice?.text ? props.notice.text : `EVENT ${props.event.id}`);
+  });
+  const headerColor = createMemo(() => props.notice?.kind === "bad" ? "#ff7b8b" : editPrompt() || props.focus ? ACCENT : INK);
 
   return (
     <View
@@ -510,10 +483,10 @@ export function EventInspector(props: EventInspectorProps): JSX.Element {
       />
       <Text
         class="text-xs absolute"
-        style={{ posType: 1, insetL: 58, insetT: 6, height: 12, lineHeight: 12, textColor: editPrompt() ? ACCENT : INK }}
+        style={{ posType: 1, insetL: 58, insetT: 6, height: 12, lineHeight: 12, textColor: headerColor() }}
         debugName="event-inspector-edit-prompt"
       >
-        {compact(editPrompt() ?? `EVENT ${props.event.id}`, props.width - 64)}
+        {compact(headerMessage(), props.width - 64)}
       </Text>
 
       <For each={layout().eventFields}>
@@ -586,7 +559,7 @@ export function EventInspector(props: EventInspectorProps): JSX.Element {
         kind="condition"
         clip={layout().conditionClip}
         geometry={layout().conditionRows}
-        conditions={conditions()}
+        conditions={props.conditionRows}
         commands={[]}
         selected={props.selection.condition}
         focus={props.focus}

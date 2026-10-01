@@ -304,15 +304,18 @@ describe("rpgkit edit command operations and patches", () => {
     expect(commands.map((command) => command.op)).toEqual(["text", "if"]);
   });
 
-  test("inserts opaque runtime commands intact but keeps their fields read-only", () => {
+  test("inserts and field-edits extension and movement-control commands", () => {
     const source = serializeProject(fixture());
     const selection = { map: "map", event: "npc", page: 0, address: { path: [], index: 0 } };
     const opaque: Command = { op: "ext", call: "game.agent", args: { nested: [1, { exact: true }] } };
     const inserted = success(executeEditOperation(source, "insert-command", { ...selection, command: opaque }));
     const commands = (JSON.parse(inserted.output) as Project).maps[0]!.events![0]!.pages[0]!.commands;
     expect(commands[0]).toEqual(opaque);
-    expect(executeEditOperation(inserted.output, "update-command", { ...selection, field: "call", value: "other" }).response)
-      .toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+    const editedExtension = success(executeEditOperation(inserted.output, "update-command", {
+      ...selection, field: "call", value: "other.command",
+    }));
+    expect((JSON.parse(editedExtension.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0])
+      .toEqual({ ...opaque, call: "other.command" });
 
     const movement: Command = {
       op: "moveControl",
@@ -324,14 +327,16 @@ describe("rpgkit edit command operations and patches", () => {
       command: movement,
     }));
     expect((JSON.parse(moved.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0]).toEqual(movement);
-    expect(executeEditOperation(moved.output, "update-command", {
+    const editedMovement = success(executeEditOperation(moved.output, "update-command", {
       ...selection,
-      field: "control",
-      value: "{}",
-    }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+      field: "control.frequency",
+      value: "5",
+    }));
+    expect((JSON.parse(editedMovement.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0])
+      .toMatchObject({ control: { kind: "wander", frequency: 5 } });
   });
 
-  test("AI read and validation operations preserve every screen command as read-only", () => {
+  test("AI read and validation operations expose every screen command for field editing", () => {
     const project = fixture();
     const screen: Command[] = [
       { op: "screenFade", direction: "out", duration: 0.5, wait: true },
@@ -349,16 +354,18 @@ describe("rpgkit edit command operations and patches", () => {
     const listed = readSuccess(executeEditOperation(source, "list-commands", {
       map: "map", event: "npc", page: 0,
     })).result as Array<{ readOnly: boolean; command: Command }>;
-    expect(listed.map((row) => row.readOnly)).toEqual(new Array(screen.length).fill(true));
+    expect(listed.map((row) => row.readOnly)).toEqual(new Array(screen.length).fill(false));
     expect(listed.map((row) => row.command)).toEqual(screen);
 
-    expect(executeEditOperation(source, "update-command", {
+    const updated = success(executeEditOperation(source, "update-command", {
       map: "map", event: "npc", page: 0,
       address: { path: [], index: 0 }, field: "duration", value: "2",
-    }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+    }));
+    expect((JSON.parse(updated.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0])
+      .toEqual({ op: "screenFade", direction: "out", duration: 2, wait: true });
   });
 
-  test("AI inserts, validates and lists audio commands but cannot field-edit them", () => {
+  test("AI inserts, validates, lists and field-edits audio commands", () => {
     const project = fixture();
     project.audio = {
       field: "audio:wav.field",
@@ -406,12 +413,14 @@ describe("rpgkit edit command operations and patches", () => {
       map: "map", event: "npc", page: 0,
     })).result as Array<{ readOnly: boolean; command: Command }>;
     expect(listed.map((row) => row.command)).toEqual(audio);
-    expect(listed.map((row) => row.readOnly)).toEqual(new Array(audio.length).fill(true));
+    expect(listed.map((row) => row.readOnly)).toEqual(new Array(audio.length).fill(false));
 
-    expect(executeEditOperation(source, "update-command", {
+    const updated = success(executeEditOperation(source, "update-command", {
       map: "map", event: "npc", page: 0,
       address: { path: [], index: 0 }, field: "volume", value: "50",
-    }).response).toMatchObject({ ok: false, error: { code: "READ_ONLY_COMMAND" } });
+    }));
+    expect((JSON.parse(updated.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0])
+      .toEqual({ op: "playBgm", id: "field", volume: 50, pitch: 90 });
   });
 
   test("command field errors identify the field and legal alternatives", () => {

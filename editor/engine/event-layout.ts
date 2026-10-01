@@ -14,6 +14,9 @@ export interface InspectorField {
   key: string;
   label: string;
   value: string | number | boolean | null;
+  kind?: "text" | "integer" | "number" | "boolean" | "enum";
+  options?: readonly string[];
+  hint?: string;
   readOnly?: boolean;
 }
 
