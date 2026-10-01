@@ -1,0 +1,107 @@
+{
+  "assets/curator.png": {
+    "psm": 3
+  },
+  "assets/guide.png": {
+    "psm": 3
+  },
+  "assets/portal.png": {
+    "psm": 3
+  },
+  "assets/sign.png": {
+    "psm": 3
+  },
+  "assets/player-idle-0.png": {
+    "psm": 3
+  },
+  "assets/player-left-0.png": {
+    "psm": 3
+  },
+  "assets/player-right-0.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-0.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-0.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-0.png": {
+    "psm": 3
+  },
+  "assets/player-idle-1.png": {
+    "psm": 3
+  },
+  "assets/player-left-1.png": {
+    "psm": 3
+  },
+  "assets/player-right-1.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-1.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-1.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-1.png": {
+    "psm": 3
+  },
+  "assets/player-idle-2.png": {
+    "psm": 3
+  },
+  "assets/player-left-2.png": {
+    "psm": 3
+  },
+  "assets/player-right-2.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-2.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-2.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-2.png": {
+    "psm": 3
+  },
+  "assets/player-idle-3.png": {
+    "psm": 3
+  },
+  "assets/player-left-3.png": {
+    "psm": 3
+  },
+  "assets/player-right-3.png": {
+    "psm": 3
+  },
+  "assets/alternate-idle-3.png": {
+    "psm": 3
+  },
+  "assets/alternate-left-3.png": {
+    "psm": 3
+  },
+  "assets/alternate-right-3.png": {
+    "psm": 3
+  },
+  "assets/face-curator.png": {
+    "psm": 3
+  },
+  "assets/battle-player.png": {
+    "psm": 3
+  },
+  "assets/battle-enemy.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-0.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-1.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-2.png": {
+    "psm": 3
+  },
+  "assets/map-anim/pulse-3.png": {
+    "psm": 3
+  }
+}

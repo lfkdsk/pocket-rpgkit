@@ -246,6 +246,13 @@ table.controls td { padding: 4px 0; color: var(--muted); }
 }
 .info .description { margin: 0 0 16px; }
 .info h2 { margin: 0 0 8px; font-size: 16px; }
+.info .features {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+}
+.info .features li + li { margin-top: 4px; }
 
 .noscript { text-align: center; color: #ffb4a8; }
 

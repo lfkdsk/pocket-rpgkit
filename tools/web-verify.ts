@@ -12,6 +12,8 @@
 // Checks, with screenshots in --out (the page, and the canvas at its
 // logical size). Games other than the three examples get the generic ones.
 //   landing   every card, and its preview image, loads
+//   showcase  enters two feature halls, triggers both demonstrations, and
+//             returns to the lobby after each one
 //   sunstone  idles into attract mode (the player moves on its own), a key
 //             takes over, and held arrows then walk the player
 //   grow      the settlement grows on its own; a mouse drag and a touch
@@ -301,7 +303,12 @@ async function main(): Promise<void> {
     // ---- landing ----
     phase = "landing";
     await navigate(rootBase);
+    // Local cards use lazy previews. A featured card adds enough height that
+    // the last image can sit outside Chrome's lazy-load distance, so visit
+    // the bottom once before requiring every local preview to be decoded.
+    await evaluate(`window.scrollTo(0, document.documentElement.scrollHeight)`);
     await waitFor("previews", `[...document.querySelectorAll(".game-card:not(.showcase-card) img")].every((i) => i.complete)`);
+    await evaluate(`window.scrollTo(0, 0)`);
     const landing = await evaluate<{ cards: string[]; previews: number[]; links: string[] }>(`({
       // Showcase cards link projects hosted elsewhere; only this site's games count.
       cards: [...document.querySelectorAll(".game-card:not(.showcase-card) h2")].map((h) => h.textContent),
@@ -315,6 +322,104 @@ async function main(): Promise<void> {
     expect("landing: relative links", absolute.length === 0, absolute.length ? absolute.join(", ") : `${landing.links.length} links`);
     await screenshot("landing", true);
     results.landing = landing;
+
+    // ---- showcase: lobby -> two live halls -> lobby -----------------------
+    if (games.some((g) => g.id === "showcase")) {
+      await openGame(rootBase, "showcase");
+      await checkRuns("showcase");
+      type ShowcasePosition = { mapId: string; tx: number; ty: number; moving: boolean; modal: string | null };
+      const showcasePosition = () => evaluate<ShowcasePosition>(`(({ mapId, move, interp }) => ({
+        mapId, tx: move.tx, ty: move.ty, moving: move.moving, modal: interp.modal?.kind ?? null,
+      }))(__rpgSessionState)`);
+      const walkShowcaseAxis = async (axis: "x" | "y", target: number, expectedMap: string) => {
+        let state = await showcasePosition();
+        const cell = axis === "x" ? "tx" : "ty";
+        for (let guard = 0; guard < 40; guard++) {
+          if (state.mapId !== expectedMap || (state[cell] === target && !state.moving)) return;
+          const code = axis === "x"
+            ? target > state.tx ? "ArrowRight" : "ArrowLeft"
+            : target > state.ty ? "ArrowDown" : "ArrowUp";
+          // Tap for one rendered frame, release, then let the committed tile
+          // step finish. Holding while CDP polls can begin the next tile and
+          // overshoot a one-cell portal on fast machines.
+          await key("keyDown", code);
+          await waitFrames(1);
+          await key("keyUp", code);
+          await waitFor("showcase tile boundary", `!__rpgSessionState.move.moving`, 3_000);
+          state = await showcasePosition();
+        }
+        throw new Error(`showcase walk missed ${axis}=${target} on ${expectedMap}; at ${state.mapId}(${state.tx},${state.ty})`);
+      };
+      const walkShowcase = async (mapId: string, x: number, y: number, verticalFirst = false) => {
+        if (verticalFirst) {
+          await walkShowcaseAxis("y", y, mapId);
+          if ((await showcasePosition()).mapId === mapId) await walkShowcaseAxis("x", x, mapId);
+        } else {
+          await walkShowcaseAxis("x", x, mapId);
+          if ((await showcasePosition()).mapId === mapId) await walkShowcaseAxis("y", y, mapId);
+        }
+      };
+      const pressShowcaseA = async () => {
+        await holdKey("KeyA", 2);
+        await waitFrames(2);
+      };
+      const finishShowcaseDemo = async () => {
+        for (let guard = 0; guard < 80; guard++) {
+          const status = await evaluate<{ idle: boolean; modal: string | null }>(`(({ interp, scene, fade, playerRoute }) => ({
+            idle: interp.main === null && interp.modal === null && scene === null && fade === null && playerRoute === null,
+            modal: interp.modal?.kind ?? null,
+          }))(__rpgSessionState)`);
+          if (status.idle) return;
+          if (status.modal === "text") await pressShowcaseA();
+          else await waitFrames(10);
+        }
+        throw new Error("showcase demonstration did not settle");
+      };
+
+      // Hall 1: top-left portal, then action at the centre curator. Wait for
+      // the named tint so this proves the command ran, not merely the map.
+      await walkShowcase("showcase-lobby", 2, 2);
+      await waitFor("showcase hall 1", `__rpgSessionState.mapId === "showcase-screen-effects"`);
+      await walkShowcase("showcase-screen-effects", 10, 8);
+      await pressShowcaseA();
+      for (let guard = 0; guard < 30; guard++) {
+        if (await evaluate<boolean>(`!!__rpgSessionState.interp.screen?.tints?.["time-of-day"]`)) break;
+        if ((await showcasePosition()).modal === "text") await pressShowcaseA();
+        else await waitFrames(10);
+      }
+      const tint = await evaluate<boolean>(`!!__rpgSessionState.interp.screen?.tints?.["time-of-day"]`);
+      expect("showcase: hall 1 demonstration runs", tint, `named time-of-day tint present: ${tint}`);
+      await canvasShot("showcase-hall-1");
+      await finishShowcaseDemo();
+      await walkShowcase("showcase-screen-effects", 10, 12, true);
+      await walkShowcase("showcase-screen-effects", 2, 12);
+      await walkShowcaseAxis("y", 13, "showcase-screen-effects");
+      await waitFor("showcase first return", `__rpgSessionState.mapId === "showcase-lobby"`);
+
+      // Hall 8: bottom row's second portal. Its demo walks the player across
+      // the streamed map and sets a completion switch after the live route.
+      await walkShowcase("showcase-lobby", 5, 12);
+      await waitFor("showcase hall 8", `__rpgSessionState.mapId === "hall-streaming"`);
+      await walkShowcase("hall-streaming", 10, 8);
+      await pressShowcaseA();
+      await finishShowcaseDemo();
+      const streamed = await evaluate<boolean>(`__rpgSessionState.sw.switches["showcase.streaming.complete"] === true`);
+      expect("showcase: hall 8 demonstration runs", streamed, `streamed route completion switch: ${streamed}`);
+      await canvasShot("showcase-hall-8");
+      await walkShowcase("hall-streaming", 17, 12, true);
+      await walkShowcase("hall-streaming", 2, 12);
+      await walkShowcaseAxis("y", 13, "hall-streaming");
+      await waitFor("showcase second return", `__rpgSessionState.mapId === "showcase-lobby"`);
+      const returned = await showcasePosition();
+      expect(
+        "showcase: both hall exits return to the lobby",
+        returned.mapId === "showcase-lobby",
+        `returned to ${returned.mapId}(${returned.tx},${returned.ty})`,
+      );
+      await canvasShot("showcase-returned");
+      await screenshot("showcase-returned");
+      results.showcase = { tint, streamed, returned };
+    }
 
     // ---- sunstone: attract, takeover, walk ----
     if (games.some((g) => g.id === "sunstone")) {
@@ -529,7 +634,9 @@ async function main(): Promise<void> {
     phase = "subpath";
     const before = requests.length;
     await navigate(subBase);
+    await evaluate(`window.scrollTo(0, document.documentElement.scrollHeight)`);
     await waitFor("subpath previews", `[...document.querySelectorAll(".game-card:not(.showcase-card) img")].every((i) => i.complete && i.naturalWidth > 0)`);
+    await evaluate(`window.scrollTo(0, 0)`);
     for (const game of games) {
       await openGame(subBase, game.id);
       const f0 = await frames();

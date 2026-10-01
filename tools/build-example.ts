@@ -20,7 +20,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const EXAMPLES = ["meadow", "sunstone", "grow", "wander"] as const;
+export const EXAMPLES = ["showcase", "meadow", "sunstone", "grow", "wander"] as const;
 /** The examples plus the editor app. */
 export const APPS = [...EXAMPLES, "editor"] as const;
 /** Small apps that exist only for the sim suites. */

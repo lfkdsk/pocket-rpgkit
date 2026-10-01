@@ -1,0 +1,110 @@
+[
+  {
+    "key": "ui:tile.showcase-gate",
+    "file": "assets/stream/showcase-gate.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-attract-ground",
+    "file": "assets/stream/showcase-hall-attract-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-attract-upper",
+    "file": "assets/stream/showcase-hall-attract-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-save-ground",
+    "file": "assets/stream/showcase-hall-save-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-save-upper",
+    "file": "assets/stream/showcase-hall-save-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-streaming-ground",
+    "file": "assets/stream/showcase-hall-streaming-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-streaming-upper",
+    "file": "assets/stream/showcase-hall-streaming-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-theme-ground",
+    "file": "assets/stream/showcase-hall-theme-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-hall-theme-upper",
+    "file": "assets/stream/showcase-hall-theme-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-battle-ground",
+    "file": "assets/stream/showcase-showcase-battle-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-battle-upper",
+    "file": "assets/stream/showcase-showcase-battle-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-extensions-ground",
+    "file": "assets/stream/showcase-showcase-extensions-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-extensions-upper",
+    "file": "assets/stream/showcase-showcase-extensions-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-input-and-idle-ground",
+    "file": "assets/stream/showcase-showcase-input-and-idle-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-input-and-idle-upper",
+    "file": "assets/stream/showcase-showcase-input-and-idle-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-lobby-ground",
+    "file": "assets/stream/showcase-showcase-lobby-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-lobby-upper",
+    "file": "assets/stream/showcase-showcase-lobby-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-map-animations-ground",
+    "file": "assets/stream/showcase-showcase-map-animations-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-map-animations-upper",
+    "file": "assets/stream/showcase-showcase-map-animations-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-movement-controls-ground",
+    "file": "assets/stream/showcase-showcase-movement-controls-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-movement-controls-upper",
+    "file": "assets/stream/showcase-showcase-movement-controls-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-runtime-visuals-ground",
+    "file": "assets/stream/showcase-showcase-runtime-visuals-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-runtime-visuals-upper",
+    "file": "assets/stream/showcase-showcase-runtime-visuals-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-screen-effects-ground",
+    "file": "assets/stream/showcase-showcase-screen-effects-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-screen-effects-upper",
+    "file": "assets/stream/showcase-showcase-screen-effects-upper.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-shop-ground",
+    "file": "assets/stream/showcase-showcase-shop-ground.pkts"
+  },
+  {
+    "key": "ui:tile.showcase-showcase-shop-upper",
+    "file": "assets/stream/showcase-showcase-shop-upper.pkts"
+  }
+]

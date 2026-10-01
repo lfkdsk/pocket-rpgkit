@@ -1,0 +1,36 @@
+{
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json",
+  "pocket": 2,
+  "id": "dev.lfkdsk.pocket-rpgkit-showcase",
+  "name": "pocket-rpgkit-showcase",
+  "title": "Pocket RPG Kit — Feature Gallery",
+  "version": "0.2.0",
+  "engine": {
+    "capabilities": {
+      "requires": [
+        "text.glyphs.baked",
+        "input.buttons"
+      ],
+      "enhances": [
+        "data.fs",
+        "display.viewport.live"
+      ]
+    }
+  },
+  "app": {
+    "entry": "examples/showcase/showcase.tsx",
+    "output": "showcase",
+    "framework": "solid",
+    "viewport": {
+      "fixed": {
+        "logical": [480, 272],
+        "presentation": "integer-fit"
+      },
+      "dynamic": {
+        "default": [960, 544],
+        "min": [480, 272],
+        "max": [4096, 4096]
+      }
+    }
+  }
+}

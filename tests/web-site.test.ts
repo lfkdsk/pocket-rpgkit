@@ -63,6 +63,9 @@ describe("games", () => {
       expect(game.title.length).toBeGreaterThan(0);
       expect(game.controls.length).toBeGreaterThan(0);
     }
+    const showcase = resolveGame(KIT_ROOT, config, "showcase");
+    expect(showcase.featured).toBe(true);
+    expect(showcase.features).toHaveLength(12);
   });
 
   test("viewports: sunstone pinned fixed, grow dynamic from its plan, meadow fixed", () => {
@@ -93,6 +96,12 @@ describe("games", () => {
     expect(parse({ games: { meadow: { controls: [{ button: "TURBO", action: "x" }] } } })).toThrow(/known button/);
     expect(parse({ games: { meadow: { keys: { KeyA: "TURBO" } } } })).toThrow(/not a button/);
     expect(parse({ games: { meadow: { viewport: "stretch" } } })).toThrow(/"fixed" or "dynamic"/);
+    expect(parse({ games: { meadow: { features: "one room" } } })).toThrow(/features is a list of text/);
+    expect(parse({ games: { meadow: { features: ["one room", 2] } } })).toThrow(/features is a list of text/);
+    expect(parse({ games: { meadow: { featured: "yes" } } })).toThrow(/featured is a boolean/);
+    expect(parse({ games: { meadow: { features: ["one room"], featured: true } } })()).toEqual({
+      games: { meadow: { features: ["one room"], featured: true } },
+    });
     expect(parse({ games: { meadow: {} } })()).toEqual({ games: { meadow: {} } });
   });
 
@@ -119,7 +128,7 @@ describe("pages", () => {
     expect(urls(html)).toContain("site.css");
   });
 
-  test("showcase entries are cards linked to their own site, listed first", () => {
+  test("showcase entries are cards linked to their own site, after featured local games", () => {
     const entry = {
       title: "Pocket Tuxemon",
       url: "https://example.org/tuxemon/",
@@ -133,7 +142,10 @@ describe("pages", () => {
     expect(html).toContain('<a class="play" href="https://example.org/tuxemon/">Play in the browser</a>');
     expect(html).toContain('src="https://example.org/tuxemon/preview.png"');
     expect(html).toContain("A &amp; B");
-    expect(html.indexOf("showcase-card")).toBeLessThan(html.indexOf(`id="${games[0]!.id}"`));
+    const featured = games.find((game) => game.featured)!;
+    const regular = games.find((game) => !game.featured)!;
+    expect(html.indexOf(`id="${featured.id}"`)).toBeLessThan(html.indexOf("showcase-card"));
+    expect(html.indexOf("showcase-card")).toBeLessThan(html.indexOf(`id="${regular.id}"`));
     expect(renderLanding(site, [{ game: games[0]! }])).not.toContain("showcase-card");
     const parse = (value: unknown) => () => parseSiteConfig(value, "web.json");
     expect(parse({ showcase: [entry] })).not.toThrow();
@@ -145,14 +157,15 @@ describe("pages", () => {
     expect(parse({ showcase: [{ title: "x", url: entry.url, controls: [{ button: "NOPE", action: "x" }] }] })).toThrow(/known button/);
   });
 
-  test("the site lists the showcase first and Wander before the other examples", () => {
+  test("the site lists the featured game first, then the external showcase and regular games", () => {
     const html = renderLanding(
       { ...site, showcase: config.showcase },
       cardOrder([...EXAMPLES], config).map((id) => ({ game: resolveGame(KIT_ROOT, config, id) })),
     );
     const order = [...html.matchAll(/<h2><a href="[^"]*">([^<]+)<\/a><\/h2>/g)].map((m) => m[1]);
-    expect(order[0]).toBe("Pocket Tuxemon");
-    expect(order[1]).toBe("Wander: an Endless Grown World");
+    expect(order[0]).toBe(games.find((game) => game.featured)!.title);
+    expect(order[1]).toBe("Pocket Tuxemon");
+    expect(order[2]).toBe("Wander: an Endless Grown World");
     expect(order.length).toBe(1 + EXAMPLES.length);
   });
 
@@ -185,9 +198,18 @@ describe("pages", () => {
   });
 
   test("text is escaped and the settings cannot close their script tag", () => {
-    const game = { ...games[0]!, title: "<b>A&B</b>", description: '"</script>"' };
+    const game = {
+      ...games[0]!,
+      title: "<b>A&B</b>",
+      description: '"</script>"',
+      features: ["One & two", "<script>three</script>"],
+    };
     const html = renderPlayer(site, game, { ...playerConfig(game), app: "</script><x>" }, false);
     expect(html).toContain("&lt;b&gt;A&amp;B&lt;/b&gt;");
+    expect(html).toContain("<h2>Exhibition halls</h2>");
+    expect(html).toContain("<ol class=\"features\">");
+    expect(html).toContain("<li>One &amp; two</li>");
+    expect(html).toContain("<li>&lt;script&gt;three&lt;/script&gt;</li>");
     expect(html.match(/<\/script>/g)!.length).toBe(2);
     expect(html).not.toContain("ATTRIBUTION.txt");
   });

@@ -1,0 +1,9 @@
+{
+  "assets/anim/spark-0.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 6,
+    "psm": 3
+  }
+}

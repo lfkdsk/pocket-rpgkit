@@ -90,6 +90,10 @@ export interface WebGameEntry {
   controls?: WebControl[];
   /** What the mouse or a finger does, if anything. */
   pointer?: string;
+  /** Longer plain-text points shown only on the player page. */
+  features?: string[];
+  /** Put this local game's card before externally hosted showcase cards. */
+  featured?: boolean;
   /** Pin the viewport policy when the manifest declares both. */
   viewport?: "fixed" | "dynamic";
   /** Key changes over tools/web/keys.ts KEYMAP: {"KeyA": "SQUARE"} binds,
@@ -134,6 +138,8 @@ export interface WebGame {
   description: string;
   controls: WebControl[];
   pointer?: string;
+  features?: string[];
+  featured?: boolean;
   /** Absolute path of the configured preview image, if any. */
   preview?: string;
   plan: ResolvedBuildPlan;
@@ -207,6 +213,15 @@ function validateEntry(id: string, entry: WebGameEntry, source: string): void {
   if (!entry || typeof entry !== "object") throw new Error(`web: ${source}: games.${id} is not an object`);
   if (entry.viewport !== undefined && entry.viewport !== "fixed" && entry.viewport !== "dynamic") {
     throw new Error(`web: ${source}: games.${id}.viewport is "fixed" or "dynamic"`);
+  }
+  if (
+    entry.features !== undefined &&
+    (!Array.isArray(entry.features) || entry.features.some((feature) => typeof feature !== "string"))
+  ) {
+    throw new Error(`web: ${source}: games.${id}.features is a list of text`);
+  }
+  if (entry.featured !== undefined && typeof entry.featured !== "boolean") {
+    throw new Error(`web: ${source}: games.${id}.featured is a boolean`);
   }
   try {
     withKeys(entry.keys);
@@ -339,6 +354,8 @@ export function resolveGame(projectRoot: string, config: WebSiteConfig, id: stri
     description: entry.description ?? "",
     controls: [...(entry.controls ?? DEFAULT_CONTROLS)],
     ...(entry.pointer ? { pointer: entry.pointer } : {}),
+    ...(entry.features ? { features: [...entry.features] } : {}),
+    ...(entry.featured !== undefined ? { featured: entry.featured } : {}),
     ...(preview ? { preview } : {}),
     plan,
     viewport: viewportFor(manifest, plan, entry.viewport),
@@ -441,7 +458,7 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
     const shot = preview
       ? `<img src="${game.id}/preview.png" width="${preview[0]}" height="${preview[1]}" alt="" loading="lazy">`
       : `<span class="no-preview">${escapeHtml(game.title)}</span>`;
-    return [
+    const html = [
       `<article class="game-card" id="${game.id}">`,
       `<a class="shot" href="${href}" tabindex="-1" aria-hidden="true">${shot}</a>`,
       '<div class="card-body">',
@@ -452,7 +469,10 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
       "</div>",
       "</article>",
     ].join("\n");
+    return { featured: game.featured === true, html };
   });
+  const featured = articles.filter((article) => article.featured).map((article) => article.html);
+  const regular = articles.filter((article) => !article.featured).map((article) => article.html);
   return [
     head(site.title, site.intro, "site.css"),
     '<body class="landing">',
@@ -462,8 +482,9 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
     ...(site.source ? [`<p class="links"><a href="${escapeHtml(site.source)}">Source code</a></p>`] : []),
     "</header>",
     '<main class="games">',
+    ...featured,
     ...showcase,
-    ...articles,
+    ...regular,
     "</main>",
     '<footer class="site-footer">',
     '<p>Runs on <a href="https://github.com/pocket-stack/pocketjs">PocketJS</a>, compiled to WebAssembly. ' +
@@ -475,8 +496,9 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
   ].join("\n");
 }
 
-/** A project on its own site, as a card like the examples' (listed first).
- *  Its link and preview point at that site; nothing is built or hosted here. */
+/** A project on its own site, as a card like the examples'. Its cards follow
+ *  featured local games and precede the remaining local games. Its link and
+ *  preview point at that site; nothing is built or hosted here. */
 function showcaseCard(entry: ShowcaseEntry): string {
   const href = escapeHtml(entry.url);
   const shot = entry.preview
@@ -523,6 +545,14 @@ export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig
     padHtml(game.controls, game.keymap),
     '<section class="info">',
     ...(game.description ? [`<p class="description">${escapeHtml(game.description)}</p>`] : []),
+    ...(game.features && game.features.length > 0
+      ? [
+          "<h2>Exhibition halls</h2>",
+          '<ol class="features">',
+          ...game.features.map((feature) => `<li>${escapeHtml(feature)}</li>`),
+          "</ol>",
+        ]
+      : []),
     '<h2 id="controls-heading">Controls</h2>',
     controlsTable(game.controls, game.pointer, game.keymap),
     "</section>",

@@ -32,7 +32,7 @@ the parts an RPG-Maker-style game needs without any specific game:
   the `GameAssets` manifest a game mounts;
 - **the format** (`src/data/schema.json`, v1; changes recorded in
   `src/data/CHANGELOG.md`);
-- **four examples** (`examples/`), each a PocketJS app with its own art
+- **five examples** (`examples/`), each a PocketJS app with its own art
   and tests on the wasm sim host (below);
 - **a map/event editor, in preview** (`editor/`): paints tiles, edits event
   footprints/pages/conditions/command trees, and runs the unsaved document
@@ -43,6 +43,15 @@ What is done, partial or still planned is tracked area by area in
 [docs/status.md](docs/status.md).
 
 ## Examples
+
+### `examples/showcase` — Pocket RPG Kit Feature Gallery
+
+![The feature-gallery lobby with twelve numbered portals](tests/goldens/showcase-lobby.png)
+
+One walkable app collects the kit's presentation, animation, movement,
+extension, battle, shop, streaming, theme, save and deterministic-replay
+features in twelve repeatable rooms; the [room-by-room catalogue](examples/showcase/README.md)
+links each demonstration to its authoring source.
 
 | | |
 | --- | --- |
@@ -167,7 +176,7 @@ cd pocket-rpgkit
 bun install
 bun test                 # reducer/format/controller suites; sim cases skip
 bun run build:wasm       # one-time: compile the vendored sim core
-bun run build:example    # build meadow, sunstone, grow, wander, the editor and test fixtures into dist/
+bun run build:example    # build showcase and the other examples, editor and test fixtures into dist/
 bun test                 # 1486 tests incl. sim journeys and pixel goldens
 bunx tsc --noEmit        # typecheck, exit 0
 bun run desktop sunstone # build for the desktop host and open a window

@@ -2,6 +2,9 @@
 
 What Pocket RPG Kit can do today, area by area.
 
+The implemented highlights can be explored together in the
+[`examples/showcase` feature gallery](../examples/showcase/README.md).
+
 - **Done**: on `main` and covered by tests.
 - **Partial**: works within the limits noted.
 - **Planned**: not on `main` yet. "In progress" means someone is working on it now.
