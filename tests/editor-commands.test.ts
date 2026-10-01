@@ -193,6 +193,30 @@ describe("editor command tree", () => {
     expect(invalid).toBe(deleted);
   });
 
+  test("keeps choice option icons through branch edits, copies and moves", () => {
+    const choices: Extract<Command, { op: "choices" }> = {
+      op: "choices",
+      prompt: "Who?",
+      options: [
+        { text: "Hero", icon: { sprite: "hero", dir: "up", frame: 1 }, commands: [switchCommand("a")] },
+        { text: "Guard", icon: { sprite: "npc" }, commands: [] },
+      ],
+    };
+    let commands: Command[] = [choices];
+    commands = insertCommand(commands, commandAddress(choiceBranchPath(root(0), 0), 1), switchCommand("b"));
+    commands = moveCommand(commands, commandAddress(choiceBranchPath(root(0), 0), 0), commandAddress(choiceBranchPath(root(0), 1), 0));
+    commands = deleteCommand(commands, commandAddress(choiceBranchPath(root(0), 0), 0));
+    commands = copyCommand(commands, root(0));
+    for (const command of commands) {
+      expect((command as typeof choices).options.map((option) => option.icon)).toEqual([
+        { sprite: "hero", dir: "up", frame: 1 },
+        { sprite: "npc" },
+      ]);
+    }
+    expect((commands[0] as typeof choices).options[1]!.commands).toEqual([switchCommand("a")]);
+    expect(flattenCommands(commands).filter((row) => row.branch).map((row) => row.branch)).toEqual(["Option 2: Guard", "Option 2: Guard"]);
+  });
+
   test("moves commands across branch lists and refuses moves into their own descendants", () => {
     const commands: Command[] = [
       {

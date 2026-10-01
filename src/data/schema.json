@@ -403,6 +403,17 @@
                 "required": ["text", "commands"],
                 "properties": {
                   "text": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "icon": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["sprite"],
+                    "description": "Picture drawn left of the option label: one frame of a project.sprites entry. A static image sprite ignores dir/frame.",
+                    "properties": {
+                      "sprite": { "type": "string", "minLength": 1, "description": "Key in project.sprites." },
+                      "dir": { "enum": ["down", "left", "right", "up"], "description": "Walker facing; default down." },
+                      "frame": { "enum": [0, 1, 2], "description": "Walker pose: 0 idle (default), 1 left step, 2 right step." }
+                    }
+                  },
                   "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } }
                 }
               }

@@ -83,6 +83,7 @@ import {
   type BalloonEffectState,
 } from "../engine/screen.ts";
 import { DialogBox } from "./DialogBox.tsx";
+import { resolveChoiceIcon, type ChoiceIconBoxComponent } from "./choice-icons.ts";
 import type { UiTheme } from "./theme.ts";
 import type {
   GameAssets,
@@ -807,6 +808,10 @@ export interface GameViewProps {
   faces?: Readonly<Record<string, string>>;
   /** DialogBox portrait column width (default 72). */
   faceWidth?: number;
+  /** The choices box for options with an `icon`: pass ChoiceIconBox from
+   *  `pocket-rpgkit/ui/choice-icons`. Without it such a choice shows its
+   *  labels in the text-only box. */
+  choiceIcons?: ChoiceIconBoxComponent;
   /** Optional diagnostics for streamed ground/upper residency. */
   onStreamStats?: (layer: "ground" | "upper", stats: StreamedChunkLayerStats) => void;
   /** Optional diagnostics for viewport-mounted animated tile sprites. */
@@ -1566,6 +1571,8 @@ export function GameView(props: GameViewProps) {
           faces={props.faces}
           faceWidth={props.faceWidth}
           items={itemNames}
+          choiceIconBox={props.choiceIcons}
+          choiceIcon={props.choiceIcons && ((icon) => resolveChoiceIcon(icon, sprites, assets.npcSrc))}
           viewportWidth={viewport().w}
         />
       </ProfileMount>

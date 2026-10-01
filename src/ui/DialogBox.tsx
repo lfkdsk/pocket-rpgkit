@@ -46,6 +46,7 @@ import { truncateLabel, windowStart } from "./list-window.ts";
 import { Panel } from "./Panel.tsx";
 import { resolveUiTheme, speakerLabel, splitSpeaker, type SpeakerSplit, type UiTheme } from "./theme.ts";
 import { startupProfileMark } from "../startup-profile.ts";
+import type { ChoiceIconBoxComponent, ChoiceIconResolver } from "./choice-icons.ts";
 
 /** Portrait images are 64x64: pak images must be power-of-two. */
 const FACE_PX = 64;
@@ -73,6 +74,15 @@ export interface DialogBoxProps {
   /** Shop box item display names: id -> name. An id absent from the table
    *  (or the prop itself omitted) renders its raw id. */
   items?: Readonly<Record<string, { name: string }>>;
+  /** The choices box for options with an `icon` (pocket-rpgkit/ui/choice-icons
+   *  ChoiceIconBox). Opt-in, so games without icons do not bundle it; while
+   *  it is absent an icon choice opens the text-only box (labels only) and
+   *  logs one warning. */
+  choiceIconBox?: ChoiceIconBoxComponent;
+  /** Maps an option's `icon` to baked art for choiceIconBox (GameView passes
+   *  resolveChoiceIcon over the project's sprites). An icon this returns
+   *  null for (or every icon, without the prop) shows a "?" placeholder. */
+  choiceIcon?: ChoiceIconResolver;
 }
 
 /** Slice the joined "line\nline" text to `revealed` chars; lines whose turn
@@ -100,6 +110,7 @@ const VISIBLE_ROWS = 4;
  *  instead of overflowing the 248px panel. */
 const ROW_LABEL_MAX = 24;
 const NO_SPEAKER: SpeakerSplit = { name: null, rest: "", cut: 0 };
+let warnedNoIconBox = false;
 
 export function DialogBox(props: DialogBoxProps) {
   startupProfileMark("ui-dialog:start");
@@ -116,7 +127,22 @@ export function DialogBox(props: DialogBoxProps) {
     const modal = props.modal();
     return modal?.kind === "text" ? modal : null;
   });
-  const isChoice = () => choice() !== null;
+  // Choices whose options carry icons open the icon box (ChoiceIconBox.tsx);
+  // it mounts on first use, so games without icons never build it.
+  const IconBox = props.choiceIconBox;
+  const iconChoice = createMemo(() => {
+    const m = choice();
+    if (!m?.icons) return null;
+    if (IconBox) return m;
+    if (!warnedNoIconBox) {
+      warnedNoIconBox = true;
+      console.warn("pocket-rpgkit: choice icons need the choiceIconBox prop (ui/choice-icons); showing labels only");
+    }
+    return null;
+  });
+  const iconBoxMounted = createMemo((was: boolean) => was || iconChoice() !== null, false);
+  const textChoice = createMemo(() => (iconChoice() ? null : choice()));
+  const isChoice = () => textChoice() !== null;
   // Re-evaluated per typed character; downstream only sees a new speaker.
   const speaker = createMemo(
     () => {
@@ -215,12 +241,12 @@ export function DialogBox(props: DialogBoxProps) {
         debugName="rpgkit-choices-box"
       >
         <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-choice-prompt">
-          {choice()?.prompt ?? ""}
+          {textChoice()?.prompt ?? ""}
         </Text>
         <View class="flex-col" style={{ height: 4 }} />
         <For each={CHOICE_ROWS}>
           {(row) => {
-            const m = choice;
+            const m = textChoice;
             const total = () => m()?.options.length ?? 0;
             // A pure function of the live cursor index: never desyncs
             // from the reducer, and wrap-around (top<->bottom) recomputes
@@ -251,6 +277,11 @@ export function DialogBox(props: DialogBoxProps) {
           </Text>
         </View>
       </Panel>
+      {IconBox && (
+        <Show when={iconBoxMounted()}>
+          <IconBox modal={iconChoice} legend={props.legend} theme={theme} resolve={props.choiceIcon} />
+        </Show>
+      )}
 
       {/* Shop box: same footprint and docking as the choices box, with a
             stage/gold header row instead of a prompt and a scrolling row

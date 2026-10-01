@@ -10,6 +10,12 @@ import { startupProfileMark } from "../startup-profile.ts";
 import { decodeCompactMap, isCompactMapValue } from "./compact-map.ts";
 import { canonicalJson, utf8Encode } from "./save.ts";
 import { validateSchema, type VError } from "./schema-validate.ts";
+import {
+  MAP_SCHEMA_COMPATIBLE_HASHES,
+  MAP_SCHEMA_HASH,
+  describeMapSchemaRefusal,
+  isCompatibleMapSchemaHash,
+} from "./schema-identity.ts";
 import type {
   MapDef,
   MapIndexEntry,
@@ -126,13 +132,11 @@ const escapeNonAscii = (text: string): string => text.replace(
 export const canonicalMapJson = (map: MapDef): string => escapeNonAscii(canonicalJson(map));
 export const mapChecksum = (map: MapDef): string => sha256Text(canonicalMapJson(map));
 
-/** The schema identity is conservative: any normative project-schema change
- * invalidates sharded saves, including command definitions reachable from a
- * map payload. A test derives this value from data/schema.json so schema edits
- * cannot silently leave the runtime identity stale. Keeping the digest as a
- * literal prevents every inline-project bundle from embedding the 27 KB
- * authoring schema merely to start a session. */
-export const MAP_SCHEMA_HASH = "0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5";
+/** The schema identity: any normative project-schema change produces a new
+ * hash, including command definitions reachable from a map payload. Shells and
+ * saves naming a listed, purely additive predecessor stay loadable; see
+ * schema-identity.ts for the rules. */
+export { MAP_SCHEMA_COMPATIBLE_HASHES, MAP_SCHEMA_HASH, describeMapSchemaRefusal, isCompatibleMapSchemaHash };
 
 export interface MapContentIdentity {
   manifest: string;
@@ -171,10 +175,14 @@ export function resolveMapManifestHash(shell: ProjectShell, verify = false): str
   return declared;
 }
 
+/** The content identity a session over `shell` stamps on its saves. A shell
+ * from a compatible earlier schema is read, and saved, under the current
+ * identity; an incompatible declaration is kept so the mismatch surfaces. */
 export function shellContentIdentity(shell: ProjectShell, verify = false): MapContentIdentity {
+  const declared = shell.mapSchemaHash;
   return {
     manifest: resolveMapManifestHash(shell, verify),
-    schema: shell.mapSchemaHash ?? MAP_SCHEMA_HASH,
+    schema: declared === undefined || isCompatibleMapSchemaHash(declared) ? MAP_SCHEMA_HASH : declared,
   };
 }
 

@@ -721,7 +721,12 @@ view's current-map actor list are derived data: they are absent from reducer
 state, replay hashes and saves. For a shell project, save envelopes carry the
 shell manifest and map-schema identities; `restoreSessionEnvelope` rejects a
 different content build before acquiring the saved map, or reacquires that
-map if it was evicted. A non-zero transfer fade lets the standard synchronous
+map if it was evicted. Shells and saves from an earlier schema whose changes
+since were purely additive still load (`MAP_SCHEMA_COMPATIBLE_HASHES`; see
+[Schema identities](src/data/CHANGELOG.md#schema-identities); today that is
+only the schema just before optional choice icons, and older ones are refused
+with an error naming the accepted identities), and the next save is stamped
+with the current identity. A non-zero transfer fade lets the standard synchronous
 repository prepare one fixed unit per reference tick (read/optional byte decode/parse,
 validation, then world/passage compilation); the map is still published on
 the original fully-black tick. A zero-fade transfer keeps its single-frame
@@ -742,7 +747,7 @@ earlier resident map within the same host frame.
 | op | purpose |
 | --- | --- |
 | `text` | typewriter dialog lines |
-| `choices` | prompt with 2-8 option branches (a scrolling box past 4) and an optional cancel branch |
+| `choices` | prompt with 2-8 option branches (a scrolling box past 4), an optional cancel branch, and optional per-option sprite icons ([Choice icons](#choice-icons)) |
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
@@ -1781,6 +1786,47 @@ sources so the build bakes them.
 both components draw (border, optional rim, paper), for a game's own
 screens such as a help page. `resolveUiTheme` and `splitSpeaker` are plain
 TypeScript and are exported from `pocket-rpgkit` as well.
+
+### Choice icons
+
+A `choices` option may carry an `icon` naming a `project.sprites` entry. The
+box then draws that character left of the label, the way a "pick your
+partner" or "pick your look" screen shows each candidate:
+
+```json
+{ "op": "choices", "prompt": "Pick a partner to walk with you.", "options": [
+  { "text": "Curator", "icon": { "sprite": "curator" }, "commands": [] },
+  { "text": "Guide", "icon": { "sprite": "guide", "dir": "left", "frame": 0 }, "commands": [] },
+  { "text": "Walk alone", "commands": [] }
+] }
+```
+
+A walker shows facing `dir` (default `down`) in pose `frame` (0 idle,
+default; 1 left step; 2 right step); a static `kind: "image"` sprite ignores
+both. Options without an icon keep an empty cell so the labels stay aligned.
+
+The icon box is opt-in, so games that author no icons do not bundle it:
+
+```tsx
+import { ChoiceIconBox } from "pocket-rpgkit/ui/choice-icons";
+
+mount(() => <GameView project={project} assets={GAME_ASSETS} choiceIcons={ChoiceIconBox} />);
+```
+
+It replaces the text-only box while an icon choice is open: 248×144,
+docked bottom right where the hidden message box sits, four 24 px rows that
+scroll past four options, and a cursor bar (accent tint plus accent frame)
+spanning icon and label. Icons draw at 1×, nearest neighbour. A 16×16
+image is centred in its row; a 16×32 walker frame is anchored at its feet
+and its top 8 pixel rows are clipped, which keeps Tuxemon-style characters
+whole but cuts a taller head. A sprite that is not in `project.sprites` or
+has no baked art draws a framed `?` and logs one `console.warn` per key;
+`rpgkit-check lint` reports the missing key as `lint/sprite-missing`
+(error). Without the `choiceIcons` prop an icon choice still works: it
+opens the text-only box with the labels and logs one warning. Text-only
+choices render exactly as before either way. `DialogBox` takes the same
+component as `choiceIconBox` plus a `choiceIcon` resolver
+(`resolveChoiceIcon` from the same entry).
 
 ## Target matrix
 

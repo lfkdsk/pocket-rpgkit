@@ -10,6 +10,7 @@
     "./engine": "./src/engine/index.ts",
     "./ui": "./src/ui/index.ts",
     "./ui/image": "./src/ui/image.ts",
+    "./ui/choice-icons": "./src/ui/ChoiceIconBox.tsx",
     "./ui/battle": "./src/ui/battle/index.ts",
     "./ui/demo": "./src/ui/demo/index.ts",
     "./ui/audio": "./src/ui/audio/index.ts",

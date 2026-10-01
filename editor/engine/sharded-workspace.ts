@@ -2,6 +2,8 @@
 
 import {
   MAP_SCHEMA_HASH,
+  describeMapSchemaRefusal,
+  isCompatibleMapSchemaHash,
   canonicalMapJson,
   mapManifestHash,
   resolveMapManifestHash,
@@ -81,8 +83,8 @@ export class ShardedEditorWorkspace {
     if (!Number.isInteger(maxLoadedMaps) || maxLoadedMaps < 1) {
       throw new Error("sharded workspace: maxLoadedMaps must be a positive integer");
     }
-    if (shell.mapSchemaHash !== undefined && shell.mapSchemaHash !== MAP_SCHEMA_HASH) {
-      throw new Error("sharded workspace: map schema hash does not match this RPG Kit build");
+    if (shell.mapSchemaHash !== undefined && !isCompatibleMapSchemaHash(shell.mapSchemaHash)) {
+      throw new Error(`sharded workspace: map schema hash does not match this RPG Kit build: ${describeMapSchemaRefusal(shell.mapSchemaHash)}`);
     }
     validateMapIndex(shell.mapIndex);
     resolveMapManifestHash(shell, shell.mapManifestHash !== undefined);

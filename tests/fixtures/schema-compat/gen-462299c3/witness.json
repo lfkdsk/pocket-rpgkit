@@ -1,0 +1,9 @@
+{
+  "case": "variable-beyond-safe-integer",
+  "recordedBy": "4e5d880d",
+  "outcome": {
+    "schemaErrors": 0,
+    "route": 1e+308,
+    "save": "{\"format\":\"rpgkit-save/v1\",\"version\":1,\"frame\":10,\"checksum\":\"3c1fffd2\",\"state\":{\"map\":\"a\",\"player\":{\"tx\":1,\"ty\":1,\"px\":16,\"py\":16,\"facing\":0,\"phase\":0,\"moving\":false,\"walking\":false,\"stepDir\":0},\"held\":0,\"interp\":{\"frame\":10,\"sw\":{\"switches\":{},\"self\":{},\"items\":{},\"variables\":{\"route\":1e+308},\"gold\":0,\"playerName\":\"Player\",\"rng\":305419896},\"main\":null,\"parallels\":{},\"modal\":null,\"erased\":{\"a/set\":true},\"touched\":{},\"inputLocked\":false,\"placements\":{},\"cues\":[],\"pendingTransfer\":null,\"pendingMoveRoutes\":[],\"pendingBattles\":[],\"pendingPlacements\":[],\"abortedRoutes\":[]},\"ext\":null}}"
+  }
+}

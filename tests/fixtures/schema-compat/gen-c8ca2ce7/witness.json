@@ -1,0 +1,9 @@
+{
+  "case": "transfer-to-unknown-map",
+  "recordedBy": "c2e55a03",
+  "outcome": {
+    "schemaErrors": 0,
+    "threw": true,
+    "message": "map repository: unknown map missing"
+  }
+}

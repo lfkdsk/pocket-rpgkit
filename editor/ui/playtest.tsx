@@ -7,6 +7,7 @@ import { Text, View } from "@pocketjs/framework/components";
 import type { SessionState } from "../../src/engine/session.ts";
 import type { JsonValue, Project } from "../../src/engine/types.ts";
 import { GameView, type BattleSceneViewProps, type SceneComponent } from "../../src/ui/GameView.tsx";
+import { ChoiceIconBox } from "../../src/ui/ChoiceIconBox.tsx";
 import type { GameAssets } from "../../src/ui/game-assets.ts";
 import {
   applyPlaytestCarry,
@@ -180,6 +181,7 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
         extensions={{ allowUnknown: true }}
         battle={PLAYTEST_BATTLE_RULES}
         battleScene={EditorBattleScene}
+        choiceIcons={ChoiceIconBox}
         scenes={playtestSceneRules(props.project)}
         sceneViews={playtestSceneViews(props.project)}
       />

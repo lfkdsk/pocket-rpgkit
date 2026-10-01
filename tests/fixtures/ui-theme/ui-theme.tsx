@@ -10,11 +10,16 @@ import { createOsk } from "@pocketjs/framework/osk";
 import type { Modal } from "../../../src/engine/interpreter.ts";
 import type { MenuState } from "../../../src/engine/save-menu.ts";
 import { DialogBox, SaveMenu, type UiTheme } from "../../../src/ui/index.ts";
+import { ChoiceIconBox, resolveChoiceIcon } from "../../../src/ui/ChoiceIconBox.tsx";
+import { ICON_ART, ICON_SPRITES } from "./icons.ts";
 import { CODE, FACES, ITEMS, MENUS, MODALS, SAVE_TITLE, SLOTS, THEMES, type FixtureScene } from "./scenes.ts";
 
 declare global {
   // eslint-disable-next-line no-var
   var __uiFixture: { show(scene: FixtureScene): void } | undefined;
+  /** Boot-time switch: leave DialogBox's opt-in icon box out. */
+  // eslint-disable-next-line no-var
+  var __uiFixtureNoIconBox: boolean | undefined;
 }
 
 function Fixture() {
@@ -54,6 +59,8 @@ function Fixture() {
         theme={theme()}
         faces={faces()}
         items={items()}
+        choiceIconBox={globalThis.__uiFixtureNoIconBox ? undefined : ChoiceIconBox}
+        choiceIcon={(icon) => resolveChoiceIcon(icon, ICON_SPRITES, ICON_ART)}
       />
       <SaveMenu
         menu={menu}

@@ -18,7 +18,8 @@ import {
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
-  MAP_SCHEMA_HASH,
+  describeMapSchemaRefusal,
+  isCompatibleMapSchemaHash,
   assertShellManifestFresh,
   sha256Text,
   validateMapDef,
@@ -197,8 +198,8 @@ function parseShell(source: string, label: string): ParsedShell {
     throw new EditorFilesError("INVALID_PROJECT", `${label} must be a ProjectShell`);
   }
   const shell = parsed as unknown as ProjectShell;
-  if (shell.mapSchemaHash !== undefined && shell.mapSchemaHash !== MAP_SCHEMA_HASH) {
-    throw new EditorFilesError("INVALID_PROJECT", `${label} mapSchemaHash does not match this RPG Kit build`);
+  if (shell.mapSchemaHash !== undefined && !isCompatibleMapSchemaHash(shell.mapSchemaHash)) {
+    throw new EditorFilesError("INVALID_PROJECT", `${label} mapSchemaHash does not match this RPG Kit build: ${describeMapSchemaRefusal(shell.mapSchemaHash)}`);
   }
   if (typeof shell.mapManifestHash !== "string") {
     throw new EditorFilesError("INVALID_PROJECT", `${label} must declare mapManifestHash`);

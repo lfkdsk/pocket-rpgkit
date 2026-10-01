@@ -35,12 +35,21 @@ commands and the four triggers. The matching TypeScript types are
   [`../src/engine/save.ts`](../src/engine/save.ts)). `assertShellManifestFresh`
   (exported from `pocket-rpgkit/engine`) verifies a packaged shell before
   release.
-- **Schema identity.** `MAP_SCHEMA_HASH` in `map-repository.ts` is
+- **Schema identity.** `MAP_SCHEMA_HASH` (`src/engine/schema-identity.ts`,
+  re-exported from `map-repository.ts`) is
   `sha256(canonicalJson(schema.json))`. It identifies the schema a sharded
-  project was built against; a session rejects a shell whose `mapSchemaHash`
-  differs, and sharded save envelopes carry the same identity. The literal is
-  kept in source so inline bundles need not embed the schema, and a test pins
-  it to `data/schema.json` so the two cannot drift apart.
+  project was built against, and sharded save envelopes carry the same
+  identity in `content.schema`. A session, the edit API, the sharded editor
+  workspace and the editor file server accept a shell or save whose identity
+  is the current one or one of `MAP_SCHEMA_COMPATIBLE_HASHES` — earlier
+  identities that differ only by purely additive changes — and refuse any
+  other (`shell schema hash mismatch`; save error `content`; the message
+  names the refused and the accepted identities). A session
+  records the current identity, so saves and editor writes are always
+  stamped with it; accepting an older schema identity never relaxes the
+  manifest check. The literal is kept in source so inline bundles need not
+  embed the schema, and a test pins it to `data/schema.json` so the two
+  cannot drift apart.
 - **Saves** are a separate envelope, `rpgkit-save/v1`
   (`src/engine/save.ts`): FNV-checksummed, validated by
   `src/engine/save-validate.ts` before live state is replaced.
@@ -320,15 +329,36 @@ check).
   that cannot be absorbed as an amendment — gets a new marker
   (`rpgkit-project/v2`) and a new changelog entry. Frontends detect
   compatibility from the `format` field, and sharded projects additionally
-  from `mapSchemaHash` against the host's `MAP_SCHEMA_HASH`.
+  from `mapSchemaHash` (see the next item).
+- **Schema identity compatibility.** Every normative schema edit changes
+  `MAP_SCHEMA_HASH`. A change is *purely additive* when every document valid
+  under the previous schema is still valid and behaves exactly as before: a
+  new optional property, a new command or condition variant, a new enum
+  value, a loosened limit. The outgoing identity then joins
+  `MAP_SCHEMA_COMPATIBLE_HASHES`, and existing sharded shells and their saves
+  keep loading without a rebuild. A new required field, a removed or narrowed
+  value, or an existing field that behaves differently — even only for
+  unusual values, or in a change that also adds a command — is *breaking*:
+  the list is cleared, and older shells and saves are refused until a
+  migration exists. Compatibility carries across generations, so only the
+  identities after the most recent breaking change are listed (today just
+  the identity before optional choice icons). `src/data/CHANGELOG.md` ("Schema identities") lists every identity
+  and its classification; `tests/schema-compat.test.ts` keeps that table,
+  the list and the real per-generation fixtures in
+  `tests/fixtures/schema-compat` in step, so a schema edit cannot land
+  without choosing one of the two paths; each breaking change also keeps a
+  counterexample recorded by the release before it. A shell that omits
+  `mapSchemaHash` is not checked against the list: it is read as the current
+  schema and saved under the current identity.
 - **`rpgkit-save/v1`.** The envelope carries `format` and `version`; a
   mismatch is a typed rejection, never a silent migration. The public
   `SaveErrorCode` values are `bad-json` (empty, malformed or non-UTF-8 save
   data), `format` (not an `rpgkit-save/v1` envelope), `version` (envelope
   version this build cannot load), `checksum` (FNV mismatch), `content`
-  (sharded-project identity mismatch) and `shape` (envelope or state fails
-  validation). Old saves that omit newer optional fields keep their
-  defaults.
+  (sharded-project identity mismatch: a different manifest, or a schema
+  identity that is neither current nor listed as compatible) and `shape`
+  (envelope or state fails validation). Old saves that omit newer optional
+  fields keep their defaults.
 - **`rpgkit-edit/patch-v1`.** The patch format is versioned in its `format`
   field. `beforeHash`/`afterHash` fail closed, so a patch can neither probe
   nor apply against a changed base.

@@ -18,7 +18,7 @@ entry, so the web player can jump straight to any showroom without reloading.
 | 6. Tuxemon Arena | Bamboon, Bigfin, the battle UI kit, and win/lose/escape branches | [`halls/interactive.ts`](halls/interactive.ts) |
 | 7. Market Square | Buying, selling, stock, wallet, and inventory | [`halls/interactive.ts`](halls/interactive.ts) |
 | 8. Endless Grove | Streamed chunks, native animated water, 16×32 walkers | [`halls/system.ts`](halls/system.ts) |
-| 9. Portrait Library | Live dialog theme selection and speaker portraits | [`halls/system.ts`](halls/system.ts) |
+| 9. Portrait Library | Live dialog theme selection, speaker portraits, and a partner picker whose choice rows carry character icons | [`halls/system.ts`](halls/system.ts) |
 | 10. Cutscene Stage | `lockInput`, `unlockInput`, and `worldIdle` gating | [`halls/motion.ts`](halls/motion.ts) |
 | 11. Post Office | Real `SaveMenu` rendering and save-code round trip | [`halls/system.ts`](halls/system.ts) |
 | 12. Tour Pavilion | 10-second idle tour, takeover, and L rewind | [`halls/system.ts`](halls/system.ts) |
@@ -30,7 +30,11 @@ maps, walkers, animation frames and battle art from the small attributed
 Tuxemon source set, then emits the editor JSON, manifests and frozen attract
 tape. `bun tools/showcase-screenshots.ts` regenerates the fifteen scene
 screenshots and their contact sheet after the showcase bundle and wasm host
-have been built.
+have been built. It also walks to a few authored events and captures their
+open boxes as close-ups outside the contact sheet; `--shot choice-icons`
+alone retakes Hall 9's partner picker:
+
+![Hall 9 partner picker: a choices box whose rows show the Curator, Guide and Visitor walkers](../../docs/screenshots/showcase-09-choice-icons.png)
 
 Map art is assembled, never hand-numbered:
 

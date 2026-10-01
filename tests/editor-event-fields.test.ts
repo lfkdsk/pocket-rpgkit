@@ -106,7 +106,7 @@ describe("event inspector command fields", () => {
     expect(commandInspectorRows(editable).every((row) => row.supported && !row.readOnly)).toBe(true);
     expect(validateProject(projectWith(editable))).toEqual([]);
     expect(commandFields(defaultCommand("choices")).map((entry) => entry.key)).toEqual([
-      "prompt", "optionCount", "option:0", "option:1", "cancel",
+      "prompt", "optionCount", "option:0", "option:0.icon", "option:1", "option:1.icon", "cancel",
     ]);
   });
 
@@ -301,6 +301,92 @@ describe("event inspector command fields", () => {
     expect(choice).not.toHaveProperty("write");
 
     expect(validateProject(projectWith([appearance, layer, tile, fade, audio, backdrop, animation, choice]))).toEqual([]);
+  });
+});
+
+describe("choice option icons", () => {
+  const twoOptions = (): Extract<Command, { op: "choices" }> => ({
+    op: "choices",
+    prompt: "Who?",
+    options: [
+      { text: "Hero", commands: [{ op: "switch", id: "picked", value: true }] },
+      { text: "Guard", icon: { sprite: "npc", dir: "left", frame: 2 }, commands: [] },
+    ],
+  });
+
+  test("offers an icon sprite per option and facing/pose only when one is set", () => {
+    const resources = eventEditorResources(projectWith([]));
+    const fields = commandFields(twoOptions(), resources);
+    expect(fields.map((entry) => entry.key)).toEqual([
+      "prompt", "optionCount",
+      "option:0", "option:0.icon",
+      "option:1", "option:1.icon", "option:1.icon.dir", "option:1.icon.frame",
+      "cancel",
+    ]);
+    const byKey = new Map(fields.map((entry) => [entry.key, entry]));
+    expect(byKey.get("option:0.icon")).toMatchObject({ label: "ICON 1", value: "(unset)", kind: "text", options: ["hero", "npc"] });
+    expect(byKey.get("option:0.icon")?.hint).toContain("hero, npc");
+    expect(byKey.get("option:1.icon")).toMatchObject({ value: "npc", options: ["hero", "npc"] });
+    expect(byKey.get("option:1.icon.dir")).toMatchObject({ value: "left", kind: "enum", options: ["down", "left", "right", "up"] });
+    expect(byKey.get("option:1.icon.frame")).toMatchObject({ value: "2", kind: "enum", options: ["0", "1", "2"] });
+    // Enum cycling through the inspector reaches every legal pose.
+    expect(nextFieldValue(byKey.get("option:1.icon.frame")!)).toBe("0");
+  });
+
+  test("sets, adjusts and clears an icon canonically without touching the branch", () => {
+    let choices: Command = edit(twoOptions(), "option:0.icon", "hero");
+    expect(choices.op === "choices" && choices.options[0]).toEqual({
+      text: "Hero", icon: { sprite: "hero" }, commands: [{ op: "switch", id: "picked", value: true }],
+    });
+    // Schema property order survives: text, icon, commands.
+    expect(choices.op === "choices" && Object.keys(choices.options[0]!)).toEqual(["text", "icon", "commands"]);
+
+    choices = edit(choices, "option:0.icon.frame", "1");
+    choices = edit(choices, "option:0.icon.dir", "up");
+    expect(choices.op === "choices" && choices.options[0]!.icon).toEqual({ sprite: "hero", dir: "up", frame: 1 });
+    expect(choices.op === "choices" && Object.keys(choices.options[0]!.icon!)).toEqual(["sprite", "dir", "frame"]);
+
+    // Changing the sprite keeps the pose; defaults are omitted, not stored.
+    choices = edit(choices, "option:0.icon", "npc");
+    expect(choices.op === "choices" && choices.options[0]!.icon).toEqual({ sprite: "npc", dir: "up", frame: 1 });
+    choices = edit(choices, "option:0.icon.dir", "down");
+    choices = edit(choices, "option:0.icon.frame", "0");
+    expect(choices.op === "choices" && choices.options[0]!.icon).toEqual({ sprite: "npc" });
+
+    // Clearing removes the key entirely, for both the OMIT spelling and blank.
+    const cleared = edit(choices, "option:0.icon", "(unset)");
+    expect(cleared.op === "choices" && cleared.options[0]).toEqual({
+      text: "Hero", commands: [{ op: "switch", id: "picked", value: true }],
+    });
+    const blank = edit(twoOptions(), "option:1.icon", "");
+    expect(blank.op === "choices" && blank.options[1]).toEqual({ text: "Guard", commands: [] });
+    expect(commandFields(blank).map((entry) => entry.key)).not.toContain("option:1.icon.dir");
+
+    // Text edits and option-count changes keep authored icons.
+    const renamed = edit(twoOptions(), "option:1", "Captain");
+    expect(renamed.op === "choices" && renamed.options[1]).toEqual({ text: "Captain", icon: { sprite: "npc", dir: "left", frame: 2 }, commands: [] });
+    const grown = edit(twoOptions(), "optionCount", "3");
+    expect(grown.op === "choices" && grown.options[1]!.icon).toEqual({ sprite: "npc", dir: "left", frame: 2 });
+
+    expect(validateProject(projectWith([choices, cleared, renamed, grown]))).toEqual([]);
+  });
+
+  test("rejects icon facing or pose without a sprite and out-of-range values", () => {
+    for (const [key, raw] of [
+      ["option:0.icon.dir", "left"],
+      ["option:0.icon.frame", "1"],
+      ["option:1.icon.frame", "3"],
+      ["option:1.icon.frame", "-1"],
+      ["option:1.icon.dir", "north"],
+      ["option:2.icon", "hero"],
+      ["option:1.icon.sprite", "hero"],
+      ["option:1.iconx", "hero"],
+    ] as const) {
+      expect(editCommandField(twoOptions(), key, raw).ok, `${key}=${raw}`).toBe(false);
+    }
+    // An authored icon that breaks the schema is caught by the command gate.
+    const broken = { ...twoOptions(), options: [twoOptions().options[0]!, { text: "Bad", icon: { sprite: "npc", frame: 5 }, commands: [] }] } as unknown as Command;
+    expect(editCommandField(broken, "prompt", "Still bad").ok).toBe(false);
   });
 });
 

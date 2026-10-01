@@ -435,7 +435,9 @@ simDescribe("sunstone — render budget", () => {
     // work, about 18 KB from the scene host). Bounded immutable metadata,
     // opt-in session/interpreter caches, retained actor frames, and stable
     // dialog/battle paint paths and generic-scene merge guards add 31,070 B:
-    // 767,170 B measured. The
+    // 767,170 B measured. Choice-row icons add 4,364 B of shared schema,
+    // reducer and DialogBox hook code (the icon box itself is opt-in):
+    // 771,534 B. The
     // ui/demo and ui/audio
     // input-graph tests separately prove non-opted-in code stays out; the
     // bound keeps a narrow margin so an accidental bundle-in still trips it.

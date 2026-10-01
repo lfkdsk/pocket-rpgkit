@@ -248,12 +248,31 @@ export interface ShopGood {
   condition?: PageCondition;
 }
 
+/** One row of a `choices` box. `icon` draws a registered character sprite
+ *  left of the label (see ChoiceIcon); without it the row is text only. */
+export interface ChoiceOption {
+  text: string;
+  icon?: ChoiceIcon;
+  commands: Command[];
+}
+
+/** A choice-row picture: one frame of a `project.sprites` entry. A static
+ *  image sprite (`kind: "image"`) ignores `dir`/`frame`; a walker shows the
+ *  `dir` facing (default down) in walk pose `frame` (0 idle, the default;
+ *  1 left step; 2 right step). Render-only: the reducer copies it into the
+ *  open choices modal and never reads it. */
+export interface ChoiceIcon {
+  sprite: string;
+  dir?: Dir;
+  frame?: 0 | 1 | 2;
+}
+
 export type Command =
   | { op: "text"; lines: string[]; cps?: number }
   | {
       op: "choices";
       prompt: string;
-      options: { text: string; commands: Command[] }[];
+      options: ChoiceOption[];
       cancel?: { commands: Command[] };
     }
   | { op: "switch"; id: string; value: boolean }

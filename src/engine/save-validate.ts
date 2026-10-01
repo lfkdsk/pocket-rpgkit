@@ -56,6 +56,37 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+const CHOICE_ICON_KEYS = new Set(["sprite", "dir", "frame"]);
+
+/** A choices icon column (compiled instruction or open modal): exactly one
+ *  entry per option, each null (text-only row) or {sprite, dir?, frame?}
+ *  with no other keys — the shape compile() emits from the schema-checked
+ *  `choices.options[].icon`. */
+function validateChoiceIcons(v: unknown, count: number, path: string): string | null {
+  if (!Array.isArray(v) || v.length !== count) {
+    return fail(path, "one icon entry (object or null) per option required");
+  }
+  for (let i = 0; i < v.length; i++) {
+    const icon = v[i];
+    if (icon === null) continue;
+    const at = `${path}[${i}]`;
+    if (!isRecord(icon)) return fail(at, "icon must be an object or null");
+    for (const key of Object.keys(icon)) {
+      if (!CHOICE_ICON_KEYS.has(key)) return fail(`${at}.${key}`, "unknown icon field");
+    }
+    if (typeof icon.sprite !== "string" || icon.sprite.length === 0) {
+      return fail(`${at}.sprite`, "non-empty string required");
+    }
+    if (icon.dir !== undefined && !["down", "left", "right", "up"].includes(icon.dir as string)) {
+      return fail(`${at}.dir`, "down|left|right|up required");
+    }
+    if (icon.frame !== undefined && icon.frame !== 0 && icon.frame !== 1 && icon.frame !== 2) {
+      return fail(`${at}.frame`, "0|1|2 required");
+    }
+  }
+  return null;
+}
+
 function fail(path: string, msg: string): string {
   return `${path}: ${msg}`;
 }
@@ -464,6 +495,11 @@ function validateProg(prog: unknown, path: string): string | null {
         }
         if (!Array.isArray(ins.branches) || ins.branches.length !== ins.texts.length) {
           return fail(`${here}.branches`, "one program per choice required");
+        }
+        if (ins.icons !== undefined) {
+          // Omitted (never null) when no option has an icon.
+          const e = validateChoiceIcons(ins.icons, ins.texts.length, `${here}.icons`);
+          if (e) return e;
         }
         for (const b of ins.branches) {
           const e = validateProg(b, `${here}.branches`);
@@ -1399,6 +1435,12 @@ function validateModal(v: unknown, path: string, liveKeys: ReadonlySet<string>):
       }
     } else if (v.options.length === 0) {
       return fail(`${path}.options`, "non-empty string array required");
+    }
+    if (v.icons !== undefined) {
+      // Authored choices only; an extChoice modal never carries icons.
+      if (dynamic) return fail(`${path}.icons`, "icons are only valid on an authored choices modal");
+      const e = validateChoiceIcons(v.icons, v.options.length, `${path}.icons`);
+      if (e) return e;
     }
     if (!isNonNegInt(v.index) || (
       v.options.length === 0 ? v.index !== 0 : v.index >= v.options.length

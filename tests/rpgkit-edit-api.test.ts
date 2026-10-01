@@ -6,6 +6,7 @@ import {
 } from "../editor/api/operations.ts";
 import type { EditExecution, EditSuccess } from "../editor/api/types.ts";
 import { serializeProject } from "../editor/engine/document.ts";
+import { defaultCommand } from "../editor/engine/commands.ts";
 import type { Command, Project, ProjectShell } from "../src/engine/types.ts";
 
 function fixture(): Project {
@@ -462,6 +463,74 @@ describe("rpgkit edit command operations and patches", () => {
     }));
     expect((JSON.parse(updated.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0])
       .toEqual({ op: "playBgm", id: "field", volume: 50, pitch: 90 });
+  });
+
+  test("sets, poses and clears a choice option icon with exact reversible patches", () => {
+    const project = fixture();
+    project.sprites = { hero: { kind: "image", src: "sprite:hero" } };
+    project.maps[0]!.events![0]!.pages[0]!.commands = [{
+      op: "choices",
+      prompt: "Who?",
+      options: [
+        { text: "Me", commands: [] },
+        { text: "You", commands: [{ op: "text", lines: ["Hi"] }] },
+      ],
+    }];
+    const source = serializeProject(project);
+    const selection = { map: "map", event: "npc", page: 0, address: { path: [], index: 0 } };
+    const optionPath = "/maps/0/events/0/pages/0/commands/0/options/1";
+
+    const set = success(executeEditOperation(source, "update-command", { ...selection, field: "option:1.icon", value: "hero" }));
+    expect(set.patch!.changes).toEqual([
+      { path: `${optionPath}/icon`, before: { exists: false }, after: { exists: true, value: { sprite: "hero" } } },
+    ]);
+    const withIcon = JSON.parse(set.output) as Project;
+    expect(withIcon.maps[0]!.events![0]!.pages[0]!.commands[0]).toMatchObject({
+      options: [{ text: "Me", commands: [] }, { text: "You", icon: { sprite: "hero" }, commands: [{ op: "text", lines: ["Hi"] }] }],
+    });
+    expect(Object.keys((withIcon.maps[0]!.events![0]!.pages[0]!.commands[0] as any).options[0])).toEqual(["text", "commands"]);
+    expect(applyEditPatch(withIcon, set.patch!, "reverse")).toEqual(project);
+    expect(JSON.parse(success(executeEditOperation(source, "save", { patch: set.patch })).output)).toEqual(withIcon);
+
+    const posed = success(executeEditOperation(set.output, "update-command", { ...selection, field: "option:1.icon.frame", value: "2" }));
+    expect(posed.patch!.changes).toEqual([
+      { path: `${optionPath}/icon/frame`, before: { exists: false }, after: { exists: true, value: 2 } },
+    ]);
+
+    const cleared = success(executeEditOperation(posed.output, "update-command", { ...selection, field: "option:1.icon", value: "(unset)" }));
+    expect(cleared.patch!.changes).toEqual([
+      { path: `${optionPath}/icon`, before: { exists: true, value: { sprite: "hero", frame: 2 } }, after: { exists: false } },
+    ]);
+    expect(JSON.parse(cleared.output)).toEqual(project);
+  });
+
+  test("rejects schema-invalid choice option icons from field edits and inserted commands", () => {
+    const project = fixture();
+    project.sprites = { hero: { kind: "image", src: "sprite:hero" } };
+    const source = serializeProject(project);
+    const selection = { map: "map", event: "npc", page: 0, address: { path: [], index: 0 } };
+    const choices = (icon: unknown): Record<string, unknown> => ({
+      op: "choices",
+      prompt: "",
+      options: [{ text: "A", icon, commands: [] }, { text: "B", commands: [] }],
+    });
+
+    const accepted = success(executeEditOperation(source, "insert-command", { ...selection, command: choices({ sprite: "hero", dir: "up", frame: 1 }) }));
+    expect((JSON.parse(accepted.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0])
+      .toMatchObject({ options: [{ icon: { sprite: "hero", dir: "up", frame: 1 } }, { text: "B" }] });
+
+    for (const icon of [{ sprite: "hero", frame: 5 }, { sprite: "hero", tint: "red" }, { sprite: "" }, { dir: "up" }]) {
+      expect(executeEditOperation(source, "insert-command", { ...selection, command: choices(icon) }).response, JSON.stringify(icon))
+        .toMatchObject({ ok: false, error: { code: "INVALID_EDIT" } });
+    }
+
+    const badFrame = executeEditOperation(accepted.output, "update-command", { ...selection, field: "option:0.icon.frame", value: "5" }).response;
+    expect(badFrame).toMatchObject({ ok: false, error: { code: "INVALID_COMMAND_FIELD", path: "$.command.option:0.icon.frame" } });
+    if (!badFrame.ok) expect(badFrame.error.expected).toEqual(expect.arrayContaining(["option:0.icon", "option:0.icon.dir", "option:0.icon.frame", "option:1.icon"]));
+    const plain = success(executeEditOperation(source, "insert-command", { ...selection, command: defaultCommand("choices") }));
+    const orphanDir = executeEditOperation(plain.output, "update-command", { ...selection, field: "option:0.icon.dir", value: "up" }).response;
+    expect(orphanDir).toMatchObject({ ok: false, error: { code: "INVALID_COMMAND_FIELD" } });
+    if (!orphanDir.ok) expect(orphanDir.error.message).toContain("choose an icon sprite");
   });
 
   test("command field errors identify the field and legal alternatives", () => {

@@ -26,7 +26,8 @@
 //                                   not in the catalog
 //   lint/audio-missing              audio command/condition id absent from a
 //                                   declared project.audio table
-//   lint/sprite-missing             page.sprite / appearance.sprite key not in
+//   lint/sprite-missing             page.sprite / appearance.sprite /
+//                                   choices option icon.sprite key not in
 //                                   project.sprites
 //   lint/sheet-missing              map.sheets / tile id / walker sheet / item
 //                                   sprite referencing an unknown sheet
@@ -430,6 +431,19 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           }
           break;
         case "choices":
+          // A row icon draws one frame of a project.sprites entry; an unknown
+          // key has nothing to draw. The path points at the option's icon.
+          command.options.forEach((option, optionIndex) => {
+            if (option.icon && !spriteIds.has(option.icon.sprite)) {
+              findings.push(makeFinding(
+                "lint/sprite-missing",
+                "error",
+                `choices option ${optionIndex} icon uses unknown sprite ${JSON.stringify(option.icon.sprite)}`,
+                "add the sprite to project.sprites or fix the key",
+                { ...loc, commandPath: [...path, "options", optionIndex, "icon"] },
+              ));
+            }
+          });
           if (command.options.length === 0 && !command.cancel) {
             findings.push(makeFinding(
               "lint/choices-empty",

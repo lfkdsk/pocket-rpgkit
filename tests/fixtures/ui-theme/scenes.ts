@@ -152,6 +152,76 @@ export const MODALS = {
       { kind: "back" },
     ],
   },
+  // Choice-row icons (tests/choice-icon-render.test.ts, art in icons.ts):
+  // walkers in three facings/poses and a static image, cursor on row 1.
+  iconChoices: {
+    kind: "choices",
+    fiber: "fixture",
+    prompt: "Who do you ask?",
+    options: ["The curator", "The guide", "A traveller", "The notice board"],
+    icons: [
+      { sprite: "curator" },
+      { sprite: "guide", dir: "left" },
+      { sprite: "alternate", dir: "right", frame: 1 },
+      { sprite: "sign" },
+    ],
+    index: 1,
+    cancellable: true,
+  },
+  // iconChoices without the icon column: what a game that has not opted
+  // into the icon box shows for it.
+  iconChoicesPlain: {
+    kind: "choices",
+    fiber: "fixture",
+    prompt: "Who do you ask?",
+    options: ["The curator", "The guide", "A traveller", "The notice board"],
+    index: 1,
+    cancellable: true,
+  },
+  // Same rows, cursor on the last one.
+  iconChoicesLast: {
+    kind: "choices",
+    fiber: "fixture",
+    prompt: "Who do you ask?",
+    options: ["The curator", "The guide", "A traveller", "The notice board"],
+    icons: [
+      { sprite: "curator" },
+      { sprite: "guide", dir: "left" },
+      { sprite: "alternate", dir: "right", frame: 1 },
+      { sprite: "sign" },
+    ],
+    index: 3,
+    cancellable: true,
+  },
+  // A row without an icon, an unknown sprite key and a registered sprite
+  // the manifest has no art for: the last two draw the "?" placeholder.
+  iconChoicesMissing: {
+    kind: "choices",
+    fiber: "fixture",
+    prompt: "Who do you ask?",
+    options: ["The curator", "Nobody at all", "A stranger", "An uncooked one"],
+    icons: [{ sprite: "curator" }, null, { sprite: "ghost" }, { sprite: "uncooked" }],
+    index: 2,
+    cancellable: true,
+  },
+  // Eight icon rows scrolled mid-list: the window follows the cursor.
+  iconChoices8: {
+    kind: "choices",
+    fiber: "fixture",
+    prompt: "Choose your travel script",
+    options: [
+      "Mercenary route", "Diplomat route", "Smuggler route", "Pilgrim route",
+      "Scholar route", "A label far too long to fit the choices box at all",
+      "Hermit route", "Wanderer route",
+    ],
+    icons: [
+      { sprite: "curator" }, { sprite: "guide" }, { sprite: "alternate" }, { sprite: "sign" },
+      { sprite: "curator", dir: "up" }, { sprite: "guide", dir: "right" },
+      { sprite: "alternate", dir: "left" }, { sprite: "curator", frame: 2 },
+    ],
+    index: 5,
+    cancellable: false,
+  },
 } satisfies Record<string, Modal | null>;
 
 /** Shop box item display names (DialogBox `items` prop). */

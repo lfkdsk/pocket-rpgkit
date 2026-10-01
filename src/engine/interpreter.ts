@@ -65,6 +65,7 @@ import {
 } from "./screen.ts";
 import type {
   AnimationDef,
+  ChoiceIcon,
   CameraTarget,
   Command,
   CommonEvent,
@@ -515,6 +516,11 @@ export type Instr =
       texts: string[];
       branches: Prog[];
       cancel: Prog | null;
+      /** One entry per option (null = no icon on that row). Omitted — not
+       *  null — when no option carries an icon, so icon-free programs keep
+       *  exactly the compiled shape (and save/hash bytes) they had before
+       *  icons existed. Render-only and never mutated: the modal shares it. */
+      icons?: (ChoiceIcon | null)[];
     }
   | { op: "switch"; id: string; value: boolean }
   | {
@@ -640,6 +646,12 @@ export type Instr =
 
 export type Prog = Instr[];
 
+function choiceIconEquals(a: ChoiceIcon | null | undefined, b: ChoiceIcon | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.sprite === b.sprite && a.dir === b.dir && a.frame === b.frame;
+}
+
 const DEFAULT_CPS = 30;
 
 export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
@@ -654,15 +666,20 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
         case "text":
           emit({ op: "text", lines: c.lines, cps: c.cps ?? DEFAULT_CPS });
           break;
-        case "choices":
-          emit({
+        case "choices": {
+          const ins: Extract<Instr, { op: "choices" }> = {
             op: "choices",
             prompt: c.prompt,
             texts: c.options.map((o) => o.text),
             branches: c.options.map((o) => compile(o.commands, hz)),
             cancel: c.cancel ? compile(c.cancel.commands, hz) : null,
-          });
+          };
+          if (c.options.some((o) => o.icon !== undefined)) {
+            ins.icons = c.options.map((o) => o.icon ?? null);
+          }
+          emit(ins);
           break;
+        }
         case "switch":
           emit({ op: "switch", id: c.id, value: c.value });
           break;
@@ -983,6 +1000,9 @@ export interface ChoiceModal {
   keys?: string[];
   /** Present only for extChoice. False rows remain navigable but inert. */
   enabled?: boolean[];
+  /** Present only when at least one authored option carries an `icon`; one
+   * entry per option (null = no icon on that row). Render-only. */
+  icons?: (ChoiceIcon | null)[];
   index: number;
   cancellable: boolean;
 }
@@ -1059,7 +1079,12 @@ export function modalChanged(a: Modal | null, b: Modal | null): boolean {
       (a.keys === undefined) !== (b.keys === undefined) ||
       (a.enabled === undefined) !== (b.enabled === undefined) ||
       (a.keys?.some((key, i) => key !== b.keys?.[i]) ?? false) ||
-      (a.enabled?.some((enabled, i) => enabled !== b.enabled?.[i]) ?? false)
+      (a.enabled?.some((enabled, i) => enabled !== b.enabled?.[i]) ?? false) ||
+      (a.icons === undefined) !== (b.icons === undefined) ||
+      (a.icons !== undefined && (
+        a.icons.length !== b.icons!.length ||
+        a.icons.some((icon, i) => !choiceIconEquals(icon, b.icons![i]))
+      ))
     );
   }
   if (a.kind === "shop" && b.kind === "shop") {
@@ -1706,6 +1731,7 @@ export function cloneModal(m: Modal | null): Modal | null {
     options: [...m.options],
     ...(m.keys ? { keys: [...m.keys] } : {}),
     ...(m.enabled ? { enabled: [...m.enabled] } : {}),
+    ...(m.icons ? { icons: [...m.icons] } : {}),
   };
 }
 
@@ -3588,7 +3614,7 @@ function runFiber(
       // player's cursor index.
       if (!s.modal || s.modal.kind !== "choices") {
         const name = s.sw.playerName ?? DEFAULT_PLAYER_NAME;
-        s.modal = {
+        const opened: ChoiceModal = {
           kind: "choices",
           fiber: f.key,
           prompt: substitutePlayerName(ins.prompt, name),
@@ -3596,6 +3622,8 @@ function runFiber(
           index: 0,
           cancellable: ins.cancel !== null,
         };
+        if (ins.icons) opened.icons = ins.icons;
+        s.modal = opened;
       }
       const modal = s.modal as ChoiceModal;
       if (input.upEdge) modal.index = (modal.index + ins.texts.length - 1) % ins.texts.length;
@@ -4088,11 +4116,11 @@ function runFiber(
           complete: false,
         };
         return;
-      case "choices":
+      case "choices": {
         // Same single-slot rule for the choices box.
         if (s.modal) return;
         f.mode = "choices";
-        s.modal = {
+        const opened: ChoiceModal = {
           kind: "choices",
           fiber: f.key,
           prompt: substitutePlayerName(ins.prompt, s.sw.playerName ?? DEFAULT_PLAYER_NAME),
@@ -4100,7 +4128,10 @@ function runFiber(
           index: 0,
           cancellable: ins.cancel !== null,
         };
+        if (ins.icons) opened.icons = ins.icons;
+        s.modal = opened;
         return;
+      }
       case "extChoice": {
         // Same single modal slot and fiber mode as authored choices. The
         // provider runs only after the slot is acquired, so a queued parallel

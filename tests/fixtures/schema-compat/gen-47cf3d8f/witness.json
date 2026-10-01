@@ -1,0 +1,14 @@
+{
+  "case": "stale-parallel-battle",
+  "recordedBy": "ee84c7b3",
+  "outcome": {
+    "schemaErrors": 0,
+    "battlesStarted": [
+      {
+        "clear": "go"
+      },
+      {}
+    ],
+    "mainDone": true
+  }
+}

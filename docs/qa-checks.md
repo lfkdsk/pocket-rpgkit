@@ -38,8 +38,9 @@ envelope is:
 
 `loc` fields are all optional; `commandPath` interleaves indexes and branch
 tags (`then`, `else`, `options`, `cancel`, `onWin`, `onLose`, `onEscape`,
-`onDone`, `onCancel`, `common`). `shot` returns an array instead of the
-envelope (see below).
+`onDone`, `onCancel`, `common`). A finding about a choices option's own
+field ends in a field tag after the option index (`[2, "options", 1, "icon"]`).
+`shot` returns an array instead of the envelope (see below).
 
 ## Exit codes
 
@@ -271,7 +272,7 @@ prerequisite is a thrown error (exit 2).
 | `lint/common-event-missing` | error | a `common` op calls an unknown common event | add the common event or fix the id |
 | `lint/item-missing` | error | an item/shop/condition references an item not in the catalog | add the item to the catalog or fix the id |
 | `lint/audio-missing` | error | an audio command or `bgmPlaying` condition references an id absent from a declared `project.audio` table | add the logical id to `project.audio` or fix the reference; projects without an audio table remain valid for state-only use |
-| `lint/sprite-missing` | error | a page sprite, `appearance` sprite, or appearance-condition sprite key is not in `project.sprites` | add the sprite or fix the key |
+| `lint/sprite-missing` | error | a page sprite, `appearance` sprite, appearance-condition sprite, or choices option `icon.sprite` key is not in `project.sprites` | add the sprite or fix the key |
 | `lint/sheet-missing` | error | a map sheet, tile id prefix, walker sheet, or item sprite references an unknown sheet | add the sheet or fix the id |
 | `lint/tileproperty-out-of-bounds` | error | a `tileProperty` command (throws at runtime) or condition (always false) addresses a cell outside the host map | move the cell inside the map or remove the clause |
 | `lint/map-unreachable` | warning | no sequence of literal-id transfers reaches the map from the start map | dynamic transfers can still reach it; add a transfer path or remove the map |

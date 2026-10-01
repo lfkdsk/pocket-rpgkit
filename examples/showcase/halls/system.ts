@@ -33,7 +33,7 @@ export const SYSTEM_HALLS: HallDefinition[] = [
     id: "hall-theme",
     number: 9,
     title: "Themes & Portraits",
-    commands: ["GameView theme", "speaker portrait"],
+    commands: ["GameView theme", "speaker portrait", "choices icon"],
     palette: ["#4e284f", "#753a67"],
     demo: [
       { op: "switch", id: "showcase.theme.alt", value: false },
@@ -41,6 +41,62 @@ export const SYSTEM_HALLS: HallDefinition[] = [
       { op: "switch", id: "showcase.theme.alt", value: true },
       text("CURATOR: The same dialog now uses the sunrise theme.", "Theme colors belong to the application, not saves."),
       { op: "switch", id: "showcase.theme.complete", value: true },
+    ],
+    events: [
+      {
+        // Below the left-hand bookshelves, off the curator's approach and the
+        // entry row, and clear of the right-docked choices box. Each row's
+        // icon is one frame of a project.sprites entry; the last row has
+        // none, so pictured and text-only rows mix.
+        id: "partner-picker",
+        name: "Partner picker",
+        x: 9,
+        y: 5,
+        pages: [{
+          trigger: "action",
+          sprite: "runner",
+          blocks: true,
+          dir: "down",
+          commands: [{
+            op: "choices",
+            prompt: "Pick a partner to walk with you.",
+            options: [
+              {
+                text: "Curator",
+                icon: { sprite: "curator" },
+                commands: [
+                  { op: "variable", id: "showcase.partner", set: { op: "set", value: 1 } },
+                  text("CURATOR: Splendid. I know every shelf by heart."),
+                ],
+              },
+              {
+                text: "Guide",
+                icon: { sprite: "guide" },
+                commands: [
+                  { op: "variable", id: "showcase.partner", set: { op: "set", value: 2 } },
+                  text("GUIDE: Lead on. I will keep an eye on the map."),
+                ],
+              },
+              {
+                text: "Visitor",
+                icon: { sprite: "alternate" },
+                commands: [
+                  { op: "variable", id: "showcase.partner", set: { op: "set", value: 3 } },
+                  text("VISITOR: Oh, me? I would love the company!"),
+                ],
+              },
+              {
+                text: "Walk alone",
+                commands: [
+                  { op: "variable", id: "showcase.partner", set: { op: "set", value: 0 } },
+                  text("The library is quiet. You browse on your own."),
+                ],
+              },
+            ],
+            cancel: { commands: [text("Take your time. The partners will wait here.")] },
+          }],
+        }],
+      },
     ],
   },
   {

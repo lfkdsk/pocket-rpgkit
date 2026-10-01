@@ -150,6 +150,8 @@ import type { Dir4, PassageTable } from "./passability.ts";
 import { buildPassage, canStepFrom, stampBlockedCells, withTilePropertyOverrides } from "./passability.ts";
 import {
   MAP_SCHEMA_HASH,
+  describeMapSchemaRefusal,
+  isCompatibleMapSchemaHash,
   isProjectShell,
   resolveMapManifestHash,
   validateMapIndex,
@@ -636,8 +638,8 @@ export function createSession(
     startupProfileMark("session-create:index-validated");
     const manifest = resolveMapManifestHash(project, options.verifyMapManifest === true);
     startupProfileMark("session-create:manifest-resolved");
-    if (project.mapSchemaHash !== undefined && project.mapSchemaHash !== MAP_SCHEMA_HASH) {
-      throw new Error("map repository: shell schema hash mismatch");
+    if (project.mapSchemaHash !== undefined && !isCompatibleMapSchemaHash(project.mapSchemaHash)) {
+      throw new Error(`map repository: shell schema hash mismatch: ${describeMapSchemaRefusal(project.mapSchemaHash)}`);
     }
     if (!index.has(project.start.map)) {
       throw new Error(`map repository: start map ${project.start.map} is absent from mapIndex`);

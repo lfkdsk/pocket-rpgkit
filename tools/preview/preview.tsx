@@ -16,6 +16,7 @@ import { mount } from "@pocketjs/framework";
 import { Text, View } from "@pocketjs/framework/components";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { GameView, type BattleSceneViewProps } from "../../src/ui/GameView.tsx";
+import { ChoiceIconBox } from "../../src/ui/ChoiceIconBox.tsx";
 import type { GameAssets } from "../../src/ui/game-assets.ts";
 import type { GameViewDemoHost } from "../../src/ui/demo-contract.ts";
 import { createWarpState, loadDemoChapter } from "../../src/ui/demo/runtime.ts";
@@ -285,6 +286,7 @@ export function PreviewApp() {
             extensions={{ allowUnknown: true }}
             battle={PLAYTEST_BATTLE_RULES}
             battleScene={PreviewBattleScene}
+            choiceIcons={ChoiceIconBox}
             demo={{
               create(h) {
                 host = h;

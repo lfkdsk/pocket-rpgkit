@@ -539,7 +539,7 @@ Field names are literal and case-sensitive. The core forms are:
 | command | `field` spellings |
 | --- | --- |
 | `text` | `lines`, `cps` |
-| `choices` | `prompt`, `optionCount`, `option:<zero-based-index>`, `cancel` |
+| `choices` | `prompt`, `optionCount`, `option:<i>` (label), `option:<i>.icon`, `option:<i>.icon.dir`, `option:<i>.icon.frame`, `cancel`; `<i>` is the zero-based option index |
 | `switch` | `id`, `value` |
 | `variable` | `id`, `mode`, then `value`, `from`, or `min`/`max` as selected by the mode |
 | `selfSwitch` | `key`, `value` |
@@ -614,6 +614,33 @@ line argument must be escaped, for example:
 $ bun run rpgkit-edit update-command --file game.json --dry-run \
     --json '{"map":"field","event":"merchant","page":0,"address":{"path":[],"index":0},"field":"goods","value":"[{\"item\":\"potion\",\"price\":25}]"}'
 ```
+
+A `choices` option may show a picture left of its label: one frame of a
+`project.sprites` entry. `option:<i>.icon` sets the sprite key, or removes the
+whole `icon` object when the value is `(unset)` or empty. Once a sprite is set,
+`option:<i>.icon.dir` (`down`, `left`, `right`, `up`) and
+`option:<i>.icon.frame` (`0`, `1`, `2`) pick the walker facing and pose;
+before that they fail with `INVALID_COMMAND_FIELD`. The defaults (`down`,
+`0`) are omitted from the document rather than stored, and changing the sprite
+keeps the chosen facing and pose. Sprite keys are suggestions like every other
+resource hint, not a closed enum; the schema still rejects an empty sprite, an
+out-of-range `dir`/`frame`, or any other key inside `icon`.
+
+```sh
+$ bun run rpgkit-edit update-command --file game.json --dry-run \
+    --json '{"map":"field","event":"guide","page":0,"address":{"path":[],"index":0},"field":"option:1.icon","value":"hero"}'
+```
+
+The patch adds one property, so reversing it restores the text-only row:
+
+```json
+{ "path": "/maps/0/events/0/pages/0/commands/0/options/1/icon",
+  "before": { "exists": false },
+  "after": { "exists": true, "value": { "sprite": "hero" } } }
+```
+
+Clearing it again with `"value":"(unset)"` produces the mirror change
+(`before` holds the old icon, `after` is `{ "exists": false }`).
 
 The desktop inspector offers resource hints drawn from project maps, items,
 sprites, animations, audio ids and common events, plus already-authored layer

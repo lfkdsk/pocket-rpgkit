@@ -11963,6 +11963,7 @@
                   "lines": [
                     "CURATOR: HALL 9 — Themes & Portraits",
                     "Commands: GameView theme / speaker portrait",
+                    "choices icon",
                     "The curator in the center starts the demo."
                   ]
                 }
@@ -12074,6 +12075,123 @@
                   "lines": [
                     "VISITOR: I prefer the warm sunrise reading theme."
                   ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "partner-picker",
+          "name": "Partner picker",
+          "x": 9,
+          "y": 5,
+          "pages": [
+            {
+              "trigger": "action",
+              "sprite": "runner",
+              "blocks": true,
+              "dir": "down",
+              "commands": [
+                {
+                  "op": "choices",
+                  "prompt": "Pick a partner to walk with you.",
+                  "options": [
+                    {
+                      "text": "Curator",
+                      "icon": {
+                        "sprite": "curator"
+                      },
+                      "commands": [
+                        {
+                          "op": "variable",
+                          "id": "showcase.partner",
+                          "set": {
+                            "op": "set",
+                            "value": 1
+                          }
+                        },
+                        {
+                          "op": "text",
+                          "lines": [
+                            "CURATOR: Splendid. I know every shelf by heart."
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "text": "Guide",
+                      "icon": {
+                        "sprite": "guide"
+                      },
+                      "commands": [
+                        {
+                          "op": "variable",
+                          "id": "showcase.partner",
+                          "set": {
+                            "op": "set",
+                            "value": 2
+                          }
+                        },
+                        {
+                          "op": "text",
+                          "lines": [
+                            "GUIDE: Lead on. I will keep an eye on the map."
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "text": "Visitor",
+                      "icon": {
+                        "sprite": "alternate"
+                      },
+                      "commands": [
+                        {
+                          "op": "variable",
+                          "id": "showcase.partner",
+                          "set": {
+                            "op": "set",
+                            "value": 3
+                          }
+                        },
+                        {
+                          "op": "text",
+                          "lines": [
+                            "VISITOR: Oh, me? I would love the company!"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "text": "Walk alone",
+                      "commands": [
+                        {
+                          "op": "variable",
+                          "id": "showcase.partner",
+                          "set": {
+                            "op": "set",
+                            "value": 0
+                          }
+                        },
+                        {
+                          "op": "text",
+                          "lines": [
+                            "The library is quiet. You browse on your own."
+                          ]
+                        }
+                      ]
+                    }
+                  ],
+                  "cancel": {
+                    "commands": [
+                      {
+                        "op": "text",
+                        "lines": [
+                          "Take your time. The partners will wait here."
+                        ]
+                      }
+                    ]
+                  }
                 }
               ]
             }

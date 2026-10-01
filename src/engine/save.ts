@@ -31,6 +31,7 @@ import { deepClone, keyedRecord } from "./clone.ts";
 import { assertJsonValue, encodeExtension } from "./extensions.ts";
 import { envelopeConsistent, validateSnapshot } from "./save-validate.ts";
 import type { MapContentIdentity } from "./map-repository.ts";
+import { MAP_SCHEMA_HASH, describeMapSchemaRefusal, isCompatibleMapSchemaHash } from "./schema-identity.ts";
 import type { JsonValue } from "./types.ts";
 import type { Session, SessionState } from "./session.ts";
 
@@ -486,8 +487,13 @@ export function decodeEnvelopeText(
     if (envelope.content.manifest !== expectedContent.manifest) {
       throw new SaveError("content", "save map manifest hash does not match this content build");
     }
-    if (envelope.content.schema !== expectedContent.schema) {
-      throw new SaveError("content", "save map schema hash does not match this runtime");
+    // A save from a listed, purely additive predecessor schema still loads;
+    // it is rewritten under the current identity the next time it is saved.
+    if (envelope.content.schema !== expectedContent.schema && !(
+      expectedContent.schema === MAP_SCHEMA_HASH && isCompatibleMapSchemaHash(envelope.content.schema)
+    )) {
+      const why = expectedContent.schema === MAP_SCHEMA_HASH ? `: ${describeMapSchemaRefusal(envelope.content.schema)}` : "";
+      throw new SaveError("content", `save map schema hash does not match this runtime${why}`);
     }
   }
   const snapshot = envelope.state;

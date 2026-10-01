@@ -3,6 +3,8 @@
 // Command values without exposing raw JSON editing.
 
 import type {
+  ChoiceIcon,
+  ChoiceOption,
   Command,
   Condition,
   Dir,
@@ -66,6 +68,8 @@ const NULL = "null";
 const OPTIONAL_BOOLEAN = [OMIT, "true", "false"] as const;
 const NULLABLE_BOOLEAN = [OMIT, "true", "false", NULL] as const;
 const OPTIONAL_PASSAGE = [OMIT, "pass", "block", NULL] as const;
+const ICON_FRAMES = ["0", "1", "2"] as const;
+const CHOICE_OPTION_KEY = /^option:(\d+)(?:\.(icon|icon\.dir|icon\.frame))?$/;
 const COMMAND_SCHEMA = (PROJECT_SCHEMA as { $defs: { command: Schema } }).$defs.command;
 const CONDITION_SCHEMA = (PROJECT_SCHEMA as { $defs: { condition: Schema } }).$defs.condition;
 
@@ -286,6 +290,58 @@ function routeSteps(route: MoveRoute): string {
   return route.steps.map((step) => typeof step === "string" ? step : JSON.stringify(step)).join(",");
 }
 
+/** One choice row: its label, then an icon sprite (OMIT = text only). Facing
+ * and pose fields exist only once a sprite is chosen. */
+function choiceOptionFields(option: ChoiceOption, i: number, resources: EventEditorResources): EditableField[] {
+  const key = `option:${i}`;
+  const fields = [
+    field(key, `OPTION ${i + 1}`, option.text),
+    resourceField(`${key}.icon`, `ICON ${i + 1}`, option.icon?.sprite ?? OMIT, resources.sprites, `Project sprites; use ${OMIT} for a text-only option`),
+  ];
+  if (option.icon) {
+    fields.push(
+      field(`${key}.icon.dir`, `ICON ${i + 1} DIR`, option.icon.dir ?? "down", "enum", DIRS),
+      field(`${key}.icon.frame`, `ICON ${i + 1} FRAME`, String(option.icon.frame ?? 0), "enum", ICON_FRAMES),
+    );
+  }
+  return fields;
+}
+
+/** Canonical icon spelling: sprite, dir, frame in schema order, with the
+ * runtime defaults (down, frame 0) omitted. */
+function choiceIcon(sprite: string, dir: Dir | undefined, frame: ChoiceIcon["frame"]): ChoiceIcon {
+  return {
+    sprite,
+    ...(dir === undefined || dir === "down" ? {} : { dir }),
+    ...(frame === undefined || frame === 0 ? {} : { frame }),
+  };
+}
+
+/** Replace an option's icon while keeping `text` first and `icon` before
+ * `commands`; `undefined` removes the key entirely. */
+function withChoiceIcon(option: ChoiceOption, icon: ChoiceIcon | undefined): ChoiceOption {
+  const { text, icon: _, ...rest } = option;
+  return { text, ...(icon ? { icon } : {}), ...rest };
+}
+
+function editChoiceIcon(option: ChoiceOption, part: string, raw: string): FieldEdit<ChoiceOption> {
+  if (part === "icon") {
+    const sprite = optionalString(raw, "icon sprite", false);
+    if (!sprite.ok) return sprite;
+    if (sprite.value == null) return good(withChoiceIcon(option, undefined));
+    return good(withChoiceIcon(option, choiceIcon(sprite.value, option.icon?.dir, option.icon?.frame)));
+  }
+  if (!option.icon) return bad("choose an icon sprite before its direction or frame");
+  if (part === "icon.dir") {
+    const dir = enumValue(raw, DIRS, "icon direction");
+    return dir.ok ? good(withChoiceIcon(option, choiceIcon(option.icon.sprite, dir.value, option.icon.frame))) : dir;
+  }
+  const frame = enumValue(raw, ICON_FRAMES, "icon frame");
+  return frame.ok
+    ? good(withChoiceIcon(option, choiceIcon(option.icon.sprite, option.icon.dir, Number(frame.value) as ChoiceIcon["frame"])))
+    : frame;
+}
+
 export function conditionFields(
   condition: Condition,
   prefix = "",
@@ -347,7 +403,7 @@ export function commandFields(
       return [
         field("prompt", "PROMPT", command.prompt),
         field("optionCount", "OPTIONS", command.options.length, "integer"),
-        ...command.options.map((option, i) => field(`option:${i}`, `OPTION ${i + 1}`, option.text)),
+        ...command.options.flatMap((option, i) => choiceOptionFields(option, i, resources)),
         field("cancel", "CANCEL", command.cancel !== undefined, "boolean", BOOLS),
       ];
     case "switch":
@@ -742,10 +798,17 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
         return good({ ...command, options });
       }
       if (key.startsWith("option:")) {
-        const at = Number(key.slice(7));
+        const match = CHOICE_OPTION_KEY.exec(key);
+        const at = match ? Number(match[1]) : NaN;
         if (!Number.isInteger(at) || !command.options[at]) return bad("choice option does not exist");
-        if (raw.length < 1 || raw.length > 64) return bad("choice text needs 1-64 characters");
         const options = command.options.slice();
+        if (match![2]) {
+          const edited = editChoiceIcon(options[at]!, match![2], raw);
+          if (!edited.ok) return edited;
+          options[at] = edited.value;
+          return good({ ...command, options });
+        }
+        if (raw.length < 1 || raw.length > 64) return bad("choice text needs 1-64 characters");
         options[at] = { ...options[at]!, text: raw };
         return good({ ...command, options });
       }

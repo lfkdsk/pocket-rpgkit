@@ -11,6 +11,7 @@ import { simulationHz } from "@pocketjs/framework/clock";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { createOsk } from "@pocketjs/framework/osk";
 import { GameView } from "../../src/ui/GameView.tsx";
+import { ChoiceIconBox } from "../../src/ui/ChoiceIconBox.tsx";
 import { createAudioEffects } from "../../src/ui/audio/index.ts";
 import { createDemo } from "../../src/ui/demo/index.ts";
 import { NameInputScene } from "../../src/ui/name-input/NameInputScene.tsx";
@@ -148,6 +149,7 @@ function ShowcaseApp() {
         attractTape={loadAttractTape(SHOWCASE_TOUR_RUNS).masks}
         demo={demo}
         theme={theme()}
+        choiceIcons={ChoiceIconBox}
         faces={{
           CURATOR: SHOWCASE_ART.face,
           GUIDE: SHOWCASE_ART.guideFace,

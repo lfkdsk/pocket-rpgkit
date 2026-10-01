@@ -29,10 +29,18 @@ const maybeTest = preflight.ok ? test : test.skip;
 // to the ordinary Meadow bundle and 31,070 bytes to the QOA/WAV entries:
 // bounded state metadata, opt-in interpreter/session caches, retained actor
 // frames, stable dialog/battle paint paths, and generic-scene merge guards.
+// Choice-row icons add the optional icon schema entry, the reducer's icon
+// column and the DialogBox opt-in hook (the icon box itself is opt-in):
+// 1,952 bytes to Meadow, 4,364 to Sunstone and 2,825 to the WAV fixture.
+// The list of compatible earlier schema identities (twelve SHA-256 literals
+// and the membership check the session and save decoder share) adds 1,099
+// bytes to Meadow and the WAV fixture and 1,202 to Sunstone. Narrowing that
+// list to one identity and naming the accepted identities in the refusal
+// message saves 314 bytes in Meadow and the WAV fixture and 180 in Sunstone.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 497_140;
-const EXPECTED_SUNSTONE_QOA_BYTES = 767_170;
-const EXPECTED_WAV_FIXTURE_BYTES = 634_478;
+const EXPECTED_MEADOW_BYTES = 499_877;
+const EXPECTED_SUNSTONE_QOA_BYTES = 772_556;
+const EXPECTED_WAV_FIXTURE_BYTES = 638_088;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

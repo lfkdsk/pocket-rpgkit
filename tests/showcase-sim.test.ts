@@ -138,7 +138,7 @@ const pins: Record<string, string> = {
   "map-animation": "6d27d8b7",
   battle: "be26dddf",
   streaming: "8f1494d7",
-  theme: "1683bb4a",
+  theme: "0ad10d88",
   "save-code": "3915d13f",
   "save-verified": "c1156966",
   attract: "72f143e6",

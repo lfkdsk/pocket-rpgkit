@@ -13,6 +13,8 @@ import type {
 } from "../../src/engine/types.ts";
 import {
   MAP_SCHEMA_HASH,
+  describeMapSchemaRefusal,
+  isCompatibleMapSchemaHash,
   canonicalMapJson,
   mapManifestHash,
   resolveMapManifestHash,
@@ -134,8 +136,8 @@ export function loadValidatedProjectShell(source: string): ProjectShell {
   } catch (error) {
     invalidDocument("$.mapIndex", error instanceof Error ? error.message : String(error));
   }
-  if (shell.mapSchemaHash !== undefined && shell.mapSchemaHash !== MAP_SCHEMA_HASH) {
-    invalidDocument("$.mapSchemaHash", "map schema hash does not match this RPG Kit build");
+  if (shell.mapSchemaHash !== undefined && !isCompatibleMapSchemaHash(shell.mapSchemaHash)) {
+    invalidDocument("$.mapSchemaHash", `map schema hash does not match this RPG Kit build: ${describeMapSchemaRefusal(shell.mapSchemaHash)}`);
   }
   try {
     // Missing hashes retain the ProjectShell runtime's documented computed

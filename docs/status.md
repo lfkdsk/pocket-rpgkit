@@ -15,9 +15,10 @@ The links point to where each feature is described in detail.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Event pages with `action`, `playerTouch`, `autorun` and `parallel` triggers; common events | Done | [The 46 commands](../README.md#the-46-commands) |
+| Event pages with `action`, `playerTouch`, `autorun` and `parallel` triggers; common events | Done | [The 47 commands](../README.md#the-47-commands) |
 | Dialog: typewriter text, choices with 2–8 options (scrolling past 4) and a cancel branch | Done | |
 | Dialog themes and speaker portraits | Done | [Themes and speaker portraits](../README.md#themes-and-speaker-portraits) |
+| Choice icons: a character sprite left of each `choices` option label | Done | Opt-in `ChoiceIconBox` (`pocket-rpgkit/ui/choice-icons`, GameView `choiceIcons`); 1× icons in 24 px rows, 16×32 walkers lose their top 8 pixel rows; missing sprites draw a `?` and fail `rpgkit-check`; editable in the editor and `rpgkit-edit update-command`. See [Choice icons](../README.md#choice-icons) |
 | Switches, self switches, items, gold | Done | |
 | Variables: set/add/sub, seeded random ranges, arithmetic against another variable | Done | Numbers only |
 | Page and `if` conditions on switches, variables, self switches, items, gold, facing, appearance, tile-property overrides, `worldIdle`, `bgmPlaying`, or an extension predicate | Done | |
@@ -74,6 +75,7 @@ The links point to where each feature is described in detail.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Save slots and save codes | Done | Slots use `data.fs` on desktop; the web falls back to save codes. Loaded snapshots are validated |
+| Sharded projects and saves across schema updates | Done | Shells and saves made under an earlier schema version load as long as every change since then only added optional fields, commands or conditions; a change to existing behaviour refuses them until a migration exists (none ships yet). Today only the version just before optional choice icons is accepted besides the current one; older versions predate behaviour changes and are refused with a message naming the accepted versions. Saves are rewritten under the current version. See [Schema identities](../src/data/CHANGELOG.md#schema-identities) |
 | Attract mode | Done | Plays a tape after 10 idle seconds; any button takes over, **L** rewinds 3 virtual seconds, using bounded keyframes |
 | Demo controls and web deep links | Done | Opt-in chapter starts, safe map warp and 1×/2×/4× autoplay through [`pocket-rpgkit/ui/demo`](../README.md#demo-controls-pocket-rpgkituidemo); web chapter cards support preview images and descriptions, jump the running game without a reload, and retain query-link fallbacks. Desktop has the menu but no guest argv/environment launch bridge |
 | Byte-identical replays on every host and simulation rate | Done | No wall clock and no `Math.random` in the engine |

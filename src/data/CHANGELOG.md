@@ -4,6 +4,56 @@ The format marker on every project document is the `format` string,
 currently `"rpgkit-project/v1"` (`src/data/schema.json` is normative;
 `src/engine/types.ts` carries the TypeScript types).
 
+## Schema identities
+
+Sharded shells (`mapSchemaHash`) and their saves (`content.schema`) record
+the schema identity they were produced under: SHA-256 of canonical
+`src/data/schema.json`, exported as `MAP_SCHEMA_HASH`. Every schema edit
+produces a new identity. The runtime and the editor accept the current
+identity and every identity in `MAP_SCHEMA_COMPATIBLE_HASHES`
+(`src/engine/schema-identity.ts`); anything else is refused (`shell schema
+hash mismatch`, save error code `content`). A session always records the
+current identity, so the next save of an old game is rewritten under it.
+
+A change is **additive** when every document valid under the previous schema
+is still valid and behaves exactly as before: a new optional property, a new
+command or condition, a new enum value, a loosened limit. The previous
+identity then joins the compatible list. Anything else (a new required
+field, a removed or narrowed value, an existing field whose behaviour
+changes, even only for unusual values or alongside a new command) is
+**breaking**: the list is cleared and older shells and saves are refused
+until a migration exists. Compatibility carries across rows, so only the
+identities at or after the most recent breaking row stay loadable. Each new
+identity adds a row at the top of this table and a fixture under
+`tests/fixtures/schema-compat`; a test keeps the table, the list and the
+fixtures in step, and each breaking row keeps a counterexample recorded by
+the release before it.
+
+A shell without `mapSchemaHash` (written before sharded shells recorded
+one, or by hand) is not checked against this table: it is read as the
+current schema, validated like any other shell and saved under the current
+identity.
+
+The last column says whether shells and saves of the row below still load
+under the row's schema.
+
+| Identity | Change | Older |
+| --- | --- | --- |
+| `c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06` | optional `icon` on `choices` options | additive |
+| `0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5` | `scene` command; a battle queued by a parallel page is dropped when that page stops being active before the battle starts (it used to start anyway) | breaking |
+| `47cf3d8ffdb35044fb6b099d98455368123db4710bc8516875a0bc06902c6d59` | `audio` entries may also name QOA streams | additive |
+| `8ffba1d4305ed2fa7ea0a2421e2982a98eff38a228ee59b0726fd8865fb816f1` | root `audio`, audio commands, `bgmPlaying` condition | additive |
+| `2d99dc69aff70a2e5eb690963f094c9d5e06d766c3af7b8c09796bbcce41ea04` | screen, camera and balloon commands | additive |
+| `cc709a6fa4f1a2597d2128649c632f72dee10998823533380cba012b3e1ee0b6` | root `animations`, `mapAnim` / `stopAnim` | additive |
+| `37e18dede0ca663db3decd895f5ddf4a754b563a4734d9e2de817c97366d6f1f` | page movement fields, `moveControl`, `control` move step, `player` place target | additive |
+| `9553e885ee1aca527679ba74ce348290a51bdf2b5714a5533aeca43edc7e99b5` | `appearance`, `layer`, `tileProperty` commands and conditions | additive |
+| `96239876deaca61c4db65417c05a3e5c009c7141aae100276bbf853845670d5b` | `extChoice` command | additive |
+| `0ff7c248ce6b0e4ba42f815b41f869ce333ffa2b748acb69d712e3441a30692c` | `worldIdle` condition | additive |
+| `c27e2e51e0256f25fc7c6850b83273dab8bab9664e249a72c0a38d8940939157` | inventory and `shop`, larger `choices` limits, variable `from` operations; numeric variable writes clamp to safe integers and saves holding larger numbers are refused | breaking |
+| `462299c3e20212f9a5a092a88fc563164a87bd4e473214c1e909389baa12cc90` | `ext` and `battle` commands, `ext` condition, variable transfer targets; a transfer to an unknown map enters the content-error state instead of throwing | breaking |
+| `c8ca2ce77e5bff0af2d15f33863014d51dfb4acf4cef14fb678a17f7dc1ecba3` | `system.messageBlocksPlayer`; moving characters are stopped only by `blocks: true` pages | breaking |
+| `9570c570df1ddb497b6f5a0c9d1f1a0a265e22cf1ae83e8da8dcd5310e9f2a21` | first sharded generation (`mapIndex`) | first |
+
 ## v1 — 2026-09-23 (component extraction release 0.1.0)
 
 First frozen release of the format, extracted from the PocketJS app
@@ -538,6 +588,40 @@ v1.0/v1.1 document stays valid; the new command is optional.
   as host ring credit becomes available; the build helper deterministically
   encodes interleaved signed 16-bit PCM using the mono/stereo sample formats
   accepted by PocketJS.
+
+## v1 amendment — 2026-10-01 (choice row icons)
+
+- Each `choices` option may carry an optional `icon`
+  (`{ sprite, dir?, frame? }`): one frame of a `project.sprites` entry drawn
+  left of the option label. `sprite` is a non-empty `project.sprites` key;
+  `dir` (`down` | `left` | `right` | `up`, default `down`) and `frame`
+  (`0` idle, the default; `1` left step; `2` right step) pick the walker
+  pose, and a static `kind: "image"` sprite ignores both. No other keys are
+  allowed.
+- Render-only: the reducer copies the icons into the open choices modal
+  (`ChoiceModal.icons`, one entry per option, `null` on rows without an
+  icon) and never reads them, so selection, branching, saves and replays
+  are unchanged. A box with no icons builds exactly the modal and compiled
+  program it did before (no `icons` key at all). Extension choices never
+  carry icons.
+- `rpgkit-check` reports an `icon.sprite` that is not in `project.sprites`
+  as `lint/sprite-missing` (error), located at the option
+  (`commandPath: [..., "options", i, "icon"]`).
+- Every existing document stays valid and renders identically. The schema
+  identity changed; the change is additive, so existing sharded shells and
+  their saves keep loading without a rebuild (see
+  [Schema identities](#schema-identities)).
+
+## v1 amendment — 2026-10-01 (compatible schema identities)
+
+- Sharded shells and saves that name a listed earlier schema identity
+  (`MAP_SCHEMA_COMPATIBLE_HASHES`) load in the runtime and the editor instead
+  of being refused. Only identities at or after the most recent breaking
+  change are listed (today that is the single previous identity); older
+  shells and saves are refused. Saves taken after loading are
+  stamped with the current identity, and the manifest binding is unchanged.
+  The rules and the full list are under
+  [Schema identities](#schema-identities).
 
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

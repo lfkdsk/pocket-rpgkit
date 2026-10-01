@@ -87,7 +87,16 @@ const maybeTest = preflight.ok ? test : test.skip;
 // opt-in engine caches, retained actor frames, stable dialog/battle paint
 // paths, and generic-scene merge guards. The identifiers below still prove
 // that battle UI itself stays out of this non-battle bundle.
-const EXPECTED_BYTES = 767_170;
+// Choice-row icons add 4,364 shared bytes: the optional `choices.options[].icon`
+// schema entry, compiling/validating the icon column and comparing it in
+// modalChanged (2,425 B), and the DialogBox opt-in hook plus GameView's icon
+// resolver (1,939 B). The icon box itself stays in the opt-in
+// pocket-rpgkit/ui/choice-icons entry (checked below).
+// The compatible earlier schema identities (twelve SHA-256 literals and the
+// membership check shared by createSession and the save decoder) add 1,202
+// shared bytes; narrowing the list to one identity and naming the accepted
+// identities in the refusal message saves 180 of them.
+const EXPECTED_BYTES = 772_556;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
@@ -121,6 +130,15 @@ describe("KB4 does not reach games that never opt into battle", () => {
       "NameInputScene",
       "swallowCancel",
     ]) {
+      expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
+    }
+  });
+
+  maybeTest("sunstone's bundle contains none of the choice icon box's identifiers", () => {
+    // Games opt into the icon box through GameView's `choiceIcons` prop;
+    // sunstone authors no icons and never imports it.
+    const text = readFileSync(SUNSTONE_JS, "utf8");
+    for (const needle of ["rpgkit-choices-icon-box", "cannot paint"]) {
       expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
     }
   });

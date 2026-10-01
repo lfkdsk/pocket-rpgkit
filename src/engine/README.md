@@ -368,8 +368,12 @@ without changing `MAP_SCHEMA_HASH`.
 The former bare-repository third argument remains accepted for v1 callers.
 Packaged splitter output uses its build-time content hash directly, and
 startup never recomputes it; `verifyMapManifest` opts into the recompute for
-untrusted inputs. A shell that declares `mapSchemaHash` must match the kit's
-baked `MAP_SCHEMA_HASH` or `createSession` throws.
+untrusted inputs. A shell that declares `mapSchemaHash` must name the kit's
+baked `MAP_SCHEMA_HASH` or one of `MAP_SCHEMA_COMPATIBLE_HASHES` (earlier
+schemas that differ only by additive changes) or `createSession` throws with
+a message naming the refused and accepted identities; save envelopes follow
+the same rule, and the session always stamps new saves with
+the current identity.
 `assertShellManifestFresh(shell)` exports the matching build/test-time check:
 an application that packages a shell calls it after writing the shell to disk,
 so a stale or hand-edited declared hash fails the build instead of shipping.

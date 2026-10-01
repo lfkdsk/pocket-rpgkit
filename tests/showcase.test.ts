@@ -15,7 +15,7 @@ import {
   type SessionState,
 } from "../src/engine/session.ts";
 import { buildShowcaseProject, SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
-import { HALL_DEMO, hallDoorPosition } from "../examples/showcase/hall-kit.ts";
+import { HALL_DEMO, hallDoorPosition, type HallDefinition } from "../examples/showcase/hall-kit.ts";
 import { SHOWCASE_EXTENSIONS } from "../examples/showcase/extensions.ts";
 import { showcaseBattleRules } from "../examples/showcase/showcase-battle-rules.ts";
 import { NAME_INPUT_SCENE_ID, nameInputRules } from "../src/engine/name-input.ts";
@@ -78,6 +78,21 @@ class Driver {
   }
 
   enter(number: number): void {
+    const hall = this.arrive(number);
+
+    // Approach the curator from below; the room sign stays beside the entry.
+    this.moveAxis("x", HALL_DEMO.x, hall.id);
+    this.moveAxis("y", HALL_DEMO.y + 1, hall.id);
+    expect([this.state.move.tx, this.state.move.ty, this.state.move.facing]).toEqual([
+      HALL_DEMO.x,
+      HALL_DEMO.y + 1,
+      2,
+    ]);
+    this.pulseConfirm();
+  }
+
+  /** Walk through hall `number`'s lobby portal and stop at its entrance. */
+  arrive(number: number): HallDefinition {
     const hall = SHOWCASE_HALLS.find((candidate) => candidate.number === number);
     if (!hall) throw new Error(`showcase test: unknown hall ${number}`);
     const index = SHOWCASE_HALLS.indexOf(hall);
@@ -89,16 +104,19 @@ class Driver {
     this.moveAxis("y", doorY, "showcase-lobby");
     this.settleMap(hall.id);
     expect(this.state.mapId).toBe(hall.id);
+    return hall;
+  }
 
-    // Approach the curator from below; the room sign stays beside the entry.
-    this.moveAxis("x", HALL_DEMO.x, hall.id);
-    this.moveAxis("y", HALL_DEMO.y + 1, hall.id);
-    expect([this.state.move.tx, this.state.move.ty, this.state.move.facing]).toEqual([
-      HALL_DEMO.x,
-      HALL_DEMO.y + 1,
-      2,
-    ]);
-    this.pulseConfirm();
+  /** Walk the current map one axis at a time: vertical first, then across. */
+  walk(x: number, y: number): void {
+    const mapId = this.state.mapId;
+    this.moveAxis("y", y, mapId);
+    this.moveAxis("x", x, mapId);
+  }
+
+  face(button: number): void {
+    this.tick({ buttons: button });
+    this.until((state) => !state.move.moving, { autoText: false, limit: 60 });
   }
 
   until(
@@ -279,6 +297,37 @@ describe("showcase rooms — real lobby entry and repeatable demonstrations", ()
     const done = d.finish();
     expect(done.sw.switches["showcase.theme.alt"]).toBe(true);
     expect(done.sw.switches["showcase.theme.complete"]).toBe(true);
+  });
+
+  test("9. partner picker opens a choices box whose rows carry walker icons", () => {
+    const d = new Driver();
+    const hall = d.arrive(9);
+    const picker = project.maps.find((map) => map.id === hall.id)!.events!.find((event) => event.id === "partner-picker")!;
+    // Up the entry column, across below the picker, then face it.
+    d.walk(picker.x, picker.y + 1);
+    d.face(BTN.UP);
+    expect([d.state.move.tx, d.state.move.ty, d.state.move.facing]).toEqual([picker.x, picker.y + 1, 2]);
+    d.pulseConfirm();
+    const choosing = d.until((state) => state.interp.modal?.kind === "choices", { autoText: false, limit: 30 });
+    expect(choosing.interp.modal).toMatchObject({
+      kind: "choices",
+      prompt: "Pick a partner to walk with you.",
+      options: ["Curator", "Guide", "Visitor", "Walk alone"],
+      icons: [{ sprite: "curator" }, { sprite: "guide" }, { sprite: "alternate" }, null],
+      index: 0,
+      cancellable: true,
+    });
+    for (const icon of picker.pages[0]!.commands.flatMap((command) =>
+      command.op === "choices" ? command.options.flatMap((option) => option.icon ? [option.icon] : []) : [])) {
+      expect(project.sprites?.[icon.sprite], icon.sprite).toBeDefined();
+    }
+    d.tick({ buttons: BTN.DOWN, downEdge: true });
+    d.tick();
+    d.tick({ buttons: BTN.DOWN, downEdge: true });
+    d.tick();
+    d.pulseConfirm();
+    const done = d.finish();
+    expect(done.sw.variables["showcase.partner"]).toBe(3);
   });
 
   test("10. lockInput remains busy to observers and worldIdle opens only after the action ends", () => {
