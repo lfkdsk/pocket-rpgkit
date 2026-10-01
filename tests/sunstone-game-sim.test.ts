@@ -431,11 +431,15 @@ simDescribe("sunstone — render budget", () => {
     // DEMO1's explicitly opted-in menu, save validation, chapter codes, tape
     // suffixes and live page hook, and 10,219 B of shared PocketJS code from
     // the upstream rebase, and KG1's generic scene host in the shared GameView:
-// 736,187 B measured (5,196 B more from the ported PSP framework work, ~18 KB
-// from the scene host). The ui/demo and ui/audio
+    // 736,187 B before this port (5,196 B more from the ported PSP framework
+    // work, about 18 KB from the scene host). Bounded immutable metadata,
+    // opt-in session/interpreter caches, retained actor frames, and stable
+    // dialog/battle paint paths and generic-scene merge guards add 31,070 B:
+    // 767,170 B measured. The
+    // ui/demo and ui/audio
     // input-graph tests separately prove non-opted-in code stays out; the
     // bound keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(744_000);
+    expect(jsBytes).toBeLessThan(775_000);
   });
 });
 

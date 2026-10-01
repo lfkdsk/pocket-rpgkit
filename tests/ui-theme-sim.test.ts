@@ -32,7 +32,7 @@ import { bootWorld, fnv1a, treeHasText, type SimWorld } from "../vendor/pocketjs
 import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { DEFAULT_UI_THEME } from "../src/ui/theme.ts";
 import { FACE_PX, faceRgba, FACE_PALETTES } from "./fixtures/ui-theme/faces.ts";
-import { SAVE_TITLE, THEMES, type FixtureScene } from "./fixtures/ui-theme/scenes.ts";
+import { MODALS, SAVE_TITLE, THEMES, type FixtureScene } from "./fixtures/ui-theme/scenes.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 
 const preflight = appPreflight("ui-theme");
@@ -121,6 +121,8 @@ const shopRow = (row: number) => ({ x0: 228, x1: 460, y0: 104 + row * 14, y1: 11
 
 let world: SimWorld;
 let opCount = 0;
+let structuralOps = 0;
+const STRUCTURAL_OPS = new Set(["createNode", "destroyNode", "insertBefore", "removeChild"]);
 
 /** Render one scene from a clean screen (both components unmounted). */
 function shot(scene: FixtureScene): Uint8Array {
@@ -142,6 +144,7 @@ simDescribe("ui theme — built fixture on the sim host", () => {
         if (typeof fn !== "function") continue;
         ops[name] = (...args: unknown[]) => {
           opCount++;
+          if (STRUCTURAL_OPS.has(name)) structuralOps++;
           return (fn as (...a: unknown[]) => unknown).apply(ops, args);
         };
       }
@@ -343,6 +346,29 @@ simDescribe("ui theme — built fixture on the sim host", () => {
       world.tick();
     }
     expect(opCount).toBe(0);
+  });
+
+  test("message reveal, row boundaries, clearing and rewind retain every text node", () => {
+    for (const faces of [false, true]) {
+      const scene: FixtureScene = { modal: "speaker", faces };
+      const complete = shot(scene);
+      show({ ...scene, revealed: 0 });
+      structuralOps = 0;
+      if (MODALS.speaker.kind !== "text") throw new Error("Expected a text fixture");
+      const total = MODALS.speaker.total;
+      for (let revealed = 1; revealed <= total; revealed++) {
+        show({ ...scene, revealed });
+        expect(structuralOps, `faces=${faces} reveal=${revealed}`).toBe(0);
+      }
+      expect(world.render()).toEqual(complete);
+      for (let revealed = total - 1; revealed >= 0; revealed--) {
+        show({ ...scene, revealed });
+        expect(structuralOps, `faces=${faces} rewind=${revealed}`).toBe(0);
+      }
+      show({ faces });
+      expect(show(scene)).toEqual(complete);
+      expect(structuralOps).toBe(0);
+    }
   });
 
   // --- T2-9 scrolling choices --------------------------------------------

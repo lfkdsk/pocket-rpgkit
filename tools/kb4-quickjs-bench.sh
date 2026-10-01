@@ -64,4 +64,4 @@ if [ -z "$bin" ]; then
 fi
 
 KB4_BENCH_SCRATCH="$scratch/runs" POCKETJS_DIST="$dist" "$bin" kb4_quickjs_bench::battle_frame_and_node_churn --ignored --exact --nocapture \
-  2>&1 | grep -E "^(KB4_QJS|KB4_CHURN|test result)"
+  2>&1 | grep -Eo "(KB4_QJS|KB4_CHURN|test result).*"

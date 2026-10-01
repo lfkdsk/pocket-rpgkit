@@ -12,6 +12,7 @@ import { View } from "@pocketjs/framework/components";
 import type { BattleSceneViewProps } from "../../../src/ui/GameView.tsx";
 import {
   CommandGrid,
+  FrameStrip,
   createBattleImageCache,
   ListMenu,
   MessageBand,
@@ -32,8 +33,14 @@ import {
 import { KB4_ART } from "./assets-game.ts";
 
 const SPRITE_SIZE = 64;
+const FRAME_STRIP_FRAMES = [KB4_ART.player, KB4_ART.enemy] as const;
 
-export function Kb4BattleScene(props: BattleSceneViewProps) {
+interface Kb4BattleSceneProps extends BattleSceneViewProps {
+  /** Opt-in rendered probe for FrameStrip's transform and image updates. */
+  frameStrip?: boolean;
+}
+
+export function Kb4BattleScene(props: Kb4BattleSceneProps) {
   const imageCache = createBattleImageCache(() => props.active, { maxEntries: 4 });
   const state = () => demoState(props.state);
   const nowTick = () => state().nowTick;
@@ -108,6 +115,23 @@ export function Kb4BattleScene(props: BattleSceneViewProps) {
           debugName="kb4-battle-player-hp"
         />
       </View>
+
+      <Show when={props.frameStrip}>
+        <FrameStrip
+          frames={FRAME_STRIP_FRAMES}
+          cache={imageCache}
+          active={props.active}
+          frameTicks={4}
+          startTick={0}
+          nowTick={nowTick()}
+          loop
+          x={201}
+          y={73}
+          width={32}
+          height={32}
+          debugName="kb4-battle-frame-strip"
+        />
+      </Show>
 
       <Show when={message().length > 0}>
         <MessageBand

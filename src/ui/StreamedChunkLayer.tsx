@@ -16,7 +16,7 @@ import {
   type NodeMirror,
 } from "@pocketjs/framework/renderer";
 import {
-  chunkWindow,
+  createChunkWindowReader,
   chunkWindowContains,
   expandChunkWindow,
   type ChunkPoint,
@@ -88,6 +88,7 @@ function parseRef(ref: string): { key: string; index: number } {
 /** One streamed world layer. The parent owns camera translation; chunk nodes
  * remain at world coordinates and change only when the chunk window changes. */
 export function StreamedChunkLayer(props: StreamedChunkLayerProps): SolidJSX.Element {
+  const chunkWindow = createChunkWindowReader();
   const root = createElement("view");
   setProp(root, "style", {
     posType: 1, insetL: 0, insetT: 0, width: 0, height: 0,

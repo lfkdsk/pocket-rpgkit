@@ -75,8 +75,8 @@ function project(
   };
 }
 
-function boot(p: Project, hz = 60): { session: Session; state: SessionState } {
-  const session = createSession(p, hz);
+function boot(p: Project, hz = 60, immutableState = false): { session: Session; state: SessionState } {
+  const session = createSession(p, hz, immutableState ? { immutableState: true } : undefined);
   return { session, state: startSession(p, session) };
 }
 
@@ -88,9 +88,9 @@ interface BootPair {
 /** Boot the same project twice; force the controlled path on the second
  *  session by flipping the compiled world's gate flag (white-box: nothing
  *  else differs, so any state divergence is a path-equivalence bug). */
-function dualBoot(p: Project, hz = 60): BootPair {
-  const legacy = boot(p, hz);
-  const controlled = boot(p, hz);
+function dualBoot(p: Project, hz = 60, immutableState = false): BootPair {
+  const legacy = boot(p, hz, immutableState);
+  const controlled = boot(p, hz, immutableState);
   for (const world of controlled.session.worlds.values()) {
     world.needsMovementControlPath = true;
   }
@@ -147,6 +147,39 @@ test("player movement matches when the controlled path is armed by an authored n
     ...hold(BTN.UP, 120),
     ...idle(60),
   ]);
+});
+
+test("immutable character sharing preserves both movement paths and retained frames", () => {
+  const patrol = event("patrol", 6, 3, [page("parallel", [], {
+    blocks: true,
+    moveRoute: {
+      steps: ["moveRight", "wait", "moveDown", "moveLeft", "moveUp"],
+      repeat: true,
+      skippable: false,
+    },
+  })]);
+  const pair = dualBoot(project([map("a", [patrol])]), 4, true);
+  let legacy = pair.legacy.state;
+  let controlled = pair.controlled.state;
+  const script = [
+    ...hold(BTN.RIGHT, 16),
+    ...idle(12),
+    ...hold(BTN.DOWN, 16),
+    ...hold(BTN.LEFT, 16),
+    ...idle(12),
+  ];
+  for (let frame = 0; frame < script.length; frame++) {
+    const priorLegacy = legacy;
+    const priorControlled = controlled;
+    const legacyJson = JSON.stringify(priorLegacy);
+    const controlledJson = JSON.stringify(priorControlled);
+    const input = { buttons: 0, ...script[frame]! };
+    legacy = stepSession(pair.legacy.session, legacy, input);
+    controlled = stepSession(pair.controlled.session, controlled, input);
+    expect(JSON.stringify(priorLegacy), `legacy retained frame ${frame}`).toBe(legacyJson);
+    expect(JSON.stringify(priorControlled), `controlled retained frame ${frame}`).toBe(controlledJson);
+    expect(JSON.stringify(controlled), `path parity frame ${frame}`).toBe(JSON.stringify(legacy));
+  }
 });
 
 test("NPC patrol route: turns, waits, repeat, and blocked skippable release", () => {

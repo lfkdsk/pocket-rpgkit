@@ -31,7 +31,10 @@ function Fixture() {
   globalThis.__uiFixture = {
     show(scene) {
       batch(() => {
-        setModal(MODALS[scene.modal ?? "none"]);
+        const next = MODALS[scene.modal ?? "none"];
+        setModal(next?.kind === "text" && scene.revealed !== undefined
+          ? { ...next, revealed: scene.revealed, complete: scene.revealed >= next.total }
+          : next);
         setMenu(MENUS[scene.menu ?? "closed"]);
         setTheme(THEMES[scene.theme ?? "default"]);
         setFaces(scene.faces ? FACES : undefined);
@@ -44,7 +47,14 @@ function Fixture() {
 
   return (
     <View class="w-full h-full overflow-hidden bg-black">
-      <DialogBox modal={modal} legend={legend} theme={theme()} faces={faces()} items={items()} />
+      <DialogBox
+        modal={modal}
+        legend={legend}
+        viewportWidth={480}
+        theme={theme()}
+        faces={faces()}
+        items={items()}
+      />
       <SaveMenu
         menu={menu}
         hasFs={true}

@@ -64,4 +64,4 @@ if [ -z "$bin" ]; then
 fi
 
 KB6_BENCH_SCRATCH="$scratch/runs" POCKETJS_DIST="$dist" "$bin" kb6_quickjs_bench::battle_entry_exit_frames --ignored --exact --nocapture \
-  2>&1 | grep -E "^(KB6_X|KB6_S|test result)"
+  2>&1 | grep -Eo "(KB6_X|KB6_S|test result).*"

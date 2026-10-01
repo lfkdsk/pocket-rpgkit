@@ -310,4 +310,3 @@ export function showcaseMapArt(map: MapDef): { ground: Uint8Array; upper: Uint8A
   sceneDecor(map, layers.ground, layers.upper);
   return { ground: layers.ground.rgba, upper: layers.upper.rgba };
 }
-

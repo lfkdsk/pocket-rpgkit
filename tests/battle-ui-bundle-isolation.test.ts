@@ -82,8 +82,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The PSP work ported from lfkdsk/pocketjs-tuxemon#1 adds 5,196 shared
 // PocketJS framework bytes (bounded host image residency, deferred frame
 // queue release, externally indexed pak support). Dropping the duplicate
-// scene clone at the GameView boundary saves 87 shared bytes.
-const EXPECTED_BYTES = 736_100;
+// scene clone at the GameView boundary saves 87 shared baseline bytes.
+// The immutable-session/cache port adds 31,070 bytes for bounded metadata,
+// opt-in engine caches, retained actor frames, stable dialog/battle paint
+// paths, and generic-scene merge guards. The identifiers below still prove
+// that battle UI itself stays out of this non-battle bundle.
+const EXPECTED_BYTES = 767_170;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

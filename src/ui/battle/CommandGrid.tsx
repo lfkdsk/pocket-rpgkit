@@ -3,7 +3,7 @@
 // and each cell's enabled state are props read straight off the battle
 // state, so the grid can never desync from the reducer.
 
-import { For } from "solid-js";
+import { createMemo, For } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import { Panel } from "../Panel.tsx";
 import { resolveUiTheme, type UiTheme } from "../theme.ts";
@@ -29,7 +29,7 @@ const CELL_W = 116;
 const CELL_H = 22;
 
 export function CommandGrid(props: CommandGridProps) {
-  const theme = () => resolveUiTheme(props.theme);
+  const theme = createMemo(() => resolveUiTheme(props.theme));
   const rows = [0, 1] as const;
   const cols = [0, 1] as const;
 
@@ -46,10 +46,10 @@ export function CommandGrid(props: CommandGridProps) {
             <For each={cols}>
               {(col) => {
                 const i = row * 2 + col;
-                const cell = () => props.cells[i]!;
-                const selected = () => props.index === i;
-                const colour = () =>
-                  cell().disabled ? theme().dim : selected() ? theme().accent : theme().ink;
+                const cell = createMemo(() => props.cells[i]!);
+                const selected = createMemo(() => props.index === i);
+                const colour = createMemo(() =>
+                  cell().disabled ? theme().dim : selected() ? theme().accent : theme().ink);
                 return (
                   <View
                     class="flex-row items-center"

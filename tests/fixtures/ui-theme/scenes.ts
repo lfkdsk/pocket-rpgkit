@@ -197,6 +197,8 @@ export const CODE = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_".repeat(6);
 
 export interface FixtureScene {
   modal?: keyof typeof MODALS;
+  /** Override text reveal to exercise every row and legend boundary. */
+  revealed?: number;
   menu?: keyof typeof MENUS;
   theme?: keyof typeof THEMES;
   /** Pass FACES to the DialogBox. */

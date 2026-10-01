@@ -56,16 +56,17 @@ function visibleLines(lines: readonly string[], revealed: number): string[] {
 }
 
 export function MessageBand(props: MessageBandProps) {
-  const theme = () => resolveUiTheme(props.theme);
+  const theme = createMemo(() => resolveUiTheme(props.theme));
   const rows = () => props.rows ?? DEFAULT_ROWS;
   const rowIndices = createMemo(() => Array.from({ length: rows() }, (_, i) => i));
-  const total = () => props.lines.join("\n").length;
+  const contentWidth = createMemo(() => Math.max(0, (props.width ?? DEFAULT_WIDTH) - 16));
+  const total = createMemo(() => props.lines.join("\n").length);
   const shown = () => Math.max(0, Math.min(props.revealed ?? total(), total()));
   const complete = () => shown() >= total();
-  const textLines = () => {
+  const textLines = createMemo(() => {
     const visible = visibleLines(props.lines, shown());
     return rowIndices().map((i) => visible[i] ?? "");
-  };
+  });
 
   return (
     <Panel
@@ -83,7 +84,7 @@ export function MessageBand(props: MessageBandProps) {
         {(row) => (
           <Text
             class="text-xs"
-            style={{ textColor: theme().ink, lineHeight: ROW_H, height: ROW_H }}
+            style={{ textColor: theme().ink, lineHeight: ROW_H, height: ROW_H, width: contentWidth() }}
             debugName={props.debugName ? `${props.debugName}-row-${row}` : undefined}
           >
             {orBlank(textLines()[row]!)}
@@ -94,7 +95,7 @@ export function MessageBand(props: MessageBandProps) {
         <View class="flex-row justify-end" style={{ height: 12, insetT: 2 }}>
           <Text
             class="text-xs"
-            style={{ textColor: theme().dim, lineHeight: 12, height: 12 }}
+            style={{ textColor: theme().dim, lineHeight: 12, height: 12, width: contentWidth(), textAlign: 2 }}
             debugName={props.debugName ? `${props.debugName}-legend` : undefined}
           >
             {orBlank(complete() ? props.legend! : "")}

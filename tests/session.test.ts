@@ -15,7 +15,7 @@ import {
 } from "../src/engine/session.ts";
 import { createSwitchState } from "../src/engine/interpreter.ts";
 import { buildMiniProject } from "../examples/meadow/mini-project.ts";
-import type { Command, GameEvent, MapDef, MoveStep, Project, TileId } from "../src/engine/types.ts";
+import type { Command, GameEvent, MapDef, MoveStep, PageCondition, Project, TileId } from "../src/engine/types.ts";
 
 const GRASS: TileId = "town.0";
 
@@ -253,6 +253,223 @@ describe("P1④ session — command move routes", () => {
       expect(Object.keys(out.interp.erased).sort(), `${hz} Hz erased pages`)
         .toEqual(["a/a", "a/b"]);
     }
+  });
+});
+
+describe("immutable session page cache", () => {
+  for (const scenario of [
+    {
+      name: "appearance",
+      condition: { kind: "appearance", target: "player", sprite: "hero" } as const,
+      update(state: SessionState): SessionState {
+        const sw = { ...state.sw, playerAppearance: { sprite: "hero" } };
+        return { ...state, sw, interp: { ...state.interp, sw } };
+      },
+    },
+    {
+      name: "tile property",
+      condition: { kind: "tileProperty", x: 0, y: 0, passage: "block" } as const,
+      update(state: SessionState): SessionState {
+        return {
+          ...state,
+          interp: { ...state.interp, tileProperties: { "0": { passage: "block" } } },
+        };
+      },
+    },
+    {
+      name: "playing BGM",
+      condition: { kind: "bgmPlaying", id: "theme" } as const,
+      update(state: SessionState): SessionState {
+        return {
+          ...state,
+          interp: {
+            ...state.interp,
+            audio: { bgm: { id: "theme", volume: 100, pitch: 100, positionTicks: 0 } },
+          },
+        };
+      },
+    },
+  ]) test(`${scenario.name} conditions bypass identity-only page reuse`, () => {
+    const gate = ge("gate", 6, 6, [
+      { trigger: "action", commands: [] },
+      { trigger: "action", commands: [], condition: { all: [scenario.condition] } },
+    ]);
+    const p = project([map("a", 8, 8, [gate])]);
+    const sess = createSession(p, 60, { immutableState: true });
+    let state = stepSession(sess, startSession(p, sess), { buttons: 0 });
+    expect(state.chars.chars.gate!.pageIndex).toBe(0);
+    state = stepSession(sess, scenario.update(state), { buttons: 0 });
+    expect(state.chars.chars.gate!.pageIndex).toBe(1);
+  });
+
+  for (const hz of [60, 30, 20, 4]) for (const opaque of [false, true])
+    test(`page reads follow every bank, facing, idle and rewind at ${hz} Hz, extension=${opaque}`, () => {
+      const conditions: PageCondition[] = [
+        { switch: "gate" }, { variable: { id: "phase", op: ">=", value: 1 } },
+        { selfSwitch: "A" }, { item: "key" },
+        { all: [{ kind: "switch", id: "gate", value: false }] },
+        { all: [{ kind: "variable", id: "phase", op: "==", value: 2 }] },
+        { all: [{ kind: "selfSwitch", key: "B", value: false }] },
+        { all: [{ kind: "item", id: "key", count: 2 }] },
+        { all: [{ kind: "gold", amount: 10 }] },
+        { all: [{ kind: "facing", dir: "right" }] },
+        { all: [{ kind: "worldIdle" }] },
+      ];
+      if (opaque) conditions.push({ all: [{ kind: "ext", call: "demo.page", args: null }] });
+      const p = project([map("a", 24, 16, conditions.map((condition, i) =>
+        ge(`npc-${i}`, i + 1, 12, [
+          { trigger: "action", commands: [], blocks: false },
+          { trigger: "action", commands: [], blocks: true, condition },
+        ])))]);
+      const extensions = { initial: 0, immutableConditions: true, deterministicConditions: true,
+        conditions: { "demo.page": (c: { ext: unknown; gold: number; variables: Record<string, unknown> }) =>
+          c.ext === 1 || (c.gold >= 10 && c.variables.phase === 2) } };
+      const reference = createSession(p, hz, { extensions });
+      const cached = createSession(p, hz, { extensions, immutableState: true });
+      let a = startSession(p, reference), b = startSession(p, cached);
+      const history: SessionState[] = [];
+      const saved: string[] = [];
+      for (let frame = 0; frame < 30; frame++) {
+        const modify = (s: SessionState): SessionState => {
+          const sw: SessionState["sw"] = { ...s.sw, variables: { ...s.sw.variables, unrelated: frame } };
+          const value = frame < 15 ? 2 : 0;
+          switch (frame % 15) {
+            case 2: sw.switches = { ...sw.switches, gate: value > 0 }; break;
+            case 4: sw.variables.phase = value; break;
+            case 6: sw.self = { ...sw.self, "a/npc-2": value ? "A" : undefined, "a/npc-6": value ? "B" : undefined }; break;
+            case 8: sw.items = { ...sw.items, key: value }; break;
+            case 10: sw.gold = value * 10; break;
+          }
+          return { ...s, sw, interp: { ...s.interp, sw }, ext: frame >= 12 && frame < 27 ? 1 : 0 };
+        };
+        const input = { buttons: frame % 7 === 0 ? 0x0020 : 0 };
+        a = stepSession(reference, modify(a), input);
+        b = stepSession(cached, modify(b), input);
+        expect(b).toEqual(a);
+        history.push(b); saved.push(JSON.stringify(b));
+      }
+      for (let i = history.length - 1; i >= 0; i--) {
+        expect(JSON.stringify(history[i])).toBe(saved[i]!);
+        const restored = JSON.parse(saved[i]!);
+        expect(stepSession(cached, history[i]!, { buttons: 0 }))
+          .toEqual(stepSession(reference, restored, { buttons: 0 }));
+      }
+    });
+
+  test("page conditions without a determinism contract run again with unchanged state", () => {
+    let open = false;
+    const p = project([map("a", 8, 8, [ge("gate", 6, 6, [
+      { trigger: "action", commands: [] },
+      { trigger: "action", commands: [], condition: { all: [{ kind: "ext", call: "demo.open", args: null }] } },
+    ])])]);
+    const sess = createSession(p, 60, { immutableState: true, extensions: {
+      immutableConditions: true, conditions: { "demo.open": () => open },
+    } });
+    let state = startSession(p, sess);
+    for (const next of [false, true, false, true]) {
+      open = next;
+      state = stepSession(sess, state, { buttons: 0 });
+      expect(state.chars.chars.gate!.pageIndex).toBe(next ? 1 : 0);
+    }
+  });
+
+  for (const hz of [60, 30, 20, 4]) test(`wakes an idle scan on input, bank writes, placement and restore at ${hz} Hz`, () => {
+    const p = project([map("a", 12, 8, [
+      ge("sleep", 0, 0, page("parallel", [{ op: "if",
+        if: { kind: "ext", call: "demo.awake", args: null },
+        then: [{ op: "variable", id: "clock", set: { op: "add", value: 1 } }],
+      }])),
+      ge("button", 2, 1, page("action", [
+        { op: "wait", seconds: 0.1 },
+        { op: "ext", call: "demo.wake", args: null },
+        { op: "place", target: { event: "npc" }, x: 3, y: 1, dir: "left" },
+        { op: "erase" },
+      ])),
+      ge("npc", 7, 4, page("playerTouch", [
+        { op: "variable", id: "touches", set: { op: "add", value: 1 } },
+      ], { blocks: false })),
+    ])], { map: "a", x: 1, y: 1, dir: "right" });
+    const extensions = {
+      initial: "sleep", immutableConditions: true, deterministicConditions: true,
+      conditions: { "demo.awake": (context: { ext: unknown }) => context.ext === "awake" },
+      commands: { "demo.wake": () => ({ ext: "awake", writes: { clock: 0 } }) },
+    };
+    const regular = createSession(p, hz, { extensions });
+    const optimized = createSession(p, hz, { extensions, immutableState: true });
+    let a = startSession(p, regular), b = startSession(p, optimized);
+    const history: Array<{ state: SessionState; json: string }> = [];
+    for (let frame = 0; frame < hz * 4; frame++) {
+      history.push({ state: b, json: JSON.stringify(b) });
+      const input = { buttons: frame >= hz * 2 && frame < hz * 3 ? 0x0020 : 0,
+        confirmEdge: frame === hz };
+      a = stepSession(regular, a, input);
+      b = stepSession(optimized, b, input);
+      expect(b).toEqual(a);
+      if (frame === hz - 1) { a = JSON.parse(JSON.stringify(a)); b = JSON.parse(JSON.stringify(b)); }
+    }
+    for (const prior of history) expect(JSON.stringify(prior.state)).toBe(prior.json);
+    expect(b.ext).toBe("awake");
+    expect(b.interp.erased["a/button"]).toBe(true);
+    expect(b.sw.variables.clock).toBeGreaterThan(0);
+    expect(b.sw.variables.touches).toBe(1);
+    expect([b.chars.chars.npc!.tx, b.chars.chars.npc!.ty]).toEqual([3, 1]);
+  });
+
+  for (const hz of [60, 30, 20, 4]) test(`shares idle characters while preserving routes, collisions and placements at ${hz} Hz`, () => {
+    const p = project([map("a", 24, 16, [
+      ...Array.from({ length: 40 }, (_, i) => ge(`static-${i}`, i % 20, 12 + Math.floor(i / 20), page("action", [], { blocks: true }))),
+      ge("random", 4, 4, page("action", [], { moveType: "random", blocks: true })),
+      ge("patrol", 8, 4, page("action", [], { blocks: true,
+        moveRoute: { steps: ["moveLeft", "wait", "moveRight"], repeat: true, skippable: true } })),
+      ge("npc", 6, 4, [
+        { trigger: "action", commands: [], blocks: true },
+        { trigger: "action", commands: [], blocks: false, condition: { all: [{ kind: "switch", id: "phase", value: true }] } },
+      ]),
+      ge("driver", 0, 0, page("parallel", [
+        { op: "wait", seconds: 0.1 },
+        { op: "moveRoute", target: { event: "npc" }, wait: true,
+          route: { steps: ["moveRight", "moveDown", "moveLeft"], repeat: false, skippable: true } },
+        { op: "place", target: { event: "npc" }, x: 3, y: 3, dir: "up" },
+        { op: "switch", id: "phase", value: true },
+        { op: "erase" },
+      ])),
+    ])]);
+    const regular = createSession(p, hz), optimized = createSession(p, hz, { immutableState: true });
+    let a = startSession(p, regular), b = startSession(p, optimized);
+    for (let frame = 0; frame < hz * 3; frame++) {
+      const before = JSON.stringify(b), retained = b;
+      const input = { buttons: frame < hz ? 0x0020 : frame < hz * 2 ? 0x0040 : 0 };
+      a = stepSession(regular, a, input);
+      b = stepSession(optimized, b, input);
+      expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+      expect(JSON.stringify(retained)).toBe(before);
+      if (frame === hz) { a = JSON.parse(JSON.stringify(a)); b = JSON.parse(JSON.stringify(b)); }
+    }
+    expect(b.sw.switches.phase).toBe(true);
+    expect([b.chars.chars.npc!.tx, b.chars.chars.npc!.ty]).toEqual([3, 3]);
+  });
+
+  for (const hz of [60, 30, 20, 4]) test(`preserves tick, bank-write and restore behavior at ${hz} Hz`, () => {
+    const p = project([map("a", 8, 8, [
+      ge("counter", 0, 0, page("parallel", [{ op: "variable", id: "clock", set: { op: "add", value: 1 } }])),
+      ge("gate", 4, 4, [
+        { trigger: "parallel", commands: [] },
+        { trigger: "parallel", condition: { all: [{ kind: "variable", id: "clock", op: ">=", value: 2 }] },
+          commands: [{ op: "switch", id: "opened", value: true }], sprite: "gate", blocks: true },
+      ]),
+    ])]);
+    const regular = createSession(p, hz), cached = createSession(p, hz, { immutableState: true });
+    let a = startSession(p, regular), b = startSession(p, cached);
+    for (let frame = 0; frame < 20; frame++) {
+      const before = JSON.stringify(b);
+      const prior = b;
+      a = stepSession(regular, a, { buttons: 0 });
+      b = stepSession(cached, b, { buttons: 0 });
+      expect(JSON.stringify(prior)).toBe(before);
+      expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+      if (frame === 9) { a = JSON.parse(JSON.stringify(a)); b = JSON.parse(JSON.stringify(b)); }
+    }
+    expect(b.sw.switches.opened).toBe(true);
   });
 });
 

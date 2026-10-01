@@ -5,6 +5,7 @@
 // L-rewind paints the same width.
 
 import { Text, View } from "@pocketjs/framework/components";
+import { createMemo } from "solid-js";
 import { resolveUiTheme, type UiTheme } from "../theme.ts";
 import { barFillWidth } from "./effects.ts";
 
@@ -22,15 +23,19 @@ export interface StatBarProps {
   theme?: Partial<UiTheme>;
   /** "137 / 220" readout to the bar's right. Omit for a bare bar. */
   showNumbers?: boolean;
+  /** Fixed readout cell for paint-only number changes in a reserved HUD area. */
+  numbersWidth?: number;
   debugName?: string;
 }
 
 const BAR_HEIGHT = 6;
 
 export function StatBar(props: StatBarProps) {
-  const theme = () => resolveUiTheme(props.theme);
+  const theme = createMemo(() => resolveUiTheme(props.theme));
   const height = () => props.height ?? BAR_HEIGHT;
-  const fillWidth = () => barFillWidth(props.current, props.max, props.width);
+  const fillScale = createMemo(() => props.width > 0
+    ? barFillWidth(props.current, props.max, props.width) / props.width
+    : 0);
 
   return (
     <View class="flex-row items-center" debugName={props.debugName}>
@@ -40,14 +45,26 @@ export function StatBar(props: StatBarProps) {
         debugName={props.debugName ? `${props.debugName}-track` : undefined}
       >
         <View
-          style={{ width: fillWidth(), height: height(), bgColor: props.fill ?? theme().accent }}
+          style={{
+            width: props.width,
+            height: height(),
+            bgColor: props.fill ?? theme().accent,
+            scaleX: fillScale(),
+            originX: -0.5,
+          }}
           debugName={props.debugName ? `${props.debugName}-fill` : undefined}
         />
       </View>
       {props.showNumbers ? (
         <Text
           class="text-xs"
-          style={{ textColor: theme().ink, lineHeight: 14, height: 14, insetL: 6 }}
+          style={{
+            textColor: theme().ink,
+            lineHeight: 14,
+            height: 14,
+            insetL: 6,
+            ...(props.numbersWidth === undefined ? {} : { width: props.numbersWidth }),
+          }}
           debugName={props.debugName ? `${props.debugName}-numbers` : undefined}
         >
           {`${Math.max(0, Math.round(props.current))} / ${Math.round(props.max)}`}

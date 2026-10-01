@@ -24,6 +24,31 @@ function pixelAt(frame: Uint8Array, width: number, x: number, y: number): number
 }
 
 simDescribe("GameView battle scene host", () => {
+  test("deactivates a kept-alive battle renderer when a generic scene takes foreground", async () => {
+    const active: boolean[] = [];
+    const world = await bootGameWorld(appBundle("r2-ui"), 60, {
+      __r2BattleThenScene: true,
+      __r2BattleActiveTrace: active,
+    });
+    const step = (buttons = 0): void => {
+      world.frame(buttons, 0x8080);
+      world.tick();
+    };
+
+    for (let guard = 0; world.probes().state.scene?.kind !== "battle" && guard < 30; guard++) step();
+    expect(world.probes().state.scene?.kind).toBe("battle");
+    expect(active.at(-1)).toBe(true);
+    const stableTraceLength = active.length;
+    for (let frame = 0; frame < 5; frame++) step();
+    expect(active).toHaveLength(stableTraceLength);
+
+    step(BTN.CIRCLE);
+    for (let guard = 0; world.probes().state.scene?.kind !== "scene" && guard < 30; guard++) step();
+    expect(world.probes().state.scene?.kind).toBe("scene");
+    expect(JSON.stringify(world.getTree())).toContain("kept-alive-game-scene");
+    expect(active.at(-1)).toBe(false);
+  });
+
   test("gives a battle sole visibility and input ownership over a parked non-cancellable choice", async () => {
     const atBattle = async (extraGlobals: Record<string, unknown>) => {
       const world = await bootGameWorld(appBundle("r2-ui"), 60, extraGlobals);

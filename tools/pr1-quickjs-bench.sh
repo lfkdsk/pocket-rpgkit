@@ -15,12 +15,13 @@
 #                      (e.g. PR1_QJS_CPU=2). Recommended for stable numbers;
 #                      the run header records the affinity actually granted.
 #   PR1_QJS_ITERS=N    iterations per case per slot (default 2000).
+#   PR1_BENCH_CASE=NAME  run one focused workload instead of the full table.
 #   PR1_QJS_SCRATCH=DIR  scratch worktree/build directory.
 #
 # Each round records `uptime` before and after its window, and the run header
 # records candidate/baseline/PocketJS SHAs, CPU affinity and the sha256 of
 # both built bundles, so a pasted log is enough to replay the run. The summary
-# stage warns if any slot did not yield exactly 5 PR1_QJS rows.
+# stage checks every slot against the selected workload count (8 or 1).
 #
 # Extraction note: with --nocapture libtest attaches a slot's first benchmark
 # line to its `test ...` line, so PR1_QJS rows are extracted with an
@@ -38,6 +39,18 @@ rounds="${PR1_QJS_ROUNDS:-1}"
 cpu="${PR1_QJS_CPU:-}"
 iters="${PR1_QJS_ITERS:-2000}"
 rows="$scratch/rows.log"
+cases=( \
+  sunstoneIdle sunstoneWalk sunstoneControlWalk wanderAuto battleScene \
+  sunstoneIdleImmutable sunstoneControlWalkImmutable battleSceneImmutable
+)
+selected_case="${PR1_BENCH_CASE:-}"
+if [ -n "$selected_case" ]; then
+  case " ${cases[*]} " in
+    *" $selected_case "*) cases=("$selected_case") ;;
+    *) echo "pr1-quickjs-bench: unknown PR1_BENCH_CASE '$selected_case'" >&2; exit 2 ;;
+  esac
+fi
+expected_rows="${#cases[@]}"
 
 mkdir -p "$scratch"
 if git -C "$root" worktree list --porcelain | grep -Fqx "worktree $baseline"; then
@@ -64,7 +77,7 @@ sed -i -E "s#path = \"\.\./\.\./([^\"]+)\"#path = \"$root/vendor/pocketjs/\1\"#g
 cp "$root/tools/pr1-quickjs-bench.rs" "$host/src/pr1_quickjs_bench.rs"
 echo 'include!("pr1_quickjs_bench.rs");' >> "$host/src/main.rs"
 
-CARGO_TARGET_DIR="$target" cargo test --release --no-run --manifest-path "$host/Cargo.toml" >/dev/null
+CARGO_TARGET_DIR="$target" cargo test --no-default-features --release --no-run --manifest-path "$host/Cargo.toml" >/dev/null
 bin="$(find "$target/release/deps" -maxdepth 1 -type f -name 'pocket_desktop_host-*' ! -name '*.d' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
 if [ -z "$bin" ]; then
   echo "pr1-quickjs-bench: desktop host test binary was not produced" >&2
@@ -80,6 +93,20 @@ if [ -n "$cpu" ]; then
   pin=(taskset -c "$cpu")
 fi
 
+run_slot() {
+  local js="$1"
+  local label="$2"
+  if [ -n "$selected_case" ]; then
+    PR1_BENCH_JS="$js" PR1_BENCH_LABEL="$label" PR1_BENCH_ITERS="$iters" \
+      PR1_BENCH_CASE="$selected_case" "${pin[@]}" "$bin" \
+      pr1_quickjs_bench::tick_fold --ignored --exact --nocapture 2>&1
+  else
+    PR1_BENCH_JS="$js" PR1_BENCH_LABEL="$label" PR1_BENCH_ITERS="$iters" \
+      "${pin[@]}" "$bin" \
+      pr1_quickjs_bench::tick_fold --ignored --exact --nocapture 2>&1
+  fi
+}
+
 {
   echo "PR1_QJS meta=key candidate value=$(git -C "$root" rev-parse HEAD)"
   echo "PR1_QJS meta=key baseline value=$baseline_ref"
@@ -88,6 +115,7 @@ fi
   echo "PR1_QJS meta=key bundle_candidate value=$(sha256sum "$scratch/candidate.js" | cut -d' ' -f1)"
   echo "PR1_QJS meta=key rounds value=$rounds"
   echo "PR1_QJS meta=key iters value=$iters"
+  echo "PR1_QJS meta=key cases value=${cases[*]}"
   if [ -n "$cpu" ]; then
     # Query the pinned process itself: taskset -cp $$ would report the
     # parent shell's affinity, not the child's granted affinity.
@@ -104,9 +132,7 @@ fi
       js="$scratch/$label.js"
       # Unanchored extraction: the first benchmark line of each slot is
       # attached to libtest's `test ...` line, so ^PR1_QJS would drop it.
-      PR1_BENCH_JS="$js" PR1_BENCH_LABEL="$label" PR1_BENCH_ITERS="$iters" \
-        "${pin[@]}" "$bin" \
-        pr1_quickjs_bench::tick_fold --ignored --exact --nocapture 2>&1 \
+      run_slot "$js" "$label" \
         | grep -E 'PR1_QJS|^test result' \
         | sed -E "s/PR1_QJS label=/PR1_QJS round=$round slot=$slot label=/"
     done
@@ -117,7 +143,7 @@ fi
 # Pair each window's candidate slots against their neighboring main slots
 # (forward: slot2/slot1-1, reverse: slot3/slot4-1) and summarize the 2*rounds
 # paired deltas per case with their median.
-awk '
+awk -v expected_rows="$expected_rows" '
 function parse_line(   i, a) {
   r = ""; s = ""; cs = ""; mu = ""
   for (i = 1; i <= NF; i++) {
@@ -140,9 +166,9 @@ function parse_line(   i, a) {
 }
 END {
   for (k in slotrows) {
-    if (slotrows[k] != 5) {
+    if (slotrows[k] != expected_rows) {
       split(k, parts, SUBSEP)
-      printf "PR1_QJS_WARN round=%s slot=%s has %d rows (expected 5)\n", parts[1], parts[2], slotrows[k] > "/dev/stderr"
+      printf "PR1_QJS_WARN round=%s slot=%s has %d rows (expected %d)\n", parts[1], parts[2], slotrows[k], expected_rows > "/dev/stderr"
       bad = 1
     }
   }

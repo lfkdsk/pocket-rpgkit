@@ -117,6 +117,7 @@ export type AttractPhase = "attract" | "play";
 export type AttractSpeed = 1 | 2 | 4;
 
 export interface AttractOptions {
+  immutableState?: boolean;
   /** Virtual frames per second; seconds-based timings derive from it. */
   hz: number;
   /** Source rate of the published tape. Defaults to 60 Hz. Tests that feed
@@ -323,6 +324,7 @@ export class AttractController {
       battle: opts.battle,
       scenes: opts.scenes,
       scene: opts.scene,
+      immutableState: opts.immutableState,
     });
     this.idleFrames = opts.idleFrames ?? this.hz * 10;
     this.endHoldFrames = opts.endHoldFrames ?? this.timelineHz * 2;

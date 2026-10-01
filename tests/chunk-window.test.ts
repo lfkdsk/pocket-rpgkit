@@ -1,7 +1,34 @@
 import { describe, expect, test } from "bun:test";
-import { chunkWindow, chunkWindowContains, expandChunkWindow } from "../src/engine/chunk-window.ts";
+import {
+  chunkWindow,
+  chunkWindowContains,
+  createChunkWindowReader,
+  expandChunkWindow,
+} from "../src/engine/chunk-window.ts";
 
 describe("chunkWindow", () => {
+  test("a layer reader follows in-place camera, viewport and grid changes", () => {
+    const read = createChunkWindowReader();
+    const camera = { x: 0, y: 0 };
+    const viewport = { w: 480, h: 272 };
+    for (const size of [16, 256]) for (const columns of [0, 4, 80]) for (const rows of [0, 3, 60]) {
+      for (const margin of [0, 16, 256]) for (const x of [-500, 0, 15, 16, 255, 256, 800]) {
+        camera.x = x;
+        camera.y = x / 2;
+        for (const width of [0, 1, 480, 960]) {
+          viewport.w = width;
+          viewport.h = width / 2;
+          const expected = chunkWindow(camera, viewport, size, columns, rows, margin);
+          const actual = read(camera, viewport, size, columns, rows, margin);
+          expect(actual).toEqual(expected);
+          expect(read(camera, viewport, size, columns, rows, margin)).toBe(actual);
+        }
+      }
+    }
+    expect(() => read(camera, viewport, 0, 4, 3)).toThrow("invalid grid");
+    expect(read(camera, viewport, 16, 4, 3)).toEqual(chunkWindow(camera, viewport, 16, 4, 3));
+  });
+
   test("maps a 480x272 viewport plus 16px margin onto an inclusive 256px grid", () => {
     expect(chunkWindow({ x: 0, y: 0 }, { w: 480, h: 272 }, 256, 4, 3, 16)).toEqual({
       x0: 0, y0: 0, x1: 1, y1: 1,

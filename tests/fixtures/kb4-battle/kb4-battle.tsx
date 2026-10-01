@@ -15,10 +15,14 @@ import { Kb4BattleScene } from "./scene.tsx";
 declare global {
   // eslint-disable-next-line no-var
   var __kb4Setup: Record<string, unknown> | undefined;
+  // eslint-disable-next-line no-var
+  var __kb4FrameStrip: boolean | undefined;
 }
 
 const setup = globalThis.__kb4Setup ?? {};
 globalThis.__kb4Setup = undefined;
+const frameStrip = globalThis.__kb4FrameStrip ?? false;
+globalThis.__kb4FrameStrip = undefined;
 
 const project: Project = {
   format: "rpgkit-project/v1",
@@ -35,6 +39,6 @@ mount(() => (
     project={project}
     assets={GAME_ASSETS}
     battle={kb4BattleRules}
-    battleScene={Kb4BattleScene}
+    battleScene={(props) => <Kb4BattleScene {...props} frameStrip={frameStrip} />}
   />
 ));

@@ -25,10 +25,14 @@ const maybeTest = preflight.ok ? test : test.skip;
 // rebasing PocketJS onto upstream main). Sunstone opts into QOA music and the
 // demo menu (chapter codes, tape suffixes, page hook); the small audio
 // fixture opts into WAV playback. KV2's per-map actor pool adds shared
-// GameView bytes to all three. Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 471_111;
-const EXPECTED_SUNSTONE_QOA_BYTES = 736_100;
-const EXPECTED_WAV_FIXTURE_BYTES = 603_408;
+// GameView bytes to all three. The immutable-session port adds 26,029 bytes
+// to the ordinary Meadow bundle and 31,070 bytes to the QOA/WAV entries:
+// bounded state metadata, opt-in interpreter/session caches, retained actor
+// frames, stable dialog/battle paint paths, and generic-scene merge guards.
+// Re-measure after every shared-path change.
+const EXPECTED_MEADOW_BYTES = 497_140;
+const EXPECTED_SUNSTONE_QOA_BYTES = 767_170;
+const EXPECTED_WAV_FIXTURE_BYTES = 634_478;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

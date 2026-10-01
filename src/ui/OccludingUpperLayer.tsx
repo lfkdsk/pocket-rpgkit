@@ -29,7 +29,7 @@ import {
 } from "@pocketjs/framework/renderer";
 import { ENUMS } from "../../vendor/pocketjs/contracts/spec/spec.ts";
 import {
-  chunkWindow,
+  createChunkWindowReader,
   chunkWindowContains,
   expandChunkWindow,
   type ChunkPoint,
@@ -114,6 +114,8 @@ export interface OccludingUpperLayerProps {
 /** Persistent current-map upper/actor plane. Rows and image slices remain
  *  attached while scrolling or transferring; animation nodes are retained. */
 export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.Element {
+  const chunkWindow = createChunkWindowReader();
+  const tileWindow = createChunkWindowReader();
   startupProfileMark("ui-upper:start");
   const root = createElement("view");
   setProp(root, "style", { posType: ENUMS.PosType.Absolute, insetL: 0, insetT: 0, width: 0, height: 0 });
@@ -363,8 +365,10 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     const node = createElement("image");
     setProp(node, "style", {
       posType: ENUMS.PosType.Absolute,
-      insetL: x * chunkPx,
-      insetT: Math.floor((row.y * TILE) / chunkPx) * chunkPx - row.y * TILE,
+      insetL: 0,
+      translateX: x * chunkPx,
+      insetT: 0,
+      translateY: Math.floor((row.y * TILE) / chunkPx) * chunkPx - row.y * TILE,
       width: chunkPx,
       height: chunkPx,
     });
@@ -378,7 +382,8 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     setProp(node, "style", {
       posType: ENUMS.PosType.Absolute,
       insetL: 0,
-      insetT: y * TILE,
+      insetT: 0,
+      translateY: y * TILE,
       width: worldWidth,
       height: TILE,
       overflow: ENUMS.Overflow.Hidden,
@@ -407,8 +412,10 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
     }
     const x = index % columns;
     setProp(node, "style", {
-      insetL: x * chunkPx,
-      insetT: Math.floor((row.y * TILE) / chunkPx) * chunkPx - row.y * TILE,
+      insetL: 0,
+      translateX: x * chunkPx,
+      insetT: 0,
+      translateY: Math.floor((row.y * TILE) / chunkPx) * chunkPx - row.y * TILE,
     }, node.domAttrs?.style);
     setProp(node, "debugName", `rpgkit-upper-row-${row.y}-chunk-${index}`);
     if (isStreamed) {
@@ -468,7 +475,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   };
 
   const syncRows = (): void => {
-    const tileWin = chunkWindow(
+    const tileWin = tileWindow(
       props.camera(),
       props.viewport(),
       TILE,
@@ -508,7 +515,8 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
         clearRow(row);
         row.y = y;
         setProp(row.node, "style", {
-          insetT: y * TILE,
+          insetT: 0,
+          translateY: y * TILE,
           zIndex: upperRowDepth(y, worldWidth),
         }, row.node.domAttrs?.style);
       }

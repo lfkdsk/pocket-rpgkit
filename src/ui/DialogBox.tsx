@@ -58,6 +58,8 @@ const BOX_TOP = 100;
 export interface DialogBoxProps {
   modal: Accessor<Modal | null>;
   legend: Accessor<string>;
+  /** Screen width for fixed message cells; omit to retain intrinsic layout. */
+  viewportWidth?: number;
   /** Colours of both boxes; missing keys keep DEFAULT_UI_THEME. */
   theme?: Partial<UiTheme>;
   /** Speaker portraits: NAME -> 64x64 image src (a full string literal
@@ -74,7 +76,7 @@ export interface DialogBoxProps {
 }
 
 /** Slice the joined "line\nline" text to `revealed` chars; lines whose turn
- *  has not come render as empty strings (every row node stays mounted). */
+ *  has not come render as empty strings. The view hides their retained rows. */
 function visibleLines(lines: string[], revealed: number): string[] {
   let left = revealed;
   return lines.map((line, i) => {
@@ -102,12 +104,23 @@ const NO_SPEAKER: SpeakerSplit = { name: null, rest: "", cut: 0 };
 export function DialogBox(props: DialogBoxProps) {
   startupProfileMark("ui-dialog:start");
   const theme = createMemo(() => resolveUiTheme(props.theme));
-  const isChoice = () => props.modal()?.kind === "choices";
-  const isShop = () => props.modal()?.kind === "shop";
+  const choice = createMemo(() => {
+    const modal = props.modal();
+    return modal?.kind === "choices" ? modal : null;
+  });
+  const shop = createMemo(() => {
+    const modal = props.modal();
+    return modal?.kind === "shop" ? modal : null;
+  });
+  const message = createMemo(() => {
+    const modal = props.modal();
+    return modal?.kind === "text" ? modal : null;
+  });
+  const isChoice = () => choice() !== null;
   // Re-evaluated per typed character; downstream only sees a new speaker.
   const speaker = createMemo(
     () => {
-      const m = props.modal();
+      const m = message();
       const faces = props.faces;
       if (!faces || m?.kind !== "text" || m.lines.length === 0) return NO_SPEAKER;
       return splitSpeaker(m.lines[0]!, faces);
@@ -115,45 +128,72 @@ export function DialogBox(props: DialogBoxProps) {
     NO_SPEAKER,
     { equals: (a, b) => a.name === b.name && a.cut === b.cut && a.rest === b.rest },
   );
-  const textLines = () => {
-    const m = props.modal();
+  const textLines = createMemo(() => {
+    const m = message();
     if (m?.kind !== "text") return ["", "", "", ""];
     const sp = speaker();
     const lines = sp.name ? [sp.rest, ...m.lines.slice(1)] : m.lines;
     const visible = visibleLines(lines, Math.max(0, m.revealed - sp.cut));
     return TEXT_ROWS.map((i) => visible[i] ?? "");
-  };
+  });
   // display: 0 shows, 1 hides (the column and the tab stay mounted).
-  const faceDisplay = () => (speaker().name ? 0 : 1);
+  const faceDisplay = createMemo(() => (speaker().name ? 0 : 1));
   // All three boxes stay mounted and hide while unused: opening a dialog updates
   // text rows instead of mounting the box subtree (on a 333 MHz PSP a mount
   // costs about 100 ms of QuickJS time).
-  const choicesDisplay = () => (isChoice() ? 0 : 1);
-  const shopDisplay = () => (isShop() ? 0 : 1);
-  const messageDisplay = () => (props.modal()?.kind === "text" ? 0 : 1);
+  const choicesDisplay = createMemo(() => (isChoice() ? 0 : 1));
+  const shopDisplay = createMemo(() => (shop() ? 0 : 1));
+  const messageDisplay = createMemo(() => (message() ? 0 : 1));
+  const textWidth = createMemo(() => props.viewportWidth === undefined
+    ? Number.NaN
+    : Math.max(
+        0,
+        props.viewportWidth - 36 -
+          (props.faces && speaker().name ? props.faceWidth ?? FACE_WIDTH : 0),
+      ));
+  const messageLegend = createMemo(() => message()?.complete ? props.legend() : "");
 
+  // Solid replaces an empty string's Text child on the next character. Keep
+  // a space in that child and hide its row instead: revealing it only
+  // restyles and replaces the retained leaf.
   // Four text rows + the legend row; the column holding them is the paper
   // itself, or the text column right of the portrait when faces are on.
   const messageRows = () => (
     <>
       <For each={TEXT_ROWS}>
-        {(row) => (
-          <Text
-            class="text-xs"
-            style={{ textColor: theme().ink, lineHeight: 15, height: 15 }}
-            debugName={`rpgkit-message-row-${row}`}
-          >
-            {`${textLines()[row]!}`}
-          </Text>
-        )}
+        {(row) => {
+          const line = createMemo(() => textLines()[row]!);
+          return (
+            <Text
+              class="text-xs"
+              style={{
+                textColor: theme().ink,
+                lineHeight: 15,
+                height: 15,
+                width: textWidth(),
+                display: line() ? 0 : 1,
+              }}
+              debugName={`rpgkit-message-row-${row}`}
+            >
+              {line() || " "}
+            </Text>
+          );
+        }}
       </For>
       <View class="flex-row justify-end" style={{ height: 12 }}>
-        <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 12, height: 12 }} debugName="rpgkit-message-legend">
-          {`${(() => {
-            const m = props.modal();
-            if (m?.kind !== "text") return "";
-            return m.complete ? props.legend() : "";
-          })()}`}
+        <Text
+          class="text-xs"
+          style={{
+            textColor: theme().dim,
+            lineHeight: 12,
+            height: 12,
+            width: textWidth(),
+            textAlign: 2,
+            display: messageLegend() ? 0 : 1,
+          }}
+          debugName="rpgkit-message-legend"
+        >
+          {messageLegend() || " "}
         </Text>
       </View>
     </>
@@ -175,12 +215,12 @@ export function DialogBox(props: DialogBoxProps) {
         debugName="rpgkit-choices-box"
       >
         <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-choice-prompt">
-          {`${isChoice() ? (props.modal() as Extract<Modal, { kind: "choices" }>).prompt : ""}`}
+          {choice()?.prompt ?? ""}
         </Text>
         <View class="flex-col" style={{ height: 4 }} />
         <For each={CHOICE_ROWS}>
           {(row) => {
-            const m = () => props.modal() as Extract<Modal, { kind: "choices" }> | null;
+            const m = choice;
             const total = () => m()?.options.length ?? 0;
             // A pure function of the live cursor index: never desyncs
             // from the reducer, and wrap-around (top<->bottom) recomputes
@@ -227,13 +267,13 @@ export function DialogBox(props: DialogBoxProps) {
             <View class="flex-row justify-between" style={{ height: 14 }}>
               <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-shop-stage">
                 {`${(() => {
-                  const m = props.modal();
+                  const m = shop();
                   return m?.kind === "shop" ? (m.stage === "buy" ? "Buy" : "Sell") : "";
                 })()}`}
               </Text>
               <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-shop-gold">
                 {`${(() => {
-                  const m = props.modal();
+                  const m = shop();
                   return m?.kind === "shop" ? `Gold: ${m.gold}` : "";
                 })()}`}
               </Text>
@@ -241,7 +281,7 @@ export function DialogBox(props: DialogBoxProps) {
             <View class="flex-col" style={{ height: 4 }} />
             <For each={CHOICE_ROWS}>
               {(row) => {
-                const m = () => props.modal() as Extract<Modal, { kind: "shop" }> | null;
+                const m = shop;
                 const total = () => m()?.rows.length ?? 0;
                 const start = () => windowStart(m()?.index ?? 0, total(), VISIBLE_ROWS);
                 const rowIndex = () => start() + row;
@@ -341,7 +381,7 @@ export function DialogBox(props: DialogBoxProps) {
           debugName="rpgkit-message-name"
         >
           <Text class="text-xs" style={{ textColor: theme().paper, lineHeight: 15, height: 15 }}>
-            {`${speaker().name ? speakerLabel(speaker().name!) : ""}`}
+            {speaker().name ? speakerLabel(speaker().name!) : " "}
           </Text>
         </View>
       </Show>

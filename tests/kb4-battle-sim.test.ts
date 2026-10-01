@@ -23,7 +23,7 @@ import { fnv1a } from "../vendor/pocketjs/hosts/sim/sim.ts";
 // tools/build.ts's own JSX pass) has no JSX transform configured, so a
 // plain `bun test` import of anything that drags in a .tsx component
 // fails to resolve react/jsx-dev-runtime. effects.ts is plain TypeScript.
-import { barFillWidth, shakeOffsetX, faintPose, tweenAt } from "../src/ui/battle/effects.ts";
+import { barFillWidth, faintPose, frameIndexAt, shakeOffsetX, tweenAt } from "../src/ui/battle/effects.ts";
 import { demoState, enemyEffect, enemyHpTween, messageRevealed, playerEffect, type DemoBattleState } from "./fixtures/kb4-battle/rules.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 import { bootGameWorld, installGameSimIsolation, type BoundGameWorld } from "./helpers/sim-session.ts";
@@ -49,6 +49,16 @@ const STRUCTURAL_OPS = ["createNode", "destroyNode", "insertBefore", "removeChil
 type StructuralCounts = Record<(typeof STRUCTURAL_OPS)[number], number>;
 const zeroStructural = (): StructuralCounts =>
   Object.fromEntries(STRUCTURAL_OPS.map((op) => [op, 0])) as StructuralCounts;
+
+function findNode(tree: unknown, name: string): { i: number; n?: string; k?: unknown[] } | undefined {
+  const node = tree as { i?: number; n?: string; k?: unknown[] };
+  if (node?.n === name && typeof node.i === "number") return node as { i: number; n?: string; k?: unknown[] };
+  for (const child of node?.k ?? []) {
+    const found = findNode(child, name);
+    if (found) return found;
+  }
+  return undefined;
+}
 
 /** Wraps a booted world's four structural native-tree ops so every call
  *  increments `counts` in place. The caller resets `counts[op] = 0` between
@@ -371,6 +381,53 @@ simDescribe("KB4 battle UI kit: golden frames + semantic pixel proofs", () => {
     // shifted sprite is body colour, one pixel further out is background.
     expect(at(restX + dx)).toEqual(bodyColour);
     expect(at(restX + dx - 1)).toEqual(bg);
+  }, 30_000);
+
+  test("FrameStrip keeps its translated node and swaps only the reducer-selected frame", async () => {
+    const structural = zeroStructural();
+    const imageUpdates: number[] = [];
+    const world = await bootGameWorld(
+      appBundle("kb4-battle"),
+      60,
+      { __kb4Setup: SETUP, __kb4FrameStrip: true },
+      (ops) => {
+        installStructuralCounter(structural)(ops);
+        const setImage = ops.setImage as (id: number, handle: number) => void;
+        ops.setImage = (id: number, handle: number): void => {
+          imageUpdates.push(id);
+          setImage.call(ops, id, handle);
+        };
+      },
+      { width: 480, height: 272 },
+    );
+    pump(world, 1);
+
+    const x = 201;
+    const y = 73;
+    const width = 480;
+    const colourAt = (frame: Uint8Array, px: number, py: number): number[] => {
+      const offset = (py * width + px) * 4;
+      return [...frame.subarray(offset, offset + 4)];
+    };
+    const background = [0x10, 0x18, 0x20, 0xff];
+    const player = [0xd6, 0x5a, 0x4a, 0xff];
+    const enemy = [0x4a, 0x96, 0xd6, 0xff];
+    const beforeNode = findNode(world.getTree(), "kb4-battle-frame-strip");
+    expect(beforeNode).toBeDefined();
+    expect(frameIndexAt(sceneState(world).nowTick, 0, 4, 2, true)).toBe(0);
+    expect(colourAt(world.render(), x, y)).toEqual(player);
+    expect(colourAt(world.render(), x - 1, y)).toEqual(background);
+
+    for (const op of STRUCTURAL_OPS) structural[op] = 0;
+    imageUpdates.length = 0;
+    while (frameIndexAt(sceneState(world).nowTick, 0, 4, 2, true) === 0) pump(world, 1);
+
+    const afterNode = findNode(world.getTree(), "kb4-battle-frame-strip");
+    expect(afterNode?.i).toBe(beforeNode!.i);
+    expect(imageUpdates).toContain(beforeNode!.i);
+    expect(structural).toEqual(zeroStructural());
+    expect(colourAt(world.render(), x, y)).toEqual(enemy);
+    expect(colourAt(world.render(), x - 1, y)).toEqual(background);
   }, 30_000);
 
   test("the faint effect sinks and fades the enemy sprite by exactly faintPose's numbers", async () => {

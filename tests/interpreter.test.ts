@@ -20,10 +20,14 @@ import {
   revealedChars,
   secondsToFrames,
   stepInterp,
+  stepInterpWithExtensionsInPlace,
+  shareInterp,
+  ownRecord,
   type InterpInput,
   type InterpState,
 } from "../src/engine/interpreter.ts";
 import { activePage, evalCondition, cloneInterp } from "../src/engine/interpreter.ts";
+import { createExtensionRuntime } from "../src/engine/extensions.ts";
 import { validateSchema, type VError } from "../src/engine/schema-validate.ts";
 import type { Command, GameEvent, MapDef, Project } from "../src/engine/types.ts";
 
@@ -1053,6 +1057,92 @@ describe("host-portable interpreter cloning (F1/1173 QuickJS)", () => {
 describe("runaway backstop (review 1274 B1)", () => {
   const CELL = { x: 10, y: 10 };
 
+  for (const trigger of ["autorun", "parallel"] as const)
+    for (const messageBlocksPlayer of [false, true])
+      test(`cached scans deliver modal edges and subsequent actions: ${trigger}, hold=${messageBlocksPlayer}`, () => {
+        const events = [
+          event("guard", 0, 0, [{ op: "if", if: { kind: "variable", id: "never", op: "==", value: 1 }, then: [] }], "parallel"),
+          event("dialog", 0, 0, [
+            { op: "text", lines: ["A line", "Another line"], cps: 20 },
+            { op: "choices", prompt: "Pick", options: [
+              { text: "One", commands: [{ op: "variable", id: "pick", set: { op: "set", value: 1 } }] },
+              { text: "Two", commands: [{ op: "variable", id: "pick", set: { op: "set", value: 2 } }] },
+            ], cancel: { commands: [{ op: "variable", id: "pick", set: { op: "set", value: 3 } }] } },
+            { op: "erase" },
+          ], trigger),
+          event("action", 10, 9, [{ op: "variable", id: "actions", set: { op: "add", value: 1 } }]),
+        ];
+        const histories: InterpState[][] = [];
+        for (const immutable of [false, true]) {
+          const w = createWorld(map(events), [], 60, { messageBlocksPlayer, extensions: createExtensionRuntime({
+            immutableConditions: true, deterministicConditions: true,
+          }) });
+          let s = createInterpState();
+          const history: InterpState[] = [];
+          for (let frame = 0; frame < 30; frame++) {
+            s = shareInterp(s, immutable);
+            stepInterpWithExtensionsInPlace(w, s, input({
+              confirmEdge: frame % 4 === 2, cancelEdge: frame % 7 === 6,
+              upEdge: frame % 3 === 0, downEdge: frame % 3 === 1,
+            }), null, undefined, immutable);
+            history.push(s);
+          }
+          expect(s.sw.variables.pick).toBeDefined();
+          expect(s.sw.variables.actions).toBeGreaterThan(0);
+          histories.push(history);
+        }
+        expect(histories[1]).toEqual(histories[0]);
+      });
+
+  test("a sleeping parallel scan reserves its budget when the blocking wait finishes", () => {
+    const events = [
+      event("guard", 10, 10, Array.from({ length: 80 }, () => ({
+        op: "if", if: { kind: "variable", id: "never", op: "==", value: 1 }, then: [],
+      })), "parallel"),
+      event("main", 0, 0, [{ op: "wait", seconds: 0.1 },
+        ...Array.from({ length: 9950 }, () => ({ op: "switch" as const, id: "work", value: true })),
+      ], "autorun"),
+    ];
+    const histories: InterpState[][] = [];
+    for (const immutable of [false, true]) {
+      const w = createWorld(map(events), [], 60, { extensions: createExtensionRuntime({
+        immutableConditions: true, deterministicConditions: true,
+      }) });
+      let s = createInterpState();
+      const history: InterpState[] = [];
+      for (let frame = 0; frame < 12; frame++) {
+        s = shareInterp(s, immutable);
+        stepInterpWithExtensionsInPlace(w, s, input(), null, undefined, immutable);
+        history.push(s);
+      }
+      expect(s.error?.kind).toBe("runaway");
+      histories.push(history);
+    }
+    expect(histories[1]).toEqual(histories[0]);
+  });
+
+  for (const guardId of ["a", "b"]) test(`cached guards preserve the shared budget in key order ${guardId}`, () => {
+    const guards: Command[] = Array.from({ length: 80 }, () => ({
+      op: "if", if: { kind: "variable", id: "never", op: "==", value: 1 }, then: [],
+    }));
+    const worker = event(guardId === "a" ? "b" : "a", 11, 10,
+      Array.from({ length: 9950 }, () => ({ op: "switch", id: "work", value: true })), "parallel");
+    worker.pages[0]!.condition = { all: [{ kind: "switch", id: "armed", value: true }] };
+    const outputs: InterpState[] = [];
+    for (const immutable of [false, true]) {
+      const w = createWorld(map([event(guardId, 10, 10, guards, "parallel"), worker]));
+      let s = createInterpState();
+      stepInterpWithExtensionsInPlace(w, s, input(), null, undefined, immutable);
+      expect(s.error).toBeUndefined();
+      s = shareInterp(s);
+      ownRecord(s.sw, "switches").armed = true;
+      stepInterpWithExtensionsInPlace(w, s, input(), null, undefined, immutable);
+      expect(s.error?.kind).toBe("runaway");
+      outputs.push(s);
+    }
+    expect(outputs[1]).toEqual(outputs[0]);
+  });
+
   /** A state with a hand-built (non-compiler-emitted) parallel fiber. */
   function stateWithParallel(prog: unknown, pc = 0): InterpState {
     const s = createInterpState();
@@ -1179,5 +1269,45 @@ describe("runaway backstop (review 1274 B1)", () => {
     });
     expect(out.parallels[`${MAP_ID}/a`]).toBeUndefined();
     expect(out.parallels[`${MAP_ID}/b`]!.stack[0]!.pc).toBe(3_999);
+  });
+});
+
+describe("immutable event appearance tables", () => {
+  test("retain idle identity and copy before changing one entry", () => {
+    const events = [
+      event("subject", 1, 1, []),
+      event("driver", 0, 0, [
+        { op: "appearance", target: { event: "subject" }, opacity: 128 },
+        { op: "wait", seconds: 0.1 },
+        { op: "appearance", target: { event: "subject" }, opacity: 64 },
+        { op: "wait", seconds: 10 },
+      ], "autorun"),
+    ];
+    const w = createWorld(map(events));
+    const frameInput = input({
+      eventPages: {
+        subject: { pageIndex: 0, sprite: null },
+        driver: { pageIndex: 0, sprite: null },
+      },
+    });
+    let s = shareInterp(createInterpState(), true);
+    stepInterpWithExtensionsInPlace(w, s, frameInput, null, undefined, true);
+    const firstTable = s.eventAppearances!;
+    const firstEntry = firstTable.subject!;
+    expect(firstEntry.opacity).toBe(128);
+
+    s = shareInterp(s, true);
+    stepInterpWithExtensionsInPlace(w, s, frameInput, null, undefined, true);
+    expect(s.eventAppearances).toBe(firstTable);
+    expect(s.eventAppearances!.subject).toBe(firstEntry);
+
+    for (let frame = 0; frame < 10 && s.eventAppearances?.subject?.opacity === 128; frame++) {
+      s = shareInterp(s, true);
+      stepInterpWithExtensionsInPlace(w, s, frameInput, null, undefined, true);
+    }
+    expect(s.eventAppearances).not.toBe(firstTable);
+    expect(s.eventAppearances!.subject.opacity).toBe(64);
+    expect(firstTable.subject).toBe(firstEntry);
+    expect(firstEntry.opacity).toBe(128);
   });
 });

@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import schema from "../src/data/schema.json" with { type: "json" };
 import { AttractController } from "../src/engine/attract.ts";
+import { createExtensionRuntime } from "../src/engine/extensions.ts";
 import {
   animFrameIndex,
   compileAnim,
@@ -15,6 +16,7 @@ import {
   createWorld,
   isWorldIdle,
   stepInterp,
+  stepInterpWithExtensionsInPlace,
   type InterpInput,
   type MapAnimInstance,
 } from "../src/engine/interpreter.ts";
@@ -532,6 +534,42 @@ describe("mapAnim target binding", () => {
     const after = s.anims![0]!;
     expect(after.target).toEqual({ event: "npc" });
     expect([after.x, after.y]).toEqual([7, 1]);
+  });
+
+  test("an immutable idle-scan hit still refreshes a following target anchor", () => {
+    const extensions = createExtensionRuntime({
+      immutableConditions: true,
+      deterministicConditions: true,
+    });
+    const w = createWorld(map([
+      event("burst", 2, 3, [page("action", [
+        { op: "mapAnim", id: "fx", anim: "pulse", target: { event: "npc" }, loop: true },
+      ])]),
+    ]), [], 60, { animations: [PULSE], extensions });
+    const s = createInterpState();
+    s.anims = [{
+      id: "fx",
+      anim: "pulse",
+      start: 0,
+      x: 5,
+      y: 6,
+      target: { event: "npc" },
+      layer: "above",
+      loop: true,
+    }];
+    const eventCells = Object.create(null) as Record<string, { x: number; y: number }>;
+    stepInterpWithExtensionsInPlace(w, s, input(0, {
+      eventCells,
+      liveEventCells: { npc: { x: 5, y: 6 } },
+    }), null, undefined, true);
+    const retained = s.anims![0]!;
+
+    stepInterpWithExtensionsInPlace(w, s, input(0, {
+      eventCells,
+      liveEventCells: { npc: { x: 7, y: 1 } },
+    }), null, undefined, true);
+    expect([s.anims![0]!.x, s.anims![0]!.y]).toEqual([7, 1]);
+    expect([retained.x, retained.y]).toEqual([5, 6]);
   });
 });
 

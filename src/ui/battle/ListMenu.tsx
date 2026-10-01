@@ -4,7 +4,7 @@
 // choices/shop boxes, so a battle skill list scrolls exactly like every
 // other list in the kit.
 
-import { For } from "solid-js";
+import { createMemo, For } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import { truncateLabel, windowStart } from "../list-window.ts";
 import { Panel } from "../Panel.tsx";
@@ -39,12 +39,12 @@ const DEFAULT_WIDTH = 200;
 const DEFAULT_LABEL_MAX = 20;
 
 export function ListMenu(props: ListMenuProps) {
-  const theme = () => resolveUiTheme(props.theme);
+  const theme = createMemo(() => resolveUiTheme(props.theme));
   const visible = () => props.visibleRows ?? DEFAULT_VISIBLE;
   const width = () => props.width ?? DEFAULT_WIDTH;
   const labelMax = () => props.labelMax ?? DEFAULT_LABEL_MAX;
-  const start = () => windowStart(props.index, props.rows.length, visible());
-  const rowSlots = () => Array.from({ length: visible() }, (_, i) => i);
+  const start = createMemo(() => windowStart(props.index, props.rows.length, visible()));
+  const rowSlots = createMemo(() => Array.from({ length: visible() }, (_, i) => i));
   const titleH = () => (props.title !== undefined ? ROW_H + 4 : 0);
   const descriptionH = () => (props.description !== undefined ? ROW_H + 4 : 0);
 
@@ -74,12 +74,12 @@ export function ListMenu(props: ListMenuProps) {
           const rowIndex = () => start() + slot;
           const exists = () => rowIndex() < props.rows.length;
           const row = () => (exists() ? props.rows[rowIndex()]! : null);
-          const selected = () => exists() && rowIndex() === props.index;
-          const colour = () => {
+          const selected = createMemo(() => exists() && rowIndex() === props.index);
+          const colour = createMemo(() => {
             const r = row();
             if (!r) return theme().ink;
             return r.disabled ? theme().dim : selected() ? theme().accent : theme().ink;
-          };
+          });
           const label = () => {
             const r = row();
             if (!r) return "";

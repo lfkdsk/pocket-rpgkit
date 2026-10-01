@@ -688,7 +688,8 @@ simDescribe("editor budget", () => {
     // companion transport and virtual map catalog: 1,232,242 B. ED-UI1's
     // measured text fitting and responsive chrome baseline is 1,242,030 B;
     // AI4's local-agent protocol/request UI and responsive integration add
-    // 16,949 B, for a combined 1,258,979 B. Retain about 1.35% headroom.
-    expect(js).toBeLessThan(1_276_000);
+    // 16,949 B, for 1,258,979 B. The shared immutable-session engine/UI
+    // paths add 31,070 B: measured 1,290,049 B.
+    expect(js).toBeLessThan(1_310_000);
   });
 });

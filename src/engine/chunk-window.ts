@@ -63,6 +63,22 @@ export function chunkWindow(
   };
 }
 
+/** One layer's last window. Snapshot numbers: hosts may mutate the camera
+ * or viewport object in place. The returned window belongs to this reader. */
+export function createChunkWindowReader(): typeof chunkWindow {
+  let x: number, y: number, w: number, h: number;
+  let size: number, cols: number, rows: number, margin: number;
+  let previous: ChunkWindow | undefined;
+  return (camera, viewport, chunkPx, columns, rowCount, extra = 0) => {
+    if (previous && x === camera.x && y === camera.y && w === viewport.w && h === viewport.h &&
+        size === chunkPx && cols === columns && rows === rowCount && margin === extra) return previous;
+    const next = chunkWindow(camera, viewport, chunkPx, columns, rowCount, extra);
+    x = camera.x; y = camera.y; w = viewport.w; h = viewport.h;
+    size = chunkPx; cols = columns; rows = rowCount; margin = extra;
+    return previous = next;
+  };
+}
+
 export function chunkWindowContains(window: ChunkWindow, x: number, y: number): boolean {
   return x >= window.x0 && x <= window.x1 && y >= window.y0 && y <= window.y1;
 }

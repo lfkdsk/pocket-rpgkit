@@ -5,6 +5,7 @@
 // two renders of the same props are pixel-identical (the rewind/multi-Hz
 // contract every KB4 piece keeps).
 
+import { createMemo } from "solid-js";
 import { LazyImage, type RpgImageSource, type TileTextureCache } from "../LazyImage.tsx";
 import { faintPose, flashOpacity, shakeOffsetX, type SpriteEffect } from "./effects.ts";
 
@@ -31,10 +32,23 @@ export interface SpriteSlotProps {
 }
 
 export function SpriteSlot(props: SpriteSlotProps) {
-  const dx = () => shakeOffsetX(props.effect, props.nowTick, props.shakeAmplitude);
-  const flash = () => flashOpacity(props.effect, props.nowTick);
-  const faint = () => faintPose(props.effect, props.nowTick, props.faintSink);
-  const opacity = () => flash() * faint().opacity;
+  const effect = createMemo(() => props.effect, undefined, {
+    equals: (a, b) => a.kind === b.kind && a.startTick === b.startTick && a.duration === b.duration,
+  });
+  const dx = createMemo(() => effect().kind === "shake"
+    ? shakeOffsetX(effect(), props.nowTick, props.shakeAmplitude)
+    : 0);
+  const flash = createMemo(() => effect().kind === "flash"
+    ? flashOpacity(effect(), props.nowTick)
+    : 1);
+  const faint = createMemo(
+    () => effect().kind === "faint"
+      ? faintPose(effect(), props.nowTick, props.faintSink)
+      : { sinkY: 0, opacity: 1 },
+    undefined,
+    { equals: (a, b) => a.sinkY === b.sinkY && a.opacity === b.opacity },
+  );
+  const opacity = createMemo(() => flash() * faint().opacity);
 
   return (
     <LazyImage
@@ -44,8 +58,10 @@ export function SpriteSlot(props: SpriteSlotProps) {
       active={props.active}
       style={{
         posType: 1,
-        insetL: props.x + dx(),
-        insetT: props.y + faint().sinkY,
+        insetL: 0,
+        insetT: 0,
+        translateX: props.x + dx(),
+        translateY: props.y + faint().sinkY,
         width: props.width,
         height: props.height,
         opacity: opacity(),

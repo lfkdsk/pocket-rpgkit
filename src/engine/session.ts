@@ -32,10 +32,12 @@
 // No host imports, no wall clock, no Math.random (docs/SIMULATION.md).
 
 import { deepClone, keyedRecord } from "./clone.ts";
+import { beginStateMetadata, endStateMetadata, RecentStateMetadata } from "./state-metadata.ts";
 import { startupProfileMark } from "../startup-profile.ts";
 import { cloneAudioState, type AudioState } from "./audio.ts";
 
 import {
+  activeIndexAt,
   activePage,
   advanceInterpAudioInPlace,
   clearStaleEventAppearances,
@@ -50,6 +52,7 @@ import {
   keyedEventsOf,
   messageHoldsPlayer,
   ownRecord,
+  recordRevision,
   pruneStaleQueuedRequests,
   randInt,
   replaceItemCounts,
@@ -68,9 +71,11 @@ import {
   type SwitchState,
   type WorldIdleBlockers,
   type WorldOptions,
+  type World,
   continueScene,
 } from "./interpreter.ts";
 import {
+  assertImmutableJsonValue,
   assertJsonValue,
   cloneExtension,
   createExtensionRuntime,
@@ -86,6 +91,8 @@ import {
 } from "./battle.ts";
 import type { SceneInput, SceneRules } from "./scene.ts";
 import {
+  charsPageRevision,
+  charsPositionRevision,
   createChars,
   installRoute,
   placeChar,
@@ -152,6 +159,7 @@ import type {
   CommonEvent,
   Dir,
   Facing,
+  GameEvent,
   MapDef,
   MapIndexEntry,
   MapRepository,
@@ -293,6 +301,8 @@ export interface Session {
   scenes: Record<string, SceneRules>;
   /** Scene policy is immutable host configuration, never reducer state. */
   sceneOptions: Required<SceneOptions>;
+  /** Published snapshots and their banks must not be mutated by the caller. */
+  immutableState: boolean;
 }
 
 export interface SceneOptions {
@@ -302,6 +312,9 @@ export interface SceneOptions {
 }
 
 export interface SessionOptions {
+  /** Opt into identity-based dependency checks. Callers must treat every
+   * published snapshot, including restored snapshots, as immutable. */
+  immutableState?: boolean;
   maps?: MapRepository;
   /** Recompute and verify a ProjectShell's declared mapManifestHash. Splitter
    * output in a trusted app package uses the declared build identity directly
@@ -649,6 +662,7 @@ export function createSession(
       battle: options.battle ?? null,
       scenes: options.scenes ?? {},
       sceneOptions: { worldContinues: options.scene?.worldContinues === true },
+      immutableState: options.immutableState === true,
     };
     acquireSessionMap(session, project.start.map);
     releaseSessionMapsExcept(session, [project.start.map]);
@@ -690,6 +704,7 @@ export function createSession(
     battle: options.battle ?? null,
     scenes: options.scenes ?? {},
     sceneOptions: { worldContinues: options.scene?.worldContinues === true },
+    immutableState: options.immutableState === true,
   };
 }
 
@@ -1168,7 +1183,8 @@ function startBattleScene(sess: Session, s: SessionState, request: PendingBattle
   if (typeof started !== "object" || Array.isArray(started)) {
     throw new Error("battle start: BattleStart object or null required");
   }
-  assertJsonValue(started.state, "battle start state");
+  if (rules.immutableState) assertImmutableJsonValue(started.state, "battle start state");
+  else assertJsonValue(started.state, "battle start state");
   const battleAudio = battleAudioState(started.audio);
   const returnAudio = battleAudio === undefined
     ? undefined
@@ -1183,7 +1199,7 @@ function startBattleScene(sess: Session, s: SessionState, request: PendingBattle
   s.scene = {
     kind: "battle",
     fiber: request.fiber,
-    state: deepClone(started.state),
+    state: rules.immutableState ? started.state : deepClone(started.state),
     pausedTicks: 0,
     ...(returnAudio !== undefined ? { returnAudio } : {}),
   };
@@ -1272,6 +1288,7 @@ function advanceGameScene(
   s: SessionState,
   input: Readonly<SceneInput>,
   ticks: number,
+  frozenShared = false,
 ): void {
   const scene = s.scene;
   if (!scene || scene.kind !== "scene") return;
@@ -1355,6 +1372,15 @@ function advanceGameScene(
     ? undefined
     : replaceItemCounts(s.interp.sw.items, itemReplacements, sess.worldOptions.inventory);
 
+  // A frozen scene frame starts from a shallow interpreter shell so ticking
+  // the scene can avoid cloning a world it cannot advance. Completion is the
+  // first point that writes banks or resumes/shifts parked fibers, so detach
+  // the shell here before committing anything. This mirrors battle scenes
+  // and preserves every previously returned immutable snapshot.
+  if (frozenShared) {
+    s.interp = shareInterp(s.interp, sess.immutableState);
+    s.sw = s.interp.sw;
+  }
   s.ext = nextExt;
   const variables = writes.length > 0 ? ownRecord(s.interp.sw, "variables") : null;
   for (const [id, value] of writes) {
@@ -1444,6 +1470,7 @@ function advanceBattleScene(
   s: SessionState,
   input: Readonly<BattleInput>,
   ticks: number,
+  frozenShared = false,
 ): void {
   const scene = s.scene;
   const rules = sess.battle;
@@ -1454,7 +1481,8 @@ function advanceBattleScene(
     // despite the pure-reducer contract. Cloning again before and after the
     // call only traversed large battle payloads without adding isolation.
     const stepped = rules.step(scene.state, input, ticks);
-    assertJsonValue(stepped, "battle step state");
+    if (rules.immutableState) assertImmutableJsonValue(stepped, "battle step state");
+    else assertJsonValue(stepped, "battle step state");
     scene.state = stepped;
   }
   const completion = rules.done(scene.state);
@@ -1521,6 +1549,10 @@ function advanceBattleScene(
     ? undefined
     : replaceItemCounts(s.interp.sw.items, itemReplacements, sess.worldOptions.inventory);
 
+  if (frozenShared) {
+    s.interp = shareInterp(s.interp, sess.immutableState);
+    s.sw = s.interp.sw;
+  }
   s.ext = nextExt;
   // B1 (fix 3): a battle completion's numeric write shares
   // the interpreter's finite-safe-integer normalizer, same as an ext
@@ -1583,15 +1615,32 @@ export function stepSession(
   s0: SessionState,
   input: SessionInput,
 ): SessionState {
+  if (!sess.immutableState) return foldSession(sess, s0, input);
+  const metadata = beginStateMetadata();
+  try {
+    return foldSession(sess, s0, input);
+  } finally {
+    endStateMetadata(metadata);
+  }
+}
+
+function foldSession(
+  sess: Session,
+  s0: SessionState,
+  input: SessionInput,
+): SessionState {
   // One working copy per frame. The reference ticks below advance it in
   // place; characters and switch records stay shared with s0 until written.
-  const interp = shareInterp(s0.interp);
+  const frozen = s0.scene !== null && !sess.sceneOptions.worldContinues;
+  const interp = frozen
+    ? { ...s0.interp, ...(s0.interp.audio ? { audio: cloneAudioState(s0.interp.audio) } : {}) }
+    : shareInterp(s0.interp, sess.immutableState);
   const s: SessionState = {
     frame: s0.frame,
     mapId: s0.mapId,
     sw: interp.sw,
     move: { ...s0.move },
-    chars: shareChars(s0.chars),
+    chars: frozen ? s0.chars : shareChars(s0.chars, sess.immutableState),
     interp,
     fade: s0.fade ? { ...s0.fade } : null,
     playerRoute: s0.playerRoute
@@ -1610,8 +1659,8 @@ export function stepSession(
             : null,
         }
       : null,
-    ext: cloneExtension(sess.extensions, s0.ext),
-    scene: cloneScene(s0.scene),
+    ext: frozen ? s0.ext : cloneExtension(sess.extensions, s0.ext),
+    scene: cloneScene(s0.scene, sess.battle?.immutableState),
   };
   s.frame++;
   const ticks = sess.ticksPerFrame;
@@ -1647,6 +1696,7 @@ export function stepSession(
         s,
         sceneAtFrameStart ? battleInput(input) : battleInput(NO_MAP_INPUT),
         sceneTicks,
+        frozen,
       );
     } else {
       advanceGameScene(
@@ -1654,11 +1704,103 @@ export function stepSession(
         s,
         sceneAtFrameStart ? sceneInput(input) : sceneInput(NO_MAP_INPUT),
         sceneTicks,
+        frozen,
       );
     }
   }
   if (sess.audioCues && frameCues !== undefined) s.interp.cues = frameCues;
   return s;
+}
+
+interface PageSyncMemo {
+  signature: readonly unknown[];
+  motion: Record<string, MotionType>;
+  pages: Map<GameEvent, number>;
+  runtime: ExtensionRuntime;
+}
+
+const pageSyncMemo = new WeakMap<World, PageSyncMemo>();
+const pageCacheability = new WeakMap<World, boolean>();
+
+/** Newer contextual conditions depend on richer live state. Keep their
+ * reconciliation on the uncached path; the optimized path covers only the
+ * dependency set whose identities are represented below. */
+function canCachePages(world: World): boolean {
+  const previous = pageCacheability.get(world);
+  if (previous !== undefined) return previous;
+  let cacheable = true;
+  for (const event of world.map.events ?? []) {
+    for (const page of event.pages) {
+      for (const clause of page.condition?.all ?? []) {
+        if (clause.kind === "appearance" || clause.kind === "tileProperty" || clause.kind === "bgmPlaying") {
+          cacheable = false;
+          break;
+        }
+        if (clause.kind === "ext" &&
+            (!world.extensions.immutableConditions || !world.extensions.deterministicConditions)) {
+          cacheable = false;
+          break;
+        }
+      }
+      if (!cacheable) break;
+    }
+    if (!cacheable) break;
+  }
+  pageCacheability.set(world, cacheable);
+  return cacheable;
+}
+
+function pageSyncSignature(s: SessionState, worldIdle: boolean): readonly unknown[] {
+  return [
+    recordRevision(s.sw.switches),
+    recordRevision(s.sw.self),
+    recordRevision(s.sw.variables),
+    recordRevision(s.sw.items),
+    s.sw.gold,
+    s.sw.playerName,
+    s.ext,
+    recordRevision(s.interp.erased),
+    recordRevision(s.interp.placements),
+    s.move.facing,
+    worldIdle,
+    charsPageRevision(s.chars),
+    s.interp.eventAppearances === undefined
+      ? undefined
+      : JSON.stringify(s.interp.eventAppearances),
+  ];
+}
+
+function sameSignature(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+const displacedCellMemo = new WeakMap<
+  MapDef,
+  RecentStateMetadata<object, Record<string, { x: number; y: number }>>
+>();
+
+function displacedCells(
+  map: MapDef,
+  chars: CharsState,
+  immutable: boolean,
+): Record<string, { x: number; y: number }> {
+  let byPosition = immutable ? displacedCellMemo.get(map) : undefined;
+  const revision = immutable ? charsPositionRevision(chars) : undefined;
+  const previous = revision ? byPosition?.get(revision) : undefined;
+  if (previous) return previous;
+  const cells = keyedRecord<{ x: number; y: number }>();
+  for (const ev of map.events ?? []) {
+    const ch = chars.chars[ev.id];
+    if (ch && (ch.tx !== ev.x || ch.ty !== ev.y)) cells[ev.id] = { x: ch.tx, y: ch.ty };
+  }
+  if (revision) {
+    if (!byPosition) {
+      byPosition = new RecentStateMetadata();
+      displacedCellMemo.set(map, byPosition);
+    }
+    byPosition.set(revision, cells);
+  }
+  return cells;
 }
 
 /** Advance the session one MOTION_HZ reference tick, mutating the working
@@ -1742,9 +1884,18 @@ function stepReferenceTick(
   const previousEventPages = needsEventPages ? eventPagesOf(map, s.chars) : undefined;
   let conditionContext = sessionConditionContext(world, s, previousEventPages);
   const syncFacing = s.move.facing;
-  const syncMotion = keyedRecord<MotionType>();
+  let syncMotion = keyedRecord<MotionType>();
   const keyed = keyedEventsOf(world);
-  const synced = syncPagesInPlace(
+  const cacheablePages = sess.immutableState && canCachePages(world);
+  const signature = cacheablePages
+    ? pageSyncSignature(s, conditionContext.worldIdle ?? false)
+    : undefined;
+  const memo = cacheablePages ? pageSyncMemo.get(world) : undefined;
+  const reusePages = memo !== undefined && memo.runtime === sess.extensions &&
+    signature !== undefined && sameSignature(memo.signature, signature);
+  if (reusePages) syncMotion = memo.motion;
+  let selectedPages = reusePages ? memo!.pages : undefined;
+  const synced = reusePages ? { abortedWaiters: [] as string[] } : syncPagesInPlace(
     s.chars,
     keyed.events,
     keyed.slotsById,
@@ -1759,6 +1910,21 @@ function stepReferenceTick(
     conditionContext,
     s.interp.eventAppearances,
   );
+  if (cacheablePages && !reusePages) {
+    selectedPages = new Map<GameEvent, number>();
+    for (const { ev, key } of keyed.events) {
+      selectedPages.set(
+        ev,
+        activeIndexAt(ev, s.sw, key, syncFacing, extension, conditionContext),
+      );
+    }
+    pageSyncMemo.set(world, {
+      signature: pageSyncSignature(s, conditionContext.worldIdle ?? false),
+      motion: syncMotion,
+      pages: selectedPages,
+      runtime: sess.extensions,
+    });
+  }
   const eventPages = needsEventPages ? eventPagesOf(map, s.chars) : undefined;
   if (eventPages && s.interp.eventAppearances) clearStaleEventAppearances(s.interp, eventPages);
   conditionContext = sessionConditionContext(world, s, eventPages);
@@ -1806,6 +1972,7 @@ function stepReferenceTick(
       s.move.facing === syncFacing
         ? syncMotion
         : motionOf(map, s.sw, s.move.facing, extension, conditionContext),
+      sess.immutableState,
     );
   } else {
     // continueExternal may have replaced the interpreter clone. Refresh the
@@ -1882,6 +2049,7 @@ function stepReferenceTick(
         runtimeRng: s.sw,
         modalOpen: s.interp.modal !== null,
       },
+      sess.immutableState,
     );
     playerRouteEventSettings = eventSettings;
     s.sw = s.interp.sw;
@@ -1899,11 +2067,10 @@ function stepReferenceTick(
   // indexed event origin without growing the per-frame record. A world
   // with event-targeted mapAnim additionally gets every live character's
   // cell so the command resolves the target without an authored fallback.
-  const eventCells = keyedRecord<{ x: number; y: number }>();
+  const eventCells = displacedCells(map, s.chars, sess.immutableState);
   const liveEventCells = world.needsMapAnimTarget ? keyedRecord<{ x: number; y: number }>() : undefined;
   for (const ev of map.events ?? []) {
     const ch = s.chars.chars[ev.id];
-    if (ch && (ch.tx !== ev.x || ch.ty !== ev.y)) eventCells[ev.id] = { x: ch.tx, y: ch.ty };
     if (liveEventCells && ch) liveEventCells[ev.id] = { x: ch.tx, y: ch.ty };
   }
   const interpInput: InterpInput = {
@@ -1925,6 +2092,10 @@ function stepReferenceTick(
     s.interp,
     interpInput,
     s.ext,
+    cacheablePages
+      ? { indices: selectedPages!, facing: syncFacing, worldIdle: conditionContext.worldIdle ?? false }
+      : undefined,
+    sess.immutableState,
   );
   // Capture before an immediate transfer rebuilds the interpreter. A host
   // frame may fold several reference ticks, so stepSession aggregates every

@@ -29,4 +29,4 @@ test -n "$binary"
 
 KR2_BENCH_JS="$bundle" KR2_BENCH_ROUNDS="${KR2_BENCH_ROUNDS:-7}" \
   "$binary" kr2_quickjs_bench::rewind_keyframes --ignored --exact --nocapture 2>&1 \
-  | grep -E '^(KR2_QJS|test result)'
+  | grep -Eo '(KR2_QJS|test result).*'

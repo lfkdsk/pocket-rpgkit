@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { loadProject, serializeProject } from "../editor/engine/document.ts";
+import { assertImmutableJsonValue, createExtensionRuntime } from "../src/engine/extensions.ts";
 import { AttractController } from "../src/engine/attract.ts";
-import { rngNext } from "../src/engine/interpreter.ts";
+import { createSwitchState, evalCondition, rngNext } from "../src/engine/interpreter.ts";
 import {
   createSession,
   isSessionWorldIdle,
@@ -198,6 +199,74 @@ function choiceModal(state: SessionState) {
 }
 
 describe("KB1 extension commands and conditions", () => {
+  for (const hz of [60, 30, 20, 4]) test(`sleeping guards see earlier parallel writes at ${hz} Hz`, () => {
+    const p = project([]);
+    p.maps[0]!.events = [
+      { id: "00-writer", x: 0, y: 0, pages: [{ trigger: "parallel", commands: [
+        { op: "wait", seconds: 0.2 },
+        { op: "variable", id: "open", set: { op: "set", value: 1 } },
+        { op: "erase" },
+      ] }] },
+      { id: "10-guard", x: 1, y: 0, pages: [{ trigger: "parallel", commands: [
+        { op: "if", if: { kind: "ext", call: "demo.open", args: null }, then: [
+          { op: "switch", id: "observed", value: true }, { op: "erase" },
+        ] },
+      ] }] },
+    ];
+    const histories: string[][] = [];
+    const calls: number[] = [];
+    for (const deterministicConditions of [false, true]) {
+      let count = 0;
+      const session = createSession(p, hz, { immutableState: true, extensions: {
+        immutableConditions: true, deterministicConditions,
+        conditions: { "demo.open": context => { count++; return context.variables.open === 1; } },
+      } });
+      let state = startSession(p, session);
+      const history: string[] = [];
+      for (let frame = 0; frame < hz; frame++) {
+        const prior = state, bytes = JSON.stringify(prior);
+        state = step(session, state);
+        expect(JSON.stringify(prior)).toBe(bytes);
+        history.push(JSON.stringify(state));
+      }
+      expect(state.sw.switches.observed).toBe(true);
+      histories.push(history);
+      calls.push(count);
+    }
+    expect(histories[1]).toEqual(histories[0]);
+    expect(calls[1]).toBeLessThan(calls[0]!);
+  });
+
+  test("condition isolation defaults to copies and can opt into immutable references", () => {
+    for (const immutableConditions of [false, true]) {
+      const args = { count: 2 };
+      let observedExt: JsonValue = null;
+      let observedArgs: JsonValue = null;
+      const runtime = createExtensionRuntime({
+        immutableConditions,
+        initial: { count: 2 },
+        conditions: { "demo.check": (context, value) => {
+          observedExt = context.ext;
+          observedArgs = value;
+          const matches = (context.ext as typeof args).count === (value as typeof args).count;
+          if (!immutableConditions) {
+            (context.ext as typeof args).count = 99;
+            (value as typeof args).count = 99;
+          }
+          return matches;
+        } },
+      });
+      const ext = Object.freeze({ count: 2 });
+      Object.freeze(args);
+      expect(evalCondition({ kind: "ext", call: "demo.check", args },
+        createSwitchState(), "event", undefined, { runtime, ext })).toBe(true);
+      expect(ext).toEqual({ count: 2 });
+      expect(args).toEqual({ count: 2 });
+      expect(observedExt === ext).toBe(immutableConditions);
+      expect(observedArgs === args).toBe(immutableConditions);
+    }
+  });
+
   test("a command reads/writes ext and variables and draws only from the saved session RNG", () => {
     const p = project([
       { op: "ext", call: "demo.increment", args: { amount: 2 } },
@@ -875,4 +944,21 @@ describe("KB1 extension commands and conditions", () => {
     expect(loaded.errors).toEqual([]);
     expect(serializeProject(loaded.project)).toBe(text);
   });
+});
+
+
+test("immutable JSON validation reuses valid branches without accepting invalid descendants", () => {
+  const child = Object.freeze({ count: 3, tags: Object.freeze(["a", "b", 1, null, false]) });
+  assertImmutableJsonValue(child, "shared");
+  assertImmutableJsonValue({ left: child, right: child }, "dag");
+  for (const value of [NaN, Infinity, -Infinity, undefined, () => 0, new Date(), Symbol("x"), 1n]) {
+    expect(() => assertImmutableJsonValue({ child, nested: [{ bad: value }] }, "state"))
+      .toThrow("state: $.nested[0].bad:");
+    expect(() => assertImmutableJsonValue([child, value], "state"))
+      .toThrow("state: $[1]:");
+  }
+  const cycle: Record<string, unknown> = { child };
+  cycle.next = cycle;
+  expect(() => assertImmutableJsonValue(cycle, "state")).toThrow("state: $.next: cyclic");
+  expect(() => assertImmutableJsonValue(cycle, "state")).toThrow("state: $.next: cyclic");
 });

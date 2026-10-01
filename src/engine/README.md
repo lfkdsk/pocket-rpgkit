@@ -39,6 +39,8 @@ state.
   `blocks: true` pages stop a character, as they stop the player).
 - `session.ts` — the multi-map fold: transfer (map swap + fade), moveRoute
   completion and battle-scene lifecycle across mover/characters/interpreter.
+- `state-metadata.ts` — bounded, frame-scoped identity metadata used by the
+  opt-in immutable-state fast path; it never enters saves or replay hashes.
 - `clone.ts` — host-portable deep copy (the desktop QuickJS realm has no
   `structuredClone`).
 - `schema-validate.ts` — zero-dependency checker for the JSON schema
@@ -288,6 +290,18 @@ state = stepSession(session, state, {          // once per virtual frame
    player) and resumes its fiber when the route lands; `battle` derives one
    seed from `state.sw.rng` and parks its fiber in `state.scene`.
 
+`SessionOptions.immutableState` is an opt-in ownership contract. When true,
+every published `SessionState` is read-only: the fold copy-on-writes only the
+banks and character records it changes, and identity-based caches may reuse
+page selection, trigger scans, displaced cells, and active-character lists.
+Frame-local ownership metadata is removed at the end of the outer fold, and
+derived revision caches have a fixed entry bound; neither changes serialized
+state. Maps using appearance, tile-property, BGM, or uncontracted extension
+conditions stay on the conservative page-selection path. Installing
+`onFiberStart` likewise keeps trigger scanning observable instead of sleeping
+an unchanged scan. With the option omitted, the engine retains its defensive
+copying and evaluation behavior.
+
 Transfer semantics:
 
 - A transfer rebuilds the map interpreter and returns every character to
@@ -383,6 +397,15 @@ encoded form. Inline projects validate every namespaced call at
 `createSession`; sharded projects also validate each acquired map.
 `allowUnknown` is an explicit preview-only escape hatch.
 
+Condition handlers normally receive defensive clones and are evaluated on
+every relevant read. Setting both `immutableConditions` and
+`deterministicConditions` on `ExtensionOptions` opts them into identity-based
+memoization: handlers must not mutate the context, extension tree, or authored
+arguments, and must have no result or side effect beyond their returned
+boolean. Supplying only `immutableConditions` avoids those input clones but
+does not permit result reuse. These flags do not change command, choice,
+codec, or validator contracts.
+
 `{ op:"extChoice", call, args, prompt, cancel?, write? }` uses a registered
 `options.extensions.choices[call]` handler. Its pure
 `options(readContext, args)` function receives no RNG and returns live rows
@@ -440,6 +463,13 @@ win/lose/escape/draw result, optional variable/switch/item/gold replacements,
 and an optional transfer. Completion validates every value before committing
 any of them, runs the result branch, then runs the transfer; the transfer can
 therefore rebuild the map interpreter without discarding branch effects.
+
+By default battle callbacks receive and return defensive JSON clones.
+`BattleRules.immutableState: true` instead promises persistent battle state:
+callbacks must never mutate a value previously published by another callback
+or by the engine. The engine validates each newly returned tree and can then
+share it across unchanged frames. Suspended map audio remains privately
+cloned, so battle BGM restoration is independent of this opt-in contract.
 
 `ExtensionCommandResult.items` and `BattleCompletion.items` replace only the
 listed ids. Counts are floored through `clampFiniteVar`, clamped non-negative

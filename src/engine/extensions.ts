@@ -87,6 +87,10 @@ export interface ExtensionCodec {
 export type ExtensionValidator = (value: JsonValue) => boolean | string | void;
 
 export interface ExtensionOptions {
+  /** Condition handlers promise to leave their argument and ext trees unchanged. */
+  immutableConditions?: boolean;
+  /** Same context and arguments produce the same result, without observable effects. */
+  deterministicConditions?: boolean;
   /** Fresh-session value. Defaults to null. */
   initial?: JsonValue;
   commands?: Readonly<Record<string, ExtensionCommandHandler>>;
@@ -109,6 +113,8 @@ export interface ExtensionRuntime {
   readonly codec: ExtensionCodec | null;
   readonly validate: ExtensionValidator | null;
   readonly allowUnknown: boolean;
+  readonly immutableConditions: boolean;
+  readonly deterministicConditions: boolean;
 }
 
 const CALL_RE = /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/;
@@ -171,6 +177,8 @@ export function createExtensionRuntime(options: ExtensionOptions = {}): Extensio
     codec: options.codec ?? null,
     validate: options.validate ?? null,
     allowUnknown: options.allowUnknown ?? false,
+    immutableConditions: options.immutableConditions === true,
+    deterministicConditions: options.deterministicConditions === true,
   };
   validateExtension(runtime, initial, "extension initial state");
   return runtime;
@@ -194,4 +202,47 @@ export function decodeExtension(runtime: ExtensionRuntime, value: JsonValue): Js
   assertJsonValue(decoded, "extension codec decode");
   validateExtension(runtime, decoded, "decoded extension state");
   return deepClone(decoded);
+}
+
+// Only callers with an explicit immutable-state contract may use this cache.
+// Nodes enter the cache after complete validation, so cycles remain errors.
+const validatedImmutableJson = new WeakSet<object>();
+// Keep recursion outside the per-call scope: a self-capturing local closure
+// creates a cycle that reference-counting runtimes retain until a full GC.
+function immutableJsonProblem(value: unknown, active: Set<object>): string | null {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? null : ": finite number required";
+  if (typeof value !== "object") return ": JSON value required";
+  if (validatedImmutableJson.has(value)) return null;
+  if (active.has(value)) return ": cyclic value is not JSON";
+  active.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const child = value[i], kind = typeof child;
+      // Primitive leaves need no recursion, active-set entry or cache lookup.
+      const error = kind === "object" && child !== null ? immutableJsonProblem(child, active)
+        : kind === "number" ? Number.isFinite(child) ? null : ": finite number required"
+        : child === null || kind === "string" || kind === "boolean" ? null : ": JSON value required";
+      if (error) return `[${i}]${error}`;
+    }
+  } else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return ": plain JSON object required";
+    for (const key of Object.keys(value)) {
+      const child = (value as Record<string, unknown>)[key], kind = typeof child;
+      const error = kind === "object" && child !== null ? immutableJsonProblem(child, active)
+        : kind === "number" ? Number.isFinite(child) ? null : ": finite number required"
+        : child === null || kind === "string" || kind === "boolean" ? null : ": JSON value required";
+      if (error) return `.${key}${error}`;
+    }
+  }
+  active.delete(value);
+  validatedImmutableJson.add(value);
+  return null;
+}
+
+export function assertImmutableJsonValue(value: unknown, label: string): asserts value is JsonValue {
+  if (value !== null && typeof value === "object" && validatedImmutableJson.has(value)) return;
+  const error = immutableJsonProblem(value, new Set<object>());
+  if (error) throw new Error(`${label}: $${error}`);
 }

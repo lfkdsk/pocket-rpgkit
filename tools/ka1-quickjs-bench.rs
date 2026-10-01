@@ -50,11 +50,15 @@ mod pr1_quickjs_bench {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(9);
+        let requested = std::env::var("PR1_BENCH_CASE").ok();
         let source = std::fs::read_to_string(path).unwrap();
         let guest = Guest::new().unwrap();
         guest.eval("pr1-quickjs-entry", &source).unwrap();
 
         for name in ["reducer0", "reducer50", "ui0", "ui50"] {
+            if requested.as_deref().is_some_and(|value| value != name) {
+                continue;
+            }
             run_case(&guest, &label, name, iterations, rounds);
         }
     }

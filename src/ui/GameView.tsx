@@ -25,7 +25,7 @@
 // the world camera commit through one precompiled jump batch; chunk images
 // stay mounted while the player walks.
 
-import { batch, createSignal, onCleanup, onMount, Show, type Accessor, type Component } from "solid-js";
+import { batch, createMemo, createSignal, onCleanup, onMount, Show, type Accessor, type Component } from "solid-js";
 import { Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createJumpBatch, type JumpBatch } from "@pocketjs/framework/animation";
 import { createElement, insertNode, setProp } from "@pocketjs/framework/renderer";
@@ -37,7 +37,7 @@ import { getOps, hostViewport } from "@pocketjs/framework/host";
 import { clampCamera, followCamera } from "../engine/camera.ts";
 import { deepClone } from "../engine/clone.ts";
 import type { ExtensionOptions, ExtensionRuntime } from "../engine/extensions.ts";
-import { cloneScene, type BattleRules, type SceneSlot } from "../engine/battle.ts";
+import type { BattleRules, SceneSlot } from "../engine/battle.ts";
 import type { SceneRules } from "../engine/scene.ts";
 import { centerOffset } from "../engine/viewport.ts";
 import {
@@ -60,8 +60,10 @@ import {
   effectivePlayerAppearance,
   eventIdLess,
   modalChanged,
+  type CompiledAnim,
+  type EventAppearanceState,
+  type Modal,
 } from "../engine/interpreter.ts";
-import type { CompiledAnim } from "../engine/interpreter.ts";
 import type {
   CameraState,
   Facing,
@@ -82,7 +84,6 @@ import {
 } from "../engine/screen.ts";
 import { DialogBox } from "./DialogBox.tsx";
 import type { UiTheme } from "./theme.ts";
-import type { Modal } from "../engine/interpreter.ts";
 import type {
   GameAssets,
   GameMapLayerAssets,
@@ -123,12 +124,22 @@ function collectMapSlots(map: MapDef): GameEvent[] {
 }
 
 interface NpcRenderSlot {
+  frame: NpcFrame;
+  character: SessionState["chars"]["chars"][string] | undefined;
+  appearance: Readonly<EventAppearanceState> | undefined;
+  needsPaint: boolean;
   node: NodeMirror;
   px: number;
   py: number;
 }
 
 type NpcFrame = [number, number, string, 16 | 32, number, boolean];
+const HIDDEN_NPC_FRAME: NpcFrame = [0, 0, "", 16, 1, false];
+
+function sameNpcFrame(a: NpcFrame, b: NpcFrame): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] &&
+    a[3] === b[3] && a[4] === b[4] && a[5] === b[5];
+}
 
 function depthOrder(points: readonly (readonly [number, number, ...unknown[]])[], worldWidth: number): string {
   const actors = points
@@ -183,6 +194,17 @@ function npcStyle(height: 16 | 32, depth: number, opacity: number, visible: bool
   };
 }
 
+/** Optional per-frame diagnostics. Arrays are allocated only when a caller
+ *  installs the hook; normal game frames pay no tracing allocation. */
+export interface ActorRenderStats {
+  /** Slots whose dependency identities were inspected this host frame. */
+  scanned: number;
+  /** Event ids whose complete render frame had to be derived again. */
+  recomputed: readonly string[];
+  /** Event ids whose image or inline style was submitted to the renderer. */
+  updated: readonly string[];
+}
+
 interface PlayerRenderFrame {
   src: string;
   height: 16 | 32;
@@ -220,7 +242,7 @@ function playerFrame(
 }
 
 /** Per-map actor node pool statistics (GameView's onActorStats). */
-export interface ActorPoolStats {
+export interface ActorPoolStats extends ActorRenderStats {
   /** The map whose events the pool is currently bound to. */
   mapId: string;
   /** Slots bound to a current-map event this frame. */
@@ -239,6 +261,7 @@ export interface ActorPoolStats {
  *  pool's nodes (parked hidden); `cap` (the baked global maxActors) bounds
  *  the growth and stays the resource budget. */
 function CurrentMapActors(props: {
+  immutableState?: boolean;
   slots: () => readonly GameEvent[];
   /** Initial pool size: the start map's event count. */
   slotCount: number;
@@ -279,7 +302,7 @@ function CurrentMapActors(props: {
     const source = hidden ? undefined : slots[index];
     const frame = source
       ? npcFrame(initial, source, props.sprites, props.npcSrc, props.extensions)
-      : [0, 0, "", 16, 1, false] as const;
+      : HIDDEN_NPC_FRAME;
     const node = createElement("image");
     setProp(node, "style", npcStyle(
       frame[3], actorDepth(frame[0], frame[1], stride), frame[4], frame[5],
@@ -287,13 +310,30 @@ function CurrentMapActors(props: {
     setProp(node, "src", frame[2]);
     if (source) setProp(node, "debugName", `rpgkit-npc-${source.id}`);
     created++;
-    return { node, px: frame[0], py: frame[1] };
+    return {
+      node,
+      frame,
+      character: source ? initial.chars.chars[source.id] : undefined,
+      appearance: source ? initial.interp.eventAppearances?.[source.id] : undefined,
+      needsPaint: false,
+      px: frame[0],
+      py: frame[1],
+    };
   };
   const npcs: NpcRenderSlot[] = Array.from({ length: props.slotCount }, (_, index) => newSlot(index));
   startupProfileMark("ui-actors:pooled");
 
-  const report = (): void => {
-    props.onStats?.({ mapId: props.state().mapId, active: slots.length, pooled: npcs.length, created });
+  const report = (render?: ActorRenderStats): void => {
+    if (!props.onStats) return;
+    props.onStats({
+      mapId: props.state().mapId,
+      active: slots.length,
+      pooled: npcs.length,
+      created,
+      scanned: render?.scanned ?? 0,
+      recomputed: render?.recomputed ?? [],
+      updated: render?.updated ?? [],
+    });
   };
 
   /** Grow the pool to `needed` slots, inserting only the delta nodes. The
@@ -368,9 +408,20 @@ function CurrentMapActors(props: {
     compilePositions();
   });
 
+  let previousCharacters = initial.chars.chars;
+  let previousAppearances = initial.interp.eventAppearances;
+  const fallbackSlots: number[] = [];
+  for (let index = 0; index < slots.length; index++) {
+    const source = slots[index]!;
+    if (initial.chars.chars[source.id] === undefined) fallbackSlots.push(index);
+  }
+
   onFrame(() => {
     if (props.active && !props.active()) return;
     props.onSync?.();
+    const trace = props.onStats;
+    const recomputed = trace ? [] as string[] : undefined;
+    const updated = trace ? [] as string[] : undefined;
     const state = props.state();
     const next = props.slots();
     const transfer = next !== slots;
@@ -393,15 +444,37 @@ function CurrentMapActors(props: {
       dirty = true;
     }
 
+    // A reducer-owned CharState already contains the selected page and every
+    // movement/pose input. Immutable folds retain its identity until that
+    // one actor changes. Event appearance entries use the same COW rule.
+    // Slots without a character are conservative: their initial/inactive
+    // fallback page can depend on extension state, so they are re-evaluated.
+    const scanAll = transfer || !props.immutableState ||
+      previousCharacters !== state.chars.chars ||
+      previousAppearances !== state.interp.eventAppearances;
     const touched = transfer ? npcs.length : slots.length;
-    const frames: NpcFrame[] = [];
-    for (let index = 0; index < touched; index++) {
+    const scanCount = scanAll ? touched : fallbackSlots.length;
+    if (scanAll) fallbackSlots.length = 0;
+    for (let scan = 0; scan < scanCount; scan++) {
+      const index = scanAll ? scan : fallbackSlots[scan]!;
       const source = slots[index];
-      const frame: NpcFrame = source
-        ? npcFrame(state, source, props.sprites, props.npcSrc, props.extensions)
-        : [0, 0, "", 16, 1, false];
-      frames.push(frame);
       const npc = npcs[index]!;
+      const character = source ? state.chars.chars[source.id] : undefined;
+      const appearance = source ? state.interp.eventAppearances?.[source.id] : undefined;
+      if (scanAll && source && character === undefined) fallbackSlots.push(index);
+      const cached = props.immutableState && !transfer && character !== undefined &&
+        npc.character === character && npc.appearance === appearance;
+      const computed: NpcFrame = cached
+        ? npc.frame
+        : source
+          ? npcFrame(state, source, props.sprites, props.npcSrc, props.extensions)
+          : HIDDEN_NPC_FRAME;
+      if (!cached && source) recomputed?.push(source.id);
+      const frame = sameNpcFrame(npc.frame, computed) ? npc.frame : computed;
+      npc.needsPaint = transfer || frame !== npc.frame;
+      npc.frame = frame;
+      npc.character = character;
+      npc.appearance = appearance;
       if (!transfer && source && (npc.px !== frame[0] || npc.py !== frame[1])) {
         positions?.set(4 + index * 2, frame[0]);
         positions?.set(5 + index * 2, frame[1]);
@@ -411,11 +484,13 @@ function CurrentMapActors(props: {
       npc.px = frame[0];
       npc.py = frame[1];
     }
+    previousCharacters = state.chars.chars;
+    previousAppearances = state.interp.eventAppearances;
     let reorder = transfer;
     if (dirty) {
       const nextOrder = depthOrder([
         [state.move.px, state.move.py],
-        ...frames.slice(0, slots.length),
+        ...npcs.slice(0, slots.length).map((npc) => npc.frame),
       ], stride);
       reorder ||= order !== nextOrder;
       order = nextOrder;
@@ -423,20 +498,40 @@ function CurrentMapActors(props: {
     if (transfer) compilePositions();
     else if (moved) positions?.commit();
     if (reorder) setPlayerDepth(actorDepth(state.move.px, state.move.py, stride));
-    for (let index = 0; index < touched; index++) {
-      const frame = frames[index]!;
+    const paintAll = transfer || reorder;
+    const paintCount = paintAll ? touched : scanCount;
+    for (let paint = 0; paint < paintCount; paint++) {
+      const index = paintAll ? paint : scanAll ? paint : fallbackSlots[paint]!;
       const npc = npcs[index]!;
+      if (!paintAll && !npc.needsPaint) continue;
+      const frame = npc.frame;
       const oldStyle = npc.node.domAttrs?.style as ReturnType<typeof npcStyle> | undefined;
-      setProp(npc.node, "src", frame[2], npc.node.domAttrs?.src as string | undefined);
-      setProp(npc.node, "style", npcStyle(
-        frame[3],
-        slots[index] && reorder ? actorDepth(frame[0], frame[1], stride) : oldStyle?.zIndex ?? 0,
-        frame[4],
-        frame[5],
-      ), oldStyle);
-      if (transfer) setProp(npc.node, "debugName", slots[index] ? `rpgkit-npc-${slots[index]!.id}` : undefined, npc.node.domAttrs?.debugName);
+      let changed = false;
+      const oldSrc = npc.node.domAttrs?.src as string | undefined;
+      if (oldSrc !== frame[2]) {
+        setProp(npc.node, "src", frame[2], oldSrc);
+        changed = true;
+      }
+      const depth = slots[index] && reorder
+        ? actorDepth(frame[0], frame[1], stride)
+        : oldStyle?.zIndex ?? 0;
+      const display = frame[5] ? 0 : 1;
+      if (!oldStyle || oldStyle.height !== frame[3] || oldStyle.zIndex !== depth ||
+          oldStyle.opacity !== frame[4] || oldStyle.display !== display) {
+        setProp(npc.node, "style", npcStyle(frame[3], depth, frame[4], frame[5]), oldStyle);
+        changed = true;
+      }
+      if (changed && slots[index]) updated?.push(slots[index]!.id);
+      if (transfer) {
+        setProp(
+          npc.node,
+          "debugName",
+          slots[index] ? `rpgkit-npc-${slots[index]!.id}` : undefined,
+          npc.node.domAttrs?.debugName,
+        );
+      }
+      npc.needsPaint = false;
     }
-    if (transfer) report();
     px = state.move.px;
     py = state.move.py;
     cx = camera.x;
@@ -450,6 +545,7 @@ function CurrentMapActors(props: {
         ? current
         : nextPlayer,
     );
+    if (trace) report({ scanned: scanCount, recomputed: recomputed!, updated: updated! });
   });
 
   const view = (
@@ -674,6 +770,9 @@ export interface GameEffectsProps {
 export type GameEffectsComponent = Component<GameEffectsProps>;
 
 export interface GameViewProps {
+  /** Enable identity-based reducer and actor caches. Published snapshots
+   *  must be treated as read-only while this option is enabled. */
+  immutableState?: boolean;
   project: ProjectSource;
   /** Required with ProjectShell; omitted for backwards-compatible inline
    * projects. Local repositories acquire synchronously. */
@@ -714,7 +813,7 @@ export interface GameViewProps {
   onAnimatedStats?: (layer: "below" | "above", stats: AnimatedTilesStats) => void;
   /** Optional diagnostics for state-driven map animation instances. */
   onMapAnimStats?: (layer: "below" | "above", stats: MapAnimStats) => void;
-  /** Optional diagnostics for the per-map actor node pool. */
+  /** Optional diagnostics for the per-map actor pool and immutable render cache. */
   onActorStats?: (stats: ActorPoolStats) => void;
   /** Per-frame heartbeat from each world layer's sync hook, fired only on
    *  frames the hook actually runs — so it stays silent while a scene gates
@@ -805,6 +904,7 @@ export function GameView(props: GameViewProps) {
         battle: props.battle,
         scenes: props.scenes,
         scene: props.scene,
+        immutableState: props.immutableState,
       })
     : null;
   const session: Session = attract
@@ -815,6 +915,7 @@ export function GameView(props: GameViewProps) {
         battle: props.battle,
         scenes: props.scenes,
         scene: props.scene,
+        immutableState: props.immutableState,
       });
   startupProfileMark("game-view:session");
   let state: SessionState = attract ? attract.state : startSession(project, session);
@@ -888,8 +989,18 @@ export function GameView(props: GameViewProps) {
   const [facing, setFacing] = createSignal<Facing>(state.move.facing);
   const [modal, setModal] = createSignal<Modal | null>(null);
   const [demo, setDemo] = createSignal<AttractStatus | null>(attract?.status() ?? null);
-  const initialScene = cloneScene(state.scene);
-  const [scene, setScene] = createSignal<SceneSlot | null>(initialScene);
+  const initialScene = state.scene;
+  // Reducer state has dedicated renderer signals below. This signal is only
+  // the presentation key (none / battle / game-scene id), so keep it stable
+  // across ordinary scene frames and avoid invalidating every visibility and
+  // resource-active consumer when only reducer state changed.
+  const [scene, setScene] = createSignal<SceneSlot | null>(initialScene, {
+    equals: (a, b) => {
+      if (a === b) return true;
+      if (a === null || b === null || a.kind !== b.kind) return false;
+      return a.kind === "battle" || (b.kind === "scene" && a.id === b.id);
+    },
+  });
   /** True while any full-screen scene (battle or game scene) owns the
    *  foreground. The world and dialog subtrees stay mounted and hidden
    *  while this is true, matching the battle keep-alive contract. */
@@ -938,12 +1049,12 @@ export function GameView(props: GameViewProps) {
     if (!indexed) throw new Error(`GameView: unknown map size ${JSON.stringify(id)}`);
     return { w: indexed.width * TILE, h: indexed.height * TILE };
   };
-  const worldFrame = () => {
+  const worldFrame = createMemo(() => {
     const vp = viewport();
     const size = mapSize(mapId());
     const off = centerOffset(size, vp);
     return { x: off.x, y: off.y, w: Math.min(size.w, vp.w), h: Math.min(size.h, vp.h) };
-  };
+  });
   const cameraFor = (st: SessionState): CameraState => {
     const vp = viewport();
     const size = mapSize(st.mapId);
@@ -1024,38 +1135,29 @@ export function GameView(props: GameViewProps) {
   // (confirm, cancel, choices up/down) is derived from the folded button
   // mask (one unified input stream), so the view never fires edges itself.
   const edge = { confirm: false, cancel: false };
-  const fire = (key: "confirm" | "cancel") =>
-    attract
-      ? undefined
-      : () => {
-          edge[key] = true;
-        };
-  const actions = useActions(() => {
+  const confirm = attract ? undefined : () => { edge.confirm = true; };
+  const cancel = attract ? undefined : () => { edge.cancel = true; };
+  const talkActions = { confirm: { label: "talk", run: confirm } };
+  const textActions = { confirm: { label: "next", run: confirm } };
+  const choiceActions = { confirm: { label: "ok", run: confirm } };
+  const backActions = { ...choiceActions, back: { label: "back", run: cancel } };
+  const actions = useActions(createMemo(() => {
     if (demoRuntime?.isOpen()) return {};
     // A full-screen scene is the sole foreground input owner. Map modals
     // remain parked in reducer state while the world is frozen, but must not
     // capture confirm/back until the scene closes and reveals them again.
     if (sceneActive()) {
-      return {
-        confirm: { label: "ok", run: fire("confirm") },
-        back: { label: "back", run: fire("cancel") },
-      };
+      return backActions;
     }
     const m = modal();
     if (m?.kind === "choices") {
-      return {
-        confirm: { label: "ok", run: fire("confirm") },
-        ...(m.cancellable ? { back: { label: "back", run: fire("cancel") } } : {}),
-      };
+      return m.cancellable ? backActions : choiceActions;
     }
     if (m?.kind === "shop") {
-      return {
-        confirm: { label: "ok", run: fire("confirm") },
-        back: { label: "back", run: fire("cancel") },
-      };
+      return backActions;
     }
-    return { confirm: { label: m ? "next" : "talk", run: fire("confirm") } };
-  });
+    return m ? textActions : talkActions;
+  }));
 
   // The world camera and actor slots stay stable across transfers, so their
   // coordinates can share one precompiled position batch.
@@ -1359,6 +1461,7 @@ export function GameView(props: GameViewProps) {
             onAnimatedStats={(stats) => props.onAnimatedStats?.("above", stats)}
           >
             <CurrentMapActors
+              immutableState={props.immutableState}
               slots={currentSlots}
               slotCount={slotCache.get(state.mapId)!.length}
               cap={actorSlotCap}
@@ -1463,6 +1566,7 @@ export function GameView(props: GameViewProps) {
           faces={props.faces}
           faceWidth={props.faceWidth}
           items={itemNames}
+          viewportWidth={viewport().w}
         />
       </ProfileMount>
       <ScreenFadeLayer screen={presentedScreen} />
@@ -1487,7 +1591,7 @@ export function GameView(props: GameViewProps) {
                 state={battleViewState()!}
                 width={viewport().w}
                 height={viewport().h}
-                active={sceneActive()}
+                active={scene()?.kind === "battle"}
               />
             </ProfileMount>
           ) : null}

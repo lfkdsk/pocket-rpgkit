@@ -356,6 +356,34 @@ describe("onFiberStart trace", () => {
     expect(loopStarts.every((s) => s.pageIndex === 0 && s.parallel === true)).toBe(true);
   });
 
+  test("immutable scan caching never suppresses observable instant starts", () => {
+    const project = fiberTraceProject();
+    project.maps[0]!.events = [{
+      id: "pulse",
+      x: 3,
+      y: 3,
+      pages: [{
+        trigger: "parallel",
+        commands: [{
+          op: "if",
+          if: { kind: "switch", id: "never", value: true },
+          then: [{ op: "switch", id: "unreachable", value: true }],
+        }],
+      }],
+    }];
+    const starts: string[] = [];
+    const session = createSession(project, 60, {
+      immutableState: true,
+      extensions: { immutableConditions: true, deterministicConditions: true },
+      onFiberStart: (key) => starts.push(key),
+    });
+    let state = startSession(project, session);
+    for (let frame = 0; frame < 5; frame++) {
+      state = stepSession(session, state, { buttons: 0 });
+    }
+    expect(starts).toEqual(new Array(5).fill("m/pulse"));
+  });
+
   test("costs nothing when not installed", () => {
     const project = fiberTraceProject();
     const session = createSession(project, 60);

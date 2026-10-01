@@ -7,6 +7,7 @@
 // carry, so a state-dependent effect must swap discrete image keys the
 // same way PlayerSprite chooses a walk pose.
 
+import { createMemo } from "solid-js";
 import { LazyImage, type RpgImageSource, type TileTextureCache } from "../LazyImage.tsx";
 import { frameIndexAt } from "./effects.ts";
 
@@ -29,9 +30,9 @@ export interface FrameStripProps {
 }
 
 export function FrameStrip(props: FrameStripProps) {
-  const index = () =>
-    frameIndexAt(props.nowTick, props.startTick, props.frameTicks, props.frames.length, props.loop ?? false);
-  const src = () => props.frames[index()] ?? "";
+  const index = createMemo(() => props.frames.length <= 1 ? 0 :
+    frameIndexAt(props.nowTick, props.startTick, props.frameTicks, props.frames.length, props.loop ?? false));
+  const src = createMemo(() => props.frames[index()] ?? "");
 
   return (
     <LazyImage
@@ -41,8 +42,10 @@ export function FrameStrip(props: FrameStripProps) {
       active={props.active}
       style={{
         posType: 1,
-        insetL: props.x,
-        insetT: props.y,
+        insetL: 0,
+        insetT: 0,
+        translateX: props.x,
+        translateY: props.y,
         width: props.width,
         height: props.height,
         zIndex: props.zIndex ?? 0,

@@ -42,7 +42,9 @@ export function deepClone<T>(v: T): T {
 export function keyedRecord<T>(src?: Readonly<Record<string, T>>): Record<string, T> {
   const out = Object.create(null) as Record<string, T>;
   if (src) {
-    for (const key of Object.keys(src)) out[key] = src[key]!;
+    Object.assign(out, src);
+    // Match the string-keyed JSON contract if a caller supplied symbols.
+    for (const key of Object.getOwnPropertySymbols(out)) delete (out as Record<PropertyKey, unknown>)[key];
   }
   return out;
 }

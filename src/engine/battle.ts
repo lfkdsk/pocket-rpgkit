@@ -64,6 +64,9 @@ export interface BattleStart {
 }
 
 export interface BattleRules {
+  /** Opt in only when callbacks preserve every published state and return
+   * persistent JSON values. The engine can then share validated subtrees. */
+  readonly immutableState?: boolean;
   start(
     ext: JsonValue,
     setup: JsonValue,
@@ -90,12 +93,17 @@ export interface BattleScene {
 
 export type SceneSlot = BattleScene | GameScene;
 
-export function cloneScene(scene: SceneSlot | null): SceneSlot | null {
+export function cloneScene(scene: BattleScene, immutableState?: boolean): BattleScene;
+export function cloneScene(scene: GameScene, immutableState?: boolean): GameScene;
+export function cloneScene(scene: null, immutableState?: boolean): null;
+export function cloneScene(scene: SceneSlot | null, immutableState?: boolean): SceneSlot | null;
+export function cloneScene(scene: SceneSlot | null, immutableState = false): SceneSlot | null {
   if (scene === null) return null;
-  assertJsonValue(scene.state, `${scene.kind} scene state`);
+  const shareState = scene.kind === "battle" && immutableState;
+  if (!shareState) assertJsonValue(scene.state, `${scene.kind} scene state`);
   return {
     ...scene,
-    state: deepClone(scene.state),
+    state: shareState ? scene.state : deepClone(scene.state),
     pausedTicks: scene.pausedTicks ?? 0,
     ...(scene.kind === "battle" && scene.returnAudio !== undefined
       ? { returnAudio: scene.returnAudio === null ? null : cloneAudioState(scene.returnAudio) }

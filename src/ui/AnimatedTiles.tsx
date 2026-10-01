@@ -25,7 +25,7 @@ import {
 } from "@pocketjs/framework/renderer";
 import type { AnimatedTile } from "./game-assets.ts";
 import {
-  chunkWindow,
+  createChunkWindowReader,
   type ChunkPoint,
   type ChunkViewport,
   type ChunkWindow,
@@ -74,6 +74,7 @@ const EMPTY: ChunkWindow = { x0: 0, y0: 0, x1: -1, y1: -1 };
 /** One animated-tile z-band. The parent owns the world translation; nodes
  *  sit at world tile coordinates and rebind only when the window changes. */
 export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
+  const chunkWindow = createChunkWindowReader();
   startupProfileMark(`ui-animated-${props.above ? "above" : "below"}:start`);
   const root = createElement("view");
   setProp(root, "style", {
@@ -86,8 +87,8 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
   /** Key `${x},${y}` -> bound node, for the current map only. */
   const live = new Map<string, NodeMirror>();
   let currentMap = "";
-  /** Tile key -> atlas name for the current map/band. */
-  const atlasAt = new Map<string, string>();
+  /** Sparse rows keep window changes proportional to animated cells. */
+  const rows = new Map<number, { x: number; key: string; sprite: string }[]>();
   let hasTiles = false;
   let lastWindow: ChunkWindow = EMPTY;
   let created = 0;
@@ -106,11 +107,20 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
     for (const node of live.values()) unbind(node);
     live.clear();
     currentMap = mapId;
-    atlasAt.clear();
-    for (const t of props.tiles[mapId] ?? []) {
-      if (t.above === props.above) atlasAt.set(`${t.x},${t.y}`, t.sprite);
+    rows.clear();
+    const cells = new Map<string, AnimatedTile>();
+    for (const tile of props.tiles[mapId] ?? []) {
+      if (tile.above === props.above && Number.isInteger(tile.x) && Number.isInteger(tile.y)) {
+        cells.set(`${tile.x},${tile.y}`, tile);
+      }
     }
-    hasTiles = atlasAt.size > 0;
+    for (const [key, tile] of cells) {
+      let row = rows.get(tile.y);
+      if (!row) rows.set(tile.y, row = []);
+      row.push({ x: tile.x, key, sprite: tile.sprite });
+    }
+    for (const row of rows.values()) row.sort((a, b) => a.x - b.x);
+    hasTiles = cells.size > 0;
     lastWindow = EMPTY;
   };
 
@@ -163,11 +173,12 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
     }
 
     for (let y = win.y0; y <= win.y1; y++) {
-      for (let x = win.x0; x <= win.x1; x++) {
-        const key = `${x},${y}`;
+      const row = rows.get(y);
+      if (!row) continue;
+      for (const { x, key, sprite } of row) {
+        if (x < win.x0) continue;
+        if (x > win.x1) break;
         if (live.has(key)) continue;
-        const sprite = atlasAt.get(key);
-        if (sprite === undefined) continue;
         const node = nodeFor();
         setProp(node, "debugName", `${props.debugName ?? "rpgkit-anim"}-tile-${key}`);
         jump(node, "translateX", x * TILE);

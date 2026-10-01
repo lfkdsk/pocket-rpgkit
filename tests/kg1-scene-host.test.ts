@@ -406,6 +406,46 @@ describe("KG1 generic scene host", () => {
     expect(state.interp.main?.mode ?? "run").not.toBe("external");
   });
 
+  for (const immutableState of [false, true])
+    test(`a frozen completion preserves its input snapshot, immutable=${immutableState}`, () => {
+      const rules: SceneRules = {
+        start(ext) {
+          return { ext, state: { done: false } };
+        },
+        step(rawState, input) {
+          const state = rawState as { done: boolean };
+          if (input.confirmEdge) state.done = true;
+          return rawState;
+        },
+        done(rawState) {
+          return (rawState as { done: boolean }).done
+            ? {
+                ext: { committed: true },
+                writes: { "scene.value": 17 },
+                switches: { "scene.switch": true },
+                items: { potion: 2 },
+                gold: 99,
+                playerName: "Iris",
+              }
+            : null;
+        },
+      };
+      const p = sceneProject({ gold: 40 });
+      const session = createSession(p, 60, { scenes: { [SCENE_ID]: rules }, immutableState });
+      const previous = openScene(session, startSession(p, session));
+      const encoded = JSON.stringify(previous);
+
+      const completed = step(session, previous, { confirm: true });
+      expect(completed.scene).toBeNull();
+      expect(completed.sw.variables["scene.value"]).toBe(17);
+      expect(completed.sw.switches["scene.switch"]).toBe(true);
+      expect(completed.sw.items.potion).toBe(2);
+      expect(completed.sw.gold).toBe(99);
+      expect(completed.sw.playerName).toBe("Iris");
+      expect(completed.ext).toEqual({ committed: true });
+      expect(JSON.stringify(previous), "stepSession must not mutate a retained scene snapshot").toBe(encoded);
+    });
+
   test("writeback: items and transfer commit", () => {
     // Gap: the writeback test only covered ext/variables/switches/gold.
     const itemsRule: SceneRules = {
@@ -758,6 +798,40 @@ describe("KG1 generic scene host", () => {
     ]);
     expect(() => createSession(nestedCancel, 60, { scenes: { [SCENE_ID]: toySceneRules } }))
       .toThrow(/unregistered scene ids: toy\.inner/);
+  });
+
+  test("scene continuations contribute every compiled world feature gate", () => {
+    const nested = project([
+      event("director", [page("action", [{
+        op: "scene",
+        id: SCENE_ID,
+        onDone: [
+          { op: "appearance", target: { event: "runner" }, opacity: 128 },
+          { op: "camera", target: { event: "runner" }, duration: 0 },
+          {
+            op: "moveRoute",
+            target: { event: "runner" },
+            route: {
+              steps: [{ control: { kind: "speed", value: 6 } }, "moveRight"],
+              repeat: false,
+              skippable: false,
+            },
+          },
+        ],
+        onCancel: [{
+          op: "if",
+          if: { kind: "tileProperty", x: 0, y: 0, passage: "pass" },
+          then: [],
+        }],
+      }])]),
+      event("runner", [page("action", [])]),
+    ]);
+    const session = createSession(nested, 60, { scenes: { [SCENE_ID]: toySceneRules } });
+    const world = session.worlds.get(MAP_ID)!;
+    expect(world.needsEventPages).toBe(true);
+    expect(world.needsTilePropertyContext).toBe(true);
+    expect(world.needsMapAnimTarget).toBe(true);
+    expect(world.needsMovementControlPath).toBe(true);
   });
 
   test("registration: battle and ext commands nested in scene branches are registered", () => {

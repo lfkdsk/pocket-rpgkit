@@ -35,7 +35,8 @@ if [ -z "$bin" ]; then
 fi
 
 for name in reducer0 reducer50 ui0 ui50; do
-  PR1_BENCH_JS="$scratch/ka1.js" PR1_BENCH_LABEL="$name" "$bin" \
+  PR1_BENCH_JS="$scratch/ka1.js" PR1_BENCH_LABEL="${KA1_BENCH_LABEL:-$name}" \
+    PR1_BENCH_CASE="$name" "$bin" \
     pr1_quickjs_bench::tick_fold --ignored --exact --nocapture 2>&1 \
-    | grep -E '^(PR1_QJS|test result)'
+    | grep -Eo '(PR1_QJS|test result).*'
 done

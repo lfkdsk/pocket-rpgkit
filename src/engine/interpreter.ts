@@ -25,6 +25,7 @@
 // its self switch, which changes its active page.
 
 import { deepClone, keyedRecord } from "./clone.ts";
+import { RecentStateMetadata, trackStateMetadata } from "./state-metadata.ts";
 import {
   assertJsonValue,
   cloneExtension,
@@ -376,14 +377,14 @@ export function evalCondition(
         throw new Error(`extension condition ${JSON.stringify(c.call)} is not registered`);
       }
       const context: ExtensionReadContext = {
-        ext: deepClone(extension.ext),
+        ext: extension.runtime.immutableConditions ? extension.ext : deepClone(extension.ext),
         switches: s.switches,
         variables: s.variables,
         items: s.items,
         gold: s.gold,
         playerName: s.playerName,
       };
-      const result = handler(context, deepClone(c.args));
+      const result = handler(context, extension.runtime.immutableConditions ? c.args : deepClone(c.args));
       if (typeof result !== "boolean") {
         throw new Error(`extension condition ${JSON.stringify(c.call)} must return a boolean`);
       }
@@ -485,7 +486,8 @@ export function activeIndexAt(
   context?: ConditionContext,
 ): number {
   for (let i = ev.pages.length - 1; i >= 0; i--) {
-    if (pageConditionHolds(ev.pages[i]!, s, key, facing, extension, context)) return i;
+    const page = ev.pages[i]!;
+    if (!page.condition || pageConditionHolds(page, s, key, facing, extension, context)) return i;
   }
   return -1;
 }
@@ -500,13 +502,7 @@ export function eventKey(mapId: string, eventId: string): string {
  *  the two hosts (review C12). Trigger arbitration must depend only on the
  *  authored id bytes, never on the host's collation tables. */
 export function eventIdLess(a: string, b: string): boolean {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const ca = a.charCodeAt(i);
-    const cb = b.charCodeAt(i);
-    if (ca !== cb) return ca < cb;
-  }
-  return a.length < b.length;
+  return a < b;
 }
 
 // --- compiled programs -------------------------------------------------------
@@ -1548,6 +1544,9 @@ function programContextFlags(program: readonly Instr[]): number {
       if (instruction.onWin) flags |= programContextFlags(instruction.onWin);
       if (instruction.onLose) flags |= programContextFlags(instruction.onLose);
       if (instruction.onEscape) flags |= programContextFlags(instruction.onEscape);
+    } else if (instruction.op === "scene") {
+      if (instruction.onDone) flags |= programContextFlags(instruction.onDone);
+      if (instruction.onCancel) flags |= programContextFlags(instruction.onCancel);
     } else if (
       instruction.op === "mapAnim" &&
       // A fixed-coordinate mapAnim compiles to `target: null` (the command
@@ -1584,6 +1583,9 @@ function programNeedsMovementControlPath(program: readonly Instr[]): boolean {
       if (instruction.onWin && programNeedsMovementControlPath(instruction.onWin)) return true;
       if (instruction.onLose && programNeedsMovementControlPath(instruction.onLose)) return true;
       if (instruction.onEscape && programNeedsMovementControlPath(instruction.onEscape)) return true;
+    } else if (instruction.op === "scene") {
+      if (instruction.onDone && programNeedsMovementControlPath(instruction.onDone)) return true;
+      if (instruction.onCancel && programNeedsMovementControlPath(instruction.onCancel)) return true;
     }
   }
   return false;
@@ -1738,6 +1740,12 @@ type SwitchRecord = "switches" | "self" | "items" | "variables" | "shopStock";
  *  wrote keeps its record identities from state to state, and a record a
  *  state was returned with is never written again. */
 const SHARED_RECORDS = new WeakMap<SwitchState, Set<SwitchRecord>>();
+const RECORD_REVISIONS = new WeakMap<object, object>();
+
+/** Stable identity for a record until a write occurs. */
+export function recordRevision(record: object): object {
+  return RECORD_REVISIONS.get(record) ?? record;
+}
 
 /** The switch-bank record `k` of `sw`, copied first if a shareInterp copy
  *  still shares it. Every write to a record of a working copy goes through
@@ -1745,6 +1753,7 @@ const SHARED_RECORDS = new WeakMap<SwitchState, Set<SwitchRecord>>();
 export function ownRecord<K extends SwitchRecord>(sw: SwitchState, k: K): SwitchState[K] {
   const shared = SHARED_RECORDS.get(sw);
   if (shared?.delete(k)) sw[k] = keyedRecord(sw[k] as Record<string, unknown>) as SwitchState[K];
+  else RECORD_REVISIONS.set(sw[k], {});
   return sw[k];
 }
 
@@ -1766,13 +1775,13 @@ export function cloneInterp(s0: InterpState): InterpState {
   // Conditional assignment (not a conditional spread) so a project without
   // playerAppearance allocates no empty-object literal on the clone path.
   if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
-  return copyInterp(s0, sw, false);
+  return copyInterp(s0, sw, false, false);
 }
 
 /** cloneInterp for stepSession's private working copy: the switch-bank
  *  records stay shared with `s0` until a write goes through ownRecord.
  *  Callers must not write the records directly. */
-export function shareInterp(s0: InterpState): InterpState {
+export function shareInterp(s0: InterpState, immutable = false): InterpState {
   const sw: SwitchState = {
     switches: s0.sw.switches,
     self: s0.sw.self,
@@ -1788,7 +1797,37 @@ export function shareInterp(s0: InterpState): InterpState {
   // is absent.
   if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
   SHARED_RECORDS.set(sw, new Set<SwitchRecord>(["switches", "self", "items", "variables", "shopStock"]));
-  return copyInterp(s0, sw, true);
+  if (immutable) trackStateMetadata(SHARED_RECORDS, sw);
+  return copyInterp(s0, sw, true, immutable);
+}
+
+type InterpRecord = "erased" | "touched" | "placements";
+const SHARED_INTERP = new WeakMap<InterpState, number>();
+const SHARED_EVENT_APPEARANCES = new WeakSet<InterpState>();
+
+function ownInterpRecord<K extends InterpRecord>(s: InterpState, key: K): InterpState[K] {
+  const flag = key === "erased" ? 1 : key === "touched" ? 2 : 4;
+  const shared = SHARED_INTERP.get(s);
+  if (shared === undefined) return s[key];
+  if (shared & flag) {
+    s[key] = keyedRecord(s[key] as Record<string, never>) as InterpState[K];
+    SHARED_INTERP.set(s, shared & ~flag);
+  } else {
+    RECORD_REVISIONS.set(s[key], {});
+  }
+  return s[key];
+}
+
+/** Event appearance entries are replaced, never edited in place. Immutable
+ *  folds can therefore share both the table and its entries until a command
+ *  changes one target or page reconciliation removes a stale override. */
+function ownEventAppearances(s: InterpState): Record<string, EventAppearanceState> {
+  if (!s.eventAppearances) {
+    s.eventAppearances = keyedRecord();
+  } else if (SHARED_EVENT_APPEARANCES.delete(s)) {
+    s.eventAppearances = keyedRecord(s.eventAppearances);
+  }
+  return s.eventAppearances;
 }
 
 function cloneTileProperties(
@@ -1805,7 +1844,12 @@ function cloneTileProperties(
   return out;
 }
 
-function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boolean): InterpState {
+function copyInterp(
+  s0: InterpState,
+  sw: SwitchState,
+  shareTileProperties: boolean,
+  immutable: boolean,
+): InterpState {
   const main = s0.main ? cloneFiber(s0.main) : null;
   const parallels = keyedRecord<Fiber>();
   for (const key of Object.keys(s0.parallels)) parallels[key] = cloneFiber(s0.parallels[key]!);
@@ -1819,18 +1863,20 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
     main,
     parallels,
     modal: cloneModal(s0.modal),
-    erased: keyedRecord(s0.erased),
-    touched: keyedRecord(s0.touched),
+    erased: immutable ? s0.erased : keyedRecord(s0.erased),
+    touched: immutable ? s0.touched : keyedRecord(s0.touched),
     inputLocked: s0.inputLocked,
-    placements: clonePlacements(s0.placements),
+    placements: immutable ? s0.placements : clonePlacements(s0.placements),
     // The anims list is mutated only by mapAnim/stopAnim (which copy it
     // first via writableAnims), so a working copy shares the source array:
     // steady-state playback costs no per-frame clone.
     anims: s0.anims,
     ...(s0.eventAppearances ? {
-      eventAppearances: Object.fromEntries(
-        Object.entries(s0.eventAppearances).map(([id, appearance]) => [id, { ...appearance }]),
-      ),
+      eventAppearances: immutable
+        ? s0.eventAppearances
+        : Object.fromEntries(
+            Object.entries(s0.eventAppearances).map(([id, appearance]) => [id, { ...appearance }]),
+          ),
     } : {}),
     ...(s0.layers ? {
       layers: Object.fromEntries(
@@ -1868,6 +1914,14 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
   // spread would create a temporary `{}` on every interpreter copy even
   // when the project never declares or uses audio.
   if (s0.audio) s.audio = cloneAudioState(s0.audio);
+  if (immutable) {
+    SHARED_INTERP.set(s, 7);
+    trackStateMetadata(SHARED_INTERP, s);
+    if (s.eventAppearances) {
+      SHARED_EVENT_APPEARANCES.add(s);
+      trackStateMetadata(SHARED_EVENT_APPEARANCES, s);
+    }
+  }
   return s;
 }
 
@@ -2009,6 +2063,9 @@ function worldEventById(w: World, id: string): GameEvent | undefined {
  *  Authored areas come from the per-cell index. Autorun/parallel pages are
  *  always eligible, while placed or moving events are added dynamically
  *  because their live rectangle no longer matches the authored index. */
+const staticCandidates = new WeakMap<World, Map<string, GameEvent[]>>();
+const displacedCandidates = new RecentStateMetadata<object, Map<string, GameEvent[]>>();
+
 function triggerCandidates(s: InterpState, w: World, input: InterpInput): GameEvent[] {
   // Keep structural compatibility for callers that construct a World
   // directly instead of using createWorld(): without an index, conservatively
@@ -2017,27 +2074,57 @@ function triggerCandidates(s: InterpState, w: World, input: InterpInput): GameEv
     return [...(w.map.events ?? [])]
       .sort((a, b) => (eventIdLess(a.id, b.id) ? -1 : a.id === b.id ? 0 : 1));
   }
-  const byId = new Map<string, GameEvent>();
-  const add = (events: readonly GameEvent[]): void => {
-    for (const ev of events) byId.set(ev.id, ev);
-  };
-  add(w.alwaysScanEvents);
-  add(indexedEventsAt(w, input.playerCell));
-  const [fx, fy] = FRONT[input.facing];
-  add(indexedEventsAt(w, { x: input.playerCell.x + fx, y: input.playerCell.y + fy }));
-  for (const id of Object.keys(s.placements)) {
-    const ev = w.eventsById.get(id);
-    if (ev) byId.set(id, ev);
+  // Geometry is immutable. Cache the static candidate union by current cell
+  // and facing; moving/placed events are merged from the live snapshot.
+  const cellKey = `${input.playerCell.x},${input.playerCell.y},${input.facing}`;
+  let cache = staticCandidates.get(w);
+  if (!cache) {
+    cache = new Map();
+    staticCandidates.set(w, cache);
   }
+  let base = cache.get(cellKey);
+  if (!base) {
+    const union = new Map<string, GameEvent>();
+    for (const ev of w.alwaysScanEvents) union.set(ev.id, ev);
+    for (const ev of indexedEventsAt(w, input.playerCell)) union.set(ev.id, ev);
+    const [fx, fy] = FRONT[input.facing];
+    for (const ev of indexedEventsAt(w, {
+      x: input.playerCell.x + fx,
+      y: input.playerCell.y + fy,
+    })) union.set(ev.id, ev);
+    base = [...union.values()].sort((a, b) => eventIdLess(a.id, b.id) ? -1 : a.id === b.id ? 0 : 1);
+    if (cache.size >= 8) cache.delete(cache.keys().next().value!);
+    cache.set(cellKey, base);
+  }
+  const displaced = Object.keys(s.placements);
   if (input.eventCells) {
     for (const id of Object.keys(input.eventCells)) {
       const ev = w.eventsById.get(id);
       const cell = input.eventCells[id]!;
-      if (ev && (cell.x !== ev.x || cell.y !== ev.y)) byId.set(id, ev);
+      if (ev && (cell.x !== ev.x || cell.y !== ev.y)) displaced.push(id);
     }
   }
-  return [...byId.values()]
-    .sort((a, b) => (eventIdLess(a.id, b.id) ? -1 : a.id === b.id ? 0 : 1));
+  if (displaced.length === 0) return base;
+
+  const displacedKey = JSON.stringify(displaced);
+  let movedCache = displacedCandidates.get(base);
+  if (!movedCache) {
+    movedCache = new Map();
+    displacedCandidates.set(base, movedCache);
+  }
+  const previous = movedCache.get(displacedKey);
+  if (previous) return previous;
+  const byId = new Map<string, GameEvent>();
+  for (const ev of base) byId.set(ev.id, ev);
+  for (const id of displaced) {
+    const ev = w.eventsById.get(id);
+    if (ev) byId.set(id, ev);
+  }
+  const result = [...byId.values()]
+    .sort((a, b) => eventIdLess(a.id, b.id) ? -1 : a.id === b.id ? 0 : 1);
+  if (movedCache.size >= 8) movedCache.delete(movedCache.keys().next().value!);
+  movedCache.set(displacedKey, result);
+  return result;
 }
 
 function startFiber(
@@ -2086,10 +2173,7 @@ function cancelStaleParallels(
   }
 }
 
-/** Tear down a parked parallel fiber the way cancelStaleParallels does:
- *  an external parker (a waited route or a scene/battle slot) lands on
- *  abortedRoutes so a player route waited on it drops, a modal owned by the
- *  fiber closes, and the fiber itself is deleted. */
+/** Tear down a parked parallel fiber the way cancelStaleParallels does. */
 function cancelParallelFiber(s: InterpState, key: string): void {
   const f = s.parallels[key];
   if (!f) return;
@@ -2098,16 +2182,7 @@ function cancelParallelFiber(s: InterpState, key: string): void {
   delete s.parallels[key];
 }
 
-/** A queued battle/scene request is only valid while its issuing fiber is
- *  still parked on its event's active page. cancelStaleParallels enforces
- *  this at the start of each fold, but a scene completion (or a command
- *  earlier in the same tick) can invalidate a page between folds — and the
- *  session consumes the queues before the next fold runs. Re-evaluate the
- *  page condition against the current switch bank, drop requests whose
- *  parallel fiber went stale, and cancel that fiber exactly as
- *  cancelStaleParallels would. Main-fiber requests are never page-gated;
- *  requests from fibers that already ended stay queued (they keep worldIdle
- *  busy) and are discarded by the consumer's fiberIsExternal check. */
+/** Drop queued battle/scene requests whose parallel owner changed page. */
 export function pruneStaleQueuedRequests(
   s: InterpState,
   w: World,
@@ -2132,12 +2207,12 @@ function pruneStaleQueue<T extends { fiber: string }>(
   for (let i = 0; i < queue.length; i++) {
     const req = queue[i]!;
     if (s.main?.key === req.fiber) {
-      queue[kept++] = req; // the main fiber is not page-gated
+      queue[kept++] = req;
       continue;
     }
     const f = s.parallels[req.fiber];
     if (!f) {
-      queue[kept++] = req; // fiber ended: fiberIsExternal discards it at consumption
+      queue[kept++] = req;
       continue;
     }
     const ev = worldEventById(w, req.fiber.slice(w.map.id.length + 1));
@@ -2148,12 +2223,68 @@ function pruneStaleQueue<T extends { fiber: string }>(
       queue[kept++] = req;
       continue;
     }
-    cancelParallelFiber(s, req.fiber); // stale page: drop the request and the fiber
+    cancelParallelFiber(s, req.fiber);
   }
   queue.length = kept;
 }
 
-function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: ExtensionScope): void {
+export interface PageSelections {
+  facing: Facing | undefined;
+  worldIdle: boolean;
+  indices: ReadonlyMap<GameEvent, number>;
+}
+
+interface PreparedTrigger {
+  ev: GameEvent;
+  key: string;
+  index: number;
+  contextual: boolean;
+}
+
+const preparedTriggers = new WeakMap<object, WeakMap<object, PreparedTrigger[]>>();
+
+function prepareTriggers(
+  w: World,
+  events: readonly GameEvent[],
+  selected: PageSelections,
+): PreparedTrigger[] {
+  let byCandidates = preparedTriggers.get(selected.indices);
+  if (!byCandidates) {
+    byCandidates = new WeakMap();
+    preparedTriggers.set(selected.indices, byCandidates);
+  }
+  const previous = byCandidates.get(events);
+  if (previous) return previous;
+  const out: PreparedTrigger[] = [];
+  for (const ev of events) {
+    // A blocking start changes worldIdle during this scan, so pages reading
+    // it must remain candidates even when the initial selection is empty.
+    const contextual = ev.pages.some((page) =>
+      page.condition?.all?.some((clause) => clause.kind === "worldIdle"));
+    const index = selected.indices.get(ev) ?? -1;
+    if (!contextual && (index < 0 || ev.pages[index]!.commands.length === 0)) continue;
+    out.push({ ev, key: eventKey(w.map.id, ev.id), index, contextual });
+  }
+  byCandidates.set(events, out);
+  return out;
+}
+
+interface PendingParallel {
+  index: number;
+  prog: Prog;
+}
+const NO_PENDING_PARALLELS = Object.freeze(
+  keyedRecord<PendingParallel>(),
+) as Record<string, PendingParallel>;
+
+function scanTriggers(
+  s: InterpState,
+  w: World,
+  input: InterpInput,
+  extension: ExtensionScope,
+  selected?: PageSelections,
+): Record<string, PendingParallel> {
+  let pending: Record<string, PendingParallel> | undefined;
   const rectOf = (ev: GameEvent): Rect | null => eventRect(ev, eventOrigin(ev, s, input));
   const moved = input.prevCell.x !== input.playerCell.x || input.prevCell.y !== input.playerCell.y;
   const prevFacing = input.prevFacing ?? input.facing;
@@ -2168,39 +2299,51 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
   for (const key of Object.keys(s.touched)) {
     const ev = worldEventById(w, key.slice(w.map.id.length + 1));
     if (!ev) {
-      delete s.touched[key];
+      delete ownInterpRecord(s, "touched")[key];
       continue;
     }
     const r = rectOf(ev);
-    if (moved || !r || !cellInRect(input.playerCell, r)) delete s.touched[key];
+    if (moved || !r || !cellInRect(input.playerCell, r)) {
+      delete ownInterpRecord(s, "touched")[key];
+    }
   }
+  let selectionContext = liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages);
   // Ascending event-id order so parallel starts and the blocking-fiber
   // choice are deterministic across frames. The order is explicit UTF-16
   // code units (eventIdLess), never localeCompare, whose collation differs
   // between the Bun and QuickJS hosts (review C12).
-  for (const ev of triggerCandidates(s, w, input)) {
-    const key = eventKey(w.map.id, ev.id);
+  const candidates = triggerCandidates(s, w, input);
+  const prepared = selected?.facing === input.facing && selected.worldIdle === selectionContext.worldIdle
+    ? prepareTriggers(w, candidates, selected)
+    : null;
+  for (let candidate = 0; candidate < (prepared ?? candidates).length; candidate++) {
+    const record = prepared?.[candidate];
+    const ev = record ? record.ev : candidates[candidate]!;
+    const key = record ? record.key : eventKey(w.map.id, ev.id);
     if (s.erased[key]) continue;
     // Page selection sees the live player facing, so a `facing` clause
     // gates the page by direction.
-    const active = activePage(
+    const cachedIndex = record && (!record.contextual || selected!.worldIdle === selectionContext.worldIdle)
+      ? record.index
+      : undefined;
+    const index = cachedIndex ?? activeIndexAt(
       ev,
       s.sw,
-      w.map.id,
+      key,
       input.facing,
       extension,
-      liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages),
+      selectionContext,
     );
-    if (!active) continue;
-    const { page, index } = active;
+    if (index < 0) continue;
+    const page = ev.pages[index]!;
     // A page with no commands has no fiber: an opened gate's touch page and
     // a victory event's spent parallel page are inert markers, not
     // per-frame start/finish spin.
     if (page.commands.length === 0) continue;
     if (page.trigger === "parallel") {
       if (!keyedValue(s.parallels, key)) {
-        w.onFiberStart?.(key, index, true);
-        s.parallels[key] = startFiber(s, key, index, true, w.pagePrograms.get(key)![index]!);
+        const prog = w.pagePrograms.get(key)![index]!;
+        (pending ??= keyedRecord<PendingParallel>())[key] = { index, prog };
       }
       continue;
     }
@@ -2208,6 +2351,7 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
     if (page.trigger === "autorun") {
       w.onFiberStart?.(key, index, false);
       s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
+      selectionContext = { ...selectionContext, worldIdle: false };
     } else if (page.trigger === "action") {
       // While the cross-event input lock is held, confirm presses
       // start no event (the cutscene owns control); autorun/parallel above
@@ -2225,6 +2369,7 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
       if (cellInRect(front, r) || cellInRect(input.playerCell, r)) {
         w.onFiberStart?.(key, index, false);
         s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
+        selectionContext = { ...selectionContext, worldIdle: false };
       }
     } else if (page.trigger === "playerTouch") {
       if (held) continue;
@@ -2236,12 +2381,216 @@ function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: E
       // the player turns in place to the direction the page now requires.
       const turnEdge = turned && !moved && pageReadsFacing(page);
       if (stepEdge || turnEdge) {
-        s.touched[key] = true;
+        ownInterpRecord(s, "touched")[key] = true;
         w.onFiberStart?.(key, index, false);
         s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
+        selectionContext = { ...selectionContext, worldIdle: false };
       }
     }
   }
+  return pending ?? NO_PENDING_PARALLELS;
+}
+
+// A completed, effect-free parallel entry prefix can sleep until one of its
+// dependencies changes. Its original instruction count remains charged to
+// the shared runaway budget at the same event-key position.
+interface GuardMemo {
+  mask: number;
+  steps: number;
+  pc: number;
+  key: string;
+  runtime: ExtensionRuntime;
+  switches?: object;
+  variables?: object;
+  self?: object;
+  items?: object;
+  gold?: number;
+  facing?: Facing;
+  idle?: boolean;
+  ext?: JsonValue;
+  playerName?: string;
+}
+
+const sleepingGuards = new WeakMap<Prog, GuardMemo>();
+
+function guardMask(c: Condition, runtime: ExtensionRuntime): number {
+  switch (c.kind) {
+    case "switch": return 1;
+    case "variable": return 2;
+    case "selfSwitch": return 4;
+    case "item": return 8;
+    case "gold": return 16;
+    case "facing": return 32;
+    case "worldIdle": return 64;
+    case "ext":
+      return runtime.immutableConditions && runtime.deterministicConditions
+        ? 1 | 2 | 8 | 16 | 128 | 256
+        : -1;
+    case "appearance":
+    case "tileProperty":
+    case "bgmPlaying":
+      return -1;
+  }
+}
+
+function guardUnchanged(
+  memo: GuardMemo,
+  s: InterpState,
+  input: InterpInput,
+  extension: ExtensionScope,
+  key: string,
+): boolean {
+  const mask = memo.mask;
+  return memo.key === key && memo.runtime === extension.runtime &&
+    (!(mask & 1) || memo.switches === recordRevision(s.sw.switches)) &&
+    (!(mask & 2) || memo.variables === recordRevision(s.sw.variables)) &&
+    (!(mask & 4) || memo.self === recordRevision(s.sw.self)) &&
+    (!(mask & 8) || memo.items === recordRevision(s.sw.items)) &&
+    (!(mask & 16) || Object.is(memo.gold, s.sw.gold)) &&
+    (!(mask & 32) || memo.facing === input.facing) &&
+    (!(mask & 64) || memo.idle === isWorldIdle(s, input.worldIdleBlockers)) &&
+    (!(mask & 128) || memo.ext === extension.ext) &&
+    (!(mask & 256) || memo.playerName === s.sw.playerName);
+}
+
+function rememberGuard(
+  prog: Prog,
+  mask: number,
+  steps: number,
+  pc: number,
+  key: string,
+  s: InterpState,
+  input: InterpInput,
+  extension: ExtensionScope,
+): void {
+  sleepingGuards.set(prog, {
+    mask,
+    steps,
+    pc,
+    key,
+    runtime: extension.runtime,
+    switches: mask & 1 ? recordRevision(s.sw.switches) : undefined,
+    variables: mask & 2 ? recordRevision(s.sw.variables) : undefined,
+    self: mask & 4 ? recordRevision(s.sw.self) : undefined,
+    items: mask & 8 ? recordRevision(s.sw.items) : undefined,
+    gold: mask & 16 ? s.sw.gold : undefined,
+    facing: mask & 32 ? input.facing : undefined,
+    idle: mask & 64 ? isWorldIdle(s, input.worldIdleBlockers) : undefined,
+    ext: mask & 128 ? extension.ext : undefined,
+    playerName: mask & 256 ? s.sw.playerName : undefined,
+  });
+}
+
+interface IdleScanMemo {
+  switches: object;
+  variables: object;
+  self: object;
+  items: object;
+  erased: object;
+  touched: object;
+  placements: object;
+  ext: JsonValue;
+  gold: number;
+  playerName: string;
+  locked: boolean;
+  idle: boolean;
+  x: number;
+  y: number;
+  prevX: number;
+  prevY: number;
+  facing: Facing;
+  prevFacing: Facing | undefined;
+  cells: InterpInput["eventCells"];
+  main: string | undefined;
+  mainPage: number | undefined;
+  modal: string | undefined;
+  modalKind: Modal["kind"] | undefined;
+  playerAppearance: string;
+  eventAppearances: string;
+  tileProperties: string;
+  audio: string;
+  eventPages: string;
+  backdrop: boolean;
+  steps: number;
+}
+
+const idleScans = new WeakMap<World, IdleScanMemo>();
+const activeScans = new WeakMap<World, {
+  signature: IdleScanMemo;
+  pages: Record<string, number>;
+  count: number;
+  pending: Record<string, PendingParallel>;
+  keys: string[];
+}>();
+
+function stableOptionalJson(value: unknown): string {
+  return value === undefined ? "" : JSON.stringify(value);
+}
+
+function sameIdleScan(
+  memo: IdleScanMemo,
+  s: InterpState,
+  input: InterpInput,
+  ext: JsonValue,
+): boolean {
+  return memo.ext === ext && Object.is(memo.gold, s.sw.gold) && memo.playerName === s.sw.playerName &&
+    memo.locked === s.inputLocked &&
+    memo.main === s.main?.key && memo.mainPage === s.main?.pageIndex &&
+    memo.modal === s.modal?.fiber && memo.modalKind === s.modal?.kind &&
+    memo.x === input.playerCell.x && memo.y === input.playerCell.y &&
+    memo.prevX === input.prevCell.x && memo.prevY === input.prevCell.y &&
+    memo.facing === input.facing && memo.prevFacing === input.prevFacing && memo.cells === input.eventCells &&
+    memo.switches === recordRevision(s.sw.switches) && memo.variables === recordRevision(s.sw.variables) &&
+    memo.self === recordRevision(s.sw.self) && memo.items === recordRevision(s.sw.items) &&
+    memo.erased === recordRevision(s.erased) && memo.touched === recordRevision(s.touched) &&
+    memo.placements === recordRevision(s.placements) &&
+    memo.idle === isWorldIdle(s, input.worldIdleBlockers) &&
+    memo.playerAppearance === stableOptionalJson(s.sw.playerAppearance) &&
+    memo.eventAppearances === stableOptionalJson(s.eventAppearances) &&
+    memo.tileProperties === stableOptionalJson(s.tileProperties) &&
+    memo.audio === stableOptionalJson(s.audio) &&
+    memo.eventPages === stableOptionalJson(input.eventPages) &&
+    memo.backdrop === (s.screen?.backdrop !== undefined);
+}
+
+function idleScanSnapshot(
+  s: InterpState,
+  input: InterpInput,
+  ext: JsonValue,
+  steps: number,
+): IdleScanMemo {
+  return {
+    switches: recordRevision(s.sw.switches),
+    variables: recordRevision(s.sw.variables),
+    self: recordRevision(s.sw.self),
+    items: recordRevision(s.sw.items),
+    erased: recordRevision(s.erased),
+    touched: recordRevision(s.touched),
+    placements: recordRevision(s.placements),
+    ext,
+    gold: s.sw.gold,
+    playerName: s.sw.playerName,
+    locked: s.inputLocked,
+    idle: isWorldIdle(s, input.worldIdleBlockers),
+    x: input.playerCell.x,
+    y: input.playerCell.y,
+    prevX: input.prevCell.x,
+    prevY: input.prevCell.y,
+    facing: input.facing,
+    prevFacing: input.prevFacing,
+    cells: input.eventCells,
+    main: s.main?.key,
+    mainPage: s.main?.pageIndex,
+    modal: s.modal?.fiber,
+    modalKind: s.modal?.kind,
+    playerAppearance: stableOptionalJson(s.sw.playerAppearance),
+    eventAppearances: stableOptionalJson(s.eventAppearances),
+    tileProperties: stableOptionalJson(s.tileProperties),
+    audio: stableOptionalJson(s.audio),
+    eventPages: stableOptionalJson(input.eventPages),
+    backdrop: s.screen?.backdrop !== undefined,
+    steps,
+  };
 }
 
 // --- fiber execution -----------------------------------------------------------
@@ -2368,16 +2717,25 @@ function clampVariableRecord(
   return out;
 }
 
+function writeVariable(sw: SwitchState, id: string, value: VariableValue): void {
+  if (!hasOwn(sw.variables, id) || !Object.is(sw.variables[id], value)) {
+    ownRecord(sw, "variables")[id] = value;
+  }
+}
+
 function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
   switch (ins.op) {
     case "switch":
-      ownRecord(s.sw, "switches")[ins.id] = ins.value;
+      if (!hasOwn(s.sw.switches, ins.id) || s.sw.switches[ins.id] !== ins.value) {
+        ownRecord(s.sw, "switches")[ins.id] = ins.value;
+      }
       break;
     case "variable": {
-      const variables = ownRecord(s.sw, "variables");
+      const variables = s.sw.variables;
+      let value: VariableValue;
       if (ins.set.op === "random") {
         const r = randInt(s.sw.rng, ins.set.min, ins.set.max);
-        variables[ins.id] = clampFiniteVar(r.value);
+        value = clampFiniteVar(r.value);
         s.sw.rng = r.next;
       } else if ("from" in ins.set) {
         // T2-16: the operand is another variable's live value (target OP
@@ -2388,14 +2746,14 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
         // write); the arithmetic ops treat a non-number source/target as 0.
         const op = ins.set.op;
         if (op === "copy") {
-          const b = variables[ins.set.from] ?? 0;
-          variables[ins.id] = typeof b === "number" ? clampFiniteVar(b) : b;
+          const b = keyedValue(variables, ins.set.from) ?? 0;
+          value = typeof b === "number" ? clampFiniteVar(b) : b;
         } else {
-          const held = variables[ins.id];
+          const held = keyedValue(variables, ins.id);
           const a = typeof held === "number" ? held : 0;
-          const source = variables[ins.set.from];
+          const source = keyedValue(variables, ins.set.from);
           const b = typeof source === "number" ? source : 0;
-          variables[ins.id] = clampFiniteVar(
+          value = clampFiniteVar(
             op === "add" ? a + b
             : op === "sub" ? a - b
             : op === "mul" ? a * b
@@ -2404,18 +2762,21 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
           );
         }
       } else {
-        const held = variables[ins.id];
+        const held = keyedValue(variables, ins.id);
         const cur = typeof held === "number" ? held : 0;
-        variables[ins.id] = clampFiniteVar(
+        value = clampFiniteVar(
           ins.set.op === "set" ? ins.set.value
           : ins.set.op === "add" ? cur + ins.set.value
           : cur - ins.set.value,
         );
       }
+      writeVariable(s.sw, ins.id, value);
       break;
     }
     case "selfSwitch":
-      ownRecord(s.sw, "self")[f.key] = ins.value ? ins.key : undefined;
+      if (!hasOwn(s.sw.self, f.key) || s.sw.self[f.key] !== (ins.value ? ins.key : undefined)) {
+        ownRecord(s.sw, "self")[f.key] = ins.value ? ins.key : undefined;
+      }
       break;
     case "gold":
       s.sw.gold = clampFiniteVar(s.sw.gold + (ins.set === "add" ? ins.amount : -ins.amount));
@@ -2518,7 +2879,7 @@ export function advanceInterpAudioInPlace(s: InterpState): void {
 }
 
 function finishFiber(s: InterpState, f: Fiber): void {
-  if (f.erase) s.erased[f.key] = true;
+  if (f.erase) ownInterpRecord(s, "erased")[f.key] = true;
   if (s.modal?.fiber === f.key) s.modal = null;
   if (f.parallel) delete s.parallels[f.key];
   else if (s.main?.key === f.key) s.main = null;
@@ -2718,11 +3079,10 @@ function applyExtensionResult(
     ? undefined
     : replaceItemCounts(s.sw.items, itemReplacements, w.inventory);
   extension.ext = nextExt;
-  const variables = writes.length > 0 ? ownRecord(s.sw, "variables") : null;
   for (const [id, value] of writes) {
     // B1 (fix 3): an ext command's numeric write shares the same
     // finite-safe-integer normalizer as every other variable write.
-    variables![id] = typeof value === "number" ? clampFiniteVar(value) : value;
+    writeVariable(s.sw, id, typeof value === "number" ? clampFiniteVar(value) : value);
   }
   if (items !== undefined) s.sw.items = items;
   if (gold !== undefined) s.sw.gold = gold;
@@ -3004,12 +3364,12 @@ function applyAppearanceCommand(
   }
   if (Object.keys(next).length === 1) {
     if (s.eventAppearances) {
-      delete s.eventAppearances[eventId];
-      if (emptyRecord(s.eventAppearances)) delete s.eventAppearances;
+      const appearances = ownEventAppearances(s);
+      delete appearances[eventId];
+      if (emptyRecord(appearances)) delete s.eventAppearances;
     }
   } else {
-    if (!s.eventAppearances) s.eventAppearances = keyedRecord();
-    s.eventAppearances[eventId] = next;
+    ownEventAppearances(s)[eventId] = next;
   }
 }
 
@@ -3132,10 +3492,14 @@ export function clearStaleEventAppearances(
   pages: Readonly<Record<string, EventPageAppearance>>,
 ): void {
   if (!s.eventAppearances) return;
-  for (const id of Object.keys(s.eventAppearances)) {
-    if (pages[id]?.pageIndex !== s.eventAppearances[id]!.pageIndex) delete s.eventAppearances[id];
+  let appearances = s.eventAppearances;
+  for (const id of Object.keys(appearances)) {
+    if (pages[id]?.pageIndex !== appearances[id]!.pageIndex) {
+      appearances = ownEventAppearances(s);
+      delete appearances[id];
+    }
   }
-  if (emptyRecord(s.eventAppearances)) delete s.eventAppearances;
+  if (emptyRecord(appearances)) delete s.eventAppearances;
 }
 
 function runFiber(
@@ -3592,7 +3956,7 @@ function runFiber(
           s.pendingPlacements.push({ target: "player", ...p });
         } else {
           const eventId = ins.target === "this" ? f.key.split("/").pop()! : ins.target.event;
-          s.placements[eventId] = p;
+          ownInterpRecord(s, "placements")[eventId] = p;
           s.pendingPlacements.push({ eventId, ...p });
         }
         top.pc++;
@@ -3885,6 +4249,8 @@ export function stepInterpWithExtensionsInPlace(
   s: InterpState,
   input: InterpInput,
   ext0: JsonValue,
+  selectedPages?: PageSelections,
+  immutable = false,
 ): JsonValue {
   const extension: MutableExtensionScope = { runtime: w.extensions, ext: ext0 };
   advanceInterpAudioInPlace(s);
@@ -3907,29 +4273,140 @@ export function stepInterpWithExtensionsInPlace(
   s.pendingPlacements = [];
   s.abortedRoutes = [];
 
-  cancelStaleParallels(s, w, input.facing, extension, input);
-  scanTriggers(s, w, input, extension);
+  const parallelKeys = immutable ? Object.keys(s.parallels) : undefined;
+  const canCacheScan = immutable && w.onFiberStart === undefined &&
+    w.extensions.immutableConditions && w.extensions.deterministicConditions &&
+    s.pendingBattles.length === 0 &&
+    (s.pendingScenes?.length ?? 0) === 0 &&
+    (!input.confirmEdge || s.main !== null || s.inputLocked || messageHoldsPlayer(w, s));
+  const canSleep = canCacheScan && parallelKeys!.length === 0;
+  const sleeping = canSleep ? idleScans.get(w) : undefined;
+  if (sleeping && sameIdleScan(sleeping, s, input, ext0)) {
+    if (s.main) {
+      runFiber(s, w, s.main, input, { remaining: RUNAWAY_STEP_LIMIT - sleeping.steps }, extension);
+    }
+    if (!s.error) syncFollowAnchors(s, input);
+    return extension.ext;
+  }
+
+  const mainBeforeScan = s.main;
+  const modalBeforeScan = s.modal;
+  const active = canCacheScan && parallelKeys!.length > 0 ? activeScans.get(w) : undefined;
+  let pending: Record<string, PendingParallel>;
+  let keys: string[];
+  if (active && active.count === parallelKeys!.length &&
+      parallelKeys!.every((key) => active.pages[key] === s.parallels[key]!.pageIndex) &&
+      sameIdleScan(active.signature, s, input, ext0)) {
+    pending = active.pending;
+    keys = active.keys;
+  } else {
+    cancelStaleParallels(s, w, input.facing, extension, input);
+    pending = scanTriggers(s, w, input, extension, selectedPages);
+    const liveKeys = Object.keys(s.parallels);
+    keys = pending === NO_PENDING_PARALLELS
+      ? liveKeys.sort()
+      : [...liveKeys, ...Object.keys(pending)].sort();
+    if (canCacheScan && liveKeys.length > 0 &&
+        s.main === mainBeforeScan && s.modal === modalBeforeScan) {
+      const pages = keyedRecord<number>();
+      for (const key of liveKeys) pages[key] = s.parallels[key]!.pageIndex;
+      activeScans.set(w, {
+        signature: idleScanSnapshot(s, input, extension.ext, 0),
+        pages,
+        count: liveKeys.length,
+        pending,
+        keys,
+      });
+    }
+  }
   const budget: StepBudget = { remaining: RUNAWAY_STEP_LIMIT };
   const queuedBattleCount = s.pendingBattles.length;
   const queuedSceneCount = s.pendingScenes?.length ?? 0;
+  let ranFiber = false;
 
   // Parallels first (ascending key), then the blocking fiber, so a parallel
   // can never observe a value the main fiber sets later in the same frame.
   // Battle/scene requests are the one exception to the resulting publication
   // order: collect this tick's parallel requests, run main, then append the
   // new requests main-first behind every request already in the FIFO.
-  for (const key of Object.keys(s.parallels).sort()) {
+  for (const key of keys) {
+    const entry = pending[key];
+    if (entry) {
+      w.onFiberStart?.(key, entry.index, true);
+      let pc = 0;
+      let dependencies = 0;
+      const initialBudget = budget.remaining;
+      const memo = immutable ? sleepingGuards.get(entry.prog) : undefined;
+      let reusedGuard = false;
+      if (memo && budget.remaining >= memo.steps &&
+          guardUnchanged(memo, s, input, extension, key)) {
+        budget.remaining -= memo.steps;
+        pc = memo.pc;
+        reusedGuard = true;
+      }
+      while (pc < entry.prog.length) {
+        const ins = entry.prog[pc]!;
+        if (ins.op !== "if" && ins.op !== "jmp") break;
+        if (budget.remaining-- <= 0) {
+          s.error = { kind: "runaway", message: `interpreter: runaway program in ${key}` };
+          break;
+        }
+        if (immutable && ins.op === "if") dependencies |= guardMask(ins.cond, extension.runtime);
+        pc = ins.op === "jmp"
+          ? ins.to
+          : evalCondition(
+              ins.cond,
+              s.sw,
+              key,
+              input.facing,
+              extension,
+              liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages),
+            )
+            ? pc + 1
+            : ins.onFalse;
+      }
+      if (s.error) break;
+      if (pc >= entry.prog.length) {
+        if (immutable && !reusedGuard && dependencies >= 0) {
+          rememberGuard(
+            entry.prog,
+            dependencies,
+            initialBudget - budget.remaining,
+            pc,
+            key,
+            s,
+            input,
+            extension,
+          );
+        }
+        if (budget.remaining-- <= 0) {
+          s.error = { kind: "runaway", message: `interpreter: runaway program in ${key}` };
+          break;
+        }
+        if (s.modal?.fiber === key) s.modal = null;
+        continue;
+      }
+      const fiber = startFiber(s, key, entry.index, true, entry.prog);
+      fiber.stack[0]!.pc = pc;
+      s.parallels[key] = fiber;
+    }
+    if (canSleep) ranFiber = true;
     runFiber(s, w, s.parallels[key]!, input, budget, extension);
     if (s.error) break;
   }
   const parallelBattles = s.pendingBattles.splice(queuedBattleCount);
-  // The scene splice only allocates when a parallel actually queued one:
-  // a scene-free project must not pay for an empty-array splice per tick.
-  // The false branch shares a module-level constant (never mutated: the
-  // push below is guarded by length > 0), so no empty array is allocated.
+  // Avoid allocating an empty scene array for projects that never use the
+  // generic scene host.
   const parallelScenes = (s.pendingScenes?.length ?? 0) > queuedSceneCount
     ? s.pendingScenes!.splice(queuedSceneCount)
     : EMPTY_PENDING_SCENES;
+  if (canSleep && !ranFiber && s.main === mainBeforeScan &&
+      s.modal === modalBeforeScan && !s.error) {
+    idleScans.set(
+      w,
+      idleScanSnapshot(s, input, extension.ext, RUNAWAY_STEP_LIMIT - budget.remaining),
+    );
+  }
   if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension);
   const mainBattles = s.pendingBattles.splice(queuedBattleCount);
   const mainScenes = (s.pendingScenes?.length ?? 0) > queuedSceneCount

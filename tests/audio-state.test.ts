@@ -76,8 +76,10 @@ function audioBattleRules(options: {
   instant?: boolean;
   decline?: boolean;
   transfer?: BattleTransfer;
+  immutable?: boolean;
 } = {}): BattleRules {
   return {
+    ...(options.immutable ? { immutableState: true } : {}),
     start(ext) {
       if (options.decline) return null;
       return {
@@ -375,6 +377,54 @@ describe("battle audio lifecycle", () => {
     expect(completed.interp.audio).toEqual(suspended);
     expect(completed.interp.audio).not.toBe(battleReturnAudio(played));
   });
+
+  for (const hz of [60, 30, 20, 4] as const) {
+    test(`immutable frozen battles preserve prior audio states at ${hz} Hz`, () => {
+      const p = battleProject([{ op: "playBgm", id: "map", volume: 73 }]);
+      const ownedSession = createSession(p, hz, {
+        immutableState: true,
+        battle: audioBattleRules({
+          immutable: true,
+          audio: { bgm: { id: "combat", volume: 88 } },
+        }),
+      });
+      const owned = sessionStep(ownedSession, startSession(p, ownedSession), true);
+      if (owned.scene?.kind !== "battle") throw new Error("expected an active battle scene");
+      expect(owned.scene.returnAudio?.bgm?.id).toBe("map");
+      expect(owned.interp.audio?.bgm?.id).toBe("combat");
+      const suspended = owned.scene.returnAudio!;
+      const ownedJson = JSON.stringify(owned);
+      const playing = sessionStep(ownedSession, owned);
+      expect(JSON.stringify(owned)).toBe(ownedJson);
+      expect(playing.interp.audio?.bgm?.positionTicks)
+        .toBe((owned.interp.audio?.bgm?.positionTicks ?? 0) + 60 / hz);
+      const playingJson = JSON.stringify(playing);
+      const restored = sessionStep(ownedSession, playing, true);
+      expect(JSON.stringify(playing)).toBe(playingJson);
+      expect(restored.scene).toBeNull();
+      expect(restored.interp.audio).toEqual(suspended);
+      expect(restored.interp.audio).not.toBe(suspended);
+
+      const liveSession = createSession(p, hz, {
+        immutableState: true,
+        battle: audioBattleRules({ immutable: true }),
+      });
+      const live = sessionStep(liveSession, startSession(p, liveSession), true);
+      expect(Object.hasOwn(live.scene!, "returnAudio")).toBe(false);
+      expect(live.interp.audio?.bgm?.id).toBe("map");
+      const liveJson = JSON.stringify(live);
+      const advanced = sessionStep(liveSession, live);
+      expect(JSON.stringify(live)).toBe(liveJson);
+      expect(advanced.interp.audio?.bgm?.positionTicks)
+        .toBe((live.interp.audio?.bgm?.positionTicks ?? 0) + 60 / hz);
+      const advancedJson = JSON.stringify(advanced);
+      const completed = sessionStep(liveSession, advanced, true);
+      expect(JSON.stringify(advanced)).toBe(advancedJson);
+      expect(completed.scene).toBeNull();
+      expect(completed.interp.audio?.bgm?.positionTicks)
+        .toBe((live.interp.audio?.bgm?.positionTicks ?? 0) + 2 * (60 / hz));
+    });
+  }
 
   test("battle silence restores map audio while omitted audio keeps it live", () => {
     const p = battleProject([{ op: "playBgm", id: "map" }]);

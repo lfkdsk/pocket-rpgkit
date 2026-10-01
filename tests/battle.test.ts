@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AttractController } from "../src/engine/attract.ts";
-import type { BattleRules } from "../src/engine/battle.ts";
+import { cloneScene, type BattleRules } from "../src/engine/battle.ts";
 import { canonicalJson, createSessionSnapshot, fnv1aText } from "../src/engine/save.ts";
 import {
   createSession,
@@ -109,6 +109,132 @@ function settle(session: Session, state: SessionState): SessionState {
 }
 
 describe("KB2 battle processing", () => {
+  test("immutable battle rules receive and publish scene state by identity", () => {
+    const initial = { phase: 0, shared: { label: "kept" } } as const;
+    const first = { phase: 1, shared: initial.shared } as const;
+    const terminal = { phase: 2, shared: initial.shared } as const;
+    const stepInputs: JsonValue[] = [];
+    const doneInputs: JsonValue[] = [];
+    const rules: BattleRules = {
+      immutableState: true,
+      start: (ext) => ({ ext, state: initial }),
+      step(state) {
+        stepInputs.push(state);
+        return state === initial ? first : terminal;
+      },
+      done(state) {
+        doneInputs.push(state);
+        return state === terminal ? { ext: null, result: "win" } : null;
+      },
+    };
+    const p = project(null);
+    const session = createSession(p, 60, { battle: rules, immutableState: true });
+    const entered = step(session, startSession(p, session));
+    expect(entered.scene?.state).toBe(initial);
+    expect(doneInputs).toEqual([initial]);
+
+    const retained = JSON.stringify(entered);
+    const advanced = step(session, entered);
+    expect(stepInputs).toEqual([initial]);
+    expect(doneInputs.at(-1)).toBe(first);
+    expect(advanced.scene?.state).toBe(first);
+    expect(JSON.stringify(entered)).toBe(retained);
+
+    const completed = step(session, advanced);
+    expect(stepInputs.at(-1)).toBe(first);
+    expect(doneInputs.at(-1)).toBe(terminal);
+    expect(completed.scene).toBeNull();
+    expect(JSON.stringify(entered)).toBe(retained);
+  });
+
+  test("legacy battle rules receive a frame-owned copy and publish their result", () => {
+    const initial = { phase: 0, nested: { value: 1 } };
+    const stepped = { phase: 1, nested: { value: 2 } };
+    let stepInput: JsonValue | undefined;
+    let doneInput: JsonValue | undefined;
+    const rules: BattleRules = {
+      start: (ext) => ({ ext, state: initial }),
+      step(state) {
+        stepInput = state;
+        return stepped;
+      },
+      done(state) {
+        doneInput = state;
+        return null;
+      },
+    };
+    const p = project(null);
+    const session = createSession(p, 60, { battle: rules, immutableState: true });
+    const entered = step(session, startSession(p, session));
+    expect(entered.scene?.state).not.toBe(initial);
+    expect(entered.scene?.state).toEqual(initial);
+
+    const advanced = step(session, entered);
+    expect(stepInput).not.toBe(entered.scene?.state);
+    expect(stepInput).toEqual(entered.scene?.state);
+    expect(advanced.scene?.state).toBe(stepped);
+    expect(doneInput).toBe(advanced.scene?.state);
+  });
+
+  test("immutable battle rules reject malformed and cyclic published state", () => {
+    const invalid: BattleRules = {
+      immutableState: true,
+      start: (ext) => ({ ext, state: { value: Number.POSITIVE_INFINITY } }),
+      step: (state) => state,
+      done: () => null,
+    };
+    const p = project(null);
+    const invalidSession = createSession(p, 60, { battle: invalid, immutableState: true });
+    expect(() => step(invalidSession, startSession(p, invalidSession)))
+      .toThrow("battle start state: $.value: finite number required");
+
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const cyclic: BattleRules = {
+      immutableState: true,
+      start: (ext) => ({ ext, state: cycle as JsonValue }),
+      step: (state) => state,
+      done: () => null,
+    };
+    const cyclicSession = createSession(p, 60, { battle: cyclic, immutableState: true });
+    expect(() => step(cyclicSession, startSession(p, cyclicSession)))
+      .toThrow("battle start state: $.self: cyclic value is not JSON");
+  });
+
+  test("scene cloning shares only opted-in battle state and always owns suspended audio", () => {
+    const state = { turn: 3 };
+    const scene = {
+      kind: "battle" as const,
+      fiber: "a/battle",
+      state,
+      pausedTicks: 4,
+      returnAudio: {
+        bgm: { id: "map", volume: 80, pitch: 100, positionTicks: 12 },
+      },
+    };
+    const immutable = cloneScene(scene, true)!;
+    expect(immutable.state).toBe(state);
+    expect(immutable.returnAudio).not.toBe(scene.returnAudio);
+    expect(immutable.returnAudio?.bgm).not.toBe(scene.returnAudio.bgm);
+    expect(immutable.returnAudio).toEqual(scene.returnAudio);
+
+    const legacy = cloneScene(scene)!;
+    expect(legacy.state).not.toBe(state);
+    expect(legacy.state).toEqual(state);
+
+    const gameState = { input: "Ash" };
+    const gameScene = {
+      kind: "scene" as const,
+      id: "profile.name",
+      fiber: "a/name",
+      state: gameState,
+      pausedTicks: 2,
+    };
+    const clonedGameScene = cloneScene(gameScene, true);
+    expect(clonedGameScene.state).not.toBe(gameState);
+    expect(clonedGameScene.state).toEqual(gameState);
+  });
+
   test("toy damage is independent of host randomness", () => {
     const started = toyBattleRules.start(null, { enemyHp: 99 }, 0x1234_5678, {
       ext: null,

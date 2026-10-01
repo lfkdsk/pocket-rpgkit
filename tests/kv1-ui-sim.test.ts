@@ -99,6 +99,41 @@ async function golden(
 }
 
 simDescribe("KV1 runtime visuals", () => {
+  test("caches static actor frames while repainting runtime appearance changes", async () => {
+    const trace: Array<{
+      scanned: number;
+      recomputed: readonly string[];
+      updated: readonly string[];
+    }> = [];
+    const world = await bootGameWorld(
+      appBundle("r2-ui"),
+      60,
+      { __r2Kv1: true, __r2ActorTrace: trace },
+      undefined,
+      { width: 480, height: 272 },
+    );
+    pump(world, 1);
+    trace.length = 0;
+
+    pump(world, 5);
+    expect(trace).toHaveLength(5);
+    expect(trace.every((frame) => frame.scanned === 0)).toBe(true);
+    expect(trace.flatMap((frame) => frame.recomputed)).not.toContain("appearance-subject");
+    expect(trace.flatMap((frame) => frame.updated)).not.toContain("appearance-subject");
+
+    trace.length = 0;
+    action(world);
+    expect(trace.flatMap((frame) => frame.recomputed)).toContain("appearance-subject");
+    expect(trace.flatMap((frame) => frame.updated)).toContain("appearance-subject");
+    expect(world.probes().state.interp.eventAppearances?.["appearance-subject"]?.sprite).toBe("alt");
+
+    trace.length = 0;
+    action(world);
+    expect(trace.flatMap((frame) => frame.recomputed)).toContain("appearance-subject");
+    expect(trace.flatMap((frame) => frame.updated)).toContain("appearance-subject");
+    expect(world.probes().state.interp.eventAppearances?.["appearance-subject"]?.visible).toBe(false);
+  }, 30_000);
+
   for (const viewport of [
     { width: 480, height: 272 },
     { width: 640, height: 360 },

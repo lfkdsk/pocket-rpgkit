@@ -1298,6 +1298,27 @@ mount(() => (
 ));
 ```
 
+### Opt-in immutable-state fast path
+
+`GameView` and `createSession` accept `immutableState: true`. This lets the
+engine share unchanged reducer banks between published snapshots and lets the
+view skip actor work when the corresponding character and appearance
+identities did not change. Treat every state returned by the engine, including
+restored and attract-mode states, as read-only while this option is enabled.
+The default remains the defensive compatibility path for callers that mutate
+published snapshots.
+
+Game-owned conditions can additionally set both
+`extensions.immutableConditions` and `extensions.deterministicConditions`.
+The first promises that condition handlers never mutate the context, extension
+state, or arguments; the second promises that identical inputs have identical
+results and no observable side effects. Both promises are required before the
+engine can reuse page and sleeping-guard decisions involving extension
+conditions. Battle rules may set `immutableState: true` when `start`, `step`,
+and `done` preserve every state they publish and return persistent JSON values.
+The engine still validates those values, while sharing already validated
+subtrees instead of cloning them every frame.
+
 ### Opt-in host audio
 
 An audio-enabled project maps logical ids to complete `audio:wav.*` or

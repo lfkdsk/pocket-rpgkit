@@ -43,6 +43,7 @@ import {
   type SwitchState,
 } from "./interpreter.ts";
 import { keyedRecord } from "./clone.ts";
+import { RecentStateMetadata, trackStateMetadata } from "./state-metadata.ts";
 import {
   activeStepConfig,
   stepPixels,
@@ -226,16 +227,54 @@ export function cloneChars(s0: CharsState): CharsState {
   return { rng: s0.rng, chars };
 }
 
-/** Ids of the characters a shareChars copy has copied so far. A state absent
- *  from this map (cloneChars, createChars) owns every character it holds. */
-const OWNED = new WeakMap<CharsState, Set<string>>();
+/** Characters and table ownership of a shareChars working copy. A state
+ *  absent from this map (cloneChars, createChars) owns both outright. */
+interface CharsOwnership {
+  ids: Set<string>;
+  sharedTable: boolean;
+}
+const OWNED = new WeakMap<CharsState, CharsOwnership>();
+
+function ownTable(s: CharsState): void {
+  const owned = OWNED.get(s);
+  if (owned?.sharedTable) {
+    owned.sharedTable = false;
+    s.chars = keyedRecord(s.chars);
+  }
+}
+
+const PAGE_REVISION = new RecentStateMetadata<CharsState, object>();
+const POSITION_REVISION = new RecentStateMetadata<CharsState, object>();
+
+export function charsPositionRevision(s: CharsState): object {
+  let token = POSITION_REVISION.get(s);
+  if (!token) {
+    token = {};
+    POSITION_REVISION.set(s, token);
+  }
+  return token;
+}
+
+export function charsPageRevision(s: CharsState): object {
+  let token = PAGE_REVISION.get(s);
+  if (!token) {
+    token = {};
+    PAGE_REVISION.set(s, token);
+  }
+  return token;
+}
 
 /** A working copy that shares each character object with `s0` until the
  *  first write to it (ownChar). stepSession folds one of these per frame:
  *  most characters stand still, so most are never copied. */
-export function shareChars(s0: CharsState): CharsState {
-  const s: CharsState = { rng: s0.rng, chars: keyedRecord(s0.chars) };
-  OWNED.set(s, new Set());
+export function shareChars(s0: CharsState, immutable = false): CharsState {
+  const s: CharsState = { rng: s0.rng, chars: immutable ? s0.chars : keyedRecord(s0.chars) };
+  OWNED.set(s, { ids: new Set(), sharedTable: immutable });
+  if (immutable) {
+    trackStateMetadata(OWNED, s);
+    PAGE_REVISION.set(s, charsPageRevision(s0));
+    POSITION_REVISION.set(s, charsPositionRevision(s0));
+  }
   return s;
 }
 
@@ -244,9 +283,13 @@ export function shareChars(s0: CharsState): CharsState {
 function ownChar(s: CharsState, id: string): CharState {
   const ch = s.chars[id]!;
   const owned = OWNED.get(s);
-  if (!owned || owned.has(id)) return ch;
-  owned.add(id);
+  if (!owned || owned.ids.has(id)) return ch;
+  owned.ids.add(id);
   const copy = cloneChar(ch);
+  if (owned.sharedTable) {
+    owned.sharedTable = false;
+    s.chars = keyedRecord(s.chars);
+  }
   s.chars[id] = copy;
   return copy;
 }
@@ -325,6 +368,7 @@ export function syncPagesInPlace(
 ): SyncResult {
   const abortedWaiters: string[] = [];
   const liveSlot = new Array<boolean>(events.length);
+  let changed = false;
 
   for (const { ev, key, index: slot } of events) {
     const index = activeIndexAt(ev, sw, key, facing, extension, conditionContext);
@@ -335,13 +379,15 @@ export function syncPagesInPlace(
 
     let existing = s.chars[ev.id];
     if (!existing) {
+      changed = true;
       // A `place` command relocates the spawn origin; MV Set Event
       // Location moves a not-yet-loaded event's future start too.
       const placed = placements[ev.id];
       const ox = placed ? placed.x : ev.x;
       const oy = placed ? placed.y : ev.y;
       const initialFacing: Dir4 = placed?.dir ? DIR4[placed.dir] : (page.dir ? DIR4[page.dir] : 0);
-      OWNED.get(s)?.add(ev.id);
+      OWNED.get(s)?.ids.add(ev.id);
+      ownTable(s);
       const appearance = appearances?.[ev.id];
       s.chars[ev.id] = {
         id: ev.id,
@@ -377,6 +423,7 @@ export function syncPagesInPlace(
         ).visible;
     const blocks = page.blocks === true;
     if (existing.visible === visible && existing.blocks === blocks && existing.pageIndex === index) continue;
+    changed = true;
     existing = ownChar(s, ev.id);
     existing.visible = visible;
     existing.blocks = blocks;
@@ -410,8 +457,14 @@ export function syncPagesInPlace(
     if (!live(id)) {
       const gone = s.chars[id]!;
       if (gone.route?.waiter) abortedWaiters.push(gone.route.waiter);
+      ownTable(s);
       delete s.chars[id];
+      changed = true;
     }
+  }
+  if (changed && PAGE_REVISION.get(s) !== undefined) {
+    PAGE_REVISION.set(s, {});
+    POSITION_REVISION.set(s, {});
   }
   return { abortedWaiters };
 }
@@ -555,6 +608,53 @@ const LEGACY_SETTINGS: Record<MotionType, ResolvedMoveSettings> = {
   approach: { ...DEFAULT_MOVE_SETTINGS, moveType: "approach" },
 };
 
+const LEGACY_TICK_IDS = new WeakMap<object, WeakMap<object, readonly string[]>>();
+const CONTROLLED_TICK_IDS = new WeakMap<object, WeakMap<object, readonly string[]>>();
+
+function cachedTickIds(
+  cache: WeakMap<object, WeakMap<object, readonly string[]>>,
+  s: CharsState,
+  key: object,
+  active: (id: string, ch: CharState) => boolean,
+): readonly string[] {
+  const revision = charsPageRevision(s);
+  let byKey = cache.get(revision);
+  if (!byKey) {
+    byKey = new WeakMap();
+    cache.set(revision, byKey);
+  }
+  let ids = byKey.get(key);
+  if (!ids) {
+    ids = Object.keys(s.chars).sort().filter((id) => active(id, s.chars[id]!));
+    byKey.set(key, ids);
+  }
+  return ids;
+}
+
+function legacyTickIds(
+  s: CharsState,
+  motion: Readonly<Record<string, MotionType>>,
+): readonly string[] {
+  return cachedTickIds(LEGACY_TICK_IDS, s, motion, (id, ch) =>
+    ch.moving || ch.route !== null || ch.thinkIn > 0 || (motion[id] ?? "static") !== "static");
+}
+
+function controlledTickIds(
+  s: CharsState,
+  motion: Readonly<Record<string, MotionType>>,
+  resolved: Readonly<Record<string, ResolvedMoveSettings>> | undefined,
+): readonly string[] {
+  const key = resolved ?? motion;
+  return cachedTickIds(CONTROLLED_TICK_IDS, s, key, (id, ch) => {
+    const settings = resolved?.[id] ?? LEGACY_SETTINGS[motion[id] ?? "static"];
+    const pageRouteNeedsSync =
+      (ch.route?.patrol === true && (settings.runtimeMoveType || settings.routeStopped)) ||
+      (ch.route === null && ch.patrol !== null && !settings.runtimeMoveType && !settings.routeStopped);
+    return ch.moving || ch.route !== null || ch.thinkIn > 0 ||
+      settings.moveType !== "static" || settings.routeStopped || pageRouteNeedsSync;
+  });
+}
+
 function occupantBlocks(
   ch: CharState,
   tx: number,
@@ -668,11 +768,15 @@ export function stepCharsInPlace(
   locked: ReadonlySet<string>,
   motion: Readonly<Record<string, MotionType>>,
   options: CharStepOptions,
+  immutable = false,
 ): string[] {
   const finishedWaiters: string[] = [];
-  const others = new Map(Object.entries(s.chars));
+  let others: Map<string, CharState> | undefined;
+  const otherChars = () => others ??= new Map(Object.entries(s.chars));
 
-  for (const id of Object.keys(s.chars).sort()) {
+  for (const id of immutable
+    ? controlledTickIds(s, motion, options.settings)
+    : Object.keys(s.chars).sort()) {
     const shared = s.chars[id]!;
     const settings = options.settings?.[id] ?? LEGACY_SETTINGS[motion[id] ?? "static"];
     const pageRouteNeedsSync =
@@ -688,7 +792,7 @@ export function stepCharsInPlace(
       ) continue;
     }
     const ch = ownChar(s, id);
-    others.set(id, ch);
+    others?.set(id, ch);
 
     // A stop command lets an already-committed tile finish, then suppresses
     // the remaining forced/page route. A waiter is released exactly once.
@@ -723,6 +827,7 @@ export function stepCharsInPlace(
       }
       ch.tx += DX[ch.stepDir];
       ch.ty += DY[ch.stepDir];
+      if (immutable) POSITION_REVISION.set(s, {});
       ch.px = ch.tx * cfg.tile;
       ch.py = ch.ty * cfg.tile;
       ch.phase = 0;
@@ -733,7 +838,7 @@ export function stepCharsInPlace(
       if (ch.route?.plan?.done) {
         const ap = ch.route.plan.approach;
         if (ap) {
-          const tc = resolveTargetCell(ap.target, player, others);
+          const tc = resolveTargetCell(ap.target, player, otherChars());
           if (tc) {
             const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
             if (f !== null && canFace(settings, true)) { ch.facing = f; ch.stepDir = f; }
@@ -757,7 +862,7 @@ export function stepCharsInPlace(
     }
 
     if (ch.route) {
-      stepRoute(s, ch, table, player, others, desiredCfg, settings, options, finishedWaiters);
+      stepRoute(s, ch, table, player, otherChars(), desiredCfg, settings, options, finishedWaiters);
       continue;
     }
 
@@ -767,9 +872,9 @@ export function stepCharsInPlace(
     }
     if (settings.runtimeWander && options.modalOpen) continue;
     if (settings.moveType === "random") {
-      randomStep(s, ch, table, player, others, desiredCfg, settings, options);
+      randomStep(s, ch, table, player, otherChars(), desiredCfg, settings, options);
     } else if (settings.moveType === "approach") {
-      approachStep(ch, table, player, others, desiredCfg, settings, options.settings);
+      approachStep(ch, table, player, otherChars(), desiredCfg, settings, options.settings);
     }
   }
 
@@ -1185,19 +1290,21 @@ export function stepCharsInPlaceLegacy(
   cfg: MovementConfig,
   locked: ReadonlySet<string>,
   motion: Readonly<Record<string, MotionType>>,
+  immutable = false,
 ): string[] {
   const frames = stepFrames(cfg);
   const finishedWaiters: string[] = [];
-  const others = new Map(Object.entries(s.chars));
+  let others: Map<string, CharState> | undefined;
+  const otherChars = () => others ??= new Map(Object.entries(s.chars));
 
-  for (const id of Object.keys(s.chars).sort()) {
+  for (const id of immutable ? legacyTickIds(s, motion) : Object.keys(s.chars).sort()) {
     const shared = s.chars[id]!;
     if (!shared.moving) {
       if (locked.has(shared.id) && !(shared.route && !shared.route.patrol)) continue;
       if (!shared.route && shared.thinkIn === 0 && (motion[id] ?? "static") === "static") continue;
     }
     const ch = ownChar(s, id);
-    others.set(id, ch);
+    others?.set(id, ch);
 
     if (ch.moving) {
       const phase = ch.phase + 1;
@@ -1210,6 +1317,7 @@ export function stepCharsInPlaceLegacy(
       }
       ch.tx += DX[ch.stepDir];
       ch.ty += DY[ch.stepDir];
+      if (immutable) POSITION_REVISION.set(s, {});
       ch.px = ch.tx * cfg.tile;
       ch.py = ch.ty * cfg.tile;
       ch.phase = 0;
@@ -1217,7 +1325,7 @@ export function stepCharsInPlaceLegacy(
       if (ch.route?.plan?.done) {
         const ap = ch.route.plan.approach;
         if (ap) {
-          const tc = resolveTargetCell(ap.target, player, others);
+          const tc = resolveTargetCell(ap.target, player, otherChars());
           if (tc) {
             const f = facingToward(ch.tx, ch.ty, tc.x, tc.y);
             if (f !== null) { ch.facing = f; ch.stepDir = f; }
@@ -1236,7 +1344,7 @@ export function stepCharsInPlaceLegacy(
       if (ch.route.waitLeft > 0) continue;
     }
     if (ch.route) {
-      stepRouteLegacy(s, ch, table, player, others, cfg, finishedWaiters);
+      stepRouteLegacy(s, ch, table, player, otherChars(), cfg, finishedWaiters);
       continue;
     }
     if (ch.thinkIn > 0) {
@@ -1244,8 +1352,8 @@ export function stepCharsInPlaceLegacy(
       if (ch.thinkIn > 0) continue;
     }
     const kind = motion[id] ?? "static";
-    if (kind === "random") randomStepLegacy(s, ch, table, player, others, cfg);
-    else if (kind === "approach") approachStepLegacy(ch, table, player, others, cfg);
+    if (kind === "random") randomStepLegacy(s, ch, table, player, otherChars(), cfg);
+    else if (kind === "approach") approachStepLegacy(ch, table, player, otherChars(), cfg);
   }
   return finishedWaiters;
 }

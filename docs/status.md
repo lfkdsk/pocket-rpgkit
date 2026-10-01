@@ -78,6 +78,13 @@ The links point to where each feature is described in detail.
 | Demo controls and web deep links | Done | Opt-in chapter starts, safe map warp and 1×/2×/4× autoplay through [`pocket-rpgkit/ui/demo`](../README.md#demo-controls-pocket-rpgkituidemo); web chapter cards support preview images and descriptions, jump the running game without a reload, and retain query-link fallbacks. Desktop has the menu but no guest argv/environment launch bridge |
 | Byte-identical replays on every host and simulation rate | Done | No wall clock and no `Math.random` in the engine |
 
+## Runtime performance
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Immutable reducer-state fast path | Done | Opt-in copy-on-write banks and bounded identity caches preserve ordinary event ordering, saves and rewind; see [Opt-in immutable-state fast path](../README.md#opt-in-immutable-state-fast-path) |
+| Retained and incremental game UI | Done | Viewport windows, actor frames, dialog leaves and battle widgets reuse stable nodes and update only changed paint inputs |
+
 ## Maps and resources
 
 | Feature | Status | Notes |
