@@ -48,7 +48,7 @@ export async function buildForDesktop(manifestPath: string): Promise<DesktopBuil
   mkdirSync(resolve(planPath, ".."), { recursive: true });
   await Bun.write(planPath, JSON.stringify(plan, null, 2) + "\n");
   await $`bun ${join(pocketjs, "tools", "build.ts")} --plan=${planPath} --project-root=${root} --outdir=${outdir}`.cwd(root);
-  await $`cargo build --release`.cwd(join(pocketjs, "hosts", "desktop"));
+  await $`cargo build --release ${desktopHostFeatures()}`.cwd(join(pocketjs, "hosts", "desktop"));
 
   const bin = join(pocketjs, "hosts", "desktop", "target", "release", "pocket-desktop-host");
   return { plan, outdir, bin };
@@ -74,4 +74,16 @@ export function desktopFlags({ plan, outdir }: DesktopBuild): string[] {
 export async function runDesktopHost(build: DesktopBuild, extra: readonly string[]): Promise<void> {
   const env = { ...process.env, RUST_LOG: process.env.RUST_LOG ?? "info" };
   await $`${build.bin} ${desktopFlags(build)} ${extra}`.env(env);
+}
+
+/** The desktop host plays sound through CPAL, which on Linux links ALSA. When
+ *  the ALSA development files are missing, build without the default
+ *  `audio-output` feature: the guest still gets the PCM audio API on a
+ *  clocked silent sink, so games run, just without sound. */
+export function desktopHostFeatures(): string[] {
+  if (process.platform !== "linux") return [];
+  const probe = Bun.spawnSync(["pkg-config", "--exists", "alsa"], { stdout: "ignore", stderr: "ignore" });
+  if (probe.exitCode === 0) return [];
+  console.warn("desktop: ALSA development files not found (pkg-config alsa); building the host without audio output");
+  return ["--no-default-features"];
 }

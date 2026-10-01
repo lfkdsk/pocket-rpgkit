@@ -56,7 +56,7 @@ if ! grep -q 'include!("kb4_quickjs_bench.rs");' "$scratch_bench/src/main.rs"; t
 fi
 
 cd "$scratch_bench"
-CARGO_TARGET_DIR="$target_dir" cargo test --release --no-run 2>&1 | grep -E "^error" && exit 1
+CARGO_TARGET_DIR="$target_dir" cargo test --no-default-features --release --no-run 2>&1 | grep -E "^error" && exit 1
 bin=$(ls -t "$target_dir"/release/deps/pocket_desktop_host-* 2>/dev/null | grep -v '\.d$' | head -1)
 if [ -z "$bin" ]; then
   echo "kb4-quickjs-bench: build produced no test binary" >&2

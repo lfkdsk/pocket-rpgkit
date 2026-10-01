@@ -31,7 +31,7 @@ if [[ -n "$seed" ]]; then
   done
 fi
 
-CARGO_TARGET_DIR="$target" cargo test --manifest-path "$scratch/Cargo.toml" --release --no-run
+CARGO_TARGET_DIR="$target" cargo test --no-default-features --manifest-path "$scratch/Cargo.toml" --release --no-run
 binary=$(find "$target/release/deps" -maxdepth 1 -type f -name 'pocket_desktop_host-*' -perm -111 -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
 test -n "$binary"
 

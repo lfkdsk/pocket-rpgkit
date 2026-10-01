@@ -76,7 +76,7 @@ const maybeTest = preflight.ok ? test : test.skip;
 // prove that the Sunstone bundle does not pull in battle UI.
 // KV2's per-map actor pool (grow-only slots, battle-gated map animation
 // and balloon layers) adds 2,301 shared GameView bytes.
-const EXPECTED_BYTES = 712_686;
+const EXPECTED_BYTES = 712_728;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

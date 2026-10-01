@@ -20,7 +20,7 @@ cp "$root/tools/kr2-quickjs-bench.rs" "$host/src/kr2-quickjs-bench.rs"
 sed -i "s#path = \"../../engine#path = \"$root/vendor/pocketjs/engine#g" "$host/Cargo.toml"
 sed -i '$a include!("kr2-quickjs-bench.rs");' "$host/src/main.rs"
 
-CARGO_TARGET_DIR="$target" cargo test \
+CARGO_TARGET_DIR="$target" cargo test --no-default-features \
   --manifest-path "$host/Cargo.toml" --release --no-run >/dev/null
 binary=$(find "$target/release/deps" -maxdepth 1 -type f \
   -name 'pocket_desktop_host-*' -perm -111 -printf '%T@ %p\n' \

@@ -1115,6 +1115,14 @@ indexed once and decoded in 20-frame slices only as host ring credit asks for
 them; loops, fades, pause/resume and ME interruption use the same reducer
 behavior for both formats. Every voice has private QOA decode state.
 
+Where it plays: the web player and the desktop host (Linux and macOS) mount
+the PocketJS audio module; the PSP host and the headless simulator implement
+it too. On Linux the desktop host links ALSA, so building it needs the ALSA
+development files (`libasound2-dev`); `bun run desktop` and `bun run editor`
+fall back to a host without audio output when they are missing, and the game
+then runs silently. The QuickJS benchmark scripts always build that silent
+host.
+
 The build-time encoder accepts interleaved signed 16-bit PCM and produces
 deterministic QOA bytes:
 

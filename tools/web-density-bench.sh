@@ -47,7 +47,7 @@ cp "$root/tools/web-density-quickjs-bench.rs" "$host/src/web_density_quickjs_ben
 printf '\ninclude!("web_density_quickjs_bench.rs");\n' >> "$host/src/main.rs"
 
 target="$scratch/target"
-CARGO_TARGET_DIR="$target" cargo test --release --no-run --manifest-path "$host/Cargo.toml" >/dev/null
+CARGO_TARGET_DIR="$target" cargo test --no-default-features --release --no-run --manifest-path "$host/Cargo.toml" >/dev/null
 bin="$(find "$target/release/deps" -maxdepth 1 -type f -name 'pocket_desktop_host-*' ! -name '*.d' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
 if [ -z "$bin" ]; then
   echo "web-density-bench: desktop host test binary was not produced" >&2

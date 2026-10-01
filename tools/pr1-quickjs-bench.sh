@@ -35,7 +35,7 @@ sed -i -E "s#path = \"\.\./\.\./([^\"]+)\"#path = \"$root/vendor/pocketjs/\1\"#g
 cp "$root/tools/pr1-quickjs-bench.rs" "$host/src/pr1_quickjs_bench.rs"
 echo 'include!("pr1_quickjs_bench.rs");' >> "$host/src/main.rs"
 
-CARGO_TARGET_DIR="$target" cargo test --release --no-run --manifest-path "$host/Cargo.toml" >/dev/null
+CARGO_TARGET_DIR="$target" cargo test --no-default-features --release --no-run --manifest-path "$host/Cargo.toml" >/dev/null
 bin="$(find "$target/release/deps" -maxdepth 1 -type f -name 'pocket_desktop_host-*' ! -name '*.d' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
 if [ -z "$bin" ]; then
   echo "pr1-quickjs-bench: desktop host test binary was not produced" >&2
