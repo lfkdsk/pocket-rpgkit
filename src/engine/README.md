@@ -143,7 +143,8 @@ Conventions:
 - **Place and initial facing:** the `place` command relocates the player,
   `"this"`, or `{event}` to a tile (and optional facing); a page `dir` sets
   the facing the character shows when that page spawns it or on a page
-  switch.
+  switch. Routes and turns published after a `place` on the same tick are
+  kept (see the session fold's same-tick order below).
 - **Movement controls:** page defaults are `moveSpeed:5` (MV grade 1-6),
   `moveFrequency:5` (MV grade 1-5 on the fixed reference-tick clock),
   `directionFix:false`, `through:false`, and
@@ -289,6 +290,25 @@ state = stepSession(session, state, {          // once per virtual frame
    while keeping `state.sw`; `moveRoute` installs on an NPC (or the
    player) and resumes its fiber when the route lands; `battle` derives one
    seed from `state.sw.rng` and parks its fiber in `state.scene`.
+
+Same-tick `place` / `moveRoute` / `moveControl` order:
+
+- The requests a tick's fold published apply in command order, across
+  fibers. A `place` stops (and resumes the waiter of) the route its target
+  was running or was given *before* the `place`; a route, turn, or control
+  published *after* it is installed on the placed character and is kept.
+  So `place` → `moveRoute` (waited or not) walks from the new cell, and
+  `place` → face turns the placed character, for the player and for events.
+- A request aimed at an event whose page the same fold switched on (for
+  example: set the variable that enables an NPC's page, `place` it, route
+  it) is applied after moving the character onto that page, so the next
+  tick's page sync does not tear the route down again. A request published
+  while the old page was still active (the fiber flips the page
+  afterwards) keeps the old rule: the page switch on the next tick resets
+  it.
+- These requests exist only within the tick that published them: a save
+  point never contains them, and rewind and every host rate (60/30/20 Hz)
+  replay them identically.
 
 `SessionOptions.immutableState` is an opt-in ownership contract. When true,
 every published `SessionState` is read-only: the fold copy-on-writes only the

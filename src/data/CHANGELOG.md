@@ -623,5 +623,29 @@ v1.0/v1.1 document stays valid; the new command is optional.
   The rules and the full list are under
   [Schema identities](#schema-identities).
 
+## v1 runtime fix — 2026-10-01 (same-tick `place` and move routes)
+
+No format change. Behavior fix in the session fold:
+
+- `place` and the `moveRoute` / `moveControl` requests published on the same
+  reference tick now apply in command order. Previously every route was
+  installed first and every `place` applied afterwards, so a `place`
+  followed on the same tick by a route or a turn for the same character
+  (event or player) discarded that route and resumed its waiter at once.
+  A `place` still stops a route that was running or was queued before it.
+- A route, turn, control, or `place` aimed at an event whose page the same
+  tick switched on (a fiber sets the variable that enables an NPC's page,
+  places it, and routes it) is applied on that new page; previously the
+  next tick's page sync tore the route down. Requests published before the
+  page flip keep the reset-on-page-switch rule.
+- Projects that never publish a `place` together with a route for the same
+  character on one tick are unaffected: Sunstone, Meadow, Grow, Wander, and
+  the showcase reproduce their previous character and movement states.
+  Content that does, such as an imported cutscene that spawns an NPC and
+  walks it in, now plays the walk, so recorded journeys and tapes covering
+  such scenes need to be re-recorded.
+- The schema identity is unchanged. The fix applies to every accepted
+  identity alike, so `MAP_SCHEMA_COMPATIBLE_HASHES` is unaffected.
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

@@ -37,7 +37,7 @@ The links point to where each feature is described in detail.
 | Player and NPC movement over the passage table, with one-sided entry/exit edges and NPC collision | Done | |
 | Move routes | Done | Moves, turns, waits, deterministic `pathTo` and `approach` |
 | Run-time movement control (`moveControl`) | Done | Autonomous mode, stop, bounded wander, and speed/run/frequency/collision/facing overrides. Projects that never use it run a separate loop and pay nothing per frame |
-| Relocating the player or an event (`place`) | Done | |
+| Relocating the player or an event (`place`) | Done | Routes, turns, and controls a fiber publishes after a `place` on the same tick are kept, including for an NPC whose page that tick switched on. See [same-tick order](../src/engine/README.md#p1-session-multi-map-fold) |
 | Followers and vehicles | Planned | |
 
 ## Presentation

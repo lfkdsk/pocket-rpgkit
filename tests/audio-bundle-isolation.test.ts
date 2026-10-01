@@ -37,10 +37,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // bytes to Meadow and the WAV fixture and 1,202 to Sunstone. Narrowing that
 // list to one identity and naming the accepted identities in the refusal
 // message saves 314 bytes in Meadow and the WAV fixture and 180 in Sunstone.
-// Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 499_877;
-const EXPECTED_SUNSTONE_QOA_BYTES = 772_556;
-const EXPECTED_WAV_FIXTURE_BYTES = 638_088;
+// Applying same-tick place/moveRoute requests in command order (with the
+// publish-time target page) adds 2,745 shared interpreter/session bytes to
+// all three. Re-measure after every shared-path change.
+const EXPECTED_MEADOW_BYTES = 502_622;
+const EXPECTED_SUNSTONE_QOA_BYTES = 775_301;
+const EXPECTED_WAV_FIXTURE_BYTES = 640_833;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

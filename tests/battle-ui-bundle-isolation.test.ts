@@ -96,7 +96,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // membership check shared by createSession and the save decoder) add 1,202
 // shared bytes; narrowing the list to one identity and naming the accepted
 // identities in the refusal message saves 180 of them.
-const EXPECTED_BYTES = 772_556;
+// Applying same-tick place/moveRoute requests in command order adds 2,745
+// shared interpreter/session bytes.
+const EXPECTED_BYTES = 775_301;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

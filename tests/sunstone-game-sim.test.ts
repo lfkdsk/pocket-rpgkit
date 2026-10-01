@@ -437,11 +437,12 @@ simDescribe("sunstone — render budget", () => {
     // dialog/battle paint paths and generic-scene merge guards add 31,070 B:
     // 767,170 B measured. Choice-row icons add 4,364 B of shared schema,
     // reducer and DialogBox hook code (the icon box itself is opt-in):
-    // 771,534 B. The
-    // ui/demo and ui/audio
+    // 771,534 B. The compatible schema identity list adds about 1 KB, and
+    // applying same-tick place/route requests in command order adds 2,745 B:
+    // 775,301 B measured. The ui/demo and ui/audio
     // input-graph tests separately prove non-opted-in code stays out; the
     // bound keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(775_000);
+    expect(jsBytes).toBeLessThan(778_000);
   });
 });
 

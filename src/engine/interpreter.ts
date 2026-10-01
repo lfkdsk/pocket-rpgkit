@@ -977,6 +977,13 @@ export interface InterpInput {
    *  the derived worldIdle condition. Low-level interpreter users may omit
    *  it when they have no scene, fade, player route, or menu. */
   worldIdleBlockers?: WorldIdleBlockers;
+  /** The session's live characters (event id -> current page index). A
+   *  route/place/control request aimed at an event whose active page at
+   *  publish time differs from its character's records that page
+   *  (PendingMoveRoute.page) so the session can apply it to the page the
+   *  fold just switched on. Omitted by low-level callers that never drain
+   *  requests. */
+  liveChars?: Readonly<Record<string, { pageIndex: number }>>;
 }
 
 export interface TextModal {
@@ -1141,6 +1148,11 @@ export interface PendingMoveRoute {
    *  when the route lands; false: fire-and-forget, the fiber already
    *  advanced past the command. */
   wait: boolean;
+  /** Map-event targets only: the target's active page when the request
+   *  was published, present only when it differs from the page of the
+   *  target's live character (InterpInput.liveChars). The session uses it
+   *  to apply a request to a page the same fold just switched on. */
+  page?: number;
 }
 
 export interface PendingMoveControl {
@@ -1148,6 +1160,11 @@ export interface PendingMoveControl {
   target: "player" | { event: string };
   eventId: string;
   control: MoveControl;
+  /** Map-event targets only: the target's active page when the request
+   *  was published, present only when it differs from the page of the
+   *  target's live character (InterpInput.liveChars). The session uses it
+   *  to apply a request to a page the same fold just switched on. */
+  page?: number;
 }
 
 export type PendingMoveOperation = PendingMoveRoute | PendingMoveControl;
@@ -1174,18 +1191,26 @@ const EMPTY_PENDING_SCENES: PendingScene[] = [];
 /** A `place` command published on THIS step. The session
  *  relocates the matching CharState after the fold; the durable position
  *  also lands in InterpState.placements so a later-created character (a
- *  page that only becomes active afterwards) spawns at the new cell. */
+ *  page that only becomes active afterwards) spawns at the new cell.
+ *  `afterRoutes` is how many pendingMoveRoutes entries were published
+ *  before this placement on the same step (omitted when none): the session
+ *  interleaves both queues in command order, so a placement cancels the
+ *  routes queued before it but not the ones queued after it. `page` is the
+ *  event target's active page at publish time, as on PendingMoveRoute. */
 export type PendingPlacement = {
   /** Existing event placement spelling is retained for old reducer traces. */
   eventId: string;
   x: number;
   y: number;
   dir: Dir | null;
+  afterRoutes?: number;
+  page?: number;
 } | {
   target: "player";
   x: number;
   y: number;
   dir: Dir | null;
+  afterRoutes?: number;
 };
 
 interface Fiber {
@@ -2083,6 +2108,41 @@ function indexedEventsAt(w: World, cell: Cell): readonly GameEvent[] {
 
 function worldEventById(w: World, id: string): GameEvent | undefined {
   return w.eventsById?.get(id) ?? (w.map.events ?? []).find((ev) => ev.id === id);
+}
+
+/** Active page index of map event `eventId` under `sw` (-1: no active page
+ *  or no such event). */
+export function eventPageAt(
+  w: World,
+  sw: SwitchState,
+  eventId: string,
+  facing?: Facing,
+  extension?: ExtensionScope,
+  context?: ConditionContext,
+): number {
+  const ev = worldEventById(w, eventId);
+  return ev ? activeIndexAt(ev, sw, eventKey(w.map.id, eventId), facing, extension, context) : -1;
+}
+
+/** `{ page }` for a request published now when its target's active page
+ *  differs from its live character's; see PendingMoveRoute.page. */
+function publishedPage(
+  s: InterpState,
+  w: World,
+  input: InterpInput,
+  extension: ExtensionScope,
+  eventId: string,
+): { page: number } | undefined {
+  if (!input.liveChars) return undefined;
+  const page = eventPageAt(
+    w,
+    s.sw,
+    eventId,
+    input.facing,
+    extension,
+    liveConditionContext(s, w, input.worldIdleBlockers, input.eventPages),
+  );
+  return page === (input.liveChars[eventId]?.pageIndex ?? -1) ? undefined : { page };
 }
 
 /** Events that can react this frame, in deterministic event-id order.
@@ -3980,12 +4040,13 @@ function runFiber(
       }
       case "place": {
         const p = { x: ins.x, y: ins.y, dir: ins.dir };
+        const order = s.pendingMoveRoutes.length > 0 ? { afterRoutes: s.pendingMoveRoutes.length } : undefined;
         if (ins.target === "player") {
-          s.pendingPlacements.push({ target: "player", ...p });
+          s.pendingPlacements.push({ target: "player", ...p, ...order });
         } else {
           const eventId = ins.target === "this" ? f.key.split("/").pop()! : ins.target.event;
           ownInterpRecord(s, "placements")[eventId] = p;
-          s.pendingPlacements.push({ eventId, ...p });
+          s.pendingPlacements.push({ eventId, ...p, ...order, ...publishedPage(s, w, input, extension, eventId) });
         }
         top.pc++;
         break;
@@ -4183,6 +4244,7 @@ function runFiber(
           : ins.target === "this" ? { event: ownEventId }
           : ins.target;
         const eventId = target === "player" ? ownEventId : target.event;
+        const page = target === "player" ? undefined : publishedPage(s, w, input, extension, eventId);
         if (!ins.wait) {
           // Fire-and-forget route: P1④ walks it, this fiber continues now.
           s.pendingMoveRoutes.push({
@@ -4191,6 +4253,7 @@ function runFiber(
             eventId,
             route: ins.route,
             wait: false,
+            ...page,
           });
           top.pc++;
           break;
@@ -4202,6 +4265,7 @@ function runFiber(
           eventId,
           route: ins.route,
           wait: true,
+          ...page,
         });
         return;
       }
@@ -4216,6 +4280,7 @@ function runFiber(
           target,
           eventId: target === "player" ? ownEventId : target.event,
           control: ins.control,
+          ...(target === "player" ? undefined : publishedPage(s, w, input, extension, target.event)),
         });
         top.pc++;
         break;

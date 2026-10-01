@@ -45,6 +45,7 @@ import {
   continueBattle,
   continueExternal,
   createInterpState,
+  eventPageAt,
   createWorld,
   fiberIsExternal,
   isBusy,
@@ -67,6 +68,8 @@ import {
   type InterpState,
   type SoundCue,
   type PendingBattle,
+  type PendingMoveOperation,
+  type PendingPlacement,
   type PendingScene,
   type SwitchState,
   type WorldIdleBlockers,
@@ -2088,6 +2091,7 @@ function stepReferenceTick(
     ...(liveEventCells ? { liveEventCells } : {}),
     eventPages,
     worldIdleBlockers: sessionWorldIdleBlockers(s),
+    liveChars: s.chars.chars,
   };
   s.ext = stepInterpWithExtensionsInPlace(
     world,
@@ -2128,75 +2132,24 @@ function stepReferenceTick(
     s.move.walking = false;
   }
 
-  // 5. Consume published external requests. Routes drain in command order
-  //    so the fire-and-forget player turn installs before the waited
-  //    self-route parks the fiber.
-  for (const req of s.interp.pendingMoveRoutes) {
-    if ("control" in req) {
-      applyTargetMoveControl(s, req.target, req.control);
-      continue;
-    }
-    if (req.target === "player") {
-      // A route replacing one still running releases the parked waiter
-      // instead of orphaning it, and takes over at a tile boundary: a
-      // command face must not inherit the mover's committed interpolation
-      // and redirect it into a cell the new direction never checked.
-      if (s.playerRoute?.waiter) {
-        s.interp = continueExternal(s.interp, s.playerRoute.waiter);
+  // 5. Consume published external requests in command order. Routes drain
+  //    in publish order so the fire-and-forget player turn installs before
+  //    the waited self-route parks the fiber; each `place` applies at its
+  //    own position in that order, so it cancels the routes queued before
+  //    it and never the ones a fiber queued after it.
+  const routes = s.interp.pendingMoveRoutes;
+  const placements = s.interp.pendingPlacements;
+  if (routes.length > 0 || placements.length > 0) {
+    let next = 0;
+    for (let i = 0; i <= routes.length; i++) {
+      while (next < placements.length && (i === routes.length || (placements[next]!.afterRoutes ?? 0) <= i)) {
+        const p = placements[next++]!;
+        syncRequestedPage(sess, s, keyed, syncFacing, p);
+        applyPlacement(sess, s, map, p);
       }
-      if (s.interp.moveControls) resumeMoveRoute(s.interp.moveControls.player);
-      s.playerRoute = {
-        steps: req.route.steps,
-        pc: 0,
-        repeat: req.route.repeat,
-        skippable: req.route.skippable,
-        waiter: req.wait ? req.fiber : null,
-        phase: 0,
-        dir: s.move.facing,
-        takeOver: s.move.moving,
-        plan: null,
-        pathRetriesLeft: null,
-      };
-    } else {
-      // A route to an event with no live character (no active page, or it
-      // was erased) cannot run: resume a waiting caller immediately rather
-      // than park its external fiber forever (MV: a Set Movement Route on
-      // an absent map event is a no-op).
-      if (!s.chars.chars[req.eventId]) {
-        if (req.wait) s.interp = continueExternal(s.interp, req.fiber);
-        continue;
-      }
-      const override = s.interp.moveControls?.events[req.eventId];
-      if (override) resumeMoveRoute(override);
-      const installed = installRoute(
-        s.chars,
-        req.eventId,
-        req.route,
-        req.wait ? req.fiber : null,
-        sess.cfg,
-      );
-      s.chars = installed.state;
-      if (installed.displacedWaiter) {
-        s.interp = continueExternal(s.interp, installed.displacedWaiter);
-      }
-    }
-  }
-  // 5b. `place` requests: relocate the live character now; the
-  //     durable placement record the interpreter already holds makes a
-  //     later-created character spawn at the new tile on the next sync.
-  for (const p of s.interp.pendingPlacements) {
-    if ("target" in p) {
-      if (!inMapBounds(map.width, map.height, p.x, p.y)) continue;
-      stopPlayerRoute(s);
-      const facing = p.dir === null ? s.move.facing : DIR_INDEX[p.dir];
-      s.move = initialMovement(p.x, p.y, facing, sess.cfg);
-      continue;
-    }
-    if (!inMapBounds(map.width, map.height, p.x, p.y)) continue;
-    const placed = placeChar(s.chars, p.eventId, p.x, p.y, p.dir, sess.cfg);
-    s.chars = placed.state;
-    if (placed.displacedWaiter) {
-      s.interp = continueExternal(s.interp, placed.displacedWaiter);
+      if (i === routes.length) break;
+      syncRequestedPage(sess, s, keyed, syncFacing, routes[i]!);
+      applyMoveRequest(sess, s, routes[i]!);
     }
   }
   s.sw = s.interp.sw;
@@ -2227,6 +2180,122 @@ function stepReferenceTick(
   const result: { x: number; y: number; cues?: SoundCue[] } = { x: s.move.tx, y: s.move.ty };
   if (tickCues) result.cues = tickCues;
   return result;
+}
+
+/** Before a place/route/control request applies, move its target onto the
+ *  page it was published for when the fold itself just switched that page
+ *  on. Without it a fiber that turns an NPC's page on, places it and routes
+ *  it would see the route installed now and torn down by the next tick's
+ *  page sync. A request published while the old page was still active (its
+ *  fiber flips the page afterwards) is left alone: the next sync resets it
+ *  with the page it belonged to, as before. */
+function syncRequestedPage(
+  sess: Session,
+  s: SessionState,
+  keyed: ReturnType<typeof keyedEventsOf>,
+  facing: Facing,
+  req: PendingMoveOperation | PendingPlacement,
+): void {
+  if (!("eventId" in req) || req.page === undefined || req.page < 0) return;
+  const { eventId: id, page } = req;
+  if (s.chars.chars[id]?.pageIndex === page) return;
+  const world = sess.worlds.get(s.mapId)!;
+  const map = sess.maps.get(s.mapId)!;
+  const extension: ExtensionScope = { runtime: sess.extensions, ext: s.ext };
+  const eventPages = world.needsEventPages === true || s.interp.eventAppearances !== undefined
+    ? eventPagesOf(map, s.chars)
+    : undefined;
+  const context = sessionConditionContext(world, s, eventPages);
+  if (eventPageAt(world, s.sw, id, facing, extension, context) !== page) return;
+  const erased = s.interp.erased;
+  const synced = syncPagesInPlace(
+    s.chars,
+    keyed.events.filter(({ ev }) => ev.id === id),
+    keyed.slotsById,
+    s.sw,
+    sess.cfg,
+    (key) => Object.prototype.hasOwnProperty.call(erased, key),
+    s.interp.placements,
+    facing,
+    extension,
+    undefined,
+    true,
+    context,
+    s.interp.eventAppearances,
+    false,
+  );
+  for (const waiter of synced.abortedWaiters) {
+    s.interp = continueExternal(s.interp, waiter);
+  }
+}
+
+function applyMoveRequest(sess: Session, s: SessionState, req: PendingMoveOperation): void {
+  if ("control" in req) {
+    applyTargetMoveControl(s, req.target, req.control);
+    return;
+  }
+  if (req.target === "player") {
+    // A route replacing one still running releases the parked waiter
+    // instead of orphaning it, and takes over at a tile boundary: a
+    // command face must not inherit the mover's committed interpolation
+    // and redirect it into a cell the new direction never checked.
+    if (s.playerRoute?.waiter) {
+      s.interp = continueExternal(s.interp, s.playerRoute.waiter);
+    }
+    if (s.interp.moveControls) resumeMoveRoute(s.interp.moveControls.player);
+    s.playerRoute = {
+      steps: req.route.steps,
+      pc: 0,
+      repeat: req.route.repeat,
+      skippable: req.route.skippable,
+      waiter: req.wait ? req.fiber : null,
+      phase: 0,
+      dir: s.move.facing,
+      takeOver: s.move.moving,
+      plan: null,
+      pathRetriesLeft: null,
+    };
+    return;
+  }
+  // A route to an event with no live character (no active page, or it
+  // was erased) cannot run: resume a waiting caller immediately rather
+  // than park its external fiber forever (MV: a Set Movement Route on
+  // an absent map event is a no-op).
+  if (!s.chars.chars[req.eventId]) {
+    if (req.wait) s.interp = continueExternal(s.interp, req.fiber);
+    return;
+  }
+  const override = s.interp.moveControls?.events[req.eventId];
+  if (override) resumeMoveRoute(override);
+  const installed = installRoute(
+    s.chars,
+    req.eventId,
+    req.route,
+    req.wait ? req.fiber : null,
+    sess.cfg,
+  );
+  s.chars = installed.state;
+  if (installed.displacedWaiter) {
+    s.interp = continueExternal(s.interp, installed.displacedWaiter);
+  }
+}
+
+/** A `place` request: relocate the live character now; the durable
+ *  placement record the interpreter already holds makes a later-created
+ *  character spawn at the new tile on the next sync. */
+function applyPlacement(sess: Session, s: SessionState, map: MapDef, p: PendingPlacement): void {
+  if (!inMapBounds(map.width, map.height, p.x, p.y)) return;
+  if ("target" in p) {
+    stopPlayerRoute(s);
+    const facing = p.dir === null ? s.move.facing : DIR_INDEX[p.dir];
+    s.move = initialMovement(p.x, p.y, facing, sess.cfg);
+    return;
+  }
+  const placed = placeChar(s.chars, p.eventId, p.x, p.y, p.dir, sess.cfg);
+  s.chars = placed.state;
+  if (placed.displacedWaiter) {
+    s.interp = continueExternal(s.interp, placed.displacedWaiter);
+  }
 }
 
 function applyTransfer(
