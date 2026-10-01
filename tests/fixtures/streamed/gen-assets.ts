@@ -142,6 +142,7 @@ writeFileSync(
     `  layers: {\n` +
     `    ground: { placement: "ground", mode: "streamed", variants: { sparse: { refs: { ${q(FIELD_ID)}: ${JSON.stringify(layers.get(FIELD_ID)!.upper.refs)} }, columns: { ${q(FIELD_ID)}: ${layers.get(FIELD_ID)!.upper.columns} }, chunkPx: ${STREAM_CHUNK} } } },\n` +
     `    upper: { placement: "upper", mode: "streamed", variants: {} },\n` +
+    `    "extra-stream": { placement: "below", mode: "streamed", variants: { on: { refs: { ${q(FIELD_ID)}: ${JSON.stringify(layers.get(FIELD_ID)!.ground.refs)} }, columns: { ${q(FIELD_ID)}: ${layers.get(FIELD_ID)!.ground.columns} }, chunkPx: ${STREAM_CHUNK}, loadBudget: 1 } } },\n` +
     `  },\n` +
     `};\n`,
 );

@@ -13,7 +13,7 @@
 // loadTileTexture handle per resident chunk and bind that same handle to all
 // visible row slices; slicing never duplicates a texture upload.
 
-import { onCleanup, type JSX as SolidJSX } from "solid-js";
+import { onCleanup, type Accessor, type JSX as SolidJSX } from "solid-js";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { getOps } from "@pocketjs/framework/host";
 import { freeTileTexture, loadTileTexture } from "../../vendor/pocketjs/framework/src/tiles.ts";
@@ -94,6 +94,9 @@ export interface OccludingUpperLayerProps {
   worldWidth?: number;
   camera: () => ChunkPoint;
   viewport: () => ChunkViewport;
+  /** While false, the layer's per-frame pool sync pauses (the subtree stays
+   *  mounted and hidden). Omit for always active. */
+  active?: Accessor<boolean>;
   debugName?: string;
   /** Selected prepackaged upper source. undefined keeps the legacy source. */
   source?: () => { key: string; variant?: MapLayerVariant };
@@ -527,6 +530,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   startupProfileMark("ui-upper:pooled");
 
   onFrame(() => {
+    if (props.active && !props.active()) return;
     const nextVisible = props.visible?.() ?? true;
     if (upperVisible !== nextVisible) {
       upperVisible = nextVisible;

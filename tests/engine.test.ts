@@ -265,6 +265,16 @@ describe("deepClone — reducer snapshot without structuredClone", () => {
     expect(out.held).toBe("A");
   });
 
+  test("keeps an own __proto__ key as data without changing the output prototype", () => {
+    const src = JSON.parse('{"__proto__":{"polluted":true},"safe":1}') as Record<string, unknown>;
+    const out = deepClone(src);
+
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(out, "__proto__")).toBe(true);
+    expect(out.__proto__).toEqual({ polluted: true });
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+
   test("passes through null and primitives", () => {
     expect(deepClone(null)).toBeNull();
     expect(deepClone(7)).toBe(7);

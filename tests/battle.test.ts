@@ -556,9 +556,12 @@ describe("KB2 battle processing", () => {
     const early = new AttractController(p, [], options);
     early.startPlay();
     while (!early.state.scene) early.step(0);
+    const entryClock = early.worldAnimationTick();
     early.step(0);
+    expect(early.worldAnimationTick()).toBe(entryClock);
     early.step(L);
     expect(early.state.scene).toBeNull();
+    expect(early.worldAnimationTick()).toBeLessThan(entryClock);
 
     const baseline = new AttractController(p, [], options);
     const rewound = new AttractController(p, [], options);
@@ -570,6 +573,7 @@ describe("KB2 battle processing", () => {
       baseline.step(0);
       rewound.step(0);
     }
+    const frozenClock = baseline.worldAnimationTick();
     tape.push(CIRCLE);
     baseline.step(CIRCLE);
     rewound.step(CIRCLE);
@@ -581,6 +585,8 @@ describe("KB2 battle processing", () => {
       baseline.step(0);
       rewound.step(0);
     }
+    expect(baseline.worldAnimationTick()).toBe(frozenClock);
+    expect(rewound.worldAnimationTick()).toBe(frozenClock);
     tape.push(0, 0);
     baseline.step(0);
     baseline.step(0);
@@ -591,5 +597,6 @@ describe("KB2 battle processing", () => {
     expect(rewound.state.scene?.kind).toBe("battle");
     for (const buttons of tape.slice(-4)) rewound.step(buttons);
     expect(rewound.state).toEqual(baseline.state);
+    expect(rewound.worldAnimationTick()).toBe(baseline.worldAnimationTick());
   });
 });

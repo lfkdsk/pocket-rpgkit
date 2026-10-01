@@ -4,7 +4,7 @@
 // they fall outside that ring. Image nodes stay in a small pool so scrolling
 // and map swaps do not churn the native scene tree.
 
-import { onCleanup, type JSX as SolidJSX } from "solid-js";
+import { onCleanup, type Accessor, type JSX as SolidJSX } from "solid-js";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { getOps } from "@pocketjs/framework/host";
 import { jump } from "@pocketjs/framework/animation";
@@ -53,6 +53,9 @@ export interface StreamedChunkLayerProps {
   margin?: number;
   /** Loads per frame for this layer. Omit for no limit; zero pauses uploads. */
   loadBudget?: number;
+  /** While false, the layer's per-frame residency sync pauses (the subtree
+   *  stays mounted and hidden). Omit for always active. */
+  active?: Accessor<boolean>;
   /** Invalidates the current map's refs when a prepackaged variant changes. */
   sourceKey?: string;
   /** Keeps residency and the node pool warm while hiding only paint. */
@@ -178,6 +181,7 @@ export function StreamedChunkLayer(props: StreamedChunkLayerProps): SolidJSX.Ele
   };
 
   const sync = (): void => {
+    if (props.active && !props.active()) return;
     const nextVisible = props.visible !== false;
     if (visible !== nextVisible) {
       visible = nextVisible;

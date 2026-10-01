@@ -21,19 +21,41 @@ declare global {
   // eslint-disable-next-line no-var
   var __r2Battle: boolean | undefined;
   // eslint-disable-next-line no-var
+  var __r2BattleModal: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __r2TransparentBattle: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __r2BattleDelay: number | undefined;
+  // eslint-disable-next-line no-var
+  var __r2StaticBattle: boolean | undefined;
+  // eslint-disable-next-line no-var
   var __r2FatalTransfer: boolean | undefined;
   // eslint-disable-next-line no-var
   var __r2Kv1: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __r2Rewind: boolean | undefined;
 }
 
 const stats: R2UiStats = {};
 globalThis.__r2UiStats = stats;
-const battleFixture = globalThis.__r2Battle === true;
+const battleModalFixture = globalThis.__r2BattleModal === true;
+const transparentBattleFixture = globalThis.__r2TransparentBattle === true;
+const battleFixture = globalThis.__r2Battle === true || battleModalFixture;
 const fatalTransferFixture = globalThis.__r2FatalTransfer === true;
+// KB6 bench: keep the world steady-mounted for this many seconds before the
+// autorun battle opens, so the entry frame is measured against a warm world.
+const battleDelay = Math.max(0, globalThis.__r2BattleDelay ?? 0);
+const staticBattleFixture = globalThis.__r2StaticBattle === true;
 const kv1Fixture = globalThis.__r2Kv1 === true;
+const rewindFixture = globalThis.__r2Rewind === true;
 globalThis.__r2Battle = undefined;
+globalThis.__r2BattleModal = undefined;
+globalThis.__r2TransparentBattle = undefined;
+globalThis.__r2BattleDelay = undefined;
+globalThis.__r2StaticBattle = undefined;
 globalThis.__r2FatalTransfer = undefined;
 globalThis.__r2Kv1 = undefined;
+globalThis.__r2Rewind = undefined;
 
 const project: Project = kv1Fixture
   ? KV1_UI_PROJECT
@@ -43,18 +65,37 @@ const project: Project = kv1Fixture
       maps: R2_UI_PROJECT.maps.map((map, index) => index === 0
         ? {
             ...map,
-            events: [{
+            events: [
+              ...(battleModalFixture ? [{
+                id: "battle-modal-fixture",
+                x: 2,
+                y: 2,
+                pages: [{
+                  trigger: "parallel" as const,
+                  commands: [{
+                    op: "choices" as const,
+                    prompt: "PARKED MAP CHOICE",
+                    options: [
+                      { text: "Wait here", commands: [] },
+                      { text: "Keep waiting", commands: [] },
+                    ],
+                  }],
+                }],
+              }] : []),
+              {
               id: "battle-scene-fixture",
               x: 1,
               y: 1,
               pages: [
                 {
                   trigger: "autorun" as const,
-                  commands: [{
-                    op: "battle" as const,
-                    setup: { enemyHp: 1 },
-                    onWin: [{ op: "switch" as const, id: "battle-ui-won", value: true }],
-                  }, { op: "switch" as const, id: "battle-ui-done", value: true }],
+                  commands: [
+                    ...(battleDelay > 0 ? [{ op: "wait" as const, seconds: battleDelay }] : []),
+                    {
+                      op: "battle" as const,
+                      setup: { enemyHp: 1 },
+                      onWin: [{ op: "switch" as const, id: "battle-ui-won", value: true }],
+                    }, { op: "switch" as const, id: "battle-ui-done", value: true }],
                 },
                 {
                   condition: { switch: "battle-ui-done" },
@@ -62,7 +103,9 @@ const project: Project = kv1Fixture
                   commands: [],
                 },
               ],
-            }, ...(map.events ?? [])],
+              },
+              ...(staticBattleFixture ? [] : map.events ?? []),
+            ],
           }
         : map),
     }
@@ -103,6 +146,7 @@ function ToyBattleScene(props: BattleSceneViewProps) {
         width: props.width,
         height: props.height,
         bgColor: "#39164f",
+        ...(transparentBattleFixture ? { opacity: 0.6 } : {}),
       }}
       debugName="toy-battle-scene"
     >
@@ -125,6 +169,7 @@ mount(() => (
     assets={GAME_ASSETS}
     battle={toyBattleRules}
     battleScene={ToyBattleScene}
+    attractTape={rewindFixture ? [] : undefined}
     onAnimatedStats={(layer, value) => {
       stats[layer] = value;
     }}

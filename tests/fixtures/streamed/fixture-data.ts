@@ -118,3 +118,31 @@ export const STREAMED_KV1_PROJECT: Project = {
     map(HARBOR_ID, HARBOR_SIZE, [returnEvent()]),
   ],
 };
+
+/** A warm streamed world that enters battle with the extra layer still
+ * loading. Its one-tick wait lets exactly one extra chunk upload first. */
+export const STREAMED_BATTLE_PROJECT: Project = {
+  ...STREAMED_PROJECT,
+  title: "Streamed battle pause fixture",
+  maps: [
+    map(FIELD_ID, FIELD_SIZE, [{
+      id: "stream-battle-controller",
+      x: 3,
+      y: 10,
+      pages: [{
+        trigger: "autorun",
+        commands: [
+          { op: "layer", layer: "extra-stream", variant: "on", visible: true },
+          { op: "wait", seconds: 1 / 60 },
+          { op: "battle", setup: { enemyHp: 1 } },
+          { op: "switch", id: "stream.battle.done", value: true },
+        ],
+      }, {
+        condition: { switch: "stream.battle.done" },
+        trigger: "action",
+        commands: [],
+      }],
+    }]),
+    map(HARBOR_ID, HARBOR_SIZE, [returnEvent()]),
+  ],
+};

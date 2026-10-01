@@ -381,7 +381,8 @@ Tuxemon:
 - the absolute interpreter clock remains rate-stable while relative wait and
   typewriter timers are shifted with it, so paused commands do not elapse;
 - `GameView` hides the map/dialog tree and renders the registered battle
-  component from `{ state, width, height }` only.
+  component from `{ state, width, height }` only; a parked map modal remains
+  in reducer state, but the scene owns confirm/cancel until it closes.
 
 Pass `scene: { worldContinues: true }` to `createSession`, `GameView`, or
 `AttractController` to opt into background map simulation. Any battle request

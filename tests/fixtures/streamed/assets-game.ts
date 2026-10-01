@@ -28,5 +28,6 @@ export const GAME_ASSETS: GameAssets = {
   layers: {
     ground: { placement: "ground", mode: "streamed", variants: { sparse: { refs: { "wide-field": [null,"ui:tile.fixture-wide-field-upper#1",null,null,null,null,null,null,null,null,null,null] }, columns: { "wide-field": 4 }, chunkPx: 256 } } },
     upper: { placement: "upper", mode: "streamed", variants: {} },
+    "extra-stream": { placement: "below", mode: "streamed", variants: { on: { refs: { "wide-field": ["ui:tile.fixture-wide-field-ground#0","ui:tile.fixture-wide-field-ground#1","ui:tile.fixture-wide-field-ground#2","ui:tile.fixture-wide-field-ground#3","ui:tile.fixture-wide-field-ground#4","ui:tile.fixture-wide-field-ground#5","ui:tile.fixture-wide-field-ground#6","ui:tile.fixture-wide-field-ground#7","ui:tile.fixture-wide-field-ground#8","ui:tile.fixture-wide-field-ground#9","ui:tile.fixture-wide-field-ground#10","ui:tile.fixture-wide-field-ground#11"] }, columns: { "wide-field": 4 }, chunkPx: 256, loadBudget: 1 } } },
   },
 };

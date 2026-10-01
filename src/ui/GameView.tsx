@@ -25,7 +25,7 @@
 // the world camera commit through one precompiled jump batch; chunk images
 // stay mounted while the player walks.
 
-import { batch, createSignal, onMount, Show, type Accessor, type Component } from "solid-js";
+import { batch, createSignal, onCleanup, onMount, Show, type Accessor, type Component } from "solid-js";
 import { Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createJumpBatch, type JumpBatch } from "@pocketjs/framework/animation";
 import { createElement, setProp } from "@pocketjs/framework/renderer";
@@ -37,7 +37,7 @@ import { getOps, hostViewport } from "@pocketjs/framework/host";
 import { clampCamera, followCamera } from "../engine/camera.ts";
 import { deepClone } from "../engine/clone.ts";
 import type { ExtensionOptions, ExtensionRuntime } from "../engine/extensions.ts";
-import { cloneScene, type BattleRules, type SceneSlot } from "../engine/battle.ts";
+import { cloneScene, type BattleRules } from "../engine/battle.ts";
 import { centerOffset } from "../engine/viewport.ts";
 import {
   createSession,
@@ -98,6 +98,7 @@ import { ChunkLayer } from "./ChunkLayer.tsx";
 import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
 import { startupProfileMark } from "../startup-profile.ts";
+import { frameProfileMark } from "../frame-profile.ts";
 
 type Sprites = Record<string, SpriteDef>;
 
@@ -232,6 +233,9 @@ function CurrentMapActors(props: {
   state: () => SessionState;
   worldNode: () => NodeMirror | undefined;
   camera: () => CameraState;
+  /** While false, the per-frame actor sync pauses (the pool stays mounted
+   *  and hidden with the world). Omit for always active. */
+  active?: Accessor<boolean>;
 }) {
   startupProfileMark("ui-actors:start");
   const initial = props.state();
@@ -303,6 +307,7 @@ function CurrentMapActors(props: {
   onMount(compilePositions);
 
   onFrame(() => {
+    if (props.active && !props.active()) return;
     const state = props.state();
     const next = props.slots();
     const transfer = next !== slots;
@@ -445,6 +450,7 @@ function ExtraMapLayer(props: {
   state: () => SessionState;
   camera: () => CameraState;
   viewport: () => { w: number; h: number };
+  active: Accessor<boolean>;
 }) {
   const selection = () => {
     props.revision();
@@ -495,6 +501,7 @@ function ExtraMapLayer(props: {
       loadBudget={streamedVariant()?.loadBudget}
       sourceKey={`${props.id}:${selection().name ?? ""}`}
       visible={selection().visible && streamedVariant() !== undefined}
+      active={props.active}
       debugName={`rpgkit-layer-${props.id}`}
     />
   ) : (
@@ -549,6 +556,16 @@ function ScreenVisualLayer(props: {
 function StartupProfileTail() {
   onMount(() => startupProfileMark("game-view:mounted"));
   return null;
+}
+
+// Bench-only mount/unmount tracing (frame-profile.ts): a pass-through
+// component that records when a Show branch mounts and unmounts, so native
+// QuickJS benches can attribute entry/exit frame time to the world subtree,
+// the dialog box and the battle scene. Adds no nodes of its own.
+function ProfileMount(props: { stage: string; children: JSX.Element }) {
+  onMount(() => frameProfileMark(`${props.stage}:mount`));
+  onCleanup(() => frameProfileMark(`${props.stage}:unmount`));
+  return props.children;
 }
 
 // The view exposes its bare reducer state and camera to sim tests; the
@@ -620,6 +637,7 @@ export function GameView(props: GameViewProps) {
   }
   const BattleSceneView = props.battleScene;
   const stream = assets.stream;
+  const hasAnimatedTiles = assets.animated !== undefined;
   const layerAssets = assets.layers ?? {};
   const groundLayer = layerAssets.ground?.placement === "ground" ? layerAssets.ground : undefined;
   const upperLayer = layerAssets.upper?.placement === "upper" ? layerAssets.upper : undefined;
@@ -722,7 +740,21 @@ export function GameView(props: GameViewProps) {
   const [facing, setFacing] = createSignal<Facing>(state.move.facing);
   const [modal, setModal] = createSignal<Modal | null>(null);
   const [demo, setDemo] = createSignal<AttractStatus | null>(null);
-  const [scene, setScene] = createSignal<SceneSlot | null>(cloneScene(state.scene));
+  const initialScene = cloneScene(state.scene);
+  const [sceneActive, setSceneActive] = createSignal(initialScene !== null);
+  // Visibility is deliberately separate from the renderer input. On exit the
+  // hidden battle subtree retains its last state, so changing only the two
+  // display gates cannot invalidate every accessor inside a large scene.
+  const [battleViewState, setBattleViewState] = createSignal<JsonValue | undefined>(
+    initialScene?.state,
+  );
+  const [worldAnimationTick, setWorldAnimationTick] = createSignal(
+    attract?.worldAnimationTick() ?? 0,
+  );
+  // The battle scene mounts on first use and stays mounted (hidden) for the
+  // rest of the session: re-entering a battle only swaps its state prop and
+  // visibility, so entry/exit frames pay no scene mount/unmount cost.
+  const [battleMounted, setBattleMounted] = createSignal(initialScene !== null);
   const [fatalError, setFatalError] = createSignal<string | null>(state.interp.error?.message ?? null);
   // Live host viewport: console hosts omit ui.__viewport (spec screen),
   // desktop windows publish and resize it. Polled in onFrame like
@@ -837,6 +869,15 @@ export function GameView(props: GameViewProps) {
           edge[key] = true;
         };
   const actions = useActions(() => {
+    // A full-screen scene is the sole foreground input owner. Map modals
+    // remain parked in reducer state while the world is frozen, but must not
+    // capture confirm/back until the scene closes and reveals them again.
+    if (sceneActive()) {
+      return {
+        confirm: { label: "ok", run: fire("confirm") },
+        back: { label: "back", run: fire("cancel") },
+      };
+    }
     const m = modal();
     if (m?.kind === "choices") {
       return {
@@ -845,18 +886,6 @@ export function GameView(props: GameViewProps) {
       };
     }
     if (m?.kind === "shop") {
-      return {
-        confirm: { label: "ok", run: fire("confirm") },
-        back: { label: "back", run: fire("cancel") },
-      };
-    }
-    // A game-owned scene (ui/GameView.tsx's BattleSceneView) reads no map
-    // modal, so without this branch a scene's cancel/escape command (a
-    // battle's "Run", a shop-in-battle back) has no way to reach the
-    // reducer's cancelEdge and a scene author is forced to read raw button
-    // bits itself (contracts/spec/spec.ts BTN.CROSS) instead of the
-    // portable confirm/cancel edges every other input path uses.
-    if (scene() !== null) {
       return {
         confirm: { label: "ok", run: fire("confirm") },
         back: { label: "back", run: fire("cancel") },
@@ -877,6 +906,7 @@ export function GameView(props: GameViewProps) {
   } | null = null;
 
   onFrame((buttons) => {
+    frameProfileMark("frame:start");
     const pressed = buttons & ~prevButtons;
     const upEdge = !!(pressed & BTN.UP);
     const downEdge = !!(pressed & BTN.DOWN);
@@ -908,6 +938,7 @@ export function GameView(props: GameViewProps) {
       downEdge,
     };
     try {
+      frameProfileMark("reducer:start");
       if (attract) {
         const result = attract.step(frameButtons);
         state = result.state;
@@ -915,6 +946,7 @@ export function GameView(props: GameViewProps) {
       } else {
         state = stepSession(session, state, input);
       }
+      frameProfileMark("reducer:end");
       prevButtons = frameButtons;
       if (blocked) props.onMapLoading?.(null);
       blocked = null;
@@ -942,6 +974,14 @@ export function GameView(props: GameViewProps) {
     globalThis.__rpgGameCamera = camera;
 
     const op = fadeOpacity(state.fade);
+    const nextWorldAnimationTick = !hasAnimatedTiles
+      ? 0
+      : attract
+        ? attract.worldAnimationTick()
+        : prev.scene === null && state.scene === null
+          ? (worldAnimationTick() + session.ticksPerFrame) >>> 0
+          : worldAnimationTick();
+    frameProfileMark("signals:start");
     const nextLayers = layerFingerprint(state);
     const nextScreen = screenFingerprint(state);
     batch(() => {
@@ -952,6 +992,9 @@ export function GameView(props: GameViewProps) {
       if (nextPose !== pose()) setPose(nextPose);
       if (state.move.facing !== facing()) setFacing(state.move.facing);
       if (op !== fade()) setFade(op);
+      if (nextWorldAnimationTick !== worldAnimationTick()) {
+        setWorldAnimationTick(nextWorldAnimationTick);
+      }
       if (nextLayers !== paintedLayers) {
         paintedLayers = nextLayers;
         setLayerRevision((revision) => revision + 1);
@@ -962,7 +1005,12 @@ export function GameView(props: GameViewProps) {
       }
       const shownModal = attract ? attract.presentedModal() : state.interp.modal;
       setModal((m) => (modalChanged(m, shownModal) ? deepClone(shownModal) : m));
-      setScene(state.scene ? cloneScene(state.scene) : null);
+      const nextScene = state.scene ? cloneScene(state.scene) : null;
+      if (nextScene) {
+        setBattleViewState(nextScene.state);
+        setBattleMounted(true);
+      }
+      setSceneActive(nextScene !== null);
       setFatalError(state.interp.error?.message ?? null);
       if (status) {
         const st = status;
@@ -978,26 +1026,37 @@ export function GameView(props: GameViewProps) {
         );
       }
     });
+    frameProfileMark("signals:end");
+    frameProfileMark("frame:end");
   });
 
   const view = (
     <View class="w-full h-full overflow-hidden bg-black">
-      <Show when={scene() === null}>
-        <>
-          {/* The frame clips each axis to min(map, viewport). Undersized axes
-              are centered over the black root; oversized axes start at zero
-              and the inner world translates by the clamped follow camera. */}
-          <View
-            class="absolute overflow-hidden"
-            style={{
-              posType: 1,
-              insetL: worldFrame().x,
-              insetT: worldFrame().y,
-              width: worldFrame().w,
-              height: worldFrame().h,
-            }}
-            debugName="rpgkit-world-frame"
-          >
+      {/* The world subtree stays mounted across full-screen scenes. Hiding
+          it with display:none (core skips layout, paint and hit-testing) and
+          pausing its frame hooks is far cheaper than unmounting and
+          remounting the chunk, animation, occlusion and actor pools on
+          every battle entry/exit. The reducer freezes world simulation
+          while a scene is open, so the paused subtree resumes from
+          identical state when the scene closes. */}
+      <ProfileMount stage="world">
+        {/* The frame clips each axis to min(map, viewport). Undersized axes
+            are centered over the black root; oversized axes start at zero
+            and the inner world translates by the clamped follow camera. */}
+        <View
+          class="absolute overflow-hidden"
+          style={{
+            posType: 1,
+            insetL: worldFrame().x,
+            insetT: worldFrame().y,
+            width: worldFrame().w,
+            height: worldFrame().h,
+            ...(hasAnimatedTiles ? { spriteClock: worldAnimationTick() } : {}),
+            // display: 0 shows, 1 hides (spec Display::None).
+            display: sceneActive() ? 1 : 0,
+          }}
+          debugName="rpgkit-world-frame"
+        >
             <View
               class="absolute"
               nodeRef={(n) => {
@@ -1017,6 +1076,7 @@ export function GameView(props: GameViewProps) {
               loadBudget={groundStreamVariant()?.loadBudget ?? stream.loadBudget}
               sourceKey={`ground:${groundSelection().name ?? ""}`}
               visible={groundSelection().visible}
+              active={() => !sceneActive()}
               debugName="rpgkit-ground"
               onStats={(stats) => props.onStreamStats?.("ground", stats)}
             />
@@ -1042,6 +1102,7 @@ export function GameView(props: GameViewProps) {
               above={false}
               camera={() => camera}
               viewport={() => viewport()}
+              active={() => !sceneActive()}
               mapTiles={() => {
                 const m = mapsById.get(mapId())!;
                 return { w: m.width, h: m.height };
@@ -1061,6 +1122,7 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               camera={() => camera}
               viewport={() => viewport()}
+              active={() => !sceneActive()}
             />
           ))}
           {assets.anims ? (
@@ -1082,6 +1144,7 @@ export function GameView(props: GameViewProps) {
             worldWidth={worldWidth}
             camera={() => camera}
             viewport={() => viewport()}
+            active={() => !sceneActive()}
             source={() => ({
               key: `upper:${upperSelection().name ?? ""}`,
               variant: upperSelection().variant,
@@ -1105,6 +1168,7 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               worldNode={() => worldNode}
               camera={() => camera}
+              active={() => !sceneActive()}
             />
           </OccludingUpperLayer>
 
@@ -1117,6 +1181,7 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               camera={() => camera}
               viewport={() => viewport()}
+              active={() => !sceneActive()}
             />
           ))}
           {assets.anims ? (
@@ -1157,7 +1222,6 @@ export function GameView(props: GameViewProps) {
             />
           ) : null}
             </View>
-          </View>
 
           {screenLayers.map(([id, layer]) => (
             <ScreenVisualLayer
@@ -1167,29 +1231,52 @@ export function GameView(props: GameViewProps) {
               state={() => state}
             />
           ))}
+        </View>
+      </ProfileMount>
 
-          <ScreenEffectsLayer screen={presentedScreen} layers={screenLayerAssets} />
+      {/* Screen effects (tints, flash, shake, backdrops) and the fade sit
+          outside the kept-alive world so they keep their place above the
+          map and around the dialog; the battle scene below draws over them
+          while it is active. */}
+      <ScreenEffectsLayer screen={presentedScreen} layers={screenLayerAssets} />
 
-          <DialogBox
-            modal={modal}
-            legend={actions.legend}
-            theme={props.theme}
-            faces={props.faces}
-            faceWidth={props.faceWidth}
-            items={itemNames}
-          />
-          <ScreenFadeLayer screen={presentedScreen} />
-        </>
-      </Show>
+      {/* The dialog box is persistent by design (b778aa0): it stays mounted
+          for the whole session and hides its own boxes while unused, so it
+          no longer remounts with the world on battle exit. */}
+      <ProfileMount stage="dialog">
+        <DialogBox
+          modal={() => sceneActive() ? null : modal()}
+          legend={actions.legend}
+          theme={props.theme}
+          faces={props.faces}
+          faceWidth={props.faceWidth}
+          items={itemNames}
+        />
+      </ProfileMount>
+      <ScreenFadeLayer screen={presentedScreen} />
 
-      <Show when={scene() !== null}>
-        {BattleSceneView ? (
-          <BattleSceneView
-            state={scene()!.state}
-            width={viewport().w}
-            height={viewport().h}
-          />
-        ) : null}
+      <Show when={battleMounted()}>
+        <View
+          style={{
+            posType: 1,
+            insetL: 0,
+            insetT: 0,
+            width: viewport().w,
+            height: viewport().h,
+            display: sceneActive() ? 0 : 1,
+          }}
+          debugName="rpgkit-battle-scene"
+        >
+          {BattleSceneView ? (
+            <ProfileMount stage="battle">
+              <BattleSceneView
+                state={battleViewState()!}
+                width={viewport().w}
+                height={viewport().h}
+              />
+            </ProfileMount>
+          ) : null}
+        </View>
       </Show>
 
       {/* D1/D2 demo overlay. In attract a small DEMO plate with the tape

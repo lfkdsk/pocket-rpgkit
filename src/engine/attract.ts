@@ -202,6 +202,7 @@ export interface AttractKeyframeStats {
 
 interface AttractKeyframe extends AttractKeyframeEntry {
   state: SessionState;
+  worldAnimationTick: number;
   lastFolded: number;
   firstDivergence: number;
   demoFrame: number;
@@ -289,6 +290,10 @@ export class AttractController {
   /** Number of reducer inputs in the retained timeline. Display-only entries
    * deliberately do not advance it. */
   private sourceFrame = 0;
+  /** Reference ticks for which the map was visible at both ends. This is a
+   * presentation clock: battle/display-only ticks do not advance it, and it
+   * rewinds with the retained input timeline without entering SessionState. */
+  private worldAnimationTickValue = 0;
   private keyframes: AttractKeyframe[] = [];
   private keyframeBytes = 0;
   private keyframeEvictions = 0;
@@ -396,6 +401,11 @@ export class AttractController {
     return this.lastFolded;
   }
 
+  /** Deterministic paint clock for native animated map sprites. */
+  worldAnimationTick(): number {
+    return this.worldAnimationTickValue;
+  }
+
   status(): AttractStatus {
     return {
       phase: this.phase,
@@ -455,6 +465,7 @@ export class AttractController {
     this.carry = 0;
     this.firstDivergence = Infinity;
     this.sourceFrame = 0;
+    this.worldAnimationTickValue = 0;
     this.keyframes = [];
     this.keyframeBytes = 0;
     this.keyframeEvictions = 0;
@@ -500,10 +511,14 @@ export class AttractController {
 
   private fold(mask: number, timelineFlags = 0): SessionState {
     const beforeMap = this.state.mapId;
+    const beforeScene = this.state.scene !== null;
     const beforeBattle = this.state.scene?.kind === "battle";
     const beforeModal = this.state.interp.modal;
     const beforeModalInstance = this.modalKey(this.state);
     this.state = this.reduce(this.state, mask, this.lastFolded);
+    if (!beforeScene && this.state.scene === null) {
+      this.worldAnimationTickValue = (this.worldAnimationTickValue + 1) >>> 0;
+    }
     this.lastFolded = mask >>> 0;
     const afterModal = this.state.interp.modal;
     const afterModalInstance = this.modalKey(this.state);
@@ -540,6 +555,7 @@ export class AttractController {
     const state = deepClone(this.state);
     const payload = {
       state,
+      worldAnimationTick: this.worldAnimationTickValue,
       timelineFrame: this.logLength,
       sourceFrame: this.sourceFrame,
       lastFolded: this.lastFolded,
@@ -584,19 +600,25 @@ export class AttractController {
   /** Re-fold the reducer entries in the first `target` timeline ticks from a
    *  fresh session. Display ticks are skipped: they presented the same world
    *  again and were never reducer input in the original run. */
-  private refold(target: number, masks: ArrayLike<number> = this.logBuf): SessionState {
+  private refoldWithClock(
+    target: number,
+    masks: ArrayLike<number> = this.logBuf,
+  ): { state: SessionState; worldAnimationTick: number } {
     const keyframe = masks === this.logBuf ? this.keyframeAtOrBefore(target) : undefined;
     let state: SessionState;
+    let worldAnimationTick: number;
     let previous: number;
     let start: number;
     if (keyframe) {
       acquireSessionMap(this.session, keyframe.state.mapId);
       releaseSessionMapsExcept(this.session, [keyframe.state.mapId]);
       state = deepClone(keyframe.state);
+      worldAnimationTick = keyframe.worldAnimationTick;
       previous = keyframe.lastFolded;
       start = keyframe.timelineFrame;
     } else {
       state = startSession(this.project, this.session);
+      worldAnimationTick = 0;
       previous = 0;
       start = 0;
     }
@@ -607,7 +629,11 @@ export class AttractController {
         if (!(flags & T_SOURCE) && (flags & T_DISPLAY)) continue;
       }
       const mask = masks[i]!;
+      const beforeScene = state.scene !== null;
       state = this.reduce(state, mask, previous);
+      if (!beforeScene && state.scene === null) {
+        worldAnimationTick = (worldAnimationTick + 1) >>> 0;
+      }
       previous = mask;
       folded++;
     }
@@ -615,7 +641,11 @@ export class AttractController {
       this.lastRefoldStart = start;
       this.lastRefoldFrames = folded;
     }
-    return state;
+    return { state, worldAnimationTick };
+  }
+
+  private refold(target: number, masks: ArrayLike<number> = this.logBuf): SessionState {
+    return this.refoldWithClock(target, masks).state;
   }
 
   /** Plain replay is kept as a diagnostic seam used by acceptance probes. It
@@ -686,7 +716,9 @@ export class AttractController {
   private rewind(): void {
     this.rewound = true;
     const target = Math.max(0, this.logLength - this.rewindFrames);
-    this.state = this.refold(target);
+    const restored = this.refoldWithClock(target);
+    this.state = restored.state;
+    this.worldAnimationTickValue = restored.worldAnimationTick;
     this.rewindNotice = this.hz;
     this.controlNotice = 0;
     this.restoreTimeline(target);
@@ -721,6 +753,7 @@ export class AttractController {
       lastFolded: this.lastFolded,
       lastLive: this.lastLive,
       sourceFrame: this.sourceFrame,
+      worldAnimationTickValue: this.worldAnimationTickValue,
       pacingTicks: this.pacingTicks,
       keyframes: this.keyframes,
       keyframeBytes: this.keyframeBytes,
@@ -752,6 +785,7 @@ export class AttractController {
       this.lastFolded = checkpoint.lastFolded;
       this.lastLive = checkpoint.lastLive;
       this.sourceFrame = checkpoint.sourceFrame;
+      this.worldAnimationTickValue = checkpoint.worldAnimationTickValue;
       this.pacingTicks = checkpoint.pacingTicks;
       this.keyframes = checkpoint.keyframes;
       this.keyframeBytes = checkpoint.keyframeBytes;

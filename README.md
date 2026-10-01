@@ -754,8 +754,12 @@ While a battle scene is active, host input goes only to `BattleRules.step`.
 By default page synchronization, player/NPC movement, and every map event
 fiber freeze; the battle-owning fiber remains parked. Set
 `scene={{ worldContinues: true }}` to opt into background world simulation;
-battle requests raised there still queue safely. `GameView` hides the map and
-dialog layers and mounts the registered scene component. That component
+battle requests raised there still queue safely. `GameView` keeps the map and
+dialog layers mounted but hidden (`display:none`, so core skips layout,
+paint and hit-testing) while a scene is open, pausing their per-frame sync
+hooks; the registered scene component mounts on first use and likewise stays
+mounted (hidden) between battles, so scene entry/exit frames pay no
+mount/unmount cost. That component
 receives only `{ state, width, height }`, so every visible animation cursor
 must be in battle state:
 
@@ -771,8 +775,9 @@ mount(() => <GameView
 ```
 
 `GameView` registers both the `confirm` and `back` action intents while a
-scene is active (its `useActions` binding otherwise only wires `back` for a
-map choices/shop modal), so `BattleInput.cancelEdge` fires on CROSS the same
+scene is active, before considering any parked map modal. A text, choices, or
+shop modal remains in reducer state but is hidden and cannot capture input
+until the scene closes. Thus `BattleInput.cancelEdge` fires on CROSS the same
 portable way `confirmEdge` already did — a rules module reads
 `input.cancelEdge` for "cancel"/"escape" the same way it reads
 `input.confirmEdge`, instead of reading the raw button mask itself.

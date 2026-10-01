@@ -1,8 +1,9 @@
 // src/ui/AnimatedTiles.tsx — render-only animated map tiles.
 //
 // Animated tiles are NOT reducer state: each one binds a native auto-play
-// sprite atlas (the core cycles the atlas frame from the vblank clock), so
-// JS never advances a frame and the simulation is unaffected. A tile mounts
+// sprite atlas (the core cycles the atlas frame from its inherited explicit
+// world clock), so this component never advances a frame and the simulation
+// is unaffected. A tile mounts
 // an image node only while its 16px cell is inside the viewport plus a
 // one-tile ring; leaving the ring unbinds the atlas and returns the node to
 // a pool. Scrolling and map swaps therefore reuse a small node set.
@@ -13,7 +14,7 @@
 // the app's sprites.json (baked into the SPRITE pak entry), so this
 // component only names the atlas; the registered meta supplies the cycle.
 
-import { onCleanup, type JSX as SolidJSX } from "solid-js";
+import { onCleanup, type Accessor, type JSX as SolidJSX } from "solid-js";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { jump } from "@pocketjs/framework/animation";
 import {
@@ -54,6 +55,10 @@ export interface AnimatedTilesProps {
   mapTiles: () => { w: number; h: number };
   /** Extra ring in tiles around the viewport to keep mounted (default 1). */
   ringTiles?: number;
+  /** While false, the window sync pauses (the subtree stays mounted and
+   *  hidden). The owning GameView also freezes its inherited sprite clock.
+   *  Omit for always active. */
+  active?: Accessor<boolean>;
   debugName?: string;
   /** Hide paint without unbinding atlases or changing the viewport pool. */
   visible?: boolean;
@@ -120,6 +125,7 @@ export function AnimatedTiles(props: AnimatedTilesProps): SolidJSX.Element {
   };
 
   const sync = (): void => {
+    if (props.active && !props.active()) return;
     const nextVisible = props.visible !== false;
     if (visible !== nextVisible) {
       visible = nextVisible;

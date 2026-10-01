@@ -19,15 +19,20 @@ export function deepClone<T>(v: T): T {
     ? Object.create(null) as Record<string, unknown>
     : {};
   for (const k of Object.keys(src)) {
-    // Define data properties so an own "__proto__" key stays data when a
-    // legacy JSON object is cloned. Assignment to an ordinary object would
-    // invoke Object.prototype.__proto__ instead.
-    Object.defineProperty(out, k, {
-      value: deepClone(src[k]),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
+    const value = deepClone(src[k]);
+    // Only this legacy accessor needs defineProperty. Ordinary JSON keys can
+    // take the VM's fast assignment path; battle states contain thousands of
+    // them and are cloned several times per reducer frame.
+    if (k === "__proto__" && Object.getPrototypeOf(out) !== null) {
+      Object.defineProperty(out, k, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    } else {
+      out[k] = value;
+    }
   }
   return out as T;
 }

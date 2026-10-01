@@ -127,6 +127,43 @@ simDescribe("GameView streamed chunks", () => {
     expect(stats().ground).toMatchObject({ resident: 4, textures: 4, uploads: 4, pending: 0 });
   });
 
+  test("pauses pending uploads in extra streamed layers while a battle owns the scene", async () => {
+    let uploads = 0;
+    const world = await bootGameWorld(
+      appBundle("streamed"),
+      60,
+      { __streamedBattle: true },
+      (ops) => {
+        for (const key of ["uploadImgEntry", "uploadTexture"] as const) {
+          const original = ops[key];
+          if (typeof original !== "function") continue;
+          ops[key] = (...args: unknown[]) => {
+            uploads++;
+            return original(...args);
+          };
+        }
+      },
+    );
+    const step = (buttons = 0): void => {
+      world.frame(buttons, 0x8080);
+      world.tick();
+    };
+
+    step();
+    expect(world.probes().state.scene).toBeNull();
+    const beforeBattle = uploads;
+    step();
+    expect(world.probes().state.scene?.kind).toBe("battle");
+    expect(uploads).toBe(beforeBattle);
+    for (let i = 0; i < 4; i++) step();
+    expect(uploads).toBe(beforeBattle);
+
+    step(BTN.CIRCLE);
+    for (let i = 0; i < 20 && world.probes().state.scene; i++) step();
+    expect(world.probes().state.scene).toBeNull();
+    expect(uploads).toBeGreaterThan(beforeBattle);
+  });
+
   test("rebinds a streamed variant and hides upper paint without rebuilding nodes", async () => {
     const world = await bootGameWorld(appBundle("streamed"), 60, { __streamedKv1: true });
     const step = (buttons = 0): void => {

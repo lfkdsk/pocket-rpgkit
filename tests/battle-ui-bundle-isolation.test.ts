@@ -45,6 +45,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // absent.
 // The worldIdle condition adds 1,820 bytes of shared session/interpreter code;
 // it remains independent of the opt-in battle UI identifiers checked below.
+// KB6's keep-mounted world and battle scene reuse add 2,150 bytes of shared
+// GameView code (display toggles, the active-accessor gates, the battle
+// keep-alive latch); the opt-in battle UI identifiers below stay absent.
 // Extension-driven choices and KV1's generic runtime appearance, named-layer
 // and tile-property paths, KM1 runtime movement controls (with a separately
 // compiled 12,980-byte legacy movement loop so projects without controls skip
@@ -56,9 +59,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // (rpgkit-check's explore coverage) adds 273 bytes of shared
 // interpreter/session code: four optional call sites in the trigger scan
 // plus the WorldOptions/SessionOptions threading. It is inert when no
-// session installs it. The distinctive battle identifiers below remain
-// absent.
-const EXPECTED_BYTES = 554_208;
+// session installs it. KB6 fix 1's host-portable JSON clone fast path adds
+// 2,257 bytes of shared engine code: it replaces per-property defineProperty calls with
+// ordinary assignment while retaining the __proto__ data-key guard. The
+// distinctive battle identifiers below remain absent.
+const EXPECTED_BYTES = 558_617;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {
