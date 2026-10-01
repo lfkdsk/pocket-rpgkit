@@ -5,6 +5,12 @@ PocketJS app on the portable desktop host. It opens the kit's example
 projects (`examples/sunstone`, `examples/meadow`) and paints them with
 those examples' own tile art.
 
+New to the editor? [`docs/editor-tutorial.md`](../docs/editor-tutorial.md)
+follows one small scenario — a villager NPC with branching dialog and a
+one-time reward, a second map with two-way portals, and a play-test with
+the live debugger — from launch to save, with regenerable screenshots and
+a guard test.
+
 ## What it does
 
 - **Tile painting**: click or drag on the canvas to paint ground cells.

@@ -298,7 +298,10 @@ a browser) the editor runs from buttons behind a visible banner.
 `bun run build:editor` builds the sim bundle alone; the editor's tests include
 `tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, the two-size event
 inspector/runtime round trip in `tests/editor-event-sim.test.ts`, and the
-real-GameView play/debug goldens in `tests/editor-playtest-sim.test.ts`. More in
+real-GameView play/debug goldens in `tests/editor-playtest-sim.test.ts`.
+[`docs/editor-tutorial.md`](docs/editor-tutorial.md) follows one small
+scenario — a villager NPC, a second map, and a play-test — from launch to
+save, with regenerable screenshots and a guard test. More in
 [`editor/README.md`](editor/README.md); the tile art's licenses are in the
 examples' `ATTRIBUTION.md` files.
 
