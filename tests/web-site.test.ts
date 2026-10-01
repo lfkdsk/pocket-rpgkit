@@ -101,6 +101,12 @@ describe("games", () => {
     expect(() => resolveGame(KIT_ROOT, { ...config, games }, "editor")).toThrow(/requires browser documents/);
   });
 
+  test("the browser editor companion cannot be configured without its file host", () => {
+    const games = { ...config.games, editor: { ...config.games!.editor } };
+    delete games.editor!.documents;
+    expect(() => resolveGame(KIT_ROOT, { ...config, games }, "editor")).toThrow(/requires browser documents/);
+  });
+
   test("viewports: sunstone pinned fixed, grow dynamic from its plan, meadow fixed", () => {
     expect(resolveGame(KIT_ROOT, config, "sunstone").viewport).toEqual({ policy: "fixed", logical: [480, 272] });
     expect(resolveGame(KIT_ROOT, config, "grow").viewport).toEqual({
@@ -162,6 +168,10 @@ describe("games", () => {
     expect(parse({ games: { meadow: { rasterDensity: "2" } } })).toThrow(/integer from 1 through 4/);
     expect(parse({ games: { meadow: { rasterDensity: Number.NaN } } })).toThrow(/integer from 1 through 4/);
     expect(parse({ games: { meadow: { rasterDensity: Number.POSITIVE_INFINITY } } })).toThrow(/integer from 1 through 4/);
+    expect(parse({ games: { meadow: { controls: [{ keys: ["Mouse"], action: "Paint" }] } } })).not.toThrow();
+    expect(parse({ games: { meadow: { controls: [{ button: "CIRCLE", keys: ["Enter"], action: "x" }] } } })).toThrow(/either literal keys/);
+    expect(parse({ games: { meadow: { documents: [] } } })).toThrow(/non-empty list/);
+    expect(parse({ games: { meadow: { documents: [{ id: "../bad", title: "Bad", document: "bad.json" }] } } })).toThrow(/usable id/);
     expect(parse({ games: { meadow: {} } })()).toEqual({ games: { meadow: {} } });
   });
 
@@ -350,6 +360,21 @@ describe("pages", () => {
     } finally {
       rmSync(output, { recursive: true, force: true });
     }
+  });
+
+  test("the editor page exposes local files, built-in projects and browser-only privacy copy", () => {
+    const editor = games.find((game) => game.id === "editor")!;
+    const html = renderPlayer(site, editor, playerConfig(editor), false);
+    expect(editor.documents?.map((document) => document.id)).toEqual(["sunstone", "meadow"]);
+    expect(html).toContain('id="editor-open"');
+    expect(html).toContain('id="editor-download"');
+    expect(html).toContain('data-editor-example="sunstone"');
+    expect(html).toContain('data-editor-example="meadow"');
+    expect(html).toContain('id="editor-open" disabled');
+    expect(html).toContain('id="editor-download" disabled');
+    expect(html).toContain('data-editor-example="sunstone" disabled');
+    expect(html).toContain("Your project data stays in this browser; nothing is uploaded.");
+    expect(html).toContain('"storageKey":"test:editor"');
   });
 
   test("text is escaped and the settings cannot close their script tag", () => {

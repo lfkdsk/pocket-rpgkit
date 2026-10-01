@@ -2,11 +2,12 @@
 
 `rpgkit-edit` exposes the editor's pure document model as a stable
 JSON-in/JSON-out command line, for scripts and coding agents. Every request
-parses and validates the input document first; every effective project mutation
-is validated again, returns JSON Pointer changes with before/after values and a
-reversible `rpgkit-edit/patch-v1` patch, and atomically replaces the project
-file. Proposal commands instead manage review sidecars without directly
-editing the project.
+parses and validates the input document first; every effective mutation is
+validated again, returns JSON Pointer changes with before/after values and a
+reversible `rpgkit-edit/patch-v1` patch, and replaces either one inline file
+or the changed map shards plus their `ProjectShell` manifest.
+Proposal commands instead manage review sidecars without directly editing the
+project and currently require an inline project for creation and assessment.
 
 The same operations are available as MCP tools; see [MCP tools](#mcp-tools).
 
@@ -27,7 +28,7 @@ The commands are `open`, `list-maps`, `list-events`, `list-pages`,
 
 | flag | meaning |
 | --- | --- |
-| `--file <path>` | project document. Required for every command. |
+| `--file <path>` | inline project or sharded `ProjectShell`. Required for every command. Shard entries resolve relative to the shell. |
 | `--json <json>` | arguments object: an inline JSON string or `@path/to/args.json`. Defaults to `{}`. |
 | `--dry-run` | project mutations and proposal create/withdraw: run full validation but do not write the project or sidecar. Read commands accept it only as a reported no-op. |
 | `--help`, `-h` | print usage, exit 0. |
@@ -57,12 +58,17 @@ Success:
 ```
 
 - `project` is a summary of the document; `revision` is the SHA-256 of its
-  canonical semantic JSON.
+  canonical semantic JSON. For a shell this is the operation's bounded
+  logical view: shell only for catalog reads, shell plus one target shard for
+  ordinary operations, all shards for validation/id rename, or the
+  patch-addressed shards for `save`.
 - `changed` is false when the edit was a no-op (for example painting a tile
   with the value it already has); `diff` and `patch` are still returned.
 - `patch` is present on successful mutating commands.
 - `result` is command-specific; documented per command below.
-- `file`, `dryRun`, and `written` are added by the file adapter.
+- `file`, `dryRun`, and `written` are added by the file adapter. A successful
+  sharded mutation also returns `writtenFiles` in commit order: changed map
+  shards first, then the shell.
 
 Failure:
 
@@ -73,17 +79,27 @@ Failure:
 `error` may also carry `path`, `expected`, `actual`, or `details`. Error
 codes include `READ_FAILED`, `WRITE_FAILED`, `WRITE_CONFLICT`,
 `PATH_OUTSIDE_ROOT` (file layer), `UNKNOWN_COMMAND`, `INVALID_ARGUMENT`,
-`INVALID_DOCUMENT`, `READ_ONLY_PROJECT_SHELL`, `MAP_NOT_FOUND`,
+`INVALID_DOCUMENT`, `MAP_NOT_FOUND`,
 `EVENT_NOT_FOUND`, `PAGE_NOT_FOUND`, `OUT_OF_BOUNDS`, `INVALID_TILE`,
 `DUPLICATE_EVENT`, `LAST_PAGE`, `COMMAND_ADDRESS_NOT_FOUND`,
-`READ_ONLY_COMMAND`, `INVALID_COMMAND_FIELD`, `INVALID_PATCH`,
+`READ_ONLY_COMMAND`, `READ_ONLY_PROJECT_SHELL`, `INVALID_COMMAND_FIELD`, `INVALID_PATCH`,
 `PATCH_BASE_MISMATCH`, `PATCH_CHANGE_MISMATCH`, `INVALID_JSON_VALUE`,
 `INVALID_EDIT`, and `INTERNAL_ERROR`.
 
-Writes are atomic: a temp file in the same directory is written, its bytes
-re-checked against the in-memory result, and renamed over the target. If the
-file changed on disk between read and write, the command fails with
-`WRITE_CONFLICT` and writes nothing.
+For a shell, `INVALID_DOCUMENT` includes stale manifest/schema identities and
+shard checksum/schema/metadata mismatches; `READ_FAILED` covers a required
+missing shard; `PATH_OUTSIDE_ROOT` covers an unsafe entry; and
+`WRITE_CONFLICT` covers drift in either the shell or a targeted shard.
+
+Inline writes are atomic: a temp file in the same directory is written, its
+bytes are re-checked against the in-memory result, and it is renamed over the
+target. Sharded writes stage every changed shard and the shell, re-check all
+source bytes before the first rename, then publish shards first and the shell
+manifest last. An ordinary later rename failure triggers best-effort rollback
+of already-published shards. If any input changed before publication, the
+command fails with `WRITE_CONFLICT` and publishes nothing. This ordering keeps
+the old manifest live until the final step, but a multi-file save is not
+crash-atomic.
 
 ## Addresses
 
@@ -117,6 +133,51 @@ The structured form used by the command-editing args is
 `{ "kind": "scene", "index": n, "branch": "done"|"cancel" }`.
 For inserts, `index` may equal the addressed list's length.
 
+## Sharded `ProjectShell` documents
+
+The CLI and MCP tools accept the same commands for an inline document and a
+`ProjectShell`. The shell remains the catalog and content-identity record;
+map payloads stay in the files named by `mapIndex[].entry`.
+
+- `open` and `list-maps` read no shard files.
+- A map read or ordinary mutation loads and validates only the addressed
+  shard. Its raw SHA-256, id and dimensions must match the index entry.
+- `validate` loads every shard. Renaming a map id also loads every shard so
+  literal transfers in other maps can follow the rename.
+- An effective mutation canonicalizes only byte-changed map payloads, updates
+  their index metadata/checksums, refreshes `mapSchemaHash` and
+  `mapManifestHash`, and writes only those shards plus the shell.
+- Shard entries must be confined relative paths beneath the configured MCP
+  root (or beneath the shell directory for the CLI). Traversal, absolute
+  paths, symlink escapes, physical aliases, and an entry resolving to the
+  shell itself are refused.
+
+For example, this changes one map shard and its shell without loading the
+other maps:
+
+```sh
+bun run rpgkit-edit paint-tile --file game/data/project.json \
+  --json '{"map":"town","x":4,"y":6,"tile":"outdoor.12"}'
+```
+
+The response's `diff` and `patch` use a logical document rather than
+pretending all resources are one JSON file:
+
+```json
+{
+  "kind": "rpgkit-edit/sharded-document-v1",
+  "shell": { "format": "rpgkit-project/v1", "mapIndex": [] },
+  "shards": { "maps/town.json": { "id": "town" } }
+}
+```
+
+Patch paths are `/shell/...` or `/shards/<entry>/...`, with the entry encoded
+as one RFC 6901 token. Thus `maps/town.json` appears as
+`/shards/maps~1town.json/ground/124`. Entry strings remain stable across a
+patch; map ids may change. A sharded patch hash covers the shell plus exactly
+the shard payloads involved in that operation, while the shell manifest
+commits the checksums of untouched shards.
+
 ## Read commands
 
 ### `open`
@@ -145,8 +206,8 @@ $ bun run rpgkit-edit list-maps --file examples/sunstone/data/sunstone.json
 
 ### `list-events`
 
-Args: `map` (string, required). Requires an inline document. `result` is an
-array of `{ address, id, name?, x, y, w, h, pageCount }`.
+Args: `map` (string, required). For a shell, only that map's shard is loaded.
+`result` is an array of `{ address, id, name?, x, y, w, h, pageCount }`.
 
 ```sh
 $ bun run rpgkit-edit list-events --file examples/sunstone/data/sunstone.json --json '{"map":"village"}'
@@ -190,7 +251,9 @@ map:village/event:elder/page:0/command:c1:option:1#0 | c1:option:1#0 | Text: ELD
 Args: none. Always `ok: true`; `result` is
 `{ valid: boolean, errors: [{ path, msg }] }`. Invalid documents are
 reported, not failures. Runs schema validation plus structural checks
-(duplicate ids, bounds, start map).
+(duplicate ids, bounds, start map). For a shell it also verifies the manifest,
+schema identity, every declared shard checksum and every shard's metadata and
+full map schema.
 
 ```sh
 $ bun run rpgkit-edit validate --file examples/sunstone/data/sunstone.json
@@ -206,7 +269,8 @@ Args: `map` (required), `changes` (object with at least one of `id`, `name`,
 characters; `width`/`height` are 1–256; `sheets` is a non-empty unique list.
 Renaming an id follows `start.map` and every transfer that names it;
 resizing crops events fully outside the new bounds and reports them in
-`croppedEvents`.
+`croppedEvents`. A shell rename therefore scans every shard; the other map
+changes load only their target shard.
 
 ```sh
 $ bun run rpgkit-edit update-map --file examples/sunstone/data/sunstone.json --dry-run \
@@ -345,8 +409,9 @@ $ bun run rpgkit-edit delete-page --file examples/sunstone/data/sunstone.json --
 
 Args: `map`, `event`, `page`, `address` (`{ path, index }`; `index` may equal
 the list length), `command` (an object with a non-empty `op` string).
-The command object is inserted intact; the whole-project schema gate after the
-mutation decides whether that op and payload are valid.
+The command object is inserted intact; the whole-project schema gate after an
+inline mutation, or the selected map-schema gate for a shell, decides whether
+that op and payload are valid.
 
 ```sh
 $ bun run rpgkit-edit insert-command --file examples/sunstone/data/sunstone.json --dry-run \
@@ -485,6 +550,13 @@ Apply a previously captured patch. Args: `patch` (a full
 (malformed), `PATCH_BASE_MISMATCH` (the document's semantic hash is not the
 patch's expected base), `PATCH_CHANGE_MISMATCH` (a change's precondition does
 not match), `INVALID_EDIT` (the patched result would be invalid).
+
+For a shell, `save` derives the exact shard set from the patch paths, verifies
+the shell and those shards, checks the logical-view base hash and each change
+precondition, then publishes only changed shards plus the shell. Reapplying a
+forward patch fails closed; reverse uses the same stable entry paths. Mixed
+inline paths such as `/maps/0/...`, unknown entries, and attempts to add,
+remove, or rename entry keys are rejected.
 
 ```sh
 $ jq '{patch:.patch}' preview.json > apply.json
@@ -689,9 +761,17 @@ Argument errors match `show-proposal`. A missing or already archived id is
 }
 ```
 
-- `beforeHash`/`afterHash` are lowercase SHA-256 hex of the document's
-  canonical semantic JSON (sorted keys).
-- `path` is an RFC 6901 JSON Pointer.
+- `beforeHash`/`afterHash` are lowercase SHA-256 hex of canonical semantic
+  JSON (sorted keys).
+- Inline paths are RFC 6901 JSON Pointers into the project, such as
+  `/maps/0/ground/21`.
+- A shell patch points into a logical
+  `{ kind: "rpgkit-edit/sharded-document-v1", shell, shards }` document.
+  Examples are `/shell/mapIndex/0/sha256`, `/shell/mapManifestHash`, and
+  `/shards/maps~1village.json/ground/21`. Its `shards` object contains only
+  operation-involved payloads; the shell manifest commits the untouched set.
+  The stable key is `mapIndex.entry`, not map id. RFC 6901 encodes `~` as
+  `~0` and `/` as `~1`.
 - `before`/`after` sides distinguish a missing value (`{ "exists": false }`)
   from a JSON null (`{ "exists": true, "value": null }`).
 - Forward applies changes in order, expecting `before` and writing `after`;
@@ -712,7 +792,8 @@ The MCP server (`bun run rpgkit-edit:mcp`, or
 `bun tools/rpgkit-edit/mcp.ts --root <project-dir>`) speaks newline-delimited
 JSON-RPC 2.0 over stdio and mounts edit, proposal, and QA check tools (see
 [qa-checks.md](qa-checks.md)). Every tool takes a `file` argument that must
-resolve inside `--root`; mutating tools also take `dryRun`.
+resolve inside `--root`; every shard referenced by a shell must remain inside
+that root after symlink resolution. Mutating tools also take `dryRun`.
 
 | MCP tool | CLI command | required args | optional args |
 | --- | --- | --- | --- |

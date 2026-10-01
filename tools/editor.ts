@@ -20,10 +20,11 @@
 // example's document: the examples build their documents from code, and
 // `bun run gen-assets` would overwrite edits made in examples/*/data/.
 
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { DEFAULT_SOURCE, EDITOR_SOURCES } from "../editor/sources.ts";
 import { DESKTOP_TARGET, buildForDesktop, runDesktopHost } from "./lib/desktop.ts";
+import { runDesktopEditorFiles } from "./editor-files.ts";
 import {
   editorProposalBridgePaths,
   syncEditorProposalBridge,
@@ -65,29 +66,41 @@ console.log(`editor: SAVE writes ${relative(root, file) || file}`);
 if (rest.includes("--data-root")) {
   throw new Error("editor: --data-root is managed by the proposal bridge");
 }
-const bridge = editorProposalBridgePaths(root, build.plan.app.id, file);
-let lastBridgeStatus = "";
-const syncProposals = (): void => {
-  try {
-    const result = syncEditorProposalBridge(file, bridge.sessionFile, bridge.hostStateFile);
-    const status = result.conflicts.length > 0
-      ? `refused ${result.conflicts.length} conflicting acceptance(s)`
-      : `${result.pending} pending, ${result.persisted} review update(s)`;
-    if ((result.conflicts.length > 0 || result.persisted > 0) && status !== lastBridgeStatus) {
-      console.log(`editor: proposal bridge ${status}`);
-    }
-    lastBridgeStatus = status;
-  } catch (error) {
-    const status = `error: ${error instanceof Error ? error.message : String(error)}`;
-    if (status !== lastBridgeStatus) console.error(`editor: proposal bridge ${status}`);
-    lastBridgeStatus = status;
-  }
-};
-syncProposals();
-const bridgeTimer = setInterval(syncProposals, 200);
+let sharded = false;
 try {
-  await runDesktopHost(build, ["--data-root", bridge.dataRoot, "--file", file, ...rest]);
-} finally {
-  clearInterval(bridgeTimer);
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  sharded = Array.isArray(parsed.mapIndex) && !("maps" in parsed);
+} catch {
+  // The editor guest reports syntax/schema errors for ordinary documents.
+}
+if (sharded) {
+  console.log("editor: proposal review is unavailable for sharded projects");
+  await runDesktopEditorFiles(build, file, rest, { root: dirname(file) });
+} else {
+  const bridge = editorProposalBridgePaths(root, build.plan.app.id, file);
+  let lastBridgeStatus = "";
+  const syncProposals = (): void => {
+    try {
+      const result = syncEditorProposalBridge(file, bridge.sessionFile, bridge.hostStateFile);
+      const status = result.conflicts.length > 0
+        ? `refused ${result.conflicts.length} conflicting acceptance(s)`
+        : `${result.pending} pending, ${result.persisted} review update(s)`;
+      if ((result.conflicts.length > 0 || result.persisted > 0) && status !== lastBridgeStatus) {
+        console.log(`editor: proposal bridge ${status}`);
+      }
+      lastBridgeStatus = status;
+    } catch (error) {
+      const status = `error: ${error instanceof Error ? error.message : String(error)}`;
+      if (status !== lastBridgeStatus) console.error(`editor: proposal bridge ${status}`);
+      lastBridgeStatus = status;
+    }
+  };
   syncProposals();
+  const bridgeTimer = setInterval(syncProposals, 200);
+  try {
+    await runDesktopHost(build, ["--data-root", bridge.dataRoot, "--file", file, ...rest]);
+  } finally {
+    clearInterval(bridgeTimer);
+    syncProposals();
+  }
 }

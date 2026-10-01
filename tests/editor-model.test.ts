@@ -348,6 +348,32 @@ describe("editor tile edit reducer", () => {
     expect(currentMap(redone).ground[5]).toBe("town.43");
   });
 
+  test("a large stroke copies its layer once and keeps the pre-stroke project immutable", () => {
+    const project = bundled("sunstone");
+    const map = project.maps[0]!;
+    const large = structuredClone(project);
+    large.maps[0] = {
+      ...structuredClone(map),
+      width: 100,
+      height: 100,
+      ground: new Array(10_000).fill("town.0"),
+      upper: [],
+      events: [],
+    };
+    const originalGround = large.maps[0]!.ground;
+    let state = selectTile(createEditorState(large), "town.43");
+    const open = strokeStart(state);
+    state = paintCell(open, 0);
+    state = paintCell(state, 1);
+    state = paintCell(state, 2);
+    expect(currentMap(state).ground).not.toBe(originalGround);
+    expect(originalGround.slice(0, 3)).toEqual(["town.0", "town.0", "town.0"]);
+    expect(currentMap(state).ground.slice(0, 3)).toEqual(["town.43", "town.43", "town.43"]);
+    expect(state.stroke!.working).toBe(currentMap(state).ground);
+    state = strokeEnd(state);
+    expect(currentMap(undo(state)).ground.slice(0, 3)).toEqual(["town.0", "town.0", "town.0"]);
+  });
+
   test("eraser (tile null) clears a ground cell to null", () => {
     let s = createEditorState(bundled("sunstone"));
     s = selectTile(s, null);

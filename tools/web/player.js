@@ -40,8 +40,10 @@
 //            the mouse (Alpine Post's click-to-walk) answers a tap.
 //   pad      the on-screen buttons, for devices without a keyboard.
 //   files    an editor page handles load/save over the companion: Open and
-//            bundled projects send load lines; SAVE persists to localStorage;
-//            Download asks the guest for a fresh schema-checked export.
+//            bundled inline projects send load lines; self-contained sharded
+//            packs send a shell catalog and answer map reads lazily. SAVE
+//            persists to localStorage; Download asks the guest for a fresh,
+//            schema-checked inline document or replacement pack.
 
 import { createWasmUi } from "../../vendor/pocketjs/hosts/web/wasm-ops.js";
 import { createAudioHost } from "../../vendor/pocketjs/hosts/web/audio.js";
@@ -72,6 +74,11 @@ const EDITOR_REQUEST_TIMEOUT = 300;
 /** Room under the screen for the caption line. */
 const RESERVE_PX = 56;
 const EDITOR_COMPANION = "rpgkit-editor";
+export const SHARDED_PACK_KIND = "rpgkit-edit/sharded-pack-v1";
+export const EDITOR_CHUNK_MAX_COUNT = 8192;
+export const EDITOR_CHUNK_MAX_CODE_UNITS = 1024;
+export const EDITOR_TRANSFER_MAX_CODE_UNITS = 8 * 1024 * 1024;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /** Browser KeyboardEvent.key -> the desktop companion's named-key dialect. */
 const NAMED_KEYS = {
@@ -187,6 +194,230 @@ async function fetchOk(url, what) {
   return response;
 }
 
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function requestId(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Reassemble the guest's bounded transport envelopes into one logical JSON
+ * message. A transfer is contiguous and strictly ordered; any malformed,
+ * duplicate, interrupted, oversized, or mismatched stream is discarded in
+ * full so a suffix can never be mistaken for a later message. */
+export class BrowserMessageReassembler {
+  constructor() {
+    this.active = null;
+  }
+
+  push(message) {
+    if (!record(message) || typeof message.t !== "string") {
+      this.active = null;
+      return null;
+    }
+    if (message.t === "chunk-start") {
+      this.active = null;
+      if (!requestId(message.transfer)
+        || !Number.isSafeInteger(message.chunks)
+        || message.chunks < 1
+        || message.chunks > EDITOR_CHUNK_MAX_COUNT) return null;
+      this.active = { transfer: message.transfer, chunks: message.chunks, parts: [], length: 0 };
+      return null;
+    }
+    if (message.t === "chunk") {
+      const active = this.active;
+      if (!active
+        || message.transfer !== active.transfer
+        || !Number.isSafeInteger(message.index)
+        || message.index !== active.parts.length
+        || message.index >= active.chunks
+        || typeof message.text !== "string"
+        || message.text.length > EDITOR_CHUNK_MAX_CODE_UNITS
+        || active.length + message.text.length > EDITOR_TRANSFER_MAX_CODE_UNITS) {
+        this.active = null;
+        return null;
+      }
+      active.parts.push(message.text);
+      active.length += message.text.length;
+      if (active.parts.length !== active.chunks) return null;
+      this.active = null;
+      try {
+        const logical = JSON.parse(active.parts.join(""));
+        return record(logical) && typeof logical.t === "string" ? logical : null;
+      } catch {
+        return null;
+      }
+    }
+    // Logical messages cannot interleave a chunk stream.
+    if (this.active) {
+      this.active = null;
+      return null;
+    }
+    this.active = null;
+    return message;
+  }
+}
+
+/** A map-index entry is an opaque POSIX-relative key, never a browser or OS
+ * path. Rejecting traversal and alternate separators keeps imported packs
+ * portable and makes keys such as "__proto__" harmless inside the Map. */
+function packEntry(value) {
+  if (typeof value !== "string" || value.length === 0 || value.includes("\\") || /[\x00-\x1f\x7f]/.test(value)) {
+    throw new Error("shard entries must be non-empty portable path keys");
+  }
+  const parts = value.split("/");
+  if (value.startsWith("/") || /^[a-zA-Z]:/.test(value) || parts.some((part) => part === "" || part === "." || part === "..")) {
+    throw new Error(`unsafe shard entry ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function parseShell(text) {
+  if (typeof text !== "string") throw new Error("shell must be JSON text");
+  let shell;
+  try {
+    shell = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`shell is not valid JSON: ${error instanceof Error ? error.message : error}`);
+  }
+  if (!record(shell) || shell.format !== "rpgkit-project/v1" || !Array.isArray(shell.mapIndex)) {
+    throw new Error("shell is not an rpgkit-project/v1 ProjectShell");
+  }
+  if (!SHA256_HEX.test(shell.mapManifestHash)) throw new Error("shell has no valid mapManifestHash");
+  const catalog = new Map();
+  for (const item of shell.mapIndex) {
+    if (!record(item)) throw new Error("shell mapIndex contains a non-object entry");
+    const entry = packEntry(item.entry);
+    if (!SHA256_HEX.test(item.sha256)) throw new Error(`shell has an invalid checksum for ${JSON.stringify(entry)}`);
+    if (catalog.has(entry)) throw new Error(`shell repeats shard entry ${JSON.stringify(entry)}`);
+    catalog.set(entry, item);
+  }
+  if (catalog.size === 0) throw new Error("shell mapIndex is empty");
+  return { shell, catalog };
+}
+
+async function sha256Text(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Self-contained browser transport for a ProjectShell and its shard bytes.
+ * It deliberately keeps shard text in a private Map: projectMessage() sends
+ * the shell/catalog only and read() releases one requested shard at a time. */
+export class BrowserProjectPack {
+  constructor(shellText, shards) {
+    const parsed = parseShell(shellText);
+    if (!(shards instanceof Map)) throw new Error("pack shards must be a Map");
+    for (const [entry, text] of shards) {
+      packEntry(entry);
+      if (!parsed.catalog.has(entry)) throw new Error(`pack contains unindexed shard ${JSON.stringify(entry)}`);
+      if (typeof text !== "string") throw new Error(`pack shard ${JSON.stringify(entry)} is not text`);
+    }
+    for (const entry of parsed.catalog.keys()) {
+      if (!shards.has(entry)) throw new Error(`pack is missing shard ${JSON.stringify(entry)}`);
+    }
+    this.shellText = shellText;
+    this.shell = parsed.shell;
+    this.catalog = parsed.catalog;
+    this.shards = new Map(shards);
+  }
+
+  static parse(text) {
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch (error) {
+      throw new Error(`pack is not valid JSON: ${error instanceof Error ? error.message : error}`);
+    }
+    if (!record(value) || value.kind !== SHARDED_PACK_KIND || typeof value.shell !== "string" || !record(value.shards)) {
+      throw new Error(`not a ${SHARDED_PACK_KIND} document`);
+    }
+    const shards = new Map();
+    for (const entry of Object.keys(value.shards)) {
+      packEntry(entry);
+      const shard = value.shards[entry];
+      if (typeof shard !== "string") throw new Error(`pack shard ${JSON.stringify(entry)} is not text`);
+      shards.set(entry, shard);
+    }
+    return new BrowserProjectPack(value.shell, shards);
+  }
+
+  projectMessage(request) {
+    if (request !== undefined && !requestId(request)) throw new Error("project request must be a non-negative safe integer");
+    return { t: "project", shell: this.shellText, ...(request === undefined ? {} : { request }) };
+  }
+
+  /** Answer a guest request without exposing the remaining pack payloads. */
+  read(message) {
+    if (!record(message) || message.t !== "map-read" || !requestId(message.request) || typeof message.entry !== "string") {
+      return null;
+    }
+    let entry;
+    try {
+      entry = packEntry(message.entry);
+    } catch (error) {
+      return { t: "map-error", request: message.request, entry: message.entry, error: error instanceof Error ? error.message : String(error) };
+    }
+    const text = this.shards.get(entry);
+    return text === undefined
+      ? { t: "map-error", request: message.request, entry, error: `unknown shard entry ${JSON.stringify(entry)}` }
+      : { t: "map-data", request: message.request, entry, text };
+  }
+
+  /** Validate a complete save request before changing any in-memory byte.
+   * `expectedSha256` is the optimistic concurrency identity of the old shard;
+   * the replacement text must match the checksum advertised by the new shell. */
+  async save(message) {
+    if (!record(message) || message.t !== "project-save" || !requestId(message.request)) {
+      throw new Error("invalid project-save request");
+    }
+    if (!SHA256_HEX.test(message.baseManifestHash) || message.baseManifestHash !== this.shell.mapManifestHash) {
+      throw new Error("project-save base manifest does not match the open pack");
+    }
+    if (!Array.isArray(message.shards)) throw new Error("project-save shards must be an array");
+    const next = parseShell(message.shell);
+    if (next.catalog.size !== this.catalog.size || [...this.catalog.keys()].some((entry) => !next.catalog.has(entry))) {
+      throw new Error("project-save cannot add, remove, or rename shard entry keys");
+    }
+
+    const replacements = new Map();
+    for (const item of message.shards) {
+      if (!record(item) || typeof item.entry !== "string" || typeof item.text !== "string" || !SHA256_HEX.test(item.expectedSha256)) {
+        throw new Error("project-save contains an invalid shard replacement");
+      }
+      const entry = packEntry(item.entry);
+      if (replacements.has(entry)) throw new Error(`project-save repeats shard ${JSON.stringify(entry)}`);
+      const oldMeta = this.catalog.get(entry);
+      const newMeta = next.catalog.get(entry);
+      if (!oldMeta || !newMeta) throw new Error(`project-save refers to unknown shard ${JSON.stringify(entry)}`);
+      if (oldMeta.sha256 !== item.expectedSha256) throw new Error(`project-save found a stale shard ${JSON.stringify(entry)}`);
+      if (await sha256Text(item.text) !== newMeta.sha256) {
+        throw new Error(`project-save checksum does not match the new shell for ${JSON.stringify(entry)}`);
+      }
+      replacements.set(entry, item.text);
+    }
+    for (const [entry, oldMeta] of this.catalog) {
+      if (!replacements.has(entry) && next.catalog.get(entry).sha256 !== oldMeta.sha256) {
+        throw new Error(`project-save changed the checksum of unsupplied shard ${JSON.stringify(entry)}`);
+      }
+    }
+
+    this.shellText = message.shell;
+    this.shell = next.shell;
+    this.catalog = next.catalog;
+    for (const [entry, text] of replacements) this.shards.set(entry, text);
+    return { request: message.request, entries: [...replacements.keys()] };
+  }
+
+  serialize() {
+    const shards = Object.create(null);
+    for (const entry of this.catalog.keys()) shards[entry] = this.shards.get(entry);
+    return `${JSON.stringify({ kind: SHARDED_PACK_KIND, shell: this.shellText, shards }, null, 2)}\n`;
+  }
+}
+
 /** The file half of the browser rpgkit-editor companion. Input stays in the
  * Player so every host uses the same logical-coordinate conversion; this
  * object owns Open, built-ins, localStorage, SAVE and Download. */
@@ -204,6 +435,9 @@ class BrowserEditorHost {
     this.pendingDownload = null;
     this.currentName = "rpgkit-project.json";
     this.currentText = null;
+    this.currentPack = null;
+    this.projectSaving = false;
+    this.guestMessages = new BrowserMessageReassembler();
     this.lastDownload = null;
     this.storageReadError = null;
   }
@@ -290,24 +524,37 @@ class BrowserEditorHost {
    * answers with {t:"loaded"}; opening a document never overwrites the last
    * explicitly saved recovery copy. */
   loadDocument(text, name, label, options = {}) {
+    let parsed;
     try {
-      const value = JSON.parse(text);
-      if (!value || value.format !== "rpgkit-project/v1") throw new Error("not an rpgkit-project/v1 document");
+      parsed = JSON.parse(text);
     } catch (error) {
       this.setStatus(`${label} was not opened: ${error instanceof Error ? error.message : error}`, true);
+      return false;
+    }
+    let pack = null;
+    if (record(parsed) && parsed.kind === SHARDED_PACK_KIND) {
+      try {
+        pack = BrowserProjectPack.parse(text);
+      } catch (error) {
+        this.setStatus(`${label} was not opened: ${error instanceof Error ? error.message : error}`, true);
+        return false;
+      }
+    } else if (!record(parsed) || parsed.format !== "rpgkit-project/v1") {
+      this.setStatus(`${label} was not opened: not an rpgkit-project/v1 document or ${SHARDED_PACK_KIND} pack`, true);
       return false;
     }
     const request = this.nextRequest++;
     this.pendingLoad = {
       request,
       text,
+      pack,
       name: this.safeName(name),
       label,
       startup: options.startup === true,
       restore: options.restore === true,
       deadline: this.player.frames + EDITOR_REQUEST_TIMEOUT,
     };
-    this.player.sendService({ t: "load", text, request });
+    this.player.sendService(pack ? pack.projectMessage(request) : { t: "load", text, request });
     this.setStatus(`Opening ${label}…`);
     this.player.focus();
     this.updateControls();
@@ -342,8 +589,22 @@ class BrowserEditorHost {
     });
   }
 
-  receive(message) {
-    if (!message) return;
+  receive(envelope) {
+    const message = this.guestMessages.push(envelope);
+    if (!record(message) || typeof message.t !== "string") return;
+    if (message.t === "map-read") {
+      const pack = this.pendingLoad?.pack ?? this.currentPack;
+      const response = pack?.read(message);
+      if (response) this.player.sendService(response);
+      else if (requestId(message.request) && typeof message.entry === "string") {
+        this.player.sendService({ t: "map-error", request: message.request, entry: message.entry, error: "no sharded project is open" });
+      }
+      return;
+    }
+    if (message.t === "project-save") {
+      void this.receiveProjectSave(message);
+      return;
+    }
     if (message.t === "loaded") {
       this.receiveLoaded(message);
       return;
@@ -382,13 +643,54 @@ class BrowserEditorHost {
     else this.setStatus(`Save failed because browser storage is unavailable: ${stored.error}`, true);
   }
 
+  async receiveProjectSave(message) {
+    if (!requestId(message.request)) return;
+    const pack = this.currentPack;
+    if (!pack || this.projectSaving) {
+      const error = this.projectSaving ? "another project save is in progress" : "no sharded project is open";
+      this.player.sendService({ t: "project-saved", request: message.request, ok: false, error });
+      return;
+    }
+    this.projectSaving = true;
+    this.updateControls();
+    try {
+      const saved = await pack.save(message);
+      const text = pack.serialize();
+      this.currentText = text;
+      const stored = this.persist(text);
+      this.player.sendService({ t: "project-saved", request: message.request, ok: true });
+      const download = this.pendingDownload;
+      if (download && message.request === download.request) {
+        this.pendingDownload = null;
+        const downloaded = this.download(text);
+        if (!downloaded.ok) this.setStatus(`Download failed: ${downloaded.error}`, true);
+        else if (!stored.ok) this.setStatus(`Downloaded ${this.currentName}, but its browser recovery copy was not saved: ${stored.error}`, true);
+        else this.setStatus(`Downloaded replacement pack ${this.currentName}; the same pack is saved in this browser.`);
+      } else if (stored.ok) {
+        const count = saved.entries.length;
+        this.setStatus(`Saved ${count} changed map shard${count === 1 ? "" : "s"} in the browser pack.`);
+      } else {
+        this.setStatus(`Pack save was accepted, but browser recovery is unavailable: ${stored.error}`, true);
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      this.player.sendService({ t: "project-saved", request: message.request, ok: false, error: text });
+      if (this.pendingDownload?.request === message.request) this.pendingDownload = null;
+      this.setStatus(`Pack save failed: ${text}`, true);
+    } finally {
+      this.projectSaving = false;
+      this.updateControls();
+    }
+  }
+
   receiveLoaded(message) {
     const pending = this.pendingLoad;
     if (!pending || message.request !== pending.request) return;
     this.pendingLoad = null;
     if (message.ok === true) {
       this.currentName = pending.name;
-      this.currentText = pending.text;
+      this.currentPack = pending.pack;
+      this.currentText = pending.pack ? pending.pack.serialize() : pending.text;
       if (pending.startup) this.finishStartup();
       else this.updateControls();
       const status = pending.restore
@@ -442,7 +744,7 @@ class BrowserEditorHost {
   }
 
   canStartRequest() {
-    return this.ready && !this.fetching && !this.pendingLoad && !this.pendingDownload && this.player.state === "running";
+    return this.ready && !this.fetching && !this.projectSaving && !this.pendingLoad && !this.pendingDownload && this.player.state === "running";
   }
 
   finishStartup() {
@@ -536,6 +838,7 @@ class Player {
     this.bindPad();
     this.editorHost?.bind();
     this.bindDemoControls();
+    this.editorHost?.bind();
     this.bindAudioControls();
   }
 
@@ -651,6 +954,7 @@ class Player {
     this.frames++;
     this.editorHost?.afterStep();
     this.syncDemoControls();
+    this.editorHost?.afterStep();
   }
 
   paint() {
@@ -1074,15 +1378,17 @@ class Player {
   }
 }
 
-const player = new Player(JSON.parse($("pocket-game").textContent));
-// Read by tools/web-verify.ts.
-globalThis.__pocketPlayer = player;
-$("overlay-reload").addEventListener("click", () => location.reload());
-player.bindSizing();
-player.bindInput();
-if (location.protocol === "file:") {
-  player.setState("error", "Open this page through a web server; browsers do not load WebAssembly from file:// pages.");
-} else {
-  player.setState("loading", "Loading…");
-  player.boot().catch((error) => player.fail(error));
+if (typeof document !== "undefined") {
+  const player = new Player(JSON.parse($("pocket-game").textContent));
+  // Read by tools/web-verify.ts.
+  globalThis.__pocketPlayer = player;
+  $("overlay-reload").addEventListener("click", () => location.reload());
+  player.bindSizing();
+  player.bindInput();
+  if (location.protocol === "file:") {
+    player.setState("error", "Open this page through a web server; browsers do not load WebAssembly from file:// pages.");
+  } else {
+    player.setState("loading", "Loading…");
+    player.boot().catch((error) => player.fail(error));
+  }
 }

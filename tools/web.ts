@@ -114,6 +114,15 @@ export interface WebChapter {
   autoplay?: boolean;
 }
 
+export interface WebDocumentExample {
+  /** Stable URL/file stem. */
+  id: string;
+  /** Label shown beside Open and Download. */
+  title: string;
+  /** rpgkit-project/v1 JSON, relative to the project root. */
+  document: string;
+}
+
 /** One row of the metadata table. Every field is optional. */
 export interface WebGameEntry {
   /** pocket.json, relative to the project root, when it is not found by id. */

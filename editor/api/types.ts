@@ -1,6 +1,10 @@
 // editor/api/types.ts — stable JSON wire types for headless project editing.
 
-import type { JsonValue } from "../../src/engine/types.ts";
+import type {
+  JsonValue,
+  MapDef,
+  ProjectShell,
+} from "../../src/engine/types.ts";
 
 export const EDIT_COMMANDS = [
   "open",
@@ -49,6 +53,29 @@ export interface EditPatch {
   beforeHash: string;
   afterHash: string;
   changes: EditChange[];
+}
+
+/** The semantic document patched when a ProjectShell is edited. Shard keys
+ * are the stable mapIndex `entry` strings, not map ids (an id can itself be
+ * changed by a patch). Only shards involved in an operation are present. */
+export interface ShardedEditDocument {
+  kind: "rpgkit-edit/sharded-document-v1";
+  shell: ProjectShell;
+  shards: Record<string, MapDef>;
+}
+
+/** Multi-file output produced by a successful ProjectShell mutation. The
+ * map only contains byte-changed shard entries. The file adapter stages all
+ * outputs, publishes the shell commit marker last, and attempts rollback on
+ * failure; the filesystem operation is not crash-atomic across files. */
+export interface ShardedEditOutput {
+  shell: string;
+  shards: Record<string, string>;
+}
+
+export interface ShardedEditExecution {
+  response: EditResponse;
+  output?: ShardedEditOutput;
 }
 
 export interface ProjectSummary {
@@ -101,6 +128,9 @@ export interface FileEditSuccess extends EditSuccess {
   file: string;
   dryRun: boolean;
   written: boolean;
+  /** Real paths replaced by a successful sharded write, in commit order.
+   * Absent for inline documents and non-writing operations. */
+  writtenFiles?: string[];
 }
 
 export type FileEditResponse = FileEditSuccess | (EditFailure & {

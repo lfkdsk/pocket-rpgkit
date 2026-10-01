@@ -92,20 +92,20 @@ The links point to where each feature is described in detail.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Tile painting, passage overrides, one-way edges, undo/redo | Done | [Editor](../editor/README.md) |
+| Tile painting, passage overrides, one-way edges, undo/redo | Done | Tile layers and per-map passage work for inline and sharded maps; global sheet-edge editing is inline-only. [Editor](../editor/README.md) |
 | Editing events, pages, conditions and command trees | Done | Every command and condition kind in the current project schema is editable; see [event command and condition editing](../editor/README.md#event-command-and-condition-editing) |
-| Map properties; new, duplicate and delete maps | Done | |
-| Play-test from the selected tile with a live debug panel | Done | Runs the unsaved document in the real `GameView`; the debug panel edits switches, variables, self switches, items and gold of the preview only and lists running pages and fibers. Unregistered extensions, battles and backdrops get visible stand-ins; see [Editor](../editor/README.md) |
-| Editor in the browser (inline projects) | Done | Opens local JSON or the bundled Sunstone and Meadow documents; Save uses browser-local storage, Download exports JSON, and storage failures are visible. No project data is uploaded |
+| Map properties; new, duplicate and delete maps | Done | Inline projects; a sharded session keeps the catalog structure fixed |
+| Play-test from the selected tile with a live debug panel | Done | Inline projects run the unsaved document in the real `GameView`; the debug panel edits switches, variables, self switches, items and gold of the preview only and lists running pages and fibers. Unregistered extensions, battles and backdrops get visible stand-ins; sharded sessions save and reload the game instead. See [Editor](../editor/README.md) |
+| Editor in the browser | Done | Opens local JSON, a self-contained sharded pack, or the bundled Sunstone and Meadow documents; Save uses browser-local storage, Download exports JSON or a complete replacement pack, and storage failures are visible. No project data is uploaded. See [Editor](../editor/README.md#in-the-browser) |
 | Follow-along tutorial | Done | [Editor tutorial](editor-tutorial.md) builds an NPC, a second map and a play-test from launch to save, with regenerable screenshots and a guard test |
-| Large (sharded) projects in the editor | Planned | The editor does not yet edit a project shell whose maps are loaded as separate files |
+| Large (sharded) projects in the editor | Done | Edits the map payloads of an existing `ProjectShell`: a virtual map list, lazy verified map reads, and saves that write only changed map files plus the shell. Desktop loose files and browser packs. Adding, duplicating or deleting maps, cross-map pickers, global sheet edges, play-test and proposal review need an inline project |
 | Editing UI for the newer commands | Done | Movement control, presentation, map animations, shops, audio, extensions, battle setup and battle-result branches; see [Editor](../editor/README.md#event-command-and-condition-editing) and [`update-command`](edit-api.md#update-command) |
 
 ## Scripting and agent tools
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `rpgkit-edit` | Done | Edits projects from scripts and agents, JSON in and JSON out, with reversible patches. Available on the CLI and as MCP tools; see [Edit API reference](edit-api.md) |
+| `rpgkit-edit` | Done | Edits inline and sharded projects from scripts and agents, JSON in and JSON out, with reversible patches and targeted shard writes. Available on the CLI and as MCP tools; see [Edit API reference](edit-api.md) |
 | `rpgkit-check` | Done | Lint, input-lock audit, freeze scan, exploration coverage and schematic screenshots. Available on the CLI and as MCP tools; see [QA checks reference](qa-checks.md) |
 | `rpgkit-check reach` | Partial | Experimental: neither "reachable" nor "unreachable" is a proof. In progress: a rebuild that searches with the real engine and returns a replayable input tape for every map it reaches |
 | AI edit proposals reviewed in the editor | Done | Validated sidecar queue with ghost previews, per-hunk accept/reject, live conflict checks and crash-safe archival; currently limited to inline projects through the desktop bridge. See [Editor](../editor/README.md#what-it-does) |

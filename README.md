@@ -275,7 +275,8 @@ What it does today:
   every transfer reference with a pageable command location and asks for a
   second confirm); inspector-local notices keep crop lists and save errors
   visible;
-- review AI edit proposals from **PROPOSALS**: inspect author/rationale and
+- review AI edit proposals for inline desktop projects from **PROPOSALS**:
+  inspect author/rationale and
   per-hunk conflict state, locate each hunk, preview proposed tiles as
   translucent art and event changes as color-coded boxes, then accept or
   reject one hunk or accept every clean hunk; one accept action is one undo
@@ -284,6 +285,9 @@ What it does today:
   deep (header buttons or Cmd+Z / Cmd+Shift+Z);
 - switch between a document's maps; the palette shows the sheets the
   current map declares;
+- open a sharded `ProjectShell` with a virtualized map catalog, load maps on
+  demand into a bounded clean-map cache, and save only dirty shards plus the
+  refreshed shell after host acknowledgement;
 - save through the schema validator (`src/data/schema.json`): an invalid
   export is refused with its first error, an unedited one saves back byte
   for byte, and an edit reuses untouched event/source spans without a
@@ -309,6 +313,7 @@ source PNG.
 bun run editor                    # Sunstone, on a working copy in dist/editor/
 bun run editor meadow             # Meadow
 bun run editor sunstone --file my-map.json   # another file (seeded if missing)
+bun run editor --file game/data/project.json # existing sharded ProjectShell
 bun run editor --build-only       # bundle + release host, no window
 ```
 
@@ -317,13 +322,20 @@ then opens the window with the `rpgkit-editor` companion and `--file`: the
 host forwards the real mouse and keyboard and writes each save to that
 file, by default a working copy in `dist/editor/` seeded from the
 example (the example games build their documents from code, and
-`bun run gen-assets` rewrites `data/*.json`). Without the companion (the wasm sim,
-a browser other than the website) the editor runs from buttons behind a visible
-banner. The website supplies its own browser companion for pointer and keyboard
-input, local storage, Open and Download.
+`bun run gen-assets` rewrites `data/*.json`).
 The launcher also bridges `<project.json>.proposals/` into the editor's
 sandboxed `data.fs` and writes review decisions back while the window is
 open. Fully reviewed proposals move to the sidecar's `archive/` directory.
+A sharded project (a `ProjectShell` with separate map files) instead uses a
+confined file companion that sends only the shell at first, answers map reads
+lazily, and commits changed shards before the refreshed shell; proposal
+review is unavailable in that session.
+The website supplies its own browser companion for pointer and keyboard
+input, local storage, Open and Download. It also opens a self-contained
+`rpgkit-edit/sharded-pack-v1` file and downloads a complete replacement pack;
+it cannot overwrite a local directory. Without a companion (the bare wasm
+sim, or a browser other than the website) the editor runs from buttons behind
+a visible banner.
 `bun run build:editor` builds the sim bundle alone; the editor's tests include
 `tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, the proposal review
 golden in `tests/editor-proposal-sim.test.ts`, the two-size event
@@ -342,7 +354,10 @@ interface. It is meant for scripts and coding agents that should edit project
 documents without joining the running game or editor process. Every request
 parses and validates the input document first. Every effective project mutation is
 validated again, returns JSON Pointer changes with before/after values and an
-`rpgkit-edit/patch-v1` reversible patch, and atomically replaces the file.
+`rpgkit-edit/patch-v1` reversible patch. Inline projects are atomically
+replaced as one file. Sharded updates stage and conflict-check all outputs,
+then publish changed shards before the shell manifest with best-effort
+rollback; they are not crash-atomic across files.
 `--dry-run` follows the same path but never writes. The full parameter,
 output, error-code and MCP reference for every subcommand is
 [`docs/edit-api.md`](docs/edit-api.md).
@@ -365,8 +380,8 @@ jq '{patch:.patch}' preview.json > apply.json
 bun run rpgkit-edit save --file game/data/project.json --json @apply.json
 ```
 
-For human-reviewed AI work, group typed edit operations into explicit hunks
-and create a proposal instead of mutating the project:
+For human-reviewed AI work on an inline project, group typed edit operations
+into explicit hunks and create a proposal instead of mutating the project:
 
 ```json
 {
@@ -398,12 +413,12 @@ and create a proposal instead of mutating the project:
 ```
 
 ```sh
-bun run rpgkit-edit propose --file game/data/project.json \
+bun run rpgkit-edit propose --file game/data/inline-project.json \
   --json @welcome-proposal.json
-bun run rpgkit-edit list-proposals --file game/data/project.json
-bun run rpgkit-edit show-proposal --file game/data/project.json \
+bun run rpgkit-edit list-proposals --file game/data/inline-project.json
+bun run rpgkit-edit show-proposal --file game/data/inline-project.json \
   --json '{"id":"agent-welcome-path-1"}'
-bun run rpgkit-edit withdraw-proposal --file game/data/project.json \
+bun run rpgkit-edit withdraw-proposal --file game/data/inline-project.json \
   --json '{"id":"agent-welcome-path-1"}'
 ```
 
@@ -447,10 +462,18 @@ The command set is `open`, `list-maps`, `list-events`, `list-pages`,
 `insert-command`, `delete-command`, `update-command`, `validate`, `save`,
 `propose`, `list-proposals`, `show-proposal`, and `withdraw-proposal`.
 Mutations use the same tile strokes, event/page transactions, recursive
-command addresses and field parsers as the visual editor. A schema-valid
-sharded `ProjectShell` can be opened and its `mapIndex` listed; map payload
-editing is deliberately refused until shard writes are supported. Run the
-complete CLI-to-interpreter example with:
+command addresses and field parsers as the visual editor. Project read/edit
+commands through `save` support inline documents and sharded `ProjectShell`
+projects. Proposal creation, assessment, and editor review currently require
+an inline project; a shell receives a clear `READ_ONLY_PROJECT_SHELL` error.
+Shell-only
+discovery reads no map payloads; ordinary map operations load and validate
+only the selected shard. `validate` and a map-id rename read every shard,
+because validation covers the complete project and renames rewrite transfers
+everywhere. Effective mutations write only changed shards plus the refreshed
+shell. Shell patches use `/shards/<escaped-entry>/...` and `/shell/...`
+logical JSON Pointer paths and remain reversible with `save`. Run the complete
+CLI-to-interpreter example with:
 
 ```sh
 bun tools/rpgkit-edit/example-sunstone.ts \
@@ -609,6 +632,11 @@ at startup; pass `verifyMapManifest: true` in `createSession` options to
 recompute and compare a declared hash when accepting an untrusted or mutable
 shell. Index shape, duplicate ids/entries and the start-map reference are
 validated in both modes.
+
+`rpgkit-edit` strictly checks a declared manifest before editing and verifies
+every shard it opens. After an effective mutation it refreshes changed shard
+checksums, `mapSchemaHash`, and `mapManifestHash`, then writes only the changed
+shards plus the shell.
 
 Because the runtime trusts a declared hash, an application that packages a
 `ProjectShell` must verify its freshness at build or test time. After writing

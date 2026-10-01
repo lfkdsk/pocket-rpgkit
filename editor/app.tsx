@@ -30,8 +30,8 @@ import { Text, View } from "@pocketjs/framework/components";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { getOps, hostViewport } from "@pocketjs/framework/host";
 import { BTN } from "@pocketjs/framework/input";
-import type { GameEvent, Page, Project, TileId } from "../src/engine/types.ts";
-import { sha256Text } from "../src/engine/map-repository.ts";
+import type { GameEvent, MapDef, MapIndexEntry, Page, Project, ProjectShell, ProjectSource, TileId } from "../src/engine/types.ts";
+import { canonicalMapJson, isProjectShell, mapManifestHash, sha256Text } from "../src/engine/map-repository.ts";
 import {
   addPage,
   canRedo,
@@ -105,6 +105,8 @@ import {
 } from "./engine/layout.ts";
 import { HEADER_ORDER, initialCursor, stepCursor, type Cursor } from "./engine/cursor.ts";
 import { connectSvc, type HostLine, type Svc } from "./svc.ts";
+import { createShardedEditorWorkspace, type ShardedEditorWorkspace } from "./engine/sharded-workspace.ts";
+import { hitMapListRow, mapListWindow, revealMapListRow } from "./engine/map-list.ts";
 import { hasFs, readProject, writeProject } from "./store.ts";
 import { Banner, EventPanel, HeaderButton, PalettePanel, type PaletteThumb } from "./ui/panels.tsx";
 import { PassPanel } from "./ui/pass-panel.tsx";
@@ -166,6 +168,7 @@ import {
 } from "./engine/map-layout.ts";
 import { EventInspector, flattenInspectorConditions } from "./ui/event-inspector.tsx";
 import { MapInspector } from "./ui/map-inspector.tsx";
+import { MapList } from "./ui/map-list.tsx";
 import { ProposalPanel } from "./ui/proposal-panel.tsx";
 import {
   hitProposalPanel,
@@ -229,6 +232,34 @@ interface DocSlot {
   sourceText: string;
 }
 
+interface PendingMapRead {
+  entry: string;
+  resolve(map: MapDef): void;
+  reject(error: Error): void;
+}
+
+interface PendingShardedSave {
+  token: number;
+  activeMapId: string | null;
+  activeMapText: string | null;
+  shardCount: number;
+}
+
+/** Present one resident shard to the existing single-project editor model.
+ * The shell remains authoritative for the catalog and persistence identity. */
+function projectForShardedMap(shell: ProjectShell, map: MapDef): Project {
+  const {
+    mapIndex: _mapIndex,
+    mapManifestHash: _mapManifestHash,
+    mapSchemaHash: _mapSchemaHash,
+    ...globals
+  } = shell;
+  const start = shell.start.map === map.id
+    ? shell.start
+    : { map: map.id, x: 0, y: 0, dir: shell.start.dir };
+  return { ...structuredClone(globals), start: structuredClone(start), maps: [structuredClone(map)] };
+}
+
 interface HostSaveGuard {
   /** Last host revision observed before the accepted review was queued. */
   previousHash: string;
@@ -290,6 +321,14 @@ export function EditorApp(): JSX.Element {
   /** True once the host's --file document is open: SAVE writes that file,
    *  so DOC must not swap another project in under it. */
   const [hostFile, setHostFile] = createSignal(false);
+  const [shardedWorkspace, setShardedWorkspace] = createSignal<ShardedEditorWorkspace | null>(null);
+  const [workspaceRevision, setWorkspaceRevision] = createSignal(0);
+  const [catalogIndex, setCatalogIndex] = createSignal(0);
+  const [mapListOpen, setMapListOpen] = createSignal(false);
+  const [mapListCursor, setMapListCursor] = createSignal(0);
+  const [mapListScroll, setMapListScroll] = createSignal(0);
+  const [loadingMapIndex, setLoadingMapIndex] = createSignal<number | null>(null);
+  const [savePending, setSavePending] = createSignal(false);
   const [pendingHostSave, setPendingHostSave] = createSignal<PendingHostSave | null>(null);
   const [eventMode, setEventMode] = createSignal(false);
   const [inspectorOpen, setInspectorOpen] = createSignal(false);
@@ -349,10 +388,36 @@ export function EditorApp(): JSX.Element {
   let edgeStrokeOpen = false;
   let playPointerDown = false;
   let playPort: PlaytestPort | null = null;
+  let nextServiceRequest = 1;
+  let activationGeneration = 0;
+  const pendingMapReads = new Map<number, PendingMapRead>();
+  const pendingShardedSaves = new Map<number, PendingShardedSave>();
+  const syncedMapText = new Map<string, string>();
 
   const tileTextures = createTileTextures();
 
-  const pendingProposals = createMemo(() => proposals().filter((proposal) => !proposalComplete(proposal)));
+  const bumpWorkspace = (): void => {
+    setWorkspaceRevision((value) => value + 1);
+  };
+  const catalog = createMemo<readonly MapIndexEntry[]>(() => {
+    workspaceRevision();
+    return shardedWorkspace()?.catalog ?? [];
+  });
+  const dirtyEntries = createMemo<ReadonlySet<string>>(() => {
+    workspaceRevision();
+    const workspace = shardedWorkspace();
+    if (!workspace) return new Set<string>();
+    const ids = new Set(workspace.dirtyMapIds);
+    if (editor().dirty && workspace.activeMapId) ids.add(workspace.activeMapId);
+    return new Set(workspace.catalog.filter((meta) => ids.has(meta.id)).map((meta) => meta.entry));
+  });
+  const visibleMapRows = createMemo(() => {
+    if (!mapListOpen()) return 0;
+    const windowed = mapListWindow(catalog().length, vp().h - HEADER_H, mapListScroll());
+    return windowed.end - windowed.first;
+  });
+  const pendingProposals = createMemo(() =>
+    shardedWorkspace() ? [] : proposals().filter((proposal) => !proposalComplete(proposal)));
   const proposalAssessments = createMemo(() => {
     const project = exportProject(editor());
     return pendingProposals().map((proposal) => assessProposal(project, proposal));
@@ -380,22 +445,22 @@ export function EditorApp(): JSX.Element {
    *  way to EVENT), so it must exclude event mode explicitly. */
   const passMode = createMemo(() => !eventMode() && editor().layer === "passage");
   const passageDense = createMemo(() => editor().passageDense[editor().mapIndex] ?? null);
-  /** Per-cell dirEdges for the current map, resolved from each cell's ground
-   *  tile sheet (dirEdges is sheet-level in this format). */
-  const cellEdges = createMemo<(CellEdges | null)[]>(() => {
-    const m = map();
-    const out: (CellEdges | null)[] = new Array(m.width * m.height).fill(null);
-    const sheets = new Map(editor().project.sheets.map((sheet) => [sheet.id, sheet]));
-    for (let i = 0; i < m.ground.length; i++) {
-      const tile = m.ground[i];
-      if (typeof tile !== "string") continue;
-      const match = /^([a-z0-9_-]+)\.(\d+)$/.exec(tile);
-      if (!match) continue;
-      const edges = sheets.get(match[1]!)?.dirEdges?.[String(Number(match[2]!))];
-      if (edges) out[i] = edges;
+  // Ground painting replaces the map wrapper on every changed cell. Keep
+  // sheet identity behind its own memo so ordinary painting does not rebuild
+  // edge metadata for all 10,000 cells of a 100x100 map. Canvas resolves only
+  // its bounded visible window through this stable lookup.
+  const sheetDefs = createMemo(() => editor().project.sheets);
+  const tileEdges = createMemo<ReadonlyMap<string, CellEdges>>(() => {
+    const out = new Map<string, CellEdges>();
+    for (const sheet of sheetDefs()) {
+      for (const [cell, edges] of Object.entries(sheet.dirEdges ?? {})) {
+        out.set(`${sheet.id}.${Number(cell)}`, edges);
+      }
     }
     return out;
   });
+  const edgeForTile = (tile: TileId): CellEdges | null =>
+    tile === null ? null : tileEdges().get(tile) ?? null;
   const selectedEvent = createMemo<GameEvent | null>(() => {
     const id = editor().selectedEventId;
     return id === null ? null : (map().events ?? []).find((event) => event.id === id) ?? null;
@@ -461,6 +526,123 @@ export function EditorApp(): JSX.Element {
     };
   };
 
+  const abandonShardedRequests = (reason: string): void => {
+    activationGeneration++;
+    for (const pending of pendingMapReads.values()) pending.reject(new Error(reason));
+    pendingMapReads.clear();
+    pendingShardedSaves.clear();
+    syncedMapText.clear();
+    setSavePending(false);
+    setLoadingMapIndex(null);
+  };
+
+  const requestMapShard = (meta: MapIndexEntry): Promise<MapDef> => {
+    if (!svc) return Promise.reject(new Error("sharded projects require an editor file host"));
+    const request = nextServiceRequest++;
+    return new Promise<MapDef>((resolve, reject) => {
+      pendingMapReads.set(request, { entry: meta.entry, resolve, reject });
+      svc.readMap(meta.entry, request);
+    });
+  };
+
+  /** Flush the active reducer snapshot into the workspace at explicit
+   * boundaries. Edits stay inside the single resident map between switches,
+   * so per-frame work never scales with the 263-entry catalog. */
+  const syncActiveShardedMap = (): MapDef | null => {
+    const workspace = shardedWorkspace();
+    const id = workspace?.activeMapId;
+    if (!workspace || !id) return null;
+    let state = editor();
+    if (state.stroke) state = strokeEnd(state);
+    if (state.edgeStroke) state = edgeStrokeEnd(state);
+    if (state !== editor()) setEditor(state);
+    const active = exportProject(state).maps[0]!;
+    const text = canonicalMapJson(active);
+    if (text !== syncedMapText.get(id)) {
+      workspace.replaceMap(id, active);
+      syncedMapText.set(id, text);
+      bumpWorkspace();
+    }
+    return active;
+  };
+
+  const activateShardedMap = async (index: number): Promise<void> => {
+    const workspace = shardedWorkspace();
+    const entries = workspace?.catalog ?? [];
+    if (!workspace || entries.length === 0) return;
+    const target = Math.max(0, Math.min(entries.length - 1, index));
+    const meta = entries[target]!;
+    syncActiveShardedMap();
+    const generation = ++activationGeneration;
+    setLoadingMapIndex(target);
+    setNotice({ kind: "info", text: `LOADING ${meta.id}…` });
+    try {
+      const loadedMap = await workspace.activateMap(meta.id);
+      if (generation !== activationGeneration || shardedWorkspace() !== workspace) return;
+      const project = projectForShardedMap(workspace.shell, loadedMap);
+      const sourceText = serializeProjectPreservingSource(JSON.stringify(project), project, project);
+      syncedMapText.set(meta.id, canonicalMapJson(loadedMap));
+      batch(() => {
+        setDoc({ id: "sharded", project, sourceText });
+        setEditor(createEditorState(project));
+        setCatalogIndex(target);
+        setMapListCursor(target);
+        setMapListScroll(revealMapListRow(target, entries.length, vp().h - HEADER_H, mapListScroll()));
+        setMapListOpen(false);
+        setLoadingMapIndex(null);
+        setCam({ x: 0, y: 0 });
+        setCursor(initialCursor(0, 0));
+        setHover(null);
+        setPalScroll(0);
+        setEventMode(false);
+        setInspectorOpen(false);
+        setMapInspectorOpen(false);
+        setPendingPick(null);
+        setPlayStartCell(null);
+        setNotice({ kind: "good", text: `LOADED ${meta.id} (${target + 1}/${entries.length})` });
+      });
+      bumpWorkspace();
+    } catch (error) {
+      if (generation !== activationGeneration || shardedWorkspace() !== workspace) return;
+      setLoadingMapIndex(null);
+      setNotice({ kind: "bad", text: `MAP LOAD FAILED: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
+
+  const handleMapReply = (line: HostLine): void => {
+    if (line.request === undefined) return;
+    const pending = pendingMapReads.get(line.request);
+    if (!pending) return;
+    pendingMapReads.delete(line.request);
+    if (line.entry !== pending.entry) {
+      pending.reject(new Error(`host returned ${line.entry ?? "an unnamed shard"} for ${pending.entry}`));
+      return;
+    }
+    if (line.t === "map-error") {
+      pending.reject(new Error(line.error ?? `host could not read ${pending.entry}`));
+      return;
+    }
+    if (line.t !== "map-data" || typeof line.text !== "string") {
+      pending.reject(new Error(`host returned no data for ${pending.entry}`));
+      return;
+    }
+    try {
+      pending.resolve(JSON.parse(line.text) as MapDef);
+    } catch (error) {
+      pending.reject(new Error(`invalid map JSON for ${pending.entry}: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  };
+
+  const leaveShardedProject = (reason: string): void => {
+    if (shardedWorkspace()) abandonShardedRequests(reason);
+    setShardedWorkspace(null);
+    setMapListOpen(false);
+    setMapListCursor(0);
+    setMapListScroll(0);
+    setCatalogIndex(0);
+    bumpWorkspace();
+  };
+
   const resetForProject = (project: Project, message: Notice): void => {
     batch(() => {
       setEditor(createEditorState(project));
@@ -500,6 +682,7 @@ export function EditorApp(): JSX.Element {
       return;
     }
     const nextIndex = (docIndex() + 1) % BUNDLED_PROJECTS.length;
+    leaveShardedProject("another document was opened");
     setDocIndex(nextIndex);
     const slot = bootDoc(nextIndex);
     setDoc(slot);
@@ -508,6 +691,18 @@ export function EditorApp(): JSX.Element {
   };
 
   const switchMap = (delta: number): void => {
+    const workspace = shardedWorkspace();
+    if (workspace) {
+      if (pendingPick()) {
+        setNotice({ kind: "bad", text: "CROSS-MAP TARGET PICKING IS UNAVAILABLE IN A LAZY PROJECT" });
+        return;
+      }
+      const count = workspace.catalog.length;
+      if (count === 0 || loadingMapIndex() !== null) return;
+      const next = (catalogIndex() + delta + count) % count;
+      if (next !== catalogIndex()) void activateShardedMap(next);
+      return;
+    }
     const e = editor();
     const count = e.project.maps.length;
     const next = (e.mapIndex + delta + count) % count;
@@ -521,6 +716,76 @@ export function EditorApp(): JSX.Element {
       setEditor(switched);
       setCam(clampCameraTo(switched, cam()));
       setPlayStartCell(null);
+    });
+  };
+
+  const performShardedSave = (hostRequest?: number): void => {
+    const workspace = shardedWorkspace();
+    if (!workspace || !svc) return;
+    if (savePending()) {
+      if (hostRequest !== undefined) svc.saveError(hostRequest, "a sharded save is already in progress");
+      setNotice({ kind: "bad", text: "SAVE ALREADY IN PROGRESS" });
+      return;
+    }
+    const active = syncActiveShardedMap();
+    const candidate = exportProject(editor());
+    const errors = validateProject(candidate);
+    if (errors.length > 0) {
+      if (hostRequest !== undefined) svc.saveError(hostRequest, `${errors[0]!.path} ${errors[0]!.msg}`);
+      setNotice({
+        kind: "bad",
+        text: `EXPORT REFUSED: ${errors.length} schema error(s), first: ${errors[0]!.path} ${errors[0]!.msg}`,
+      });
+      return;
+    }
+    const before = workspace.shell;
+    const output = workspace.buildSavePayload();
+    const request = hostRequest ?? nextServiceRequest++;
+    const shards = Object.entries(output.shards).map(([entry, text]) => {
+      const expected = before.mapIndex.find((meta) => meta.entry === entry)?.sha256;
+      if (!expected) throw new Error(`dirty shard ${entry} is absent from the open shell`);
+      return { entry, text, expectedSha256: expected };
+    });
+    const shellText = `${JSON.stringify(output.shell, null, 2)}\n`;
+    pendingShardedSaves.set(request, {
+      token: output.token,
+      activeMapId: workspace.activeMapId,
+      activeMapText: active ? canonicalMapJson(active) : null,
+      shardCount: shards.length,
+    });
+    setSavePending(true);
+    svc.saveProject({
+      baseManifestHash: before.mapManifestHash ?? mapManifestHash(before),
+      shell: shellText,
+      shards,
+    }, request);
+    setNotice({ kind: "info", text: `SAVING ${shards.length} CHANGED MAP${shards.length === 1 ? "" : "S"}…` });
+  };
+
+  const handleProjectSaved = (line: HostLine): void => {
+    if (line.request === undefined) return;
+    const pending = pendingShardedSaves.get(line.request);
+    const workspace = shardedWorkspace();
+    if (!pending || !workspace) return;
+    pendingShardedSaves.delete(line.request);
+    setSavePending(pendingShardedSaves.size > 0);
+    workspace.acknowledgeSave(pending.token, line.ok === true);
+    if (line.ok !== true) {
+      bumpWorkspace();
+      setNotice({ kind: "bad", text: `SAVE FAILED: ${line.error ?? "host rejected the project"}` });
+      return;
+    }
+    const active = workspace.activeMapId;
+    const current = active ? canonicalMapJson(exportProject(editor()).maps[0]!) : null;
+    if (active === pending.activeMapId && current === pending.activeMapText &&
+      !workspace.dirtyMapIds.includes(active!)) {
+      setEditor(markSaved(editor()));
+    }
+    setSavedText(`${JSON.stringify(workspace.shell, null, 2)}\n`);
+    bumpWorkspace();
+    setNotice({
+      kind: "good",
+      text: `SAVED ${pending.shardCount} MAP SHARD${pending.shardCount === 1 ? "" : "S"} + PROJECT SHELL`,
     });
   };
 
@@ -562,6 +827,10 @@ export function EditorApp(): JSX.Element {
     if (provided === undefined && e.edgeStroke) {
       e = edgeStrokeEnd(e);
       setEditor(e);
+    }
+    if (shardedWorkspace()) {
+      performShardedSave(browserRequest);
+      return;
     }
     const candidate = exportProject(e);
     const errors = validateProject(candidate);
@@ -608,18 +877,18 @@ export function EditorApp(): JSX.Element {
         }
         const expectedSourceHash = sha256Text(baseline.sourceText);
         const projectHash = proposalSemanticHash(candidate);
-        const request: EditorSaveRequest = {
+        const saveRequest: EditorSaveRequest = {
           id: saveRequestId(expectedSourceHash, projectHash),
           expectedSourceHash,
           projectHash,
           text,
         };
-        const queued = writeEditorSaveRequest(request);
+        const queued = writeEditorSaveRequest(saveRequest);
         if ("error" in queued) {
           setNotice({ kind: "bad", text: `SAVE FAILED: ${queued.error}` });
           return;
         }
-        setPendingHostSave({ request, baseline, project: candidate, successPrefix });
+        setPendingHostSave({ request: saveRequest, baseline, project: candidate, successPrefix });
         setNotice({ kind: "info", text: `SAVE QUEUED ${text.length} bytes FOR HOST CAS` });
         return;
       }
@@ -787,6 +1056,15 @@ export function EditorApp(): JSX.Element {
 
   const toggleProposalPanel = (): void => {
     finishActiveInput();
+    if (shardedWorkspace()) {
+      setProposalOpen(false);
+      clearProposalSelection();
+      setNotice({
+        kind: "bad",
+        text: "PROPOSALS ARE UNAVAILABLE FOR SHARDED PROJECTS; USE DIRECT EDITS OR OPEN AN INLINE PROJECT",
+      });
+      return;
+    }
     if (proposalOpen()) {
       setProposalOpen(false);
       clearProposalSelection();
@@ -917,6 +1195,10 @@ export function EditorApp(): JSX.Element {
   };
 
   const startPlaytest = (): void => {
+    if (shardedWorkspace()) {
+      setNotice({ kind: "bad", text: "SAVE, THEN RELOAD THE GAME TO PLAYTEST A SHARDED PROJECT" });
+      return;
+    }
     if (inspectorFocus() || mapFocus()) {
       setNotice({ kind: "bad", text: "FINISH OR CANCEL THE ACTIVE FIELD BEFORE PLAY" });
       return;
@@ -977,7 +1259,13 @@ export function EditorApp(): JSX.Element {
   const loadHostDocument = (line: HostLine): void => {
     const text = line.text!;
     const loaded = loadProject(text);
+    const source = loaded.project as unknown as ProjectSource;
+    if (loaded.errors.length === 0 && isProjectShell(source)) {
+      loadHostShardedProject({ ...line, t: "project", shell: text });
+      return;
+    }
     if (loaded.errors.length === 0) {
+      leaveShardedProject("an inline document was opened");
       // Name the slot after the bundled example the file came from (the
       // launcher points --file at an example document).
       const match = BUNDLED_PROJECTS.findIndex((b) => b.title === loaded.project.title);
@@ -997,6 +1285,40 @@ export function EditorApp(): JSX.Element {
     const error = `${loaded.errors[0]!.path} ${loaded.errors[0]!.msg}`;
     setNotice({ kind: "bad", text: `HOST FILE REJECTED: ${error}` });
     svc?.loaded(line.request, false, error);
+  };
+
+  const loadHostShardedProject = (line: HostLine): void => {
+    const shellText = line.shell!;
+    const loaded = loadProject(shellText);
+    const source = loaded.project as unknown as ProjectSource;
+    if (loaded.errors.length > 0 || !isProjectShell(source)) {
+      const error = loaded.errors.length > 0
+        ? `${loaded.errors[0]!.path} ${loaded.errors[0]!.msg}`
+        : "$ expected a ProjectShell with mapIndex";
+      setNotice({ kind: "bad", text: `PROJECT SHELL REJECTED: ${error}` });
+      svc?.loaded(line.request, false, error);
+      return;
+    }
+    try {
+      leaveShardedProject("another sharded project was opened");
+      const workspace = createShardedEditorWorkspace(source, requestMapShard, { maxLoadedMaps: 4 });
+      setProposalOpen(false);
+      clearProposalSelection();
+      setShardedWorkspace(workspace);
+      setHostFile(true);
+      setSavedText(shellText);
+      setLoadNotice(`SHARDED HOST PROJECT ${workspace.catalog.length} MAPS`);
+      setMapListCursor(0);
+      setMapListScroll(0);
+      bumpWorkspace();
+      svc?.loaded(line.request, true);
+      const start = workspace.catalog.findIndex((meta) => meta.id === source.start.map);
+      void activateShardedMap(start >= 0 ? start : 0);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ kind: "bad", text: `PROJECT SHELL REJECTED: ${message}` });
+      svc?.loaded(line.request, false, message);
+    }
   };
 
   const activatePlaytestHit = (hit: NonNullable<ReturnType<typeof hitTestPlaytest>>): void => {
@@ -1522,7 +1844,41 @@ export function EditorApp(): JSX.Element {
     setMapInspectorOpen(false);
   };
 
+  const closeMapList = (): void => {
+    setMapListOpen(false);
+  };
+
+  const moveMapListCursor = (delta: number): void => {
+    const entries = catalog();
+    if (entries.length === 0) return;
+    const next = Math.max(0, Math.min(entries.length - 1, mapListCursor() + delta));
+    setMapListCursor(next);
+    setMapListScroll(revealMapListRow(next, entries.length, vp().h - HEADER_H, mapListScroll()));
+  };
+
+  const openMapListSelection = (): void => {
+    if (loadingMapIndex() !== null) return;
+    void activateShardedMap(mapListCursor());
+  };
+
   const toggleMapInspector = (): void => {
+    if (shardedWorkspace()) {
+      if (mapListOpen()) {
+        closeMapList();
+      } else {
+        setInspectorOpen(false);
+        setMapInspectorOpen(false);
+        setMapListCursor(catalogIndex());
+        setMapListScroll(revealMapListRow(
+          catalogIndex(),
+          catalog().length,
+          vp().h - HEADER_H,
+          mapListScroll(),
+        ));
+        setMapListOpen(true);
+      }
+      return;
+    }
     if (mapInspectorOpen()) {
       closeMapInspector();
       return;
@@ -1549,6 +1905,10 @@ export function EditorApp(): JSX.Element {
   const commitMapField = (field: MapField, raw: string): boolean => {
     const e = editor();
     if (field === "id") {
+      if (shardedWorkspace()) {
+        setNotice({ kind: "bad", text: "MAP IDS ARE STABLE IN A SHARDED EDITOR SESSION; USE rpgkit-edit TO RENAME" });
+        return false;
+      }
       const r = renameMap(e, raw);
       if (!r.ok) {
         setNotice({ kind: "bad", text: r.error.toUpperCase() });
@@ -1626,6 +1986,10 @@ export function EditorApp(): JSX.Element {
       return;
     }
     const e = editor();
+    if (shardedWorkspace() && action.kind === "action") {
+      setNotice({ kind: "bad", text: "ADD, DUPLICATE, AND DELETE MAP USE rpgkit-edit FOR SHARDED PROJECTS" });
+      return;
+    }
     if (action.action === "new") {
       // A new map inherits the current map's sheets and fills with the first
       // sheet's cell 0 (a walkable default) rather than blocking void.
@@ -1682,6 +2046,10 @@ export function EditorApp(): JSX.Element {
 
   // --- passage tools --------------------------------------------------------
   const selectPassTool = (tool: PassTool): void => {
+    if (shardedWorkspace() && (tool === "clr-edge" || tool.startsWith("in-") || tool.startsWith("out-"))) {
+      setNotice({ kind: "bad", text: "SHEET EDGE EDITS ARE GLOBAL; USE rpgkit-edit FOR A SHARDED PROJECT" });
+      return;
+    }
     setPassTool(tool);
     setNotice({ kind: "info", text: `PASS TOOL: ${PASS_TOOL_LABELS[tool]}` });
   };
@@ -1799,6 +2167,30 @@ export function EditorApp(): JSX.Element {
     const x = m.x | 0;
     const y = m.y | 0;
     pointerX = x;
+
+    if (mapListOpen()) {
+      if (m.d && !pointerDown) {
+        pointerDown = "event";
+        if (y < HEADER_H) {
+          const hit = hitAt(x, y);
+          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+        } else {
+          const index = hitMapListRow(
+            y - HEADER_H,
+            catalog().length,
+            vp().h - HEADER_H,
+            mapListScroll(),
+          );
+          if (index !== null) {
+            setMapListCursor(index);
+            openMapListSelection();
+          }
+        }
+      } else if (!m.d) {
+        pointerDown = false;
+      }
+      return;
+    }
 
     if (mapInspectorOpen()) {
       if (m.d && !pointerDown) {
@@ -1997,6 +2389,17 @@ export function EditorApp(): JSX.Element {
     // comes from the mouse and cmd-key chords. The gamepad fallback (no
     // companion) keeps the full button vocabulary.
     const pointerMode = svc !== null;
+    if (mapListOpen()) {
+      if (!pointerMode) {
+        if (edge & BTN.UP) moveMapListCursor(-1);
+        if (edge & BTN.DOWN) moveMapListCursor(1);
+        if (edge & BTN.CIRCLE) openMapListSelection();
+        if (edge & BTN.CROSS) closeMapList();
+        if (edge & BTN.START) performSave();
+      }
+      prevButtons = buttons;
+      return;
+    }
     if (proposalOpen()) {
       if (!pointerMode) {
         const selectedIndex = selectedProposal();
@@ -2199,6 +2602,9 @@ export function EditorApp(): JSX.Element {
             stopPlaytest();
           } else if (line.t === "key" && line.cmd && (line.k === "s" || line.k === "S")) {
             performSave(undefined, "SAVED", line.request);
+          } else if (line.t === "project" && typeof line.shell === "string") {
+            stopPlaytest();
+            loadHostShardedProject(line);
           } else if (line.t === "load" && typeof line.text === "string") {
             stopPlaytest();
             loadHostDocument(line);
@@ -2212,9 +2618,19 @@ export function EditorApp(): JSX.Element {
       for (const line of svc.poll()) {
         if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
           setVp({ w: line.w, h: line.h });
+        } else if (line.t === "project" && typeof line.shell === "string") {
+          loadHostShardedProject(line);
+        } else if ((line.t === "map-data" || line.t === "map-error") && line.request !== undefined) {
+          handleMapReply(line);
+        } else if (line.t === "project-saved") {
+          handleProjectSaved(line);
         } else if (line.t === "load" && typeof line.text === "string") {
           loadHostDocument(line);
         } else if (line.t === "proposals" && Array.isArray(line.proposals)) {
+          if (shardedWorkspace()) {
+            setNotice({ kind: "bad", text: "PROPOSALS ARE UNAVAILABLE FOR SHARDED PROJECTS" });
+            continue;
+          }
           try {
             const incoming = line.proposals.map(parseProposal);
             batch(() => {
@@ -2228,6 +2644,14 @@ export function EditorApp(): JSX.Element {
         } else if (line.t === "mouse") {
           handleMouseLine(line);
         } else if (line.t === "scroll" && typeof line.dy === "number") {
+          if (mapListOpen()) {
+            const windowed = mapListWindow(catalog().length, vp().h - HEADER_H, mapListScroll());
+            setMapListScroll((value) => Math.max(
+              0,
+              Math.min(windowed.maxScroll, value + Math.sign(line.dy!) * 44),
+            ));
+            continue;
+          }
           if (proposalOpen()) {
             const proposal = selectedProposal() === null ? undefined : pendingProposals()[selectedProposal()!];
             const count = proposal?.hunks.length ?? pendingProposals().length;
@@ -2267,7 +2691,19 @@ export function EditorApp(): JSX.Element {
           const name = line.k ?? "";
           const focus = inspectorFocus();
           const mapFocusAction = mapFocus();
-          if (pendingPick() && (name === "Escape" || name === "Esc")) {
+          if (mapListOpen() && (name === "ArrowUp" || name === "Up")) {
+            moveMapListCursor(-1);
+          } else if (mapListOpen() && (name === "ArrowDown" || name === "Down")) {
+            moveMapListCursor(1);
+          } else if (mapListOpen() && name === "Home") {
+            moveMapListCursor(-catalog().length);
+          } else if (mapListOpen() && name === "End") {
+            moveMapListCursor(catalog().length);
+          } else if (mapListOpen() && name === "Enter") {
+            openMapListSelection();
+          } else if (mapListOpen() && (name === "Escape" || name === "Esc")) {
+            closeMapList();
+          } else if (pendingPick() && (name === "Escape" || name === "Esc")) {
             setPendingPick(null);
             setNotice({ kind: "info", text: "PICK CANCELLED" });
           } else if (mapFocusAction && mapFocusAction.kind === "field" && name === "Enter") {
@@ -2310,6 +2746,8 @@ export function EditorApp(): JSX.Element {
     editor: editor(),
     cam: cam(),
     cursor: cursor(),
+    paletteSize: palette().length,
+    palScroll: palScroll(),
     hover: hover(),
     notice: notice(),
     hasSvc: svc !== null,
@@ -2318,6 +2756,17 @@ export function EditorApp(): JSX.Element {
     savedText: savedText(),
     loadNotice: loadNotice(),
     hostFile: hostFile(),
+    sharded: shardedWorkspace() !== null,
+    catalogCount: catalog().length,
+    catalogIndex: catalogIndex(),
+    mapListOpen: mapListOpen(),
+    mapListCursor: mapListCursor(),
+    mapListScroll: mapListScroll(),
+    visibleMapRows: visibleMapRows(),
+    loadingMapIndex: loadingMapIndex(),
+    loadedMapIds: shardedWorkspace()?.loadedMapIds ?? [],
+    dirtyMapIds: shardedWorkspace()?.dirtyMapIds ?? [],
+    savePending: savePending(),
     pendingHostSave: pendingHostSave(),
     eventMode: eventMode(),
     passMode: passMode(),
@@ -2356,6 +2805,9 @@ export function EditorApp(): JSX.Element {
   (globalThis as Record<string, unknown>).__rpgkitEditorInject = (json: string) => {
     const loaded = loadProject(json);
     if (loaded.errors.length > 0) return { ok: false, errors: loaded.errors };
+    const source = loaded.project as unknown as ProjectSource;
+    if (isProjectShell(source)) return { ok: false, errors: [{ path: "$", msg: "sharded injection requires a file host" }] };
+    leaveShardedProject("a test document was injected");
     setDoc({ id: "injected", project: loaded.project, sourceText: json });
     setSavedText(json);
     resetForProject(loaded.project, { kind: "info", text: "INJECTED PROJECT JSON" });
@@ -2376,7 +2828,7 @@ export function EditorApp(): JSX.Element {
   const statusLine = (): string => {
     const e = editor();
     const m = currentMap(e);
-    const dirty = e.dirty ? "*" : "";
+    const dirty = e.dirty || shardedWorkspace()?.isDirty ? "*" : "";
     const mode = svc ? "PTR" : "PAD";
     const sel = eventMode()
       ? e.selectedEventId ?? "NO EVENT"
@@ -2430,7 +2882,23 @@ export function EditorApp(): JSX.Element {
         </For>
       </View>
 
-      {inspectorOpen() && selectedEvent() ? (
+      {mapListOpen() && shardedWorkspace() ? (
+        <View
+          class="absolute"
+          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H }}
+        >
+          <MapList
+            entries={catalog()}
+            active={catalogIndex()}
+            cursor={mapListCursor()}
+            loading={loadingMapIndex()}
+            dirtyEntries={dirtyEntries()}
+            scrollY={mapListScroll()}
+            width={vp().w}
+            height={vp().h - HEADER_H}
+          />
+        </View>
+      ) : inspectorOpen() && selectedEvent() ? (
         <View
           class="absolute"
           style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H }}
@@ -2504,7 +2972,7 @@ export function EditorApp(): JSX.Element {
             map={map()}
             upper={editor().upperDense[editor().mapIndex]!}
             passage={passageDense()}
-            edges={cellEdges()}
+            edgeForTile={edgeForTile}
             camX={cam().x}
             camY={cam().y}
             cols={viewCols()}

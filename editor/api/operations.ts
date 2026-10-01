@@ -190,6 +190,27 @@ function assertKnownArgs(command: EditCommandName, args: Record<string, unknown>
   }
 }
 
+/** Shared wire-level command/argument gate used by inline and sharded hosts
+ * before either implementation decides what document bytes it must load. */
+export function validateEditOperationInput(
+  commandValue: string,
+  rawArgs: unknown = {},
+): { command: EditCommandName; args: Record<string, unknown> } {
+  if (!COMMAND_SET.has(commandValue)) {
+    throw new EditApiError(
+      "UNKNOWN_COMMAND",
+      `unknown command ${JSON.stringify(commandValue)}; choose one of: ${EDIT_COMMANDS.join(", ")}`,
+      "$.command",
+      EDIT_COMMANDS,
+      commandValue,
+    );
+  }
+  const command = commandValue as EditCommandName;
+  const args = argsRecord(rawArgs);
+  assertKnownArgs(command, args);
+  return { command, args };
+}
+
 function stringArg(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -338,7 +359,7 @@ function requireInline(project: ProjectSource): Project {
   if (!isInlineProject(project)) {
     throw new EditApiError(
       "READ_ONLY_PROJECT_SHELL",
-      "ProjectShell map payloads are sharded and read-only in this version; use list-maps, or edit an inline document",
+      "executeEditOperation has no shard source; use executeShardedEditOperation or the file adapter for ProjectShell payload operations",
       "$.mapIndex",
       "inline project with $.maps",
     );
@@ -560,7 +581,9 @@ function assertJsonValue(value: unknown, path: string, ancestors = new Set<objec
   ancestors.delete(value);
 }
 
-export function createEditPatch(before: Project, after: Project): EditPatch {
+/** Build a reversible patch over any JSON semantic view. Inline projects use
+ * the project object directly; sharded projects use ShardedEditDocument. */
+export function createEditPatch(before: unknown, after: unknown): EditPatch {
   return {
     format: "rpgkit-edit/patch-v1",
     beforeHash: semanticHash(before),
@@ -685,10 +708,22 @@ export function applyEditPatch(
   patchValue: unknown,
   direction: "forward" | "reverse" = "forward",
 ): Project {
+  const next = applyEditPatchValue(project, patchValue, direction);
+  validateEditedProject(next as Project);
+  return next as Project;
+}
+
+/** Apply patch-v1 hash and per-change preconditions to an arbitrary JSON
+ * semantic view. The caller owns domain validation of the result. */
+export function applyEditPatchValue(
+  value: unknown,
+  patchValue: unknown,
+  direction: "forward" | "reverse" = "forward",
+): unknown {
   const patch = parseEditPatch(patchValue);
   const expectedHash = direction === "forward" ? patch.beforeHash : patch.afterHash;
   const resultHash = direction === "forward" ? patch.afterHash : patch.beforeHash;
-  const actualHash = semanticHash(project);
+  const actualHash = semanticHash(value);
   if (actualHash !== expectedHash) {
     throw new EditApiError(
       "PATCH_BASE_MISMATCH",
@@ -698,7 +733,7 @@ export function applyEditPatch(
       actualHash,
     );
   }
-  const next = applyEditChanges(project, patch.changes, direction);
+  const next = applyEditChangesValue(value, patch.changes, direction);
   const actualResultHash = semanticHash(next);
   if (actualResultHash !== resultHash) {
     throw new EditApiError("INVALID_PATCH", "patch result hash does not match its declared result", "$.patch", resultHash, actualResultHash);
@@ -724,7 +759,17 @@ export function applyEditChanges(
     afterHash: "0".repeat(64),
     changes: rawChanges,
   }).changes;
-  let next: unknown = cloneJson(project);
+  const next = applyEditChangesValue(project, changes, direction);
+  validateEditedProject(next as Project);
+  return next as Project;
+}
+
+function applyEditChangesValue(
+  value: unknown,
+  changes: readonly EditChange[],
+  direction: "forward" | "reverse",
+): unknown {
+  let next: unknown = cloneJson(value);
   const ordered = direction === "forward" ? changes : [...changes].reverse();
   for (const change of ordered) {
     const tokens = pointerTokens(change.path);
@@ -742,8 +787,7 @@ export function applyEditChanges(
     }
     next = setSide(next, tokens, replacement);
   }
-  validateEditedProject(next as Project);
-  return next as Project;
+  return next;
 }
 
 export function validateEditedProject(project: Project): void {
@@ -1267,18 +1311,7 @@ export function executeEditOperation(
   rawArgs: unknown = {},
 ): EditExecution {
   try {
-    if (!COMMAND_SET.has(commandValue)) {
-      throw new EditApiError(
-        "UNKNOWN_COMMAND",
-        `unknown command ${JSON.stringify(commandValue)}; choose one of: ${EDIT_COMMANDS.join(", ")}`,
-        "$.command",
-        EDIT_COMMANDS,
-        commandValue,
-      );
-    }
-    const command = commandValue as EditCommandName;
-    const args = argsRecord(rawArgs);
-    assertKnownArgs(command, args);
+    const { command, args } = validateEditOperationInput(commandValue, rawArgs);
     if (command === "validate") {
       const loaded = loadProject(source);
       const structural = loaded.errors.length === 0

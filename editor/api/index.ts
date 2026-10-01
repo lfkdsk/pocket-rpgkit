@@ -1,6 +1,7 @@
 export * from "./types.ts";
 export * from "./operations.ts";
 export * from "./file.ts";
+export * from "./sharded.ts";
 export * from "./tools.ts";
 export * from "./proposals.ts";
 export * from "./proposal-tools.ts";

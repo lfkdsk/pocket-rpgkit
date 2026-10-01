@@ -12,7 +12,11 @@
 // host → guest lines used here:
 //   {t:"hello",w,h}             logical viewport at boot
 //   {t:"resize",w,h}            live window resize
-//   {t:"load",text}             document text from the host's --file
+//   {t:"load",text}             inline document text from the host's --file
+//   {t:"project",shell}         sharded document shell (no map payloads)
+//   {t:"map-data",request,...}  one requested map shard
+//   {t:"map-error",request,...} failed map request
+//   {t:"project-saved",...}     acknowledgement for a sharded save
 //   {t:"mouse",x,y,d,b,sh}      pointer: b 0 left / 2 right; sh = shift;
 //                               a Reset sends a bare {d:false} release
 //   {t:"scroll",dy}             wheel scrolls the tile palette
@@ -22,12 +26,15 @@
 //
 // guest → host lines:
 //   {t:"loaded",request,ok,...} acknowledge a browser-correlated load
-//   {t:"save",text,request?}    persist the exported document; request is
+//   {t:"save",text,request?}    persist an inline document; request is
 //                               echoed for a browser Download round-trip
 //   {t:"save",text}             legacy save when no managed data.fs bridge exists
+//   {t:"map-read",request,...}  request one map shard by manifest entry
+//   {t:"project-save",...}      persist a shell plus dirty shards only
 //   {t:"proposal-review",proposal} persist one proposal's hunk decisions
 
 import { getOps } from "@pocketjs/framework";
+import { ServiceMessageAssembler, chunkServiceMessage } from "./engine/service-chunks.ts";
 
 export const COMPANION = "rpgkit-editor";
 
@@ -51,6 +58,41 @@ export interface LoadEvent {
   /** Optional browser-host correlation token. Desktop hosts omit it. */
   request?: number;
 }
+export interface ShardedProjectEvent {
+  t: "project";
+  shell: string;
+  request?: number;
+}
+export interface MapDataEvent {
+  t: "map-data";
+  request: number;
+  entry: string;
+  text: string;
+}
+export interface MapErrorEvent {
+  t: "map-error";
+  request: number;
+  entry: string;
+  error: string;
+}
+export interface ProjectSavedEvent {
+  t: "project-saved";
+  request: number;
+  ok: boolean;
+  error?: string;
+}
+export interface DirtyShardSave {
+  entry: string;
+  text: string;
+  /** Exact SHA-256 declared by the shell when this shard was loaded. */
+  expectedSha256: string;
+}
+export interface ShardedSave {
+  /** Manifest identity of the shell accepted by the editor. */
+  baseManifestHash: string;
+  shell: string;
+  shards: DirtyShardSave[];
+}
 export interface ResizeEvent {
   t: "resize";
   w: number;
@@ -72,6 +114,10 @@ export interface PasteEvent {
   t: "paste";
   text: string;
 }
+export interface ProposalSnapshotEvent {
+  t: "proposals";
+  proposals: unknown;
+}
 /** A parsed host line. `t` is the discriminant; the typed interfaces below
  *  document each dialect, and extra fields stay accessible through the
  *  index signature. */
@@ -91,6 +137,10 @@ export type HostLine = {
   dy?: number;
   s?: string;
   text?: string;
+  shell?: string;
+  entry?: string;
+  error?: string;
+  ok?: boolean;
   request?: number;
   proposals?: unknown;
   proposal?: unknown;
@@ -100,9 +150,13 @@ export interface Svc {
   /** Drain this frame's host lines (one poll per frame, per the HostOps
    *  contract). */
   poll(): HostLine[];
-  /** Persist the exported document through a generic host channel. The
-   * managed editor launcher uses the data.fs compare-and-swap bridge instead. */
+  /** Persist through a generic host channel. Managed desktop inline saves
+   * use the data.fs compare-and-swap bridge instead. */
   save(text: string, request?: number): void;
+  /** Ask the host for exactly one shard declared by the open shell. */
+  readMap(entry: string, request: number): void;
+  /** Persist only dirty shards and the refreshed shell. */
+  saveProject(save: ShardedSave, request: number): void;
   /** Report whether a correlated host load passed full project validation. */
   loaded(request: number | undefined, ok: boolean, error?: string): void;
   /** Complete a correlated export request when schema validation failed. */
@@ -116,10 +170,15 @@ type SvcLine =
   | MouseEvent
   | ScrollEvent
   | LoadEvent
+  | ShardedProjectEvent
+  | MapDataEvent
+  | MapErrorEvent
+  | ProjectSavedEvent
   | ResizeEvent
   | KeyEvent
   | CharacterEvent
   | PasteEvent
+  | ProposalSnapshotEvent
   | { t: "hello"; w: number; h: number };
 
 export type { SvcLine };
@@ -144,6 +203,11 @@ export function connectSvc(): Svc | null {
   if (!accepted) return null;
   const poll = ops.svcPoll.bind(ops);
   const send = ops.svcSend.bind(ops);
+  const assembler = new ServiceMessageAssembler();
+  let nextTransfer = 1;
+  const sendMessage = (value: unknown): void => {
+    for (const line of chunkServiceMessage(value, nextTransfer++)) send(line);
+  };
   return {
     poll() {
       const batch = poll();
@@ -152,7 +216,12 @@ export function connectSvc(): Svc | null {
       for (const line of batch.split("\n")) {
         if (line === "") continue;
         try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
+          const envelope = JSON.parse(line) as unknown;
+          const assembled = assembler.push(envelope);
+          if (assembled === undefined || typeof assembled !== "object" || assembled === null || Array.isArray(assembled)) {
+            continue;
+          }
+          const parsed = assembled as Record<string, unknown>;
           // The key line carries cmd/ctl/alt/sh modifiers.
           if (parsed.t === "key") {
             events.push({
@@ -175,6 +244,12 @@ export function connectSvc(): Svc | null {
     },
     save(text, request) {
       send(JSON.stringify({ t: "save", text, ...(request === undefined ? {} : { request }) }));
+    },
+    readMap(entry, request) {
+      send(JSON.stringify({ t: "map-read", request, entry }));
+    },
+    saveProject(save, request) {
+      sendMessage({ t: "project-save", request, ...save });
     },
     loaded(request, ok, error) {
       send(JSON.stringify({

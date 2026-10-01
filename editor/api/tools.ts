@@ -15,7 +15,7 @@ export interface EditToolDefinition {
 const file = {
   type: "string",
   minLength: 1,
-  description: "Path inside the server's configured --root directory to a rpgkit-project/v1 JSON document. Relative paths resolve from the server working directory.",
+  description: "Path inside --root to an inline rpgkit-project/v1 document or ProjectShell. Relative paths resolve from the server working directory; shell shard entries must also remain inside --root.",
 };
 const map = { type: "string", minLength: 1, description: "Stable map id returned by rpgkit_maps_list." };
 const event = { type: "string", minLength: 1, description: "Stable map-local event id returned by rpgkit_events_list." };
@@ -154,12 +154,12 @@ function tool(
 
 /** Ordered registry used for both tools/list and tools/call dispatch. */
 export const EDIT_TOOLS: readonly EditToolDefinition[] = [
-  tool("rpgkit_project_open", "Open RPG Kit project", "open", "Parse and schema-check a project, then report whether it is an editable inline document or a read-only sharded ProjectShell."),
+  tool("rpgkit_project_open", "Open RPG Kit project", "open", "Validate and summarize an inline project or editable ProjectShell. Opening a shell reads no map shards."),
   tool("rpgkit_maps_list", "List maps", "list-maps", "List maps with deterministic map:<id> addresses. ProjectShell map indexes are supported without loading their shards."),
-  tool("rpgkit_events_list", "List map events", "list-events", "List every event on an inline map with stable map/event addresses and page counts.", { map }, ["map"]),
-  tool("rpgkit_pages_list", "List event pages", "list-pages", "List pages in priority order with stable map/event/page addresses, conditions, triggers and command counts.", { map, event }, ["map", "event"]),
-  tool("rpgkit_commands_list", "List command tree", "list-commands", "Flatten one page's recursive command tree. Each row includes a reusable structured commandAddress, stable text address, branch, summary and read-only flag.", { map, event, page }, ["map", "event", "page"]),
-  tool("rpgkit_map_update", "Update map properties", "update-map", "Rename a map or update its display name, size and sheet list through the editor model. Literal transfer references follow an id rename; resize reports cropped event ids.", { map, changes: mapChanges }, ["map", "changes"], true),
+  tool("rpgkit_events_list", "List map events", "list-events", "List every event on the selected map with stable map/event addresses and page counts. A shell loads only that map's shard.", { map }, ["map"]),
+  tool("rpgkit_pages_list", "List event pages", "list-pages", "List pages in priority order with stable map/event/page addresses, conditions, triggers and command counts. A shell loads only the selected map's shard.", { map, event }, ["map", "event"]),
+  tool("rpgkit_commands_list", "List command tree", "list-commands", "Flatten one page's recursive command tree. Each row includes a reusable structured commandAddress, stable text address, branch, summary and read-only flag. A shell loads only the selected map's shard.", { map, event, page }, ["map", "event", "page"]),
+  tool("rpgkit_map_update", "Update map properties", "update-map", "Rename a map or update its display name, size and sheet list through the editor model. For a shell, ordinary changes load one shard; an id rename scans all shards to rewrite literal transfers but writes only changed shards.", { map, changes: mapChanges }, ["map", "changes"], true),
   tool("rpgkit_tile_paint", "Paint one tile", "paint-tile", "Paint or erase one ground/upper cell using the editor stroke model. The tile must belong to a sheet declared by the map.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
   tool("rpgkit_tile_rect", "Paint tile rectangle", "paint-rect", "Paint or erase a complete in-bounds rectangle as one editor stroke and one reversible patch.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 }, tile }, ["map", "x", "y", "width", "height", "tile"], true),
   tool("rpgkit_tile_fill", "Flood-fill tile region", "fill-region", "Four-way flood-fill the contiguous region containing x,y on ground or upper. null erases the region.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
@@ -173,8 +173,8 @@ export const EDIT_TOOLS: readonly EditToolDefinition[] = [
   tool("rpgkit_command_insert", "Insert command", "insert-command", "Insert a schema-valid command at a root or recursive branch slot. Opaque runtime commands are inserted intact; obtain nested paths from rpgkit_commands_list.", { map, event, page, address, command: commandValue }, ["map", "event", "page", "address", "command"], true),
   tool("rpgkit_command_delete", "Delete command", "delete-command", "Delete any command at a commandAddress, including an opaque command as one intact value.", { map, event, page, address }, ["map", "event", "page", "address"], true),
   tool("rpgkit_command_update", "Update command field", "update-command", "Edit one supported command field using the editor's validated text adapter. Errors name legal fields and accepted values.", { map, event, page, address, field: { type: "string", minLength: 1 }, value: { type: "string", description: "Editor text spelling, for example 10, true, or newline-separated text lines." } }, ["map", "event", "page", "address", "field", "value"], true),
-  tool("rpgkit_project_validate", "Validate project", "validate", "Parse and validate a document against rpgkit-project/v1. Invalid input is returned as valid:false with field paths and messages."),
-  tool("rpgkit_project_save", "Apply reversible patch", "save", "Apply a patch returned by a dry-run edit, forward or reverse, after checking its semantic SHA-256 base. Saves atomically unless dryRun is true.", { patch: patchValue, direction: { type: "string", enum: ["forward", "reverse"], default: "forward" } }, ["patch"], true),
+  tool("rpgkit_project_validate", "Validate project", "validate", "Validate a document against rpgkit-project/v1. A shell validation reads and verifies every indexed shard. Invalid content is returned as valid:false with field paths and messages."),
+  tool("rpgkit_project_save", "Apply reversible patch", "save", "Apply a patch forward or reverse after checking its semantic SHA-256 base. For a shell, read only patch-addressed shards, stage and conflict-check all outputs, publish shards before the shell, and use best-effort rollback.", { patch: patchValue, direction: { type: "string", enum: ["forward", "reverse"], default: "forward" } }, ["patch"], true),
 ] as const;
 
 export const EDIT_TOOL_BY_NAME: ReadonlyMap<string, EditToolDefinition> = new Map(

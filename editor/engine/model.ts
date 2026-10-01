@@ -72,6 +72,11 @@ interface OpenStroke {
   /** Tile painted by this stroke; null = an erase stroke. Fixed at press
    *  time so changing the palette selection mid-drag cannot mix brushes. */
   brush: TileId;
+  /** Private copy-on-stroke buffer. It is installed into the current state
+   *  on the first changed cell, then updated in place while parent objects
+   *  are replaced so UI dependents still observe every painted cell. This
+   *  keeps large maps from copying their whole layer on every pointer frame. */
+  working: (TileId | PassageValue)[];
   before: TileId[];
 }
 
@@ -271,13 +276,15 @@ export function strokeStart(state: EditorState, erase = false): EditorState {
     : state.layer === "passage"
       ? state.passageBrush
       : state.tile;
+  const before = layerArray(state, state.mapIndex, state.layer);
   return {
     ...state,
     stroke: {
       mapIndex: state.mapIndex,
       layer: state.layer,
       brush,
-      before: layerArray(state, state.mapIndex, state.layer).slice(),
+      working: before.slice(),
+      before: before as TileId[],
     },
   };
 }
@@ -290,12 +297,12 @@ export function paintCell(state: EditorState, index: number): EditorState {
   const map = state.project.maps[stroke.mapIndex]!;
   if (index < 0 || index >= map.width * map.height) return state;
   const layer = stroke.layer;
-  const current = layerArray(state, stroke.mapIndex, layer).slice();
   const next = stroke.brush;
+  const working = stroke.working;
   if (layer !== "passage" && next !== null && !canPaint(state, next)) return state;
-  if (current[index] === next) return state;
-  current[index] = next;
-  return { ...withLayer(state, stroke.mapIndex, layer, current), dirty: true };
+  if (working[index] === next) return state;
+  working[index] = next;
+  return { ...withLayer(state, stroke.mapIndex, layer, working), dirty: true };
 }
 
 /** Close the stroke: push one history entry covering every cell the drag

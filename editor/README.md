@@ -3,7 +3,10 @@
 A tile-map editor for `rpgkit-project/v1` documents, running as a PocketJS
 app on the portable desktop host and in the browser. It opens the kit's
 example projects (`examples/sunstone`, `examples/meadow`) and paints them
-with those examples' own tile art.
+with those examples' own tile art. It also edits existing map payloads in
+sharded `ProjectShell` projects. The editor can render only tile and sprite
+art already baked into its bundle; opening a project does not import new
+assets.
 
 New to the editor? [`docs/editor-tutorial.md`](../docs/editor-tutorial.md)
 follows one small scenario — a villager NPC with branching dialog and a
@@ -42,7 +45,7 @@ a guard test.
   transaction is one history step, 64 steps deep.
   **UNDO**/**REDO** in the header, or Cmd+Z / Cmd+Shift+Z / Cmd+Y (Cmd is
   Ctrl on Linux).
-- **In-editor playtest**: **PLAY** starts the production `GameView` and
+- **In-editor playtest (inline projects)**: **PLAY** starts the production `GameView` and
   reducer from the current in-memory document, including unsaved edits. The
   most recently selected canvas cell on the current map becomes the
   disposable preview start; if no cell was selected, the document's
@@ -63,7 +66,7 @@ a guard test.
   (CIRCLE = win, CROSS = escape), unregistered scenes open a visible
   placeholder, and named screen backdrops receive a visible placeholder
   asset. These fallbacks affect only the editor bundle.
-- **Maps**: **<** and **>** switch between the document's maps; the palette
+- **Maps (inline projects)**: **<** and **>** switch between the document's maps; the palette
   shows every cell of the sheets the current map declares. The **MAP** header
   button opens the map inspector:
   - **properties**: id (rename follows `start.map` and every transfer that
@@ -81,19 +84,29 @@ a guard test.
     with its source and recursive command address, and needs a second click
     to confirm. Crop warnings, save errors, and delete confirmation remain
     visible while the inspector is open.
+- **Sharded maps**: the host sends the shell/catalog first and the editor asks
+  for only the start or selected map payload. **MAP** opens a virtualized
+  catalog: click or wheel, or use Arrow keys/Home/End and Enter; Escape closes
+  it. `>` marks the active map, `*` marks dirty maps, and `LOADING` marks the
+  outstanding request. Only visible rows plus four overscan rows are mounted.
+  The resident cache retains at most four clean inactive maps by default;
+  active and dirty maps are pinned, so that is a soft bound.
 - **Passage overrides**: the LAYER button cycles GROUND → UPPER → **PASS** →
   EVENT. PASS mode paints per-cell `passage` overrides (PASS / BLOCK /
   CLEAR brushes, green/red corner markers) and toggles one-sided
   `dirEdges` on the sheet of the painted cell's ground tile (IN-*/OUT-*
   tools for enter/exit edges, CLR-EDGE to clear; blue arrows point into
-  the cell, orange out). Both are undoable drag strokes.
+  the cell, orange out). Both are undoable drag strokes. Per-map passage
+  painting works in a shard; sheet-level edge tools are inline-only because
+  they change project-global sheet data.
   Button-only navigation follows the visible two-column PASS tool grid, so
   every operation is reachable without changing the tile palette's layout.
-- **Transfer picking**: a transfer command's inspector row has a **PICK**
+- **Transfer picking (inline projects)**: a transfer command's inspector row has a **PICK**
   button. Click it, switch maps with **<**/**>**, click any cell, and the
   command's map/x/y/dir fill from the canvas. The map/x/y/dir fields stay
   text-editable, so `$variable` operands still work.
-- **AI proposal review**: **PROPOSALS** opens the validated sidecar queue.
+- **AI proposal review (inline desktop projects)**: **PROPOSALS** opens the
+  validated sidecar queue.
   The list shows title, author, pending hunk count, and live conflict state.
   Selecting a proposal shows its rationale and hunks, locates the chosen hunk
   on its map, overlays proposed ground/upper tiles at partial opacity, and
@@ -112,6 +125,11 @@ a guard test.
   An unedited document saves back byte for byte. After an edit, unchanged
   source spans — including other event and map objects, their property order,
   and whitespace — are reused rather than reformatting the whole file.
+  In a sharded project, switching or saving flushes the active reducer into
+  its shard workspace. Save emits canonical text for dirty shards only plus a
+  refreshed index/checksum/manifest shell. Dirty state clears only after the
+  host acknowledges that exact save; a failed or stale acknowledgement keeps
+  unsaved and newer edits dirty.
 
 ## Event command and condition editing
 
@@ -182,8 +200,39 @@ the failure instead of claiming that the document was saved; editing and
 Download remain available.
 
 The browser editor uses the tile and character art bundled from Sunstone and
-Meadow. It does not import new assets, and large projects split into a shell
-and separately loaded map files are not editable yet.
+Meadow. It does not import new assets.
+
+### Sharded packs
+
+**Open…** also accepts a self-contained sharded pack:
+
+```json
+{
+  "kind": "rpgkit-edit/sharded-pack-v1",
+  "shell": "{ ...ProjectShell JSON text... }",
+  "shards": { "maps/town.json": "{ ...MapDef JSON text... }" }
+}
+```
+
+A pack must contain exactly the safe relative entries its shell indexes.
+The browser sends the catalog first and answers individual map reads lazily.
+SAVE updates only supplied dirty shards in the in-memory pack and stores the
+complete replacement in origin-local browser storage; **Download** emits that
+complete replacement pack. Reload restores the browser copy when storage is
+available. Project data is not uploaded. Storage/quota failures are reported,
+and the originally selected local file cannot be overwritten in place.
+
+Sharded visual editing is intentionally limited to existing map payloads.
+The UI does not add, duplicate, delete, rename, or structurally edit catalog
+entries; pick cross-map transfer targets; edit global sheet edges; or run an
+in-editor playtest. Proposal review is also disabled with a visible
+inline-only notice because proposal hunks use inline `/maps/...` paths and the
+desktop bridge writes a single inline document. `rpgkit-edit` can rename an
+indexed map and rewrite its
+transfers, but patch-v1 keeps entry keys stable and does not add/remove map
+shards. Switching away preserves unsaved map content, while reactivating a
+map starts a fresh per-map reducer history. The browser needs a self-contained
+pack; a loose shell alone cannot answer map requests.
 
 ## Running on the desktop
 
@@ -194,6 +243,7 @@ bun run editor sunstone --file my-map.json   # edit another file; seeded from
                                              # the example document if missing
                                              # (relative paths start at the
                                              # repository root)
+bun run editor --file game/data/project.json # existing sharded ProjectShell
 bun run editor --build-only # bundle + release host, no window
 bun run editor meadow -- --quit-after 600    # extra host flags pass through
 ```
@@ -201,11 +251,11 @@ bun run editor meadow -- --quit-after 600    # extra host flags pass through
 `tools/editor.ts` resolves `editor/pocket.json` for the desktop target
 (macos-app on a Mac, linux-app elsewhere), builds the bundle into
 `dist/<target>/editor.{js,pak}`, builds the Rust host with
-`cargo build --release`, and starts it with the `rpgkit-editor` companion
-and `--file`. The host forwards the real mouse and keyboard to the editor and
-sends the file's text at boot. For this managed launcher, SAVE (header button
-or Cmd+S) is handed to the bridge through `data.fs` rather than sent to the
-generic host writer.
+`cargo build --release`, and starts it with the `rpgkit-editor` companion.
+For an inline project it passes `--file`; the host forwards the real mouse and
+keyboard and sends the file's text at boot. For this managed launcher, SAVE
+(header button or Cmd+S) is handed to the bridge through `data.fs` rather than
+sent to the generic host writer.
 
 The launcher derives the proposal queue at `<file>.proposals/`, snapshots its
 validated pending JSON into the editor's project-specific `data.fs`, and
@@ -233,6 +283,17 @@ token-specific reaper tombstones so concurrent recovery cannot remove a new
 owner's lock. If bridge initialization later fails, the marker makes SAVE fail
 closed; a generic companion without the marker keeps its legacy save channel.
 
+For a sharded shell (`mapIndex` without `maps`), the launcher instead starts
+the confined file companion through `--svc-connect`: it sends only the shell
+at boot and serves map reads on demand. Shard entries resolve relative to the
+shell and must stay within its directory after symlink resolution. SAVE
+validates the manifest, schema, checksums and stale bases, stages every
+replacement, commits dirty shards in catalog order and the shell last, and
+attempts rollback if a later rename fails. Oversized shell, shard, and save
+messages are transparently split into bounded service frames. AI proposal
+review is unavailable on this path; the header action explains the inline-only
+limit without opening a misleading review panel.
+
 **Working copies.** The examples author their projects in code
 (`examples/sunstone/game-data.ts`, `examples/meadow/mini-project.ts`);
 `data/*.json` is what their cookers emit, and the games themselves still
@@ -251,7 +312,7 @@ normal typing and paste; Enter commits and Escape cancels. Enum and boolean
 controls cycle on click. The arrow keys move the gamepad cursor, which pans
 the view on maps larger than the 20×14-cell window.
 
-### Without the companion
+### Without a file companion
 
 The website provides its own `rpgkit-editor` channel. On a different host
 without that channel, such as a bare wasm sim, the editor shows an amber
@@ -275,6 +336,7 @@ bun run build:editor        # dist/editor.{js,pak} for the sim tests
 bun test tests/editor-model.test.ts tests/editor-sim.test.ts \
   tests/editor-event-sim.test.ts tests/editor-proposal-sim.test.ts \
   tests/editor-playtest-sim.test.ts
+tools/editor-large-quickjs-bench.sh # real-QuickJS 100x100 interaction timing
 bun editor/gen-assets.ts    # regenerate the editor's baked inputs
 ```
 
@@ -293,13 +355,18 @@ saved action page is triggered by the runtime interpreter. The playtest sim
 suite additionally exercises unsaved map art through the real `GameView`,
 selected-cell starts, STOP/undo continuity, live page switching, LAST/FRESH
 state, capability fallbacks, and reviewed play/debug PNG goldens.
+The sharded suites cover a synthetic 263-map catalog with a 100×100 map,
+bounded list nodes and clean-map residency, lazy reads, changed-shard-only
+save, failed/successful acknowledgements, desktop path/conflict handling,
+oversized service messages, browser replacement packs, and a fresh runtime
+repository reload.
 
 ## Layout
 
 ```
 editor/
   editor.tsx, app.tsx   entry and shell (header, palette, canvas, status)
-  svc.ts                the rpgkit-editor companion channel (svc lines)
+  svc.ts                chunked shell/shard/save companion channel
   store.ts              data.fs project documents (gamepad mode)
   proposals/model.ts    portable validation, conflict, apply and preview
   proposals/store.ts    data.fs proposal-session transport
@@ -316,7 +383,10 @@ editor/
   engine/event-canvas.ts event footprint, selection and drag geometry
   engine/proposal-layout.ts proposal panel geometry and hit-testing
   engine/layout.ts      map/sidebar geometry and pointer hit-testing
+  engine/map-list.ts    virtual catalog window geometry and hit-testing
   engine/map-layout.ts  map inspector geometry
+  engine/sharded-workspace.ts lazy shard cache, dirty revisions and saves
+  engine/service-chunks.ts bounded large-message transport
   engine/cursor.ts      buttons-mode cursor reducer
   engine/playtest.ts    preview snapshot, carry/debug state, diagnostics
   engine/playtest-layout.ts debug panel geometry and hit-testing
@@ -326,10 +396,12 @@ editor/
   ui/event-inspector.tsx pages, conditions and recursive command UI
   ui/proposal-panel.tsx queue, rationale, hunk states and review controls
   ui/map-inspector.tsx  map properties, sheets and map management
+  ui/map-list.tsx       bounded-node sharded map catalog
   ui/pass-panel.tsx     PASS-mode brushes and one-way edge tools
   ui/playtest.tsx       GameView, STOP/DEBUG chrome and live state panel
   ui/panels.tsx         header, palette/event tools, gamepad banner
   pocket.json           manifest: dynamic 720x480 viewport, companion
+tools/editor-files.ts   desktop sharded-project file companion
 generated by gen-assets.ts (committed):
   assets/tile-<sheet>-<cell>.png   one 16x16 PNG per sheet cell
   images.json                      their PSM marks

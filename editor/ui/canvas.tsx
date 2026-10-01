@@ -29,8 +29,8 @@ export interface CanvasProps {
   upper: DenseUpper;
   /** Per-cell passage overrides (null = none). */
   passage?: DensePassage | null;
-  /** Per-cell dirEdges (from the cell's ground tile sheet; null = none). */
-  edges?: readonly (CellEdges | null)[] | null;
+  /** Resolve sheet-level dirEdges for one visible ground tile. */
+  edgeForTile?: (tile: TileId) => CellEdges | null;
   camX: number;
   camY: number;
   /** Fitted window (tile count + screen rect). */
@@ -182,7 +182,7 @@ export function Canvas(props: CanvasProps): JSX.Element {
     const out: { vx: number; vy: number; passage: "pass" | "block" | null; edges: CellEdges | null }[] = [];
     const m = props.map;
     const passage = props.passage;
-    const edges = props.edges;
+    const edgeForTile = props.edgeForTile;
     for (let vy = 0; vy < props.rows; vy++) {
       for (let vx = 0; vx < props.cols; vx++) {
         const wx = props.camX + vx;
@@ -190,7 +190,7 @@ export function Canvas(props: CanvasProps): JSX.Element {
         if (wx >= m.width || wy >= m.height) continue;
         const index = wy * m.width + wx;
         const p = passage ? passage[index] ?? null : null;
-        const e = edges ? edges[index] ?? null : null;
+        const e = edgeForTile ? edgeForTile(m.ground[index] ?? null) : null;
         if (p || e) out.push({ vx, vy, passage: p, edges: e });
       }
     }

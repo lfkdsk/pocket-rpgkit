@@ -377,6 +377,41 @@ table.controls td { padding: 4px 0; color: var(--muted); }
   .demo-chapter-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 }
 
+.editor-tools {
+  max-width: 960px;
+  margin: 0 auto 14px;
+  padding: 0 16px;
+  text-align: center;
+}
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.editor-actions button {
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.editor-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.editor-actions #editor-download { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.editor-actions button:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  cursor: wait;
+  opacity: .6;
+}
+.editor-status,
+.editor-privacy { margin: 7px 0 0; font-size: 13px; }
+.editor-status { color: var(--muted); }
+.editor-status.error { color: #ffb4a8; }
+.editor-privacy { color: var(--accent); }
+
 .info {
   max-width: 720px;
   margin: 20px auto 0;

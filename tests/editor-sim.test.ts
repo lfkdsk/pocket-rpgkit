@@ -664,7 +664,9 @@ simDescribe("editor budget", () => {
     // exact-revision host SAVE handshake, and E5's editable fields for every
     // current command/condition with schema gates and resource hints (about
     // 43,650 B), and KG1's scene branch ADD dispatch, scene fields and
-    // play-test scene placeholder, the merged editor is 1,195,808 B.
-    expect(js).toBeLessThan(1_210_000);
+    // play-test scene placeholder, the merged editor is 1,195,808 B. Large
+    // (sharded) project editing adds the lazy shard workspace, chunked
+    // companion transport and virtual map catalog: 1,232,242 B.
+    expect(js).toBeLessThan(1_250_000);
   });
 });

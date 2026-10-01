@@ -1,4 +1,4 @@
-// editor/api/file.ts — synchronous, atomic file adapter shared by CLI + MCP.
+// editor/api/file.ts — synchronous staged file adapter shared by CLI + MCP.
 
 import {
   chmodSync,
@@ -10,9 +10,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { executeEditOperation } from "./operations.ts";
-import type { FileEditResponse } from "./types.ts";
+import {
+  executeShardedEditOperation,
+  loadValidatedProjectShell,
+  shardEntriesForOperation,
+  sourceDeclaresProjectShell,
+} from "./sharded.ts";
+import type { EditResponse, FileEditResponse } from "./types.ts";
 import { FileLockBusyError, withFileLock } from "./lock.ts";
 
 export interface FileEditRequest {
@@ -39,13 +45,24 @@ function ioFailure(
     written: false,
     error: {
       code,
-      message: `${code === "READ_FAILED" ? "could not read" : code === "PATH_OUTSIDE_ROOT" ? "path is outside the configured project root" : code === "WRITE_CONFLICT" ? "file changed before it could be saved" : "could not atomically write"} ${file}: ${error instanceof Error ? error.message : String(error)}`,
+      message: `${code === "READ_FAILED" ? "could not read" : code === "PATH_OUTSIDE_ROOT" ? "path is outside the configured project root" : code === "WRITE_CONFLICT" ? "file changed before it could be saved" : "could not publish"} ${file}: ${error instanceof Error ? error.message : String(error)}`,
       path: file,
     },
   };
 }
 
 export class WriteConflictError extends Error {}
+
+interface AtomicReplacement {
+  path: string;
+  text: string;
+  expectedSource: string;
+}
+
+interface StagedReplacement extends AtomicReplacement {
+  temporary: string;
+  mode: number;
+}
 
 export function projectFileLockPath(path: string): string {
   return `${path}.rpgkit-edit.lock`;
@@ -64,23 +81,95 @@ export function withProjectFileLock<T>(path: string, run: () => T): T {
   }
 }
 
+/** Stage every output, recheck every input, then publish in caller order.
+ * ProjectShell callers order shards first and the shell last. Best-effort
+ * rollback restores already-published bytes if a later rename fails. The
+ * caller must hold the project-shell lock for multi-file replacements. */
+function atomicWriteMany(replacements: readonly AtomicReplacement[]): void {
+  const staged: StagedReplacement[] = [];
+  const committed: StagedReplacement[] = [];
+  try {
+    if (new Set(replacements.map((replacement) => replacement.path)).size !== replacements.length) {
+      throw new Error("atomic replacement targets must be unique");
+    }
+    for (const replacement of replacements) {
+      const mode = statSync(replacement.path).mode;
+      const temporary = `${replacement.path}.rpgkit-edit-${process.pid}-${randomUUID()}.tmp`;
+      writeFileSync(temporary, replacement.text, { encoding: "utf8", flag: "wx", mode });
+      staged.push({ ...replacement, temporary, mode });
+      chmodSync(temporary, mode);
+    }
+    for (const replacement of staged) {
+      if (readFileSync(replacement.path, "utf8") !== replacement.expectedSource) {
+        throw new WriteConflictError(`on-disk bytes no longer match the edited revision: ${replacement.path}`);
+      }
+    }
+    for (const replacement of staged) {
+      renameSync(replacement.temporary, replacement.path);
+      committed.push(replacement);
+    }
+  } catch (error) {
+    // A failure before the shell replacement leaves the old manifest live.
+    // Restore any shards already published so subsequent reads are coherent.
+    for (const replacement of [...committed].reverse()) {
+      const rollback = `${replacement.path}.rpgkit-edit-${process.pid}-${randomUUID()}.rollback`;
+      try {
+        writeFileSync(rollback, replacement.expectedSource, {
+          encoding: "utf8",
+          flag: "wx",
+          mode: replacement.mode,
+        });
+        chmodSync(rollback, replacement.mode);
+        renameSync(rollback, replacement.path);
+      } catch {
+        rmSync(rollback, { force: true });
+      }
+    }
+    for (const replacement of staged) rmSync(replacement.temporary, { force: true });
+    throw error;
+  }
+}
+
 /** Atomically replace one project file only while its source bytes still
  * match the revision the caller read. Shared by direct edits and proposal
  * acceptance so neither path can silently overwrite a newer revision. */
 export function atomicWriteProjectFile(path: string, text: string, expectedSource: string): void {
-  const mode = statSync(path).mode;
-  const temporary = `${path}.rpgkit-edit-${process.pid}-${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporary, text, { encoding: "utf8", flag: "wx", mode });
-    chmodSync(temporary, mode);
-    if (readFileSync(path, "utf8") !== expectedSource) {
-      throw new WriteConflictError("on-disk bytes no longer match the edited revision");
-    }
-    renameSync(temporary, path);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
+  atomicWriteMany([{ path, text, expectedSource }]);
+}
+
+function outside(root: string, path: string): boolean {
+  const fromRoot = relative(root, path);
+  return fromRoot === ".." ||
+    fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(fromRoot);
+}
+
+function confinedShardPath(shellFile: string, root: string, entry: string): string {
+  // mapIndex entries are portable package-style relative paths. Refuse both
+  // platform separators for traversal, even when one is not special here.
+  if (isAbsolute(entry) || entry.split(/[\\/]+/).some((part) => part === "..")) {
+    throw new Error(`shard entry ${JSON.stringify(entry)} is not a confined relative path`);
   }
+  const path = realpathSync(resolve(dirname(shellFile), entry));
+  if (outside(root, path)) throw new Error(`shard entry ${JSON.stringify(entry)} resolves outside ${root}`);
+  if (path === shellFile) throw new Error(`shard entry ${JSON.stringify(entry)} resolves to the project shell`);
+  return path;
+}
+
+function fileResponse(
+  response: EditResponse,
+  file: string,
+  dryRun: boolean,
+  written = false,
+  writtenFiles?: string[],
+): FileEditResponse {
+  return {
+    ...response,
+    file,
+    dryRun,
+    written,
+    ...(writtenFiles === undefined ? {} : { writtenFiles }),
+  } as FileEditResponse;
 }
 
 /** Read, execute, and (for effective mutations) atomically replace a file.
@@ -90,20 +179,82 @@ export function runFileEdit(request: FileEditRequest): FileEditResponse {
   const dryRun = request.dryRun === true;
   let file: string;
   let source: string;
+  let configuredRoot: string | undefined;
   try {
     // Resolve the final component before replacement so editing a symlink
     // updates its target rather than silently replacing the link itself.
     file = realpathSync(requestedFile);
     if (request.root !== undefined) {
-      const root = realpathSync(resolve(request.root));
-      const fromRoot = relative(root, file);
-      if (fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(fromRoot)) {
-        return ioFailure(request.command, file, dryRun, "PATH_OUTSIDE_ROOT", new Error(`configured root is ${root}`));
+      configuredRoot = realpathSync(resolve(request.root));
+      if (outside(configuredRoot, file)) {
+        return ioFailure(request.command, file, dryRun, "PATH_OUTSIDE_ROOT", new Error(`configured root is ${configuredRoot}`));
       }
     }
     source = readFileSync(file, "utf8");
   } catch (error) {
     return ioFailure(request.command, requestedFile, dryRun, "READ_FAILED", error);
+  }
+
+  if (sourceDeclaresProjectShell(source)) {
+    let shell: ReturnType<typeof loadValidatedProjectShell>;
+    let entries: string[];
+    try {
+      shell = loadValidatedProjectShell(source);
+      entries = shardEntriesForOperation(shell, request.command, request.args);
+    } catch {
+      const execution = executeShardedEditOperation(source, {}, request.command, request.args);
+      return fileResponse(execution.response, file, dryRun);
+    }
+
+    const boundary = configuredRoot ?? dirname(file);
+    const paths = new Map<string, string>();
+    const sources = Object.create(null) as Record<string, string>;
+    try {
+      for (const entry of entries) {
+        const path = confinedShardPath(file, boundary, entry);
+        paths.set(entry, path);
+        sources[entry] = readFileSync(path, "utf8");
+      }
+    } catch (error) {
+      const pathFailure = error instanceof Error &&
+        (/outside|confined relative path|project shell/.test(error.message));
+      return ioFailure(
+        request.command,
+        file,
+        dryRun,
+        pathFailure ? "PATH_OUTSIDE_ROOT" : "READ_FAILED",
+        error,
+      );
+    }
+
+    const execution = executeShardedEditOperation(source, sources, request.command, request.args);
+    if (!execution.response.ok) return fileResponse(execution.response, file, dryRun);
+    if (dryRun || !execution.response.changed || execution.output === undefined) {
+      return fileResponse(execution.response, file, dryRun);
+    }
+
+    const replacements: AtomicReplacement[] = [];
+    try {
+      for (const [entry, text] of Object.entries(execution.output.shards)) {
+        const path = paths.get(entry);
+        if (path === undefined || sources[entry] === undefined) {
+          throw new Error(`operation emitted an unloaded shard ${JSON.stringify(entry)}`);
+        }
+        replacements.push({ path, text, expectedSource: sources[entry] });
+      }
+      // The manifest is the commit marker and must always be last.
+      replacements.push({ path: file, text: execution.output.shell, expectedSource: source });
+      withProjectFileLock(file, () => atomicWriteMany(replacements));
+    } catch (error) {
+      return ioFailure(
+        request.command,
+        file,
+        dryRun,
+        error instanceof WriteConflictError ? "WRITE_CONFLICT" : "WRITE_FAILED",
+        error,
+      );
+    }
+    return fileResponse(execution.response, file, dryRun, true, replacements.map((item) => item.path));
   }
 
   const execution = executeEditOperation(source, request.command, request.args);
