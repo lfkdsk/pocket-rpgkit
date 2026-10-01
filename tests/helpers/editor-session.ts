@@ -18,6 +18,8 @@ interface EditorGlobals {
   __rpgkitEditorState?: () => any;
   __rpgkitEditorInject?: (json: string) => unknown;
   __rpgkitEditorExport?: () => { ok: boolean; errors: unknown[]; text: string };
+  __rpgSessionState?: unknown;
+  __rpgGameCamera?: unknown;
   __rpgSimSessionToken?: object;
 }
 
@@ -40,6 +42,8 @@ export function resetEditorGlobals(): void {
   delete globals.__rpgkitEditorState;
   delete globals.__rpgkitEditorInject;
   delete globals.__rpgkitEditorExport;
+  delete globals.__rpgSessionState;
+  delete globals.__rpgGameCamera;
   delete globals.__rpgSimSessionToken;
 }
 

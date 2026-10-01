@@ -265,8 +265,8 @@ function pixel(framebuffer: Uint8Array, width: number, x: number, y: number): [n
 }
 
 const screenshotPins: Record<string, string> = {
-  "480x272": "341f6e5f",
-  "720x480": "abf0253a",
+  "480x272": "76e4701f",
+  "720x480": "90ecaafa",
 };
 
 simDescribe("event inspector responsive rendering", () => {

@@ -17,6 +17,11 @@
 //   images.json                      the PSM marks for those PNGs
 //   engine/tile-keys.ts              tile id -> pak src literal
 //   engine/sheets.ts                 sheet grid metadata + source files
+//   assets/playtest/*.pkts           raw 16px TILESET entries for GameView
+//   assets/playtest/player-*.png     preview player's static walk frames
+//   assets/playtest/npc-*.png        bundled projects' static NPC art
+//   pak.json                         raw TILESET entries for the pak builder
+//   engine/playtest-assets.ts        preview texture manifest literals
 //   engine/projects.ts               the bundled documents as TEXT (the
 //                                    guest never reads repository files)
 //                                    and a copy of src/data/schema.json
@@ -24,10 +29,11 @@
 //
 // Deterministic: outputs depend only on the committed inputs.
 
-import { readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { loadTileCells } from "../tools/lib/bake.ts";
+import { encodeStreamedLayer } from "../tools/lib/stream.ts";
 import { validateSchema } from "../src/engine/schema-validate.ts";
 import type { Project } from "../src/engine/types.ts";
 import { EDITOR_SOURCES } from "./sources.ts";
@@ -35,8 +41,11 @@ import { EDITOR_SOURCES } from "./sources.ts";
 const HERE = new URL(".", import.meta.url).pathname; // editor/
 const ROOT = resolve(HERE, "..");
 const ASSETS = join(HERE, "assets");
+const PLAYTEST_ASSETS = join(ASSETS, "playtest");
 const ENGINE = join(HERE, "engine");
 mkdirSync(ASSETS, { recursive: true });
+rmSync(PLAYTEST_ASSETS, { recursive: true, force: true });
+mkdirSync(PLAYTEST_ASSETS, { recursive: true });
 
 const TILE = 16;
 const schemaText = readFileSync(join(ROOT, "src", "data", "schema.json"), "utf8").replace(/\r\n/g, "\n");
@@ -86,9 +95,24 @@ for (const src of EDITOR_SOURCES) {
 const imageMeta: Record<string, { psm: number }> = {};
 const tileKeyRows: string[] = [];
 const written = new Set<string>();
+const playtestRefs: Record<string, readonly (string | null)[]> = {};
+const pakEntries: { key: string; file: string }[] = [];
 
 for (const sheet of sheets.values()) {
   const cells = await loadTileCells(join(ROOT, sheet.source), sheet.cols, sheet.rows, TILE);
+  const streamed = encodeStreamedLayer(
+    `editor-sheet-${sheet.id}`,
+    Array.from({ length: sheet.cols * sheet.rows }, (_, cell) => cells.cell(cell)),
+    sheet.cols,
+    sheet.rows,
+    { chunkPx: TILE },
+  );
+  playtestRefs[sheet.id] = streamed.layer.refs;
+  for (const [index, entry] of streamed.entries.entries()) {
+    const file = `sheet-${sheet.id}${streamed.entries.length > 1 ? `-${index}` : ""}.pkts`;
+    writeFileSync(join(PLAYTEST_ASSETS, file), entry.blob);
+    pakEntries.push({ key: entry.key, file: `assets/playtest/${file}` });
+  }
   for (let cell = 0; cell < sheet.cols * sheet.rows; cell++) {
     const name = `tile-${sheet.id}-${cell}.png`;
     writeFileSync(join(ASSETS, name), encodePNG(cells.cell(cell), TILE, TILE));
@@ -102,6 +126,43 @@ for (const name of readdirSync(ASSETS)) {
   if (/^tile-.+\.png$/.test(name) && !written.has(name)) rmSync(join(ASSETS, name));
 }
 
+writeFileSync(join(HERE, "pak.json"), JSON.stringify(pakEntries, null, 2) + "\n");
+
+// The bundled examples share one player sheet. Copy the generated static
+// frames into the editor app so its preview remains self-contained.
+const playerFiles: string[] = [];
+for (let facing = 0; facing < 4; facing++) {
+  for (const name of [`player-dir${facing}.png`, `player-pose${facing}-l.png`, `player-pose${facing}-r.png`]) {
+    const source = join(ROOT, dirname(dirname(EDITOR_SOURCES[0]!.document)), "assets", name);
+    copyFileSync(source, join(PLAYTEST_ASSETS, name));
+    imageMeta[`assets/playtest/${name}`] = { psm: 3 };
+    playerFiles.push(name);
+  }
+}
+
+// Static sprite ids are global in a project. A repeated id must carry the
+// same bytes across bundled documents, just like shared tile-sheet ids.
+const npcFiles = new Map<string, { bytes: Buffer; file: string }>();
+for (const source of EDITOR_SOURCES) {
+  const project = docs.find((candidate) => candidate.id === source.id);
+  if (!project) continue;
+  const parsed = JSON.parse(project.json) as Project;
+  for (const [id, sprite] of Object.entries(parsed.sprites ?? {})) {
+    if (sprite.kind !== "image") continue;
+    const bytes = readFileSync(join(ROOT, dirname(dirname(source.document)), sprite.src));
+    const seen = npcFiles.get(id);
+    if (seen) {
+      if (!seen.bytes.equals(bytes)) throw new Error(`editor gen-assets: sprite "${id}" differs between bundled projects`);
+      continue;
+    }
+    const file = `npc-${id}.png`;
+    writeFileSync(join(PLAYTEST_ASSETS, file), bytes);
+    imageMeta[`assets/playtest/${file}`] = { psm: 3 };
+    npcFiles.set(id, { bytes, file });
+  }
+}
+
+// images.json must include the copied preview art too.
 writeFileSync(join(HERE, "images.json"), JSON.stringify(imageMeta, null, 2) + "\n");
 
 // Static src literals so the build bakes every cell as a pak IMG entry: the
@@ -112,6 +173,23 @@ writeFileSync(
   `// AUTO-GENERATED by editor/gen-assets.ts — static tile id -> pak IMG src\n` +
     `// keys (one baked 16x16 PNG per sheet cell). Do not edit.\n\n` +
     `export const TILE_SRC: Record<string, string> = {\n${tileKeyRows.join("\n")}\n};\n`,
+);
+
+const player = (kind: "idle" | "walkL" | "walkR", suffix: string): string => {
+  const rows = Array.from({ length: 4 }, (_, facing) =>
+    `assets/playtest/player-${kind === "idle" ? `dir${facing}` : `pose${facing}-${suffix}`}.png`
+  );
+  return `  ${kind}: ${JSON.stringify(rows)} as readonly [string, string, string, string],`;
+};
+const npcSource = Object.fromEntries([...npcFiles].map(([id, value]) => [id, `assets/playtest/${value.file}`]));
+writeFileSync(
+  join(ENGINE, "playtest-assets.ts"),
+  `// AUTO-GENERATED by editor/gen-assets.ts — editor-only GameView art.\n` +
+    `// Do not import this module from a game entry. Do not edit by hand.\n\n` +
+    `import type { PlayerFrames } from "../../src/ui/PlayerSprite.tsx";\n\n` +
+    `export const PLAYTEST_SHEET_REFS: Record<string, readonly (string | null)[]> = ${JSON.stringify(playtestRefs, null, 2)};\n\n` +
+    `export const PLAYTEST_PLAYER: PlayerFrames = {\n${player("idle", "") }\n${player("walkL", "l")}\n${player("walkR", "r")}\n};\n\n` +
+    `export const PLAYTEST_NPC_SRC: Record<string, string> = ${JSON.stringify(npcSource, null, 2)};\n`,
 );
 
 const sheetMeta = [...sheets.values()].map(({ id, cols, rows, source }) => ({ id, cols, rows, tile: TILE, source }));
@@ -139,5 +217,7 @@ writeFileSync(
 
 console.log(
   `editor gen-assets: ${written.size} tile image(s) from ${sheets.size} sheet(s), ` +
-    `${docs.length} bundled document(s) ${docs.map((d) => `${d.id}=${d.json.length}B`).join(", ")}`,
+    `${pakEntries.length} playtest TILESET entry(s), ${playerFiles.length} player frame(s), ` +
+    `${npcFiles.size} NPC image(s), ${docs.length} bundled document(s) ` +
+    docs.map((d) => `${d.id}=${d.json.length}B`).join(", "),
 );

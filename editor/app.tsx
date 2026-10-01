@@ -162,6 +162,26 @@ import {
 } from "./engine/map-layout.ts";
 import { EventInspector, flattenInspectorConditions } from "./ui/event-inspector.tsx";
 import { MapInspector } from "./ui/map-inspector.tsx";
+import {
+  buildPlaytestProject,
+  playtestStartCell,
+  capturePlaytestCarry,
+  diagnosePlaytestProject,
+  playtestDebugRows,
+  playtestRowEdit,
+  type PlaytestCarry,
+  type PlaytestIssue,
+} from "./engine/playtest.ts";
+import {
+  hitTestPlaytest,
+  playtestPanelRect,
+  playtestRowsPerPage,
+  type PlaytestTab,
+} from "./engine/playtest-layout.ts";
+import { createPlaytestAssets } from "./engine/playtest-view.ts";
+import type { GameAssets } from "../src/ui/game-assets.ts";
+import type { SessionState } from "../src/engine/session.ts";
+import { PlaytestSurface, type PlaytestPort } from "./ui/playtest.tsx";
 
 type Notice = { kind: "info" | "good" | "bad"; text: string };
 
@@ -244,6 +264,16 @@ export function EditorApp(): JSX.Element {
      *  it; undo/redo and structural command changes do not. */
     command: Page["commands"][number];
   } | null>(null);
+  const [playProject, setPlayProject] = createSignal<Project | null>(null);
+  const [playAssets, setPlayAssets] = createSignal<GameAssets | null>(null);
+  const [playState, setPlayState] = createSignal<SessionState | null>(null);
+  const [playDebug, setPlayDebug] = createSignal(false);
+  const [playTab, setPlayTab] = createSignal<PlaytestTab>("switch");
+  const [playPage, setPlayPage] = createSignal(0);
+  const [playIssues, setPlayIssues] = createSignal<PlaytestIssue[]>([]);
+  const [carryPrevious, setCarryPrevious] = createSignal(false);
+  const [lastPlayCarry, setLastPlayCarry] = createSignal<PlaytestCarry | null>(null);
+  const [playStartCell, setPlayStartCell] = createSignal<{ mapId: string; x: number; y: number } | null>(null);
 
   // Input transactions live beside the reactive editor state. Mode changes
   // must close both halves together: reducer strokes and these UI latches.
@@ -253,6 +283,8 @@ export function EditorApp(): JSX.Element {
   let prevButtons = 0;
   let strokeOpen = false;
   let edgeStrokeOpen = false;
+  let playPointerDown = false;
+  let playPort: PlaytestPort | null = null;
 
   const tileTextures = createTileTextures();
 
@@ -360,6 +392,7 @@ export function EditorApp(): JSX.Element {
       setPendingPick(null);
       setPassTool("pass");
       setEventPlacement({ x: 0, y: 0 });
+      setPlayStartCell(null);
       setDragPreview(null);
       setInspectorSelection({ condition: null, command: null });
       setInspectorFocus(null);
@@ -395,6 +428,7 @@ export function EditorApp(): JSX.Element {
     batch(() => {
       setEditor(switched);
       setCam(clampCameraTo(switched, cam()));
+      setPlayStartCell(null);
     });
   };
 
@@ -467,6 +501,117 @@ export function EditorApp(): JSX.Element {
     edgeStrokeOpen = false;
   };
 
+  const startPlaytest = (): void => {
+    if (inspectorFocus() || mapFocus()) {
+      setNotice({ kind: "bad", text: "FINISH OR CANCEL THE ACTIVE FIELD BEFORE PLAY" });
+      return;
+    }
+    finishActiveInput();
+    const e = editor();
+    const cell = playtestStartCell(e, playStartCell());
+    const candidate = buildPlaytestProject(e, cell);
+    const errors = validateProject(candidate);
+    if (errors.length > 0) {
+      setNotice({
+        kind: "bad",
+        text: `PLAY REFUSED: ${errors.length} schema error(s), first: ${errors[0]!.path} ${errors[0]!.msg}`,
+      });
+      return;
+    }
+    const issues = diagnosePlaytestProject(candidate);
+    batch(() => {
+      setInspectorOpen(false);
+      setMapInspectorOpen(false);
+      setPlayState(null);
+      setPlayDebug(false);
+      setPlayTab("switch");
+      setPlayPage(0);
+      setPlayIssues(issues);
+      setPlayAssets(createPlaytestAssets(candidate));
+      setPlayProject(candidate);
+    });
+  };
+
+  const stopPlaytest = (): void => {
+    const ended = playPort?.state() ?? playState();
+    if (ended) setLastPlayCarry(capturePlaytestCarry(ended));
+    playPointerDown = false;
+    playPort = null;
+    batch(() => {
+      setPlayProject(null);
+      setPlayAssets(null);
+      setPlayState(null);
+      setPlayDebug(false);
+      setPlayPage(0);
+      setNotice({ kind: "good", text: "PLAYTEST STOPPED; EDITS AND UNDO HISTORY PRESERVED" });
+    });
+  };
+
+  const toggleCarryMode = (): void => {
+    setCarryPrevious((value) => !value);
+    setNotice({
+      kind: "info",
+      text: carryPrevious() ? "PLAY STATE: LAST RUN SWITCHES / VARIABLES" : "PLAY STATE: FRESH",
+    });
+  };
+
+  const activatePlaytestHit = (hit: NonNullable<ReturnType<typeof hitTestPlaytest>>): void => {
+    if (hit.kind === "stop") {
+      stopPlaytest();
+      return;
+    }
+    if (hit.kind === "debug") {
+      setPlayDebug((open) => !open);
+      return;
+    }
+    if (hit.kind === "tab") {
+      setPlayTab(hit.tab);
+      setPlayPage(0);
+      return;
+    }
+    const project = playProject();
+    const state = playPort?.state() ?? playState();
+    if (!project || !state) return;
+    const panel = playtestPanelRect(vp().w, vp().h, playIssues().length > 0);
+    const perPage = playtestRowsPerPage(panel);
+    const rows = playtestDebugRows(project, state, playTab());
+    if (hit.kind === "page") {
+      const pages = Math.max(1, Math.ceil(rows.length / perPage));
+      setPlayPage((page) => Math.max(0, Math.min(pages - 1, page + hit.delta)));
+      return;
+    }
+    const row = rows[playPage() * perPage + hit.row];
+    if (!row) return;
+    const edit = playtestRowEdit(row, hit.delta);
+    if (edit) playPort?.edit(edit);
+  };
+
+  const handlePlaytestMouseLine = (line: HostLine): void => {
+    if (line.t !== "mouse") return;
+    if (line.x === undefined || line.y === undefined || !line.d) {
+      playPointerDown = false;
+      return;
+    }
+    if (playPointerDown) return;
+    playPointerDown = true;
+    const hit = hitTestPlaytest(
+      line.x | 0,
+      line.y | 0,
+      vp().w,
+      vp().h,
+      playDebug(),
+      playIssues().length > 0,
+    );
+    if (hit) activatePlaytestHit(hit);
+  };
+
+  const stepPlaytestButtons = (buttons: number): void => {
+    const edge = buttons & ~prevButtons;
+    if (edge & BTN.START) stopPlaytest();
+    else if (edge & BTN.SELECT) setPlayDebug((open) => !open);
+    prevButtons = buttons;
+  };
+
   const toggleLayer = (): void => {
     finishActiveInput();
     const e = editor();
@@ -504,6 +649,8 @@ export function EditorApp(): JSX.Element {
     else if (id === "mapprev") switchMap(-1);
     else if (id === "mapnext") switchMap(1);
     else if (id === "map") toggleMapInspector();
+    else if (id === "play") startPlaytest();
+    else if (id === "state") toggleCarryMode();
     else if (id === "undo") {
       setPendingPick(null);
       const e = editor();
@@ -1178,6 +1325,10 @@ export function EditorApp(): JSX.Element {
 
   const handleMouseLine = (m: HostLine): void => {
     if (m.t !== "mouse") return;
+    if (playProject()) {
+      handlePlaytestMouseLine(m);
+      return;
+    }
     // A bare release (host Reset on focus loss) ends the stroke anywhere.
     if (m.x === undefined || m.y === undefined) {
       if (pointerDown === "paint" || pointerDown === "erase" || pointerDown === "pass") {
@@ -1239,6 +1390,7 @@ export function EditorApp(): JSX.Element {
         // Press edge: buttons and palette slots activate only here, so a
         // drag that starts on the header does not repaint the map.
         const hit = hitAt(x, y);
+        if (hit?.kind === "cell") setPlayStartCell({ mapId: map().id, x: hit.tx, y: hit.ty });
         if (hit?.kind === "button") {
           pointerDown = kind;
           activateHeader(HEADER_ORDER.indexOf(hit.id));
@@ -1349,6 +1501,10 @@ export function EditorApp(): JSX.Element {
 
   // --- buttons interaction (always live; the gamepad mode without svc) ---
   const stepButtons = (buttons: number): void => {
+    if (playProject()) {
+      stepPlaytestButtons(buttons);
+      return;
+    }
     const edge = buttons & ~prevButtons;
     const released = prevButtons & ~buttons;
     // With a pointer companion the host ALSO mirrors keys as buttons
@@ -1408,6 +1564,9 @@ export function EditorApp(): JSX.Element {
       if (edge & BTN.SQUARE) activateHeader(HEADER_ORDER.indexOf("undo"));
       if (edge & BTN.TRIANGLE) activateHeader(HEADER_ORDER.indexOf("redo"));
       if (edge & BTN.START) performSave();
+    }
+    if (!pointerMode && cur.zone === "canvas" && (edge & (BTN.CIRCLE | BTN.CROSS))) {
+      setPlayStartCell({ mapId: map().id, x: cur.tx, y: cur.ty });
     }
 
     // Transfer-target picking owns the canvas in every mode.
@@ -1513,6 +1672,21 @@ export function EditorApp(): JSX.Element {
 
   // --- per-frame pump -----------------------------------------------------
   onFrame((buttons) => {
+    if (playProject()) {
+      if (svc) {
+        for (const line of svc.poll()) {
+          if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
+            setVp({ w: line.w, h: line.h });
+          } else if (line.t === "mouse") {
+            handlePlaytestMouseLine(line);
+          } else if (line.t === "key" && (line.k === "Escape" || line.k === "Esc")) {
+            stopPlaytest();
+          }
+        }
+      }
+      stepPlaytestButtons(buttons);
+      return;
+    }
     if (svc) {
       for (const line of svc.poll()) {
         if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
@@ -1641,6 +1815,16 @@ export function EditorApp(): JSX.Element {
     inspectorFocus: inspectorFocus(),
     inputBuffer: inputBuffer(),
     uploaded: tileTextures.uploaded(),
+    playtest: playProject() !== null,
+    playProject: playProject(),
+    playState: playState(),
+    playDebug: playDebug(),
+    playTab: playTab(),
+    playPage: playPage(),
+    playIssues: playIssues(),
+    carryPrevious: carryPrevious(),
+    hasLastPlayState: lastPlayCarry() !== null,
+    playStartCell: playStartCell(),
   });
   (globalThis as Record<string, unknown>).__rpgkitEditorInject = (json: string) => {
     const loaded = loadProject(json);
@@ -1676,11 +1860,31 @@ export function EditorApp(): JSX.Element {
     const pos = h ? ` ${h.x},${h.y}` : "";
     const layer = eventMode() ? "EVENTS" : passMode() ? "PASS" : e.layer.toUpperCase();
     const pick = pendingPick() ? " | PICK TARGET" : "";
-    return `${mode} | ${doc().id}${dirty} | ${m.id} ${m.width}x${m.height} | ${layer} | ${sel}${pos}${pick} | ${notice().text}`;
+    const selectedStart = playStartCell();
+    const start = selectedStart?.mapId === m.id ? ` | START ${selectedStart.x},${selectedStart.y}` : "";
+    return `${mode} | ${doc().id}${dirty} | ${m.id} ${m.width}x${m.height} | ${layer} | ${sel}${pos}${start}${pick} | ${notice().text}`;
   };
 
   return (
     <View class="w-full h-full" style={{ bgColor: "#10131b" }} debugName="editor-root">
+      {playProject() && playAssets() ? (
+        <PlaytestSurface
+          project={playProject()!}
+          assets={playAssets()!}
+          carry={carryPrevious() ? lastPlayCarry() : null}
+          width={vp().w}
+          height={vp().h}
+          debugOpen={playDebug()}
+          tab={playTab()}
+          page={playPage()}
+          issues={playIssues()}
+          onState={(state) => setPlayState(state)}
+          onPort={(port) => {
+            playPort = port;
+          }}
+        />
+      ) : (
+        <>
       <View
         class="absolute flex-row items-center"
         style={{ posType: 1, insetL: 0, insetT: 0, width: vp().w, height: HEADER_H, bgColor: "#1b2230" }}
@@ -1689,7 +1893,7 @@ export function EditorApp(): JSX.Element {
         <For each={buttonsRow()}>
           {(b, i) => (
             <HeaderButton
-              label={headerLabel(b.id, eventMode(), editor().layer)}
+              label={headerLabel(b.id, eventMode(), editor().layer, carryPrevious(), b.w)}
               x={b.x}
               w={b.w}
               focus={cursor().zone === "header" && cursor().button === i()}
@@ -1804,16 +2008,26 @@ export function EditorApp(): JSX.Element {
           </View>
         </>
       )}
+        </>
+      )}
     </View>
   );
 }
 
-function headerLabel(id: (typeof HEADER_ORDER)[number], eventMode: boolean, layer: EditorState["layer"]): string {
+function headerLabel(
+  id: (typeof HEADER_ORDER)[number],
+  eventMode: boolean,
+  layer: EditorState["layer"],
+  carryPrevious: boolean,
+  width: number,
+): string {
   if (id === "layer") return eventMode ? "EVENT" : layer === "ground" ? "GROUND" : layer === "upper" ? "UPPER" : "PASS";
   if (id === "doc") return "DOC";
   if (id === "mapprev") return "<";
   if (id === "mapnext") return ">";
   if (id === "map") return "MAP";
+  if (id === "play") return "PLAY";
+  if (id === "state") return width < 36 ? (carryPrevious ? "L" : "F") : carryPrevious ? "STATE LAST" : "STATE FRESH";
   if (id === "undo") return "UNDO";
   if (id === "redo") return "REDO";
   return "SAVE";

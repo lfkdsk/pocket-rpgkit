@@ -86,7 +86,7 @@ The links point to where each feature is described in detail.
 | Tile painting, passage overrides, one-way edges, undo/redo | Done | [Editor](../editor/README.md) |
 | Editing events, pages, conditions and command trees | Done | Newer commands are shown read-only: screen effects, map animations, movement control, extensions |
 | Map properties; new, duplicate and delete maps | Done | |
-| Play-test from the selected tile with a live debug panel | Planned | In review |
+| Play-test from the selected tile with a live debug panel | Done | Runs the unsaved document in the real `GameView`; the debug panel edits switches, variables, self switches, items and gold of the preview only and lists running pages and fibers. Unregistered extensions, battles and backdrops get visible stand-ins; see [Editor](../editor/README.md) |
 | Large (sharded) projects and an editor in the browser | Planned | |
 | Editing UI for the newer commands | Planned | |
 

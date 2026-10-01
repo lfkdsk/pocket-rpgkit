@@ -1,0 +1,10 @@
+[
+  {
+    "key": "ui:tile.editor-sheet-town",
+    "file": "assets/playtest/sheet-town.pkts"
+  },
+  {
+    "key": "ui:tile.editor-sheet-dun",
+    "file": "assets/playtest/sheet-dun.pkts"
+  }
+]

@@ -139,7 +139,7 @@ export type Layer = "ground" | "upper";
 
 // Header buttons (y 2..18).
 export interface ButtonGeom extends FrameGeom {
-  id: "layer" | "doc" | "mapprev" | "mapnext" | "map" | "undo" | "redo" | "save";
+  id: "layer" | "doc" | "mapprev" | "mapnext" | "map" | "play" | "state" | "undo" | "redo" | "save";
 }
 
 export function headerButtons(vpW: number): ButtonGeom[] {
@@ -149,12 +149,15 @@ export function headerButtons(vpW: number): ButtonGeom[] {
   const save = mk("save", vpW - 4 - 52, 52);
   const redo = mk("redo", save.x - 4 - 44, 44);
   const undo = mk("undo", redo.x - 4 - 44, 44);
+  const stateX = 236;
   return [
     mk("layer", 4, 44),
     mk("doc", 52, 36),
     mk("mapprev", 92, 20),
     mk("mapnext", 116, 20),
     mk("map", 140, 44),
+    mk("play", 188, 44),
+    mk("state", stateX, Math.min(88, Math.max(8, undo.x - 4 - stateX))),
     undo,
     redo,
     save,

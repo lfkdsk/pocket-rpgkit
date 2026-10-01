@@ -34,8 +34,9 @@ the parts an RPG-Maker-style game needs without any specific game:
   `src/data/CHANGELOG.md`);
 - **four examples** (`examples/`), each a PocketJS app with its own art
   and tests on the wasm sim host (below);
-- **a map/event editor, in preview** (`editor/`): paints tiles and edits
-  event footprints, pages, conditions and command trees on the desktop host
+- **a map/event editor, in preview** (`editor/`): paints tiles, edits event
+  footprints/pages/conditions/command trees, and runs the unsaved document
+  through the production game view with a live state debugger
   ([below](#editor-preview)).
 
 What is done, partial or still planned is tracked area by area in
@@ -224,7 +225,17 @@ What it does today:
 - save through the schema validator (`src/data/schema.json`): an invalid
   export is refused with its first error, an unedited one saves back byte
   for byte, and an edit reuses untouched event/source spans without a
-  whole-file reformat.
+  whole-file reformat;
+- PLAY the current in-memory document (unsaved edits included) through the
+  production `GameView`, starting at the last selected cell or the authored
+  project start; STOP/Escape/START returns without replacing editor state or
+  undo history;
+- open a live debugger for switches, variables, current-map self switches,
+  items, gold, active pages and fiber command addresses; FRESH/LAST chooses
+  whether the next run inherits the previous run's switches and variables;
+- visibly degrade missing game registrations: unknown extensions are
+  disabled, battles use a deterministic win/escape preview, and screen
+  backdrops use placeholders instead of crashing the editor.
 
 Not yet: common-event lists, asset import, or sheet-level `dirBlock` /
 `defaultPassage` editing. The grow example's generated settlement is not
@@ -246,8 +257,9 @@ example (the example games build their documents from code, and
 `bun run gen-assets` rewrites `data/*.json`). Without the companion (the wasm sim,
 a browser) the editor runs from buttons behind a visible banner.
 `bun run build:editor` builds the sim bundle alone; the editor's tests include
-`tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, and the two-size
-event inspector/runtime round trip in `tests/editor-event-sim.test.ts`. More in
+`tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, the two-size event
+inspector/runtime round trip in `tests/editor-event-sim.test.ts`, and the
+real-GameView play/debug goldens in `tests/editor-playtest-sim.test.ts`. More in
 [`editor/README.md`](editor/README.md); the tile art's licenses are in the
 examples' `ATTRIBUTION.md` files.
 

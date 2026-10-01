@@ -446,16 +446,27 @@ describe("editor layout geometry", () => {
 
   test("header buttons partition the top strip and never overlap", () => {
     const bs = headerButtons(480);
-    expect(bs.map((b) => b.id)).toEqual(["layer", "doc", "mapprev", "mapnext", "map", "undo", "redo", "save"]);
+    expect(bs.map((b) => b.id)).toEqual([
+      "layer", "doc", "mapprev", "mapnext", "map", "play", "state", "undo", "redo", "save",
+    ]);
     for (let i = 1; i < bs.length; i++) {
       expect(bs[i]!.x).toBeGreaterThanOrEqual(bs[i - 1]!.x + bs[i - 1]!.w);
     }
     // every button has positive area (never an invisible hot zone)
     for (const b of bs) expect(b.w * b.h).toBeGreaterThan(40);
-    // the MAP button fits between > and UNDO at the narrow 480 width
+    // PLAY and STATE occupy the gap between MAP and the right-aligned edit
+    // buttons, including the editor's 400px minimum viewport.
     const map = bs.find((b) => b.id === "map")!;
+    const play = bs.find((b) => b.id === "play")!;
+    const state = bs.find((b) => b.id === "state")!;
     const undo = bs.find((b) => b.id === "undo")!;
-    expect(map.x + map.w).toBeLessThanOrEqual(undo.x);
+    expect(map.x + map.w).toBeLessThanOrEqual(play.x);
+    expect(play.x + play.w).toBeLessThanOrEqual(state.x);
+    expect(state.x + state.w).toBeLessThanOrEqual(undo.x);
+    const narrow = headerButtons(400);
+    for (let i = 1; i < narrow.length; i++) {
+      expect(narrow[i]!.x).toBeGreaterThanOrEqual(narrow[i - 1]!.x + narrow[i - 1]!.w);
+    }
   });
 
   test("hit-test partitions header, palette and cells", () => {

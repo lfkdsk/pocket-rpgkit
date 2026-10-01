@@ -160,8 +160,9 @@ simDescribe("editor boot", () => {
     // starts at the palette edge, never over it)
     expect(px(fb, 10, HEADER_H + 4).join(",")).toBe(darkPanel.join(","));
     // every header button's center is filled (not the header background):
-    // LAYER 26, DOC 70, < 102, > 126, UNDO 350, REDO 398, SAVE 450
-    for (const cx of [26, 70, 102, 126, 350, 398, 450]) {
+    // LAYER 26, DOC 70, < 102, > 126, MAP 162, PLAY 210,
+    // STATE 280, UNDO 350, REDO 398, SAVE 450.
+    for (const cx of [26, 70, 102, 126, 162, 210, 280, 350, 398, 450]) {
       expect(px(fb, cx, 10).join(",")).not.toBe(darkPanel.join(","));
     }
     // palette eraser slot (0): the thumbnail row starts below the label at
@@ -621,12 +622,16 @@ simDescribe("editor budget", () => {
   test("bundle sizes stay in the editor budget", () => {
     const pak = statSync(appBundle("editor") + ".pak").size;
     const js = statSync(appBundle("editor") + ".js").size;
-    // 264 baked 16x16 tile PNGs + styles/two font atlases: under 360 KB.
-    expect(pak).toBeLessThan(360_000);
+    // E3 adds two 16px raw TILESET entries (37,836 B), 25 preview actor
+    // images, and the larger text slots used by the play/debug chrome.
+    // Measured complete editor pak: 480,480 B.
+    expect(pak).toBeLessThan(490_000);
     // Shared framework + tile editor + structured event inspector, the map
     // inspector/passage mode/transfer picking (E2), the two bundled documents,
-    // and KS1's embedded command schema/read-only summaries: 608,486 B
-    // measured. Keep a narrow margin around the complete editor.
-    expect(js).toBeLessThan(616_000);
+    // and KS1's embedded command schema/read-only summaries: 608,486 B.
+    // E3 intentionally adds the production GameView/session renderer to the
+    // editor-only entry plus its debug adapter; measured total: 1,016,715 B.
+    // The separate Sunstone isolation gate proves games do not pay for it.
+    expect(js).toBeLessThan(1_030_000);
   });
 });

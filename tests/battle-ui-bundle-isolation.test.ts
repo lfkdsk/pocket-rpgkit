@@ -84,4 +84,18 @@ describe("KB4 does not reach games that never opt into battle", () => {
       expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
     }
   });
+
+  maybeTest("editor playtest and debugger code do not reach the game bundle", () => {
+    const text = readFileSync(SUNSTONE_JS, "utf8");
+    for (const needle of [
+      "editor-playtest-root",
+      "editor-playtest-debug-panel",
+      "PLAYTEST STOPPED",
+      "LIVE STATE  F",
+      "Preview fallback: unregistered extension",
+      "PLAYTEST_SHEET_REFS",
+    ]) {
+      expect(text.includes(needle), `sunstone.js unexpectedly contains editor-only ${JSON.stringify(needle)}`).toBe(false);
+    }
+  });
 });
