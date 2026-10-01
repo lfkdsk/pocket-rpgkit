@@ -421,7 +421,7 @@ export class BrowserProjectPack {
 /** The file half of the browser rpgkit-editor companion. Input stays in the
  * Player so every host uses the same logical-coordinate conversion; this
  * object owns Open, built-ins, localStorage, SAVE and Download. */
-class BrowserEditorHost {
+export class BrowserEditorHost {
   constructor(player, config) {
     this.player = player;
     this.config = config;
@@ -484,6 +484,14 @@ class BrowserEditorHost {
 
   async start() {
     this.player.sendService({ t: "hello", w: this.player.width, h: this.player.height, epoch: Date.now() });
+    this.player.sendService({
+      t: "agent-ready",
+      protocol: "rpgkit-local-agent/v1",
+      available: false,
+      adapter: "browser",
+      message: "Desktop companion required",
+      maxPromptChars: 4096,
+    });
     let stored = null;
     try {
       stored = localStorage.getItem(this.config.storageKey);

@@ -11,7 +11,7 @@ import { sha256Text } from "../src/engine/map-repository.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
 import { serializeProjectPreservingSource } from "../editor/engine/document.ts";
 import { HEADER_H, STATUS_H, TILE, fittedView, headerButtons, mapOffset, type HeaderActionId } from "../editor/engine/layout.ts";
-import { proposalActionRects } from "../editor/engine/proposal-layout.ts";
+import { proposalActionRects, proposalRowRect } from "../editor/engine/proposal-layout.ts";
 import { createProposalFromOperations } from "../editor/api/proposals.ts";
 import { applyProposalHunks, proposalSemanticHash } from "../editor/proposals/model.ts";
 import {
@@ -111,6 +111,11 @@ function clickHeader(inbox: string[], world: World, id: HeaderActionId): void {
   click(inbox, world, button!.x + Math.floor(button!.w / 2), button!.y + Math.floor(button!.h / 2));
 }
 
+function clickFirstProposal(inbox: string[], world: World): void {
+  const row = proposalRowRect(0, false, true);
+  click(inbox, world, row.x + Math.floor(row.w / 2), HEADER_H + row.y + Math.floor(row.h / 2));
+}
+
 function changedPixels(before: Uint8Array, after: Uint8Array, x0: number, y0: number): number {
   let changed = 0;
   for (let y = y0; y < y0 + TILE; y++) {
@@ -156,7 +161,7 @@ simDescribe("editor proposal review", () => {
 
     send(inbox, world, { t: "proposals", proposals: [proposal] });
     clickHeader(inbox, world, "proposals");
-    click(inbox, world, 12, HEADER_H + 34); // first queue row
+    clickFirstProposal(inbox, world);
 
     const previewState = probes().state();
     expect(previewState.proposalOpen).toBe(true);
@@ -219,7 +224,7 @@ simDescribe("editor proposal review", () => {
       .toEqual(["accepted", undefined]);
 
     clickHeader(inbox2, world2, "proposals");
-    click(inbox2, world2, 12, HEADER_H + 34);
+    clickFirstProposal(inbox2, world2);
     expect(probes().state().selectedProposalHunk).toBe(1);
     const beforeReject = probes().export().text;
     const reject = actions.find((item) => item.action.kind === "reject")!.rect;
@@ -261,7 +266,7 @@ simDescribe("editor proposal review", () => {
     send(inbox, world, { t: "proposals", proposals: [proposal] });
     clickHeader(inbox, world, "proposals");
     const before = world.render().slice();
-    click(inbox, world, 12, HEADER_H + 34);
+    clickFirstProposal(inbox, world);
 
     const state = probes().state();
     expect(state.cam).toEqual({ x: 1, y: 0 });
@@ -325,7 +330,7 @@ simDescribe("editor proposal review", () => {
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "load", text: SUNSTONE.json });
     clickHeader(inbox, world, "proposals");
-    click(inbox, world, 12, HEADER_H + 34);
+    clickFirstProposal(inbox, world);
     const actions = proposalActionRects(H - HEADER_H - STATUS_H);
     const accept = actions.find((item) => item.action.kind === "accept")!.rect;
     click(inbox, world, accept.x + 4, HEADER_H + accept.y + 4);
@@ -378,7 +383,7 @@ simDescribe("editor proposal review", () => {
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "load", text: SUNSTONE.json });
     clickHeader(inbox, world, "proposals");
-    click(inbox, world, 12, HEADER_H + 34);
+    clickFirstProposal(inbox, world);
     const actions = proposalActionRects(H - HEADER_H - STATUS_H);
     const accept = actions.find((item) => item.action.kind === "accept")!.rect;
     click(inbox, world, accept.x + 4, HEADER_H + accept.y + 4);

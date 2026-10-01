@@ -31,7 +31,8 @@ import {
 } from "../editor/engine/layout.ts";
 import { initialCursor, stepCursor } from "../editor/engine/cursor.ts";
 import { createMapInspectorLayout } from "../editor/engine/map-layout.ts";
-import { proposalActionRects } from "../editor/engine/proposal-layout.ts";
+import { createProposalPanelLayout, proposalActionRects } from "../editor/engine/proposal-layout.ts";
+import { fitTextToWidth, wrapTextToWidth } from "../editor/engine/text-layout.ts";
 import { appPreflight, fnv1a } from "./helpers/boot.ts";
 import {
   bootEditorWorld,
@@ -208,7 +209,7 @@ function enterEventMode(inbox: string[], world: World): void {
 }
 
 simDescribe("editor responsive chrome", () => {
-  test("measured labels fit at 480x272 and after a live resize to 720x480", async () => {
+  test("measured labels fit across compact and desktop profiles", async () => {
     const inbox: string[] = [];
     const outbox: string[] = [];
     let measureText: ((text: string, slot: number) => number) | undefined;
@@ -256,7 +257,7 @@ simDescribe("editor responsive chrome", () => {
     // These fixed-width labels share the same baked 12 px face. Pin their
     // real host measurements against the containers used at both target
     // viewport heights, so a font or copy change cannot silently overlap.
-    for (const [width, height] of [[480, 272], [720, 480]] as const) {
+    for (const [width, height] of [[400, 240], [480, 272], [720, 480]] as const) {
       const panelH = height - HEADER_H - STATUS_H;
       const proposalLabels = ["BACK", "ACCEPT", "REJECT", "ACCEPT ALL"];
       const proposalActions = proposalActionRects(panelH);
@@ -266,6 +267,26 @@ simDescribe("editor responsive chrome", () => {
       for (const line of ["SELECT HUNK", "TO LOCATE"]) {
         expect(measure(line, 0)).toBeLessThanOrEqual(130);
       }
+      const agent = createProposalPanelLayout(panelH, "compose").agent!;
+      expect(measure("ASK LOCAL AGENT", 0)).toBeLessThanOrEqual(agent.heading.w);
+      const runLabel = fitTextToWidth("RUN RESPONSIVE OFFLINE AGENT ADAPTER", agent.action.w - 8, (text) => measure(text, 0));
+      expect(measure(runLabel, 0)).toBeLessThanOrEqual(agent.action.w - 8);
+      const prompt = wrapTextToWidth(
+        "Brighten the selected village path and move the elder beside it",
+        agent.input.w - 6,
+        3,
+        (text) => measure(text, 0),
+      );
+      expect(prompt).toHaveLength(3);
+      for (const line of prompt) expect(measure(line, 0)).toBeLessThanOrEqual(agent.input.w - 6);
+      const status = wrapTextToWidth(
+        "Responsive offline agent is ready for measured proposal layout",
+        agent.status.w,
+        2,
+        (text) => measure(text, 0),
+      );
+      expect(status).toHaveLength(2);
+      for (const line of status) expect(measure(line, 0)).toBeLessThanOrEqual(agent.status.w);
       for (const [index, label] of ["NEW", "EDIT", "COPY", "DELETE"].entries()) {
         expect(measure(label, 0)).toBeLessThanOrEqual(eventToolButtons()[index]!.w - 6);
       }

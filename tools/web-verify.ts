@@ -53,6 +53,7 @@ import {
   TILE,
 } from "../editor/engine/layout.ts";
 import { playtestStopRect } from "../editor/engine/playtest-layout.ts";
+import { proposalRowRect } from "../editor/engine/proposal-layout.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PREFIX = "/pocket-rpgkit/";
@@ -888,7 +889,8 @@ async function main(): Promise<void> {
       const proposalsButton = headerButtons(vp.w).find((button) => button.id === "proposals")!;
       await clickLogical(center(proposalsButton));
       await waitFor("editor proposal panel", "__rpgkitEditorState().proposalOpen === true");
-      await clickLogical({ x: 12, y: HEADER_H + 34 });
+      const proposalRow = proposalRowRect(0, false, true);
+      await clickLogical({ x: center(proposalRow).x, y: HEADER_H + center(proposalRow).y });
       const proposalState = await editorState();
       const proposalExport = await evaluate<{ ok: boolean; text: string }>("__rpgkitEditorExport()");
       const proposalPreviewVisible = proposalState.proposalPreview.tiles?.some(

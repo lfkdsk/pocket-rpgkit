@@ -126,6 +126,15 @@ a guard test.
   Agents create, list, inspect, and withdraw queue entries through the four
   proposal CLI/MCP operations documented in the
   [edit API reference](../docs/edit-api.md#ai-proposal-lifecycle).
+- **Natural-language proposals (inline desktop projects)**: the top of **PROPOSALS** has a
+  “Describe what to change” box. The desktop launcher can run TraeCLI,
+  Claude Code, or a configured MCP-capable command. The request includes the
+  current map and the last explicitly selected canvas cell plus the selected
+  event/page, when present. The agent receives a proposal-only MCP server: it
+  can inspect the project, run non-writing checks, and create a review
+  proposal, but it cannot edit the project directly. Only one request runs at
+  a time; **CANCEL** stops it, and a completed request automatically opens its
+  first new proposal. Unsaved editor changes must be saved or reloaded first.
 - **Open and save**: the document is parsed and checked against
   `src/data/schema.json` on load, and again before every save, which
   refuses an invalid export with the first schema error in the status bar.
@@ -232,7 +241,8 @@ and the originally selected local file cannot be overwritten in place.
 Sharded visual editing is intentionally limited to existing map payloads.
 The UI does not add, duplicate, delete, rename, or structurally edit catalog
 entries; pick cross-map transfer targets; edit global sheet edges; or run an
-in-editor playtest. Proposal review is also disabled with a visible
+in-editor playtest. Proposal review and natural-language local agents are also
+disabled with a visible
 inline-only notice because proposal hunks use inline `/maps/...` paths and the
 desktop bridge writes a single inline document. `rpgkit-edit` can rename an
 indexed map and rewrite its
@@ -250,6 +260,10 @@ bun run editor sunstone --file my-map.json   # edit another file; seeded from
                                              # the example document if missing
                                              # (relative paths start at the
                                              # repository root)
+bun run editor --agent traecli # built-in TraeCLI adapter (the default)
+bun run editor --agent claude  # built-in Claude Code adapter
+bun run editor --agent off     # proposal review only; do not launch an agent
+bun run editor --agent-config editor/agent-config.example.json
 bun run editor --file game/data/project.json # existing sharded ProjectShell
 bun run editor --build-only # bundle + release host, no window
 bun run editor meadow -- --quit-after 600    # extra host flags pass through
@@ -263,6 +277,24 @@ For an inline project it passes `--file`; the host forwards the real mouse and
 keyboard and sends the file's text at boot. For this managed launcher, SAVE
 (header button or Cmd+S) is handed to the bridge through `data.fs` rather than
 sent to the generic host writer.
+
+For inline projects, the launcher starts the local-agent companion before the
+desktop host. Each launch uses a new 256-bit PKNT handshake token, so a process
+that knows only the fixed app name cannot take over the loopback endpoint. This
+does not protect against a same-account process that can inspect the desktop
+host's command line. The built-in TraeCLI adapter uses an ephemeral, read-only
+run with an isolated MCP registration; the Claude Code adapter uses print
+mode, a strict MCP config, and an allowlist for `rpgkit-edit`. If the selected
+executable is absent, the proposal panel reports that it is not installed
+instead of starting a task.
+The child inherits only the documented execution, locale, terminal, config
+directory, and TLS environment baseline plus values explicitly authorized in
+`agent-config.env`. It runs in a separate process group; cancel and timeout
+signal the whole group and force it down after one second if needed. The
+default timeout is 120 seconds. Sharded sessions use the file companion and do
+not start a local agent. See
+[`docs/edit-api.md`](../docs/edit-api.md#editor-local-agent-integration) for
+the custom command/config format, protocol boundary, and manual checks.
 
 The launcher derives the proposal queue at `<file>.proposals/`, snapshots its
 validated pending JSON into the editor's project-specific `data.fs`, and
@@ -336,12 +368,17 @@ On a host with `data.fs` a save goes to
 copy at the next boot; with neither channel the save is refused with a
 visible notice.
 
+The natural-language box is desktop-only. A static web build has no authority
+to spawn a process on the viewer's computer, so it shows “Desktop companion
+required”; proposal files created elsewhere can still be reviewed there.
+
 ## Building and testing
 
 ```sh
 bun run build:editor        # dist/editor.{js,pak} for the sim tests
 bun test tests/editor-model.test.ts tests/editor-sim.test.ts \
   tests/editor-event-sim.test.ts tests/editor-proposal-sim.test.ts \
+  tests/editor-agent-companion.test.ts tests/editor-agent-sim.test.ts \
   tests/editor-playtest-sim.test.ts
 tools/editor-large-quickjs-bench.sh # real-QuickJS 100x100 interaction timing
 bun editor/gen-assets.ts    # regenerate the editor's baked inputs
@@ -357,8 +394,11 @@ pixel checks (banner, palette art and selection, tile art, multi-cell event
 selection, inspector controls at 480×272 and 720×480, and letterbox
 hit-testing), svc save/load and typed-character lines, the data.fs store, a
 byte-identical no-edit round trip, proposal ghost golden and per-hunk
-accept/reject/undo/persistence flow, and a click-authored speaking NPC whose
-saved action page is triggered by the runtime interpreter. The playtest sim
+accept/reject/undo/persistence flow, an offline fake agent that creates a
+proposal through the real MCP server, the pre-launch hash recheck, scrubbed
+environment, process-group timeout/cancel/unavailable paths, and authenticated
+loopback handshakes, and a click-authored speaking NPC whose saved action page
+is triggered by the runtime interpreter. The playtest sim
 suite additionally exercises unsaved map art through the real `GameView`,
 selected-cell starts, STOP/undo continuity, live page switching, LAST/FRESH
 state, capability fallbacks, and reviewed play/debug PNG goldens.
@@ -373,7 +413,9 @@ repository reload.
 ```
 editor/
   editor.tsx, app.tsx   entry and shell (header, palette, canvas, status)
-  svc.ts                chunked shell/shard/save companion channel
+  agent/types.ts        local-agent SVC protocol and validation
+  agent-config.example.json custom MCP agent command/template example
+  svc.ts                chunked shell/shard/save and local-agent channel
   store.ts              data.fs project documents (gamepad mode)
   proposals/model.ts    portable validation, conflict, apply and preview
   proposals/store.ts    data.fs proposal-session transport

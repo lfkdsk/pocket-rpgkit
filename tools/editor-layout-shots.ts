@@ -14,10 +14,15 @@ import {
   headerButtons,
   HEADER_H,
   mapOffset,
+  STATUS_H,
   TILE,
   type HeaderActionId,
 } from "../editor/engine/layout.ts";
+import { createMapInspectorLayout } from "../editor/engine/map-layout.ts";
+import { proposalRowRect } from "../editor/engine/proposal-layout.ts";
+import { playtestDebugRect, playtestStopRect } from "../editor/engine/playtest-layout.ts";
 import { createProposalFromOperations } from "../editor/api/proposals.ts";
+import { LOCAL_AGENT_PROTOCOL } from "../editor/agent/types.ts";
 import type { Project } from "../src/engine/types.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -209,22 +214,52 @@ for (const [width, height, profile] of PROFILES) {
 
   clickHeader(inbox, world, width, "map");
   await capture(world, width, height, profile, "map-inspector");
-  click(inbox, world, 28, HEADER_H + 12);
+  const mapClose = createMapInspectorLayout({
+    width,
+    height: height - HEADER_H - STATUS_H,
+  }).close.rect;
+  click(
+    inbox,
+    world,
+    mapClose.x + Math.floor(mapClose.w / 2),
+    HEADER_H + mapClose.y + Math.floor(mapClose.h / 2),
+  );
 
   send(inbox, world, { t: "proposals", proposals: [PROPOSAL] });
   clickHeader(inbox, world, width, "proposals");
-  click(inbox, world, 12, HEADER_H + 34);
+  send(inbox, world, {
+    t: "agent-ready",
+    protocol: LOCAL_AGENT_PROTOCOL,
+    available: true,
+    adapter: "responsive offline agent adapter",
+    message: "Responsive offline agent is ready for measured proposal layout",
+    maxPromptChars: 4096,
+  });
+  send(inbox, world, {
+    t: "paste",
+    text: "Brighten the selected village path and move the elder beside it",
+  });
+  await capture(world, width, height, profile, "agent-compose");
+  const proposalRow = proposalRowRect(0, false, true);
+  click(
+    inbox,
+    world,
+    proposalRow.x + Math.floor(proposalRow.w / 2),
+    HEADER_H + proposalRow.y + Math.floor(proposalRow.h / 2),
+  );
   await capture(world, width, height, profile, "proposal-panel");
 
   clickHeader(inbox, world, width, "proposals");
   clickHeader(inbox, world, width, "play");
   for (let index = 0; index < 3; index++) frame(world);
   await capture(world, width, height, profile, "playtest");
-  click(inbox, world, 83, 11);
+  const debug = playtestDebugRect();
+  click(inbox, world, debug.x + Math.floor(debug.w / 2), debug.y + Math.floor(debug.h / 2));
   frame(world);
   await capture(world, width, height, profile, "playtest-debug");
 
-  click(inbox, world, 28, 11);
+  const stop = playtestStopRect();
+  click(inbox, world, stop.x + Math.floor(stop.w / 2), stop.y + Math.floor(stop.h / 2));
   injectProject(world, SCENE_PREVIEW_PROJECT);
   clickHeader(inbox, world, width, "play");
   for (let index = 0; index < 5; index++) frame(world);

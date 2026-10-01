@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import * as browserHost from "../tools/web/player.js";
 
 const {
+  BrowserEditorHost,
   BrowserMessageReassembler,
   BrowserProjectPack,
   EDITOR_CHUNK_MAX_CODE_UNITS,
@@ -34,6 +35,35 @@ function fixture(count = 263) {
 }
 
 describe("browser sharded editor pack host", () => {
+  test("reports that local agents require the desktop companion", async () => {
+    const sent: unknown[] = [];
+    const host = Object.assign(Object.create(BrowserEditorHost.prototype), {
+      player: {
+        width: 480,
+        height: 272,
+        sendService(message: unknown) {
+          sent.push(message);
+        },
+      },
+      config: { storageKey: "browser-agent-test", examples: [] },
+      storageReadError: null,
+      setStatus() {},
+      finishStartup() {},
+    });
+
+    await host.start();
+
+    expect(sent[0]).toMatchObject({ t: "hello", w: 480, h: 272 });
+    expect(sent[1]).toEqual({
+      t: "agent-ready",
+      protocol: "rpgkit-local-agent/v1",
+      available: false,
+      adapter: "browser",
+      message: "Desktop companion required",
+      maxPromptChars: 4096,
+    });
+  });
+
   test("catalogues 263 entries without sending any shard text until map-read", () => {
     const source = fixture();
     const pack = BrowserProjectPack.parse(source.text);

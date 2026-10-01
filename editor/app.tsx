@@ -107,6 +107,14 @@ import {
 } from "./engine/layout.ts";
 import { HEADER_ORDER, initialCursor, stepCursor, type Cursor } from "./engine/cursor.ts";
 import { connectSvc, type HostLine, type Svc } from "./svc.ts";
+import {
+  LOCAL_AGENT_MAX_PROMPT,
+  LOCAL_AGENT_PROTOCOL,
+  parseLocalAgentHostMessage,
+  type LocalAgentReady,
+  type LocalAgentStart,
+  type LocalAgentState,
+} from "./agent/types.ts";
 import { createShardedEditorWorkspace, type ShardedEditorWorkspace } from "./engine/sharded-workspace.ts";
 import { hitMapListRow, mapListWindow, revealMapListRow } from "./engine/map-list.ts";
 import { hasFs, readProject, writeProject } from "./store.ts";
@@ -280,6 +288,7 @@ interface PendingHostSave {
 }
 
 let saveRequestSequence = 0;
+let agentRequestSequence = 0;
 
 function saveRequestId(expectedSourceHash: string, projectHash: string): string {
   saveRequestSequence++;
@@ -337,6 +346,7 @@ export function EditorApp(): JSX.Element {
   const [eventMode, setEventMode] = createSignal(false);
   const [inspectorOpen, setInspectorOpen] = createSignal(false);
   const [eventPlacement, setEventPlacement] = createSignal({ x: 0, y: 0 });
+  const [selectedCell, setSelectedCell] = createSignal<{ mapId: string; x: number; y: number } | null>(null);
   const [dragPreview, setDragPreview] = createSignal<EventDragPreview | null>(null);
   const [inspectorSelection, setInspectorSelection] = createSignal<{
     condition: number | null;
@@ -370,6 +380,17 @@ export function EditorApp(): JSX.Element {
   const [selectedProposal, setSelectedProposal] = createSignal<number | null>(null);
   const [selectedProposalHunk, setSelectedProposalHunk] = createSignal(0);
   const [proposalScroll, setProposalScroll] = createSignal(0);
+  const [agentReady, setAgentReady] = createSignal<LocalAgentReady>({
+    t: "agent-ready",
+    protocol: LOCAL_AGENT_PROTOCOL,
+    available: false,
+    adapter: "local agent",
+    message: svc ? "Waiting for local-agent companion…" : "Desktop companion required",
+    maxPromptChars: LOCAL_AGENT_MAX_PROMPT,
+  });
+  const [agentState, setAgentState] = createSignal<LocalAgentState | null>(null);
+  const [agentInput, setAgentInput] = createSignal("");
+  const [agentInputFocus, setAgentInputFocus] = createSignal(false);
   const [hostSaveGuard, setHostSaveGuard] = createSignal<HostSaveGuard | null>(null);
   const [playProject, setPlayProject] = createSignal<Project | null>(null);
   const [playAssets, setPlayAssets] = createSignal<GameAssets | null>(null);
@@ -409,6 +430,8 @@ export function EditorApp(): JSX.Element {
   });
   const mapListPanelHeight = (viewportHeight = vp().h): number =>
     Math.max(0, viewportHeight - HEADER_H - STATUS_H);
+  const proposalPanelHeight = (viewportHeight = vp().h): number =>
+    Math.max(0, viewportHeight - HEADER_H - STATUS_H);
   const applyViewport = (width: number, height: number): void => {
     setVp({ w: width, h: height });
     if (!compactHeader(width)) setHeaderMenuOpen(false);
@@ -419,6 +442,25 @@ export function EditorApp(): JSX.Element {
         mapListPanelHeight(height),
         scroll,
       ));
+    }
+    if (proposalOpen()) {
+      const pending = shardedWorkspace() ? [] : proposals().filter((proposal) => !proposalComplete(proposal));
+      const selected = selectedProposal();
+      const proposal = selected === null ? undefined : pending[selected];
+      const detail = proposal !== undefined;
+      const visible = proposalVisibleRows(proposalPanelHeight(height), detail, !detail);
+      const count = detail ? proposal.hunks.length : pending.length;
+      setProposalScroll((scroll) => {
+        const max = Math.max(0, count - visible);
+        if (!detail || visible === 0) return Math.min(scroll, max);
+        const hunk = Math.min(selectedProposalHunk(), Math.max(0, count - 1));
+        const revealed = hunk < scroll
+          ? hunk
+          : hunk >= scroll + visible
+            ? hunk - visible + 1
+            : scroll;
+        return Math.max(0, Math.min(max, revealed));
+      });
     }
   };
   const dirtyEntries = createMemo<ReadonlySet<string>>(() => {
@@ -436,6 +478,10 @@ export function EditorApp(): JSX.Element {
   });
   const pendingProposals = createMemo(() =>
     shardedWorkspace() ? [] : proposals().filter((proposal) => !proposalComplete(proposal)));
+  const agentRunning = createMemo(() => {
+    const status = agentState()?.status;
+    return status === "starting" || status === "running" || status === "cancelling";
+  });
   const proposalAssessments = createMemo(() => {
     const project = exportProject(editor());
     return pendingProposals().map((proposal) => assessProposal(project, proposal));
@@ -684,6 +730,7 @@ export function EditorApp(): JSX.Element {
       setPendingHostSave(null);
       setPassTool("pass");
       setEventPlacement({ x: 0, y: 0 });
+      setSelectedCell(null);
       setPlayStartCell(null);
       setDragPreview(null);
       setInspectorSelection({ condition: null, command: null });
@@ -733,6 +780,7 @@ export function EditorApp(): JSX.Element {
     batch(() => {
       setEditor(switched);
       setCam(clampCameraTo(switched, cam()));
+      setSelectedCell(null);
       setPlayStartCell(null);
     });
   };
@@ -1034,6 +1082,7 @@ export function EditorApp(): JSX.Element {
     const firstPending = proposal.hunks.findIndex((hunk) => !hunk.decision);
     const hunkIndex = firstPending < 0 ? 0 : firstPending;
     setSelectedProposal(index);
+    setAgentInputFocus(false);
     setSelectedProposalHunk(hunkIndex);
     setProposalScroll(Math.max(0, hunkIndex - 1));
     locateProposalHunk(proposal, hunkIndex);
@@ -1085,6 +1134,7 @@ export function EditorApp(): JSX.Element {
     }
     if (proposalOpen()) {
       setProposalOpen(false);
+      setAgentInputFocus(false);
       clearProposalSelection();
       return;
     }
@@ -1097,11 +1147,93 @@ export function EditorApp(): JSX.Element {
       setProposalOpen(true);
       setSelectedProposal(null);
       setProposalScroll(0);
+      setAgentInputFocus(true);
       setNotice({ kind: "info", text: `${pendingProposals().length} PENDING PROPOSAL(S)` });
     });
   };
 
+  const startLocalAgent = (): void => {
+    const ready = agentReady();
+    const request = agentInput().trim();
+    if (shardedWorkspace()) {
+      setNotice({ kind: "bad", text: "LOCAL AGENTS ARE UNAVAILABLE FOR SHARDED PROJECTS" });
+      return;
+    }
+    if (!svc || !ready.available) {
+      setNotice({ kind: "bad", text: ready.message.toUpperCase() });
+      return;
+    }
+    if (agentRunning()) {
+      setNotice({ kind: "bad", text: "A LOCAL AGENT REQUEST IS ALREADY RUNNING" });
+      return;
+    }
+    if (!request) {
+      setNotice({ kind: "bad", text: "DESCRIBE WHAT YOU WANT TO CHANGE" });
+      return;
+    }
+    if (editor().dirty || pendingHostSave()) {
+      setNotice({ kind: "bad", text: "SAVE OR RELOAD EDITS BEFORE ASKING THE AGENT" });
+      return;
+    }
+    const current = map();
+    const cell = selectedCell();
+    const event = selectedEvent();
+    agentRequestSequence++;
+    const id = sha256Text(`${Date.now()}\n${agentRequestSequence}\n${request}\n${proposalSemanticHash(exportProject(editor()))}`);
+    const start: LocalAgentStart = {
+      t: "agent-start" as const,
+      protocol: LOCAL_AGENT_PROTOCOL,
+      id,
+      request,
+      projectHash: proposalSemanticHash(exportProject(editor())),
+      context: {
+        map: { id: current.id, name: current.name, width: current.width, height: current.height },
+        selectedCell: cell?.mapId === current.id ? cell : null,
+        selectedEvent: event ? {
+          id: event.id,
+          ...(event.name === undefined ? {} : { name: event.name }),
+          x: event.x,
+          y: event.y,
+          w: event.w ?? 1,
+          h: event.h ?? 1,
+          page: editor().selectedPageIndex,
+        } : null,
+      },
+    };
+    batch(() => {
+      setAgentInputFocus(false);
+      setAgentState({
+        t: "agent-state",
+        protocol: LOCAL_AGENT_PROTOCOL,
+        id,
+        status: "starting",
+        message: `Starting ${ready.adapter}…`,
+      });
+      setNotice({ kind: "info", text: `STARTING ${ready.adapter.toUpperCase()} FOR A PROPOSAL` });
+    });
+    svc.startAgent(start);
+  };
+
+  const cancelLocalAgent = (): void => {
+    const state = agentState();
+    if (!svc || !state || !agentRunning()) return;
+    svc.cancelAgent({ t: "agent-cancel", protocol: LOCAL_AGENT_PROTOCOL, id: state.id });
+    setAgentState({ ...state, status: "cancelling", message: "Cancelling local agent…" });
+  };
+
   const activateProposal = (action: ProposalPanelAction): void => {
+    if (action.kind === "focus-agent-input") {
+      if (!agentRunning()) setAgentInputFocus(true);
+      return;
+    }
+    if (action.kind === "run-agent") {
+      startLocalAgent();
+      return;
+    }
+    if (action.kind === "cancel-agent") {
+      cancelLocalAgent();
+      return;
+    }
     const index = selectedProposal();
     if (action.kind === "back") {
       clearProposalSelection();
@@ -1321,6 +1453,7 @@ export function EditorApp(): JSX.Element {
       leaveShardedProject("another sharded project was opened");
       const workspace = createShardedEditorWorkspace(source, requestMapShard, { maxLoadedMaps: 4 });
       setProposalOpen(false);
+      setAgentInputFocus(false);
       clearProposalSelection();
       setShardedWorkspace(workspace);
       setHostFile(true);
@@ -2270,11 +2403,13 @@ export function EditorApp(): JSX.Element {
           const action = hitProposalPanel(
             x,
             y - HEADER_H,
-            vp().h - HEADER_H - STATUS_H,
+            proposalPanelHeight(),
             pendingProposals().length,
             proposal?.hunks.length ?? 0,
             proposal !== undefined,
             proposalScroll(),
+            proposal === undefined,
+            agentRunning(),
           );
           if (action) activateProposal(action);
         }
@@ -2293,6 +2428,7 @@ export function EditorApp(): JSX.Element {
         // Press edge: buttons and palette slots activate only here, so a
         // drag that starts on the header does not repaint the map.
         const hit = hitAt(x, y);
+        if (hit?.kind === "cell") setSelectedCell({ mapId: map().id, x: hit.tx, y: hit.ty });
         if (hit?.kind === "cell") setPlayStartCell({ mapId: map().id, x: hit.tx, y: hit.ty });
         if (hit?.kind === "button") {
           pointerDown = kind;
@@ -2445,7 +2581,7 @@ export function EditorApp(): JSX.Element {
             if (edge & BTN.DOWN) hunk = Math.min(proposal.hunks.length - 1, hunk + 1);
             if (hunk !== selectedProposalHunk()) {
               setSelectedProposalHunk(hunk);
-              const visible = proposalVisibleRows(vp().h - HEADER_H - STATUS_H, true);
+              const visible = proposalVisibleRows(proposalPanelHeight(), true);
               if (hunk < proposalScroll()) setProposalScroll(hunk);
               else if (hunk >= proposalScroll() + visible) setProposalScroll(hunk - visible + 1);
               locateProposalHunk(proposal, hunk);
@@ -2513,6 +2649,7 @@ export function EditorApp(): JSX.Element {
       if (edge & BTN.START) performSave();
     }
     if (!pointerMode && cur.zone === "canvas" && (edge & (BTN.CIRCLE | BTN.CROSS))) {
+      setSelectedCell({ mapId: map().id, x: cur.tx, y: cur.ty });
       setPlayStartCell({ mapId: map().id, x: cur.tx, y: cur.ty });
     }
 
@@ -2664,7 +2801,31 @@ export function EditorApp(): JSX.Element {
     }
     if (svc) {
       for (const line of svc.poll()) {
-        if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
+        const agentMessage = parseLocalAgentHostMessage(line);
+        if (agentMessage?.t === "agent-ready") {
+          setAgentReady(agentMessage);
+          if (!agentMessage.available) setNotice({ kind: "bad", text: agentMessage.message.toUpperCase() });
+        } else if (agentMessage?.t === "agent-state") {
+          const current = agentState();
+          if (!current || current.id === agentMessage.id) {
+            setAgentState(agentMessage);
+            if (agentMessage.status === "completed") {
+              const ids = new Set(agentMessage.proposalIds ?? []);
+              const index = pendingProposals().findIndex((proposal) => ids.has(proposal.id));
+              batch(() => {
+                setAgentInput("");
+                setAgentInputFocus(false);
+                setProposalOpen(true);
+                setNotice({ kind: "good", text: agentMessage.message.toUpperCase() });
+              });
+              if (index >= 0) selectProposalAt(index);
+            } else if (agentMessage.status === "failed" || agentMessage.status === "timed-out") {
+              setNotice({ kind: "bad", text: agentMessage.message.toUpperCase() });
+            } else if (agentMessage.status === "cancelled") {
+              setNotice({ kind: "info", text: agentMessage.message.toUpperCase() });
+            }
+          }
+        } else if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
           applyViewport(line.w, line.h);
         } else if (line.t === "project" && typeof line.shell === "string") {
           loadHostShardedProject(line);
@@ -2703,7 +2864,7 @@ export function EditorApp(): JSX.Element {
           if (proposalOpen()) {
             const proposal = selectedProposal() === null ? undefined : pendingProposals()[selectedProposal()!];
             const count = proposal?.hunks.length ?? pendingProposals().length;
-            const visible = proposalVisibleRows(vp().h - HEADER_H - STATUS_H, proposal !== undefined);
+            const visible = proposalVisibleRows(proposalPanelHeight(), proposal !== undefined, proposal === undefined);
             setProposalScroll((value) => Math.max(0, Math.min(Math.max(0, count - visible), value + Math.sign(line.dy!))));
             continue;
           }
@@ -2730,10 +2891,12 @@ export function EditorApp(): JSX.Element {
           const max = Math.max(0, stripH - panelH);
           setPalScroll((y) => Math.max(0, Math.min(max, y + Math.sign(line.dy!) * 16)));
         } else if (line.t === "ch" && typeof line.s === "string") {
-          if (mapFocus()) setMapInput((value) => (value + line.s!).slice(0, 4096));
+          if (agentInputFocus()) setAgentInput((value) => (value + line.s!).slice(0, agentReady().maxPromptChars));
+          else if (mapFocus()) setMapInput((value) => (value + line.s!).slice(0, 4096));
           else if (inspectorFocus()) setInputBuffer((value) => (value + line.s!).slice(0, 4096));
         } else if (line.t === "paste" && typeof line.text === "string") {
-          if (mapFocus()) setMapInput((value) => (value + line.text!).slice(0, 4096));
+          if (agentInputFocus()) setAgentInput((value) => (value + line.text!).slice(0, agentReady().maxPromptChars));
+          else if (mapFocus()) setMapInput((value) => (value + line.text!).slice(0, 4096));
           else if (inspectorFocus()) setInputBuffer((value) => (value + line.text!).slice(0, 4096));
         } else if (line.t === "key") {
           const name = line.k ?? "";
@@ -2751,6 +2914,12 @@ export function EditorApp(): JSX.Element {
             openMapListSelection();
           } else if (mapListOpen() && (name === "Escape" || name === "Esc")) {
             closeMapList();
+          } else if (agentInputFocus() && name === "Enter") {
+            startLocalAgent();
+          } else if (agentInputFocus() && (name === "Escape" || name === "Esc")) {
+            setAgentInputFocus(false);
+          } else if (agentInputFocus() && name === "Backspace") {
+            setAgentInput((value) => value.slice(0, -1));
           } else if (pendingPick() && (name === "Escape" || name === "Esc")) {
             setPendingPick(null);
             setNotice({ kind: "info", text: "PICK CANCELLED" });
@@ -2826,6 +2995,7 @@ export function EditorApp(): JSX.Element {
     deleteRefs: deleteRefs(),
     mapReferencePage: mapReferencePage(),
     pendingPick: pendingPick(),
+    selectedCell: selectedCell(),
     proposalOpen: proposalOpen(),
     proposals: proposals(),
     pendingProposals: pendingProposals(),
@@ -2833,6 +3003,11 @@ export function EditorApp(): JSX.Element {
     selectedProposal: selectedProposal(),
     selectedProposalHunk: selectedProposalHunk(),
     proposalPreview: proposalPreview(),
+    agentReady: agentReady(),
+    agentState: agentState(),
+    agentInput: agentInput(),
+    agentInputFocus: agentInputFocus(),
+    agentRunning: agentRunning(),
     hostSaveGuard: hostSaveGuard(),
     eventPlacement: eventPlacement(),
     inspectorSelection: inspectorSelection(),
@@ -3009,7 +3184,15 @@ export function EditorApp(): JSX.Element {
               selectedProposal={selectedProposal()}
               selectedHunk={selectedProposalHunk()}
               scroll={proposalScroll()}
-              panelH={vp().h - HEADER_H - STATUS_H}
+              panelH={proposalPanelHeight()}
+              agent={{
+                available: agentReady().available,
+                adapter: agentReady().adapter,
+                message: agentState()?.message ?? agentReady().message,
+                input: agentInput(),
+                focused: agentInputFocus(),
+                running: agentRunning(),
+              }}
             />
           ) : eventMode() ? (
             <EventPanel

@@ -12,6 +12,7 @@ import {
   RPGKIT_TOOLS,
   dispatchMcpLine,
   dispatchMcpMessage,
+  toolsForAccess,
 } from "../tools/rpgkit-edit/mcp.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -116,6 +117,32 @@ describe("rpgkit-edit MCP protocol", () => {
     expect(new Set(PROPOSAL_TOOLS.map((tool) => tool.name)).size).toBe(PROPOSAL_TOOLS.length);
     expect(PROPOSAL_TOOLS.map((tool) => tool.command).sort()).toEqual([...PROPOSAL_COMMANDS].sort());
     expect(new Set(RPGKIT_TOOLS.map((tool) => tool.name)).size).toBe(RPGKIT_TOOLS.length);
+  });
+
+  test("proposal-only access exposes sidecar proposals but no project or artifact writes", async () => {
+    const listed = await dispatchMcpMessage(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      process.cwd(),
+      "proposal-only",
+    ) as any;
+    const names = listed.result.tools.map((tool: any) => tool.name);
+    expect(names).toEqual(toolsForAccess("proposal-only").map((tool) => tool.name));
+    expect(names).toContain("rpgkit_project_open");
+    expect(names).toContain("rpgkit_project_validate");
+    expect(names).toContain("rpgkit_proposal_create");
+    expect(names).toContain("rpgkit-lint");
+    expect(names).not.toContain("rpgkit_tile_paint");
+    expect(names).not.toContain("rpgkit_project_save");
+    expect(names).not.toContain("rpgkit_proposal_withdraw");
+    expect(names).not.toContain("rpgkit-shot");
+
+    const denied = await dispatchMcpMessage({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "rpgkit_tile_paint", arguments: {} },
+    }, process.cwd(), "proposal-only");
+    expect(denied).toMatchObject({ error: { code: -32601, message: expect.stringContaining("proposal-only") } });
   });
 
   test("creates, lists, shows and withdraws a proposal through MCP without editing the project", async () => {

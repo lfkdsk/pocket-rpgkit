@@ -8,6 +8,8 @@
 //                                           # (relative to the repo root:
 //                                           # `bun run` starts scripts there)
 //   bun run editor --build-only             # bundle + release host, no window
+//   bun run editor --agent claude            # use the Claude Code adapter
+//   bun run editor --agent-config agent.json # use a custom command template
 //   bun run editor meadow -- --quit-after 600   # extra host flags pass through
 //
 // The host runs with the rpgkit-editor companion that editor/pocket.json
@@ -29,6 +31,10 @@ import {
   editorProposalBridgePaths,
   syncEditorProposalBridge,
 } from "./lib/editor-proposal-bridge.ts";
+import {
+  startEditorAgentCompanion,
+  type LocalAgentAdapter,
+} from "./lib/editor-agent-companion.ts";
 
 const root = resolve(import.meta.dir, "..");
 
@@ -41,6 +47,24 @@ if (fileAt >= 0) {
   fileArg = rest[fileAt + 1];
   if (!fileArg) throw new Error("editor: --file needs a path");
   rest.splice(fileAt, 2);
+}
+let agentAdapter: LocalAgentAdapter | undefined;
+const agentAt = rest.indexOf("--agent");
+if (agentAt >= 0) {
+  const value = rest[agentAt + 1];
+  if (!value || !["traecli", "claude", "custom", "off"].includes(value)) {
+    throw new Error("editor: --agent needs traecli, claude, custom, or off");
+  }
+  agentAdapter = value as LocalAgentAdapter;
+  rest.splice(agentAt, 2);
+}
+let agentConfig: string | undefined;
+const agentConfigAt = rest.indexOf("--agent-config");
+if (agentConfigAt >= 0) {
+  const value = rest[agentConfigAt + 1];
+  if (!value) throw new Error("editor: --agent-config needs a path");
+  agentConfig = resolve(process.cwd(), value);
+  rest.splice(agentConfigAt, 2);
 }
 const name = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : DEFAULT_SOURCE;
 const source = EDITOR_SOURCES.find((s) => s.id === name);
@@ -74,7 +98,7 @@ try {
   // The editor guest reports syntax/schema errors for ordinary documents.
 }
 if (sharded) {
-  console.log("editor: proposal review is unavailable for sharded projects");
+  console.log("editor: proposal review and local agents are unavailable for sharded projects");
   await runDesktopEditorFiles(build, file, rest, { root: dirname(file) });
 } else {
   const bridge = editorProposalBridgePaths(root, build.plan.app.id, file);
@@ -97,10 +121,27 @@ if (sharded) {
   };
   syncProposals();
   const bridgeTimer = setInterval(syncProposals, 200);
+  const agent = await startEditorAgentCompanion({
+    repoRoot: root,
+    projectFile: file,
+    stateDirectory: join(bridge.dataRoot, build.plan.app.id, "agent"),
+    app: build.plan.app.output,
+    ...(agentAdapter === undefined ? {} : { adapter: agentAdapter }),
+    ...(agentConfig === undefined ? {} : { configFile: agentConfig }),
+    onProposalsChanged: syncProposals,
+  });
+  console.log(`editor: local agent ${agent.controller.ready.available ? "ready" : "unavailable"} (${agent.controller.ready.message})`);
   try {
-    await runDesktopHost(build, ["--data-root", bridge.dataRoot, "--file", file, ...rest]);
+    await runDesktopHost(build, [
+      "--data-root", bridge.dataRoot,
+      "--file", file,
+      "--svc-connect", agent.address,
+      ...rest,
+      "--app", agent.authToken,
+    ]);
   } finally {
     clearInterval(bridgeTimer);
+    await agent.close();
     syncProposals();
   }
 }

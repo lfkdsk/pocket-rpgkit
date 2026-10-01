@@ -870,3 +870,140 @@ claude mcp add --scope project rpgkit-edit -- \
   bun /absolute/path/to/pocket-rpgkit/tools/rpgkit-edit/mcp.ts \
   --root /absolute/path/to/game-project
 ```
+
+## Editor local-agent integration
+
+For an inline project, the desktop editor can turn a natural-language request
+into an AI proposal without embedding or depending on one agent frontend. Open
+**PROPOSALS**, type in “Describe what to change”, and press Enter or **RUN**.
+The editor sends the current map, the last explicitly selected cell, and the
+selected event/page as context. When the command creates a proposal, the
+editor reloads the sidecar queue and opens the first new proposal in the
+normal review UI. Nothing is accepted automatically.
+
+The integration has three process boundaries:
+
+1. The PocketJS editor guest sends `rpgkit-local-agent/v1` start/cancel
+   messages over its existing SVC channel. It cannot spawn processes or read
+   arbitrary host files.
+2. The Bun launcher owns a loopback-only companion. Every launcher run creates
+   a fresh 256-bit token that the desktop host must present in its PKNT hello;
+   the fixed editor app name is not accepted. The companion verifies that the
+   request's semantic project hash still matches the host file, starts at most
+   one configured command, enforces its timeout, and reports lifecycle states
+   back to the guest. Each agent starts in an independent process group.
+   **CANCEL** and timeout send `SIGTERM` to that whole group, followed by
+   group-wide `SIGKILL` after one second if needed; their terminal state waits
+   for this cleanup barrier.
+3. The child command receives a private MCP registration for
+   `tools/rpgkit-edit/mcp.ts --root <project-dir> --proposal-only`.
+   Proposal-only mode exposes project reads, `validate`, non-writing QA checks,
+   and proposal create/list/show. It does not expose direct project mutations,
+   proposal withdrawal, or `rpgkit-shot`; the only write is creation of a
+   review sidecar. This is enforced by the MCP server's tool registry, not by
+   the prompt or a client-side allowlist.
+
+The random token blocks an unrelated process from claiming the endpoint by
+guessing its fixed app name. It is not an operating-system sandbox: another
+process running as the same account may be able to inspect the desktop host's
+command line and recover the token. Use normal account and machine isolation
+when that threat is in scope.
+
+The companion also prepends a fixed policy that tells the agent to use this
+MCP server and create one proposal. A configurable prompt template follows
+it. An exit-zero command that creates no new proposal is reported as a
+failure. The editor refuses to start when it has unsaved edits or a save is
+still pending; the companion repeats the semantic-hash check immediately
+before spawning, closing the race with stale editor content. Sharded editor
+sessions use a separate confined file companion and deliberately disable both
+proposal review and local-agent requests.
+
+### Built-in adapters
+
+TraeCLI is the default. Both built-ins use a one-shot session and an isolated
+MCP registration:
+
+```sh
+bun run editor --agent traecli
+bun run editor --agent claude
+bun run editor --agent off
+```
+
+The TraeCLI adapter runs `traecli exec` with ephemeral/read-only settings and
+passes the MCP registration as a command configuration. The Claude Code
+adapter runs `claude -p` with a strict MCP config, no persisted session, and
+an `mcp__rpgkit-edit__*` allowlist. If the chosen executable is not installed
+or executable, the input remains visible and the panel explains the problem.
+
+### Custom MCP-capable commands
+
+Pass a JSON file with `--agent-config`. A complete editable example lives at
+[`editor/agent-config.example.json`](../editor/agent-config.example.json):
+
+```sh
+bun run editor --agent-config editor/agent-config.example.json
+```
+
+Its fields are:
+
+| field | meaning |
+| --- | --- |
+| `adapter` | `traecli`, `claude`, `custom`, or `off`. `custom` requires `command`. |
+| `name` | Short label shown in the proposal panel and status messages. |
+| `command` | Non-empty argv array. It is spawned directly, without a shell. |
+| `mcpRegistration` | `claude-json` for the generated `mcpServers` JSON file, or `traecli-config` for the generated TraeCLI config expression. |
+| `workingDirectory` | Child working directory; defaults to `{{projectDir}}`. |
+| `timeoutMs` | Integer from 20 through 1,800,000; defaults to 120,000. |
+| `promptTemplate` | Text appended after the fixed proposal-only policy. |
+| `env` | String environment variables explicitly added to or overriding the inherited safe baseline. |
+
+`workingDirectory` accepts `{{projectDir}}` and `{{repoRoot}}`. Command and
+environment values also accept `{{prompt}}`, `{{promptFile}}`,
+`{{mcpConfig}}`, `{{mcpRegistration}}`, `{{projectFile}}`, `{{request}}`, and
+`{{contextJson}}`. The prompt template accepts `{{request}}`,
+`{{contextJson}}`, `{{projectFile}}`, `{{projectDir}}`, and `{{repoRoot}}`.
+Unknown placeholders and unknown config fields are rejected. The launcher
+also sets `RPGKIT_AGENT_PROJECT_FILE`, `RPGKIT_AGENT_MCP_CONFIG`, and
+`RPGKIT_AGENT_REQUEST_ID`, which makes a small wrapper sufficient for an MCP
+client with a different command-line syntax.
+
+The child does not inherit the launcher's full environment. The inherited
+baseline is exactly `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`,
+`TMP`, `TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `TERM`, `COLORTERM`,
+`NO_COLOR`, `FORCE_COLOR`, `TZ`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`,
+`XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `TRAE_HOME`,
+`CLAUDE_CONFIG_DIR`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and
+`NODE_EXTRA_CA_CERTS`, when each is present in the launcher. Tokens, cloud
+credential families, proxy URLs, SSH agent sockets, runtime options, and
+dynamic-loader variables are not inherited implicitly. A custom command that
+needs one may opt in through `env`; keep configurations containing secrets out
+of source control. Environment names must use shell-variable syntax, and
+launcher-owned `RPGKIT_AGENT_PROJECT_FILE`, `RPGKIT_AGENT_MCP_CONFIG`, and
+`RPGKIT_AGENT_REQUEST_ID` cannot be overridden.
+
+### Desktop and manual verification
+
+A static web page cannot start a process on the viewer's computer. The web
+editor therefore reports “Desktop companion required”; it can still review
+proposals placed in its queue by another integration. The shipped launcher
+implements local agents for the Linux and macOS desktop hosts.
+
+Real agents are deliberately not called by the automated test suite. To check
+an installed adapter manually:
+
+1. Run `traecli --version` or `claude --version`.
+2. Launch `bun run editor --agent traecli` (or `--agent claude`).
+3. In EVENT mode select an event (or select a cell and save any resulting
+   edit), open **PROPOSALS**, enter a small request, and press Enter.
+4. Confirm the status changes to running, **CANCEL** is available, and the
+   completed proposal opens without changing the map.
+5. Accept one clean hunk, then use Cmd+Z (Ctrl+Z on Linux) to verify the normal
+   proposal-review undo path.
+
+Automated coverage uses an offline fake command. It reads the real prompt,
+connects to the generated stdio MCP server, checks that direct edit tools are
+absent, calls `rpgkit_proposal_create`, then drives proposal acceptance and
+undo in the PocketJS wasm simulator. Separate cases cover the pre-launch hash
+recheck, environment filtering, a TERM-resistant grandchild, timeout,
+cancellation, concurrency, an unavailable executable, rejection of a fixed
+SVC app name, and fresh authentication tokens across launches.

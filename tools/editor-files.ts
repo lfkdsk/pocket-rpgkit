@@ -31,6 +31,7 @@ import {
   runDesktopHost,
   type DesktopBuild,
 } from "./lib/desktop.ts";
+import { createSvcWireAuthToken } from "./lib/svc-wire-auth.ts";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -831,8 +832,6 @@ class PkntPeer {
 }
 
 export interface EditorFilesServerOptions extends EditorFilesOptions {
-  /** PocketJS `--app` handshake value (the editor plan output). */
-  app?: string;
   host?: string;
   port?: number;
 }
@@ -842,6 +841,8 @@ export interface EditorFilesServer {
   readonly host: string;
   readonly port: number;
   readonly address: string;
+  /** Per-launch PKNT hello identity passed only to the desktop host. */
+  readonly authToken: string;
   close(): Promise<void>;
 }
 
@@ -852,11 +853,11 @@ export async function startEditorFilesServer(
 ): Promise<EditorFilesServer> {
   const files = new EditorFiles(shellFile, options);
   const host = options.host ?? "127.0.0.1";
-  const app = options.app ?? "editor";
+  const authToken = createSvcWireAuthToken();
   const sockets = new Set<Socket>();
   const server: Server = createServer((socket) => {
     sockets.add(socket);
-    const peer = new PkntPeer(socket, files, app);
+    const peer = new PkntPeer(socket, files, authToken);
     socket.on("data", (chunk) => {
       try {
         peer.push(chunk);
@@ -885,6 +886,7 @@ export async function startEditorFilesServer(
     host,
     port: bound.port,
     address: `${host}:${bound.port}`,
+    authToken,
     async close() {
       for (const socket of sockets) socket.destroy();
       if (!server.listening) return;
@@ -908,11 +910,10 @@ export async function runDesktopEditorFiles(
 ): Promise<void> {
   const server = await startEditorFilesServer(shellFile, {
     ...options,
-    app: build.plan.app.output,
   });
   try {
     console.log(`editor: sharded companion ${server.address}`);
-    await runDesktopHost(build, ["--svc-connect", server.address, ...flags]);
+    await runDesktopHost(build, ["--svc-connect", server.address, ...flags, "--app", server.authToken]);
   } finally {
     await server.close();
   }

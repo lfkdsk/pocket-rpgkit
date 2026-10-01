@@ -685,8 +685,10 @@ simDescribe("editor budget", () => {
     // 43,650 B), and KG1's scene branch ADD dispatch, scene fields and
     // play-test scene placeholder, the merged editor is 1,195,808 B. Large
     // (sharded) project editing adds the lazy shard workspace, chunked
-    // companion transport and virtual map catalog: 1,232,242 B. Measured
-    // text fitting and the responsive header bring it to 1,242,030 B.
-    expect(js).toBeLessThan(1_250_000);
+    // companion transport and virtual map catalog: 1,232,242 B. ED-UI1's
+    // measured text fitting and responsive chrome baseline is 1,242,030 B;
+    // AI4's local-agent protocol/request UI and responsive integration add
+    // 16,949 B, for a combined 1,258,979 B. Retain about 1.35% headroom.
+    expect(js).toBeLessThan(1_276_000);
   });
 });

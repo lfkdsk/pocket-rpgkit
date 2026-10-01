@@ -21,11 +21,13 @@ import { CHECK_TOOLS, CheckArgsError, CheckLoadError, type CheckTool } from "../
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 export const MCP_SERVER_INFO = { name: "pocket-rpgkit-edit", version: "0.1.0" } as const;
 export const MCP_USAGE = `Usage:
-  bun run rpgkit-edit:mcp [--root <project-directory>]
+  bun run rpgkit-edit:mcp [--root <project-directory>] [--proposal-only]
 
 Runs an MCP server over newline-delimited JSON-RPC on stdin/stdout. Tool file
 paths must resolve inside --root (default: current working directory). stdout
-is reserved for protocol messages.`;
+is reserved for protocol messages. --proposal-only exposes project reads,
+non-writing QA checks, and proposal create/list/show; it rejects direct project
+mutations, proposal withdrawal, and screenshot output.`;
 
 type JsonRpcId = string | number | null;
 type JsonObject = Record<string, unknown>;
@@ -62,6 +64,24 @@ export const RPGKIT_TOOLS: readonly (ToolDefinition | CheckTool)[] = [
   ...PROPOSAL_TOOLS,
   ...CHECK_TOOLS,
 ];
+
+export type McpAccess = "full" | "proposal-only";
+
+/** The local-agent editor bridge uses this capability boundary instead of
+ * trusting a prompt or optional client-side allowlist. Proposal creation is
+ * the only exposed write; it writes a review sidecar, never the project. */
+export function toolsForAccess(access: McpAccess): readonly (ToolDefinition | CheckTool)[] {
+  if (access === "full") return RPGKIT_TOOLS;
+  return [
+    ...EDIT_TOOLS.filter((tool) => !tool.mutates),
+    ...PROPOSAL_TOOLS.filter((tool) => !tool.destructive),
+    ...CHECK_TOOLS.filter((tool) => tool.name !== "rpgkit-shot"),
+  ];
+}
+
+function toolAllowed(name: string, access: McpAccess): boolean {
+  return toolsForAccess(access).some((tool) => tool.name === name);
+}
 
 function publicTool(definition: ToolDefinition): Record<string, unknown> {
   return {
@@ -203,7 +223,11 @@ function parseToolRequest(
 /** Pure single-message dispatcher. Notifications return null and emit no
  * protocol response. Edit calls are synchronous and serialized by the line
  * reader; check calls are async (they drive the engine) and awaited. */
-export async function dispatchMcpMessage(value: unknown, root = process.cwd()): Promise<JsonRpcResponse | null> {
+export async function dispatchMcpMessage(
+  value: unknown,
+  root = process.cwd(),
+  access: McpAccess = "full",
+): Promise<JsonRpcResponse | null> {
   if (!isRecord(value) || value.jsonrpc !== "2.0" || typeof value.method !== "string") {
     return errorResponse(null, -32600, "Invalid Request: expected a JSON-RPC 2.0 object with method");
   }
@@ -229,18 +253,17 @@ export async function dispatchMcpMessage(value: unknown, root = process.cwd()): 
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: false } },
       serverInfo: MCP_SERVER_INFO,
-      instructions: "Use list tools before editing. Mutations save atomically unless dryRun is true; keep the returned patch to undo with rpgkit_project_save direction=reverse.",
+      instructions: access === "proposal-only"
+        ? "Inspect and check the project, then create a review proposal. Direct project writes are disabled."
+        : "Use list tools before editing. Mutations save atomically unless dryRun is true; keep the returned patch to undo with rpgkit_project_save direction=reverse.",
     });
   }
   if (request.method === "ping") return resultResponse(id, {});
   if (request.method === "tools/list") {
     if (request.params !== undefined && !isRecord(request.params)) return errorResponse(id, -32602, "Invalid params: tools/list params must be an object");
     return resultResponse(id, {
-      tools: [
-        ...EDIT_TOOLS.map(publicTool),
-        ...PROPOSAL_TOOLS.map(publicTool),
-        ...CHECK_TOOLS.map(publicCheckTool),
-      ],
+      tools: toolsForAccess(access).map((tool) =>
+        "kind" in tool ? publicTool(tool) : publicCheckTool(tool)),
     });
   }
   if (request.method === "tools/call") {
@@ -248,6 +271,9 @@ export async function dispatchMcpMessage(value: unknown, root = process.cwd()): 
       return errorResponse(id, -32602, "Invalid params: tools/call params must contain a string name");
     }
     const toolName = request.params.name;
+    if (access !== "full" && !toolAllowed(toolName, access)) {
+      return errorResponse(id, -32601, `Tool not available in ${access} mode: ${toolName}`);
+    }
     if (CHECK_TOOL_BY_NAME.has(toolName)) {
       const args = isRecord(request.params.arguments) ? request.params.arguments : {};
       return callCheckTool(id, toolName, args, root);
@@ -271,14 +297,18 @@ export async function dispatchMcpMessage(value: unknown, root = process.cwd()): 
   return errorResponse(id, -32601, `Method not found: ${request.method}`);
 }
 
-export async function dispatchMcpLine(line: string, root = process.cwd()): Promise<JsonRpcResponse | null> {
+export async function dispatchMcpLine(
+  line: string,
+  root = process.cwd(),
+  access: McpAccess = "full",
+): Promise<JsonRpcResponse | null> {
   let value: unknown;
   try {
     value = JSON.parse(line);
   } catch (error) {
     return errorResponse(null, -32700, "Parse error", error instanceof Error ? error.message : String(error));
   }
-  return await dispatchMcpMessage(value, root);
+  return await dispatchMcpMessage(value, root, access);
 }
 
 async function writeResponse(response: JsonRpcResponse): Promise<boolean> {
@@ -291,13 +321,13 @@ async function writeResponse(response: JsonRpcResponse): Promise<boolean> {
   }
 }
 
-export async function runMcpServer(root = process.cwd()): Promise<void> {
+export async function runMcpServer(root = process.cwd(), access: McpAccess = "full"): Promise<void> {
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
   for await (const line of lines) {
     if (line.trim() === "") continue;
     const response = line.length > 4 * 1024 * 1024
       ? errorResponse(null, -32600, "Invalid Request: message exceeds 4 MiB")
-      : await dispatchMcpLine(line, root);
+      : await dispatchMcpLine(line, root, access);
     if (response && !(await writeResponse(response))) break;
   }
 }
@@ -308,6 +338,7 @@ if (import.meta.main) {
   } else {
     const argv = process.argv.slice(2);
     let root = process.cwd();
+    let access: McpAccess = "full";
     for (let index = 0; index < argv.length; index++) {
       const argument = argv[index]!;
       if (argument === "--root") {
@@ -316,10 +347,12 @@ if (import.meta.main) {
         root = value;
       } else if (argument.startsWith("--root=")) {
         root = argument.slice("--root=".length);
+      } else if (argument === "--proposal-only") {
+        access = "proposal-only";
       } else {
         throw new Error(`unknown option ${argument}`);
       }
     }
-    await runMcpServer(root);
+    await runMcpServer(root, access);
   }
 }

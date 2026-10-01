@@ -243,14 +243,24 @@ describe("desktop editor file companion", () => {
 
   test("speaks the desktop host PKNT handshake and framed control route", async () => {
     const { root, shellFile, split } = fixture();
-    const server = await startEditorFilesServer(shellFile, { root, app: "editor" });
+    const server = await startEditorFilesServer(shellFile, { root });
+    const rejected = await new Promise<Socket>((accept, reject) => {
+      const client = connect(server.port, server.host, () => accept(client));
+      client.once("error", reject);
+    });
+    rejected.write(pkntHello("editor"));
+    expect(await Promise.race([
+      new Promise<boolean>((accept) => rejected.once("close", () => accept(true))),
+      Bun.sleep(500).then(() => false),
+    ])).toBe(true);
     const socket = await new Promise<Socket>((accept, reject) => {
       const client = connect(server.port, server.host, () => accept(client));
       client.once("error", reject);
     });
     const reader = new ByteReader(socket);
     try {
-      const hello = pkntHello("editor");
+      expect(server.authToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const hello = pkntHello(server.authToken);
       socket.write(hello.subarray(0, 3));
       socket.write(hello.subarray(3));
       const ack = await reader.take(8);
@@ -295,14 +305,14 @@ describe("desktop editor file companion", () => {
     }
     expect(split.entries[0]!.text.length).toBeGreaterThan(285_698);
 
-    const server = await startEditorFilesServer(shellFile, { root, app: "editor" });
+    const server = await startEditorFilesServer(shellFile, { root });
     const socket = await new Promise<Socket>((accept, reject) => {
       const client = connect(server.port, server.host, () => accept(client));
       client.once("error", reject);
     });
     const reader = new ByteReader(socket);
     try {
-      socket.write(pkntHello("editor"));
+      socket.write(pkntHello(server.authToken));
       await reader.take(8);
       expect(await reader.control()).toEqual({ t: "project", shell: split.shellText });
       expect(reader.controlPayloadSizes.length).toBeGreaterThan(2);

@@ -1,7 +1,9 @@
 import { For, Show } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import type { EditProposal, ProposalAssessment } from "../proposals/types.ts";
+import { HEADER_H, PAL_W } from "../engine/layout.ts";
 import {
+  createProposalPanelLayout,
   proposalActionRects,
   proposalRowRect,
   proposalVisibleRows,
@@ -16,35 +18,129 @@ export function ProposalPanel(props: {
   selectedHunk: number;
   scroll: number;
   panelH: number;
+  agent: {
+    available: boolean;
+    adapter: string;
+    message: string;
+    input: string;
+    focused: boolean;
+    running: boolean;
+  };
 }): JSX.Element {
   const proposal = () => props.selectedProposal === null ? null : props.proposals[props.selectedProposal] ?? null;
   const assessment = () => props.selectedProposal === null ? null : props.assessments[props.selectedProposal] ?? null;
-  const visible = () => proposalVisibleRows(props.panelH, proposal() !== null);
+  const visible = () => proposalVisibleRows(props.panelH, proposal() !== null, proposal() === null);
   const rows = () => proposal()
     ? proposal()!.hunks.slice(props.scroll, props.scroll + visible())
     : props.proposals.slice(props.scroll, props.scroll + visible());
   const actions = () => proposalActionRects(props.panelH);
+  const layout = () => createProposalPanelLayout(props.panelH, proposal() ? "detail" : "compose");
+  const agentLayout = () => layout().agent!;
 
   return (
     <View
       class="absolute"
-      style={{ posType: 1, insetL: 0, insetT: 20, width: 140, height: props.panelH, bgColor: PANEL, overflow: 1 }}
+      style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: PAL_W, height: props.panelH, bgColor: PANEL, overflow: 1 }}
       debugName="editor-proposal-panel"
     >
       <Show when={proposal()} fallback={
         <>
-          <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: 5, textColor: ACCENT, height: 12, lineHeight: 12 }}>
-            PROPOSALS ({props.proposals.length})
+          <Text class="absolute text-xs" style={{
+            posType: 1,
+            insetL: agentLayout().heading.x,
+            insetT: agentLayout().heading.y,
+            width: agentLayout().heading.w,
+            textColor: ACCENT,
+            height: agentLayout().heading.h,
+            lineHeight: 12,
+          }}>
+            {fitEditorText("ASK LOCAL AGENT", agentLayout().heading.w)}
+          </Text>
+          <View
+            class="absolute"
+            style={{
+              posType: 1,
+              insetL: agentLayout().input.x,
+              insetT: agentLayout().input.y,
+              width: agentLayout().input.w,
+              height: agentLayout().input.h,
+              bgColor: "#111722",
+              borderWidth: 1,
+              borderColor: props.agent.focused ? ACCENT : "#3a4458",
+            }}
+            debugName="editor-agent-input"
+          >
+            <Text class="absolute text-xs" style={{
+              posType: 1,
+              insetL: 3,
+              insetT: 3,
+              width: Math.max(0, agentLayout().input.w - 6),
+              height: Math.max(0, agentLayout().input.h - 6),
+              lineHeight: 10,
+              textColor: props.agent.input ? INK : DIM,
+            }}>
+              {wrapEditorText(
+                props.agent.input || "Describe what to change",
+                Math.max(0, agentLayout().input.w - 6),
+                Math.max(1, Math.floor((agentLayout().input.h - 6) / 10)),
+              ).join("\n")}
+            </Text>
+          </View>
+          <View
+            class="absolute flex-row items-center justify-center"
+            style={{
+              posType: 1,
+              insetL: agentLayout().action.x,
+              insetT: agentLayout().action.y,
+              width: agentLayout().action.w,
+              height: agentLayout().action.h,
+              bgColor: props.agent.running ? "#55352a" : BUTTON,
+              opacity: props.agent.running || (props.agent.available && props.agent.input.trim().length > 0) ? 1 : 0.45,
+            }}
+            debugName={props.agent.running ? "editor-agent-cancel" : "editor-agent-run"}
+          >
+            <Text class="text-xs" style={{ textColor: props.agent.running ? "#ffd0b8" : INK, height: 10, lineHeight: 10 }}>
+              {fitEditorText(
+                props.agent.running ? "CANCEL" : `RUN ${props.agent.adapter.toUpperCase()}`,
+                Math.max(0, agentLayout().action.w - 8),
+              )}
+            </Text>
+          </View>
+          <Text class="absolute text-xs" style={{
+            posType: 1,
+            insetL: agentLayout().status.x,
+            insetT: agentLayout().status.y,
+            width: agentLayout().status.w,
+            textColor: props.agent.available ? DIM : BAD,
+            height: agentLayout().status.h,
+            lineHeight: 10,
+          }}>
+            {wrapEditorText(
+              props.agent.message,
+              agentLayout().status.w,
+              Math.max(1, Math.floor(agentLayout().status.h / 10)),
+            ).join("\n")}
+          </Text>
+          <Text class="absolute text-xs" style={{
+            posType: 1,
+            insetL: agentLayout().proposalHeading.x,
+            insetT: agentLayout().proposalHeading.y,
+            width: agentLayout().proposalHeading.w,
+            textColor: ACCENT,
+            height: agentLayout().proposalHeading.h,
+            lineHeight: 10,
+          }}>
+            {fitEditorText(`PROPOSALS (${props.proposals.length})`, agentLayout().proposalHeading.w)}
           </Text>
           <Show when={props.proposals.length === 0}>
-            <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: 34, width: 130, textColor: DIM, height: 24, lineHeight: 11 }}>
+            <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: layout().listClip.y + 5, width: 130, textColor: DIM, height: 24, lineHeight: 11 }}>
               NO PENDING{"\n"}PROPOSALS
             </Text>
           </Show>
           <For each={rows() as EditProposal[]}>
             {(item, row) => {
               const index = () => props.scroll + row();
-              const rect = () => proposalRowRect(row(), false);
+              const rect = () => proposalRowRect(row(), false, true);
               const conflict = () => props.assessments[index()]?.hasConflicts === true;
               const pending = () => item.hunks.filter((hunk) => !hunk.decision).length;
               return (
@@ -146,7 +242,15 @@ export function ProposalPanel(props: {
           </>
         )}
       </Show>
-      <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: props.panelH - 25, width: 130, textColor: DIM, height: 22, lineHeight: 10 }}>
+      <Text class="absolute text-xs" style={{
+        posType: 1,
+        insetL: layout().footer.x,
+        insetT: layout().footer.y,
+        width: layout().footer.w,
+        textColor: DIM,
+        height: layout().footer.h,
+        lineHeight: 10,
+      }}>
         {proposal() ? "SELECT HUNK\nTO LOCATE" : "SELECT PROPOSAL\nTO REVIEW"}
       </Text>
     </View>

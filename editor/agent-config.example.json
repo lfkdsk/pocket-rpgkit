@@ -1,0 +1,15 @@
+{
+  "adapter": "custom",
+  "name": "my local MCP agent",
+  "command": [
+    "my-agent",
+    "--mcp-config",
+    "{{mcpConfig}}",
+    "--prompt-file",
+    "{{promptFile}}"
+  ],
+  "mcpRegistration": "claude-json",
+  "workingDirectory": "{{projectDir}}",
+  "timeoutMs": 120000,
+  "promptTemplate": "User request:\n{{request}}\n\nCurrent editor context:\n{{contextJson}}"
+}

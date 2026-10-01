@@ -281,6 +281,10 @@ What it does today:
   translucent art and event changes as color-coded boxes, then accept or
   reject one hunk or accept every clean hunk; one accept action is one undo
   step and rejection never edits the document;
+- ask a configured local agent for a proposal from the natural-language box
+  for an inline desktop project;
+  the request carries the current map and explicit cell/event selection, and
+  the agent's MCP server permits proposal creation but no direct project edit;
 - undo/redo, one step per tile stroke or event/map transaction, 64 steps
   deep (header buttons or Cmd+Z / Cmd+Shift+Z);
 - switch between a document's maps; the palette shows the sheets the
@@ -313,6 +317,9 @@ source PNG.
 bun run editor                    # Sunstone, on a working copy in dist/editor/
 bun run editor meadow             # Meadow
 bun run editor sunstone --file my-map.json   # another file (seeded if missing)
+bun run editor --agent traecli       # default built-in local-agent adapter
+bun run editor --agent claude        # Claude Code adapter
+bun run editor --agent-config editor/agent-config.example.json
 bun run editor --file game/data/project.json # existing sharded ProjectShell
 bun run editor --build-only       # bundle + release host, no window
 ```
@@ -329,7 +336,11 @@ open. Fully reviewed proposals move to the sidecar's `archive/` directory.
 A sharded project (a `ProjectShell` with separate map files) instead uses a
 confined file companion that sends only the shell at first, answers map reads
 lazily, and commits changed shards before the refreshed shell; proposal
-review is unavailable in that session.
+review and local-agent requests are unavailable in that session.
+For an inline project, the same launcher owns the optional local-agent process
+and sends only its proposal results back to the editor. Adapter and custom
+command details are in the
+[agent integration reference](docs/edit-api.md#editor-local-agent-integration).
 The website supplies its own browser companion for pointer and keyboard
 input, local storage, Open and Download. It also opens a self-contained
 `rpgkit-edit/sharded-pack-v1` file and downloads a complete replacement pack;
@@ -338,7 +349,8 @@ sim, or a browser other than the website) the editor runs from buttons behind
 a visible banner.
 `bun run build:editor` builds the sim bundle alone; the editor's tests include
 `tests/editor-model.test.ts`, `tests/editor-sim.test.ts`, the proposal review
-golden in `tests/editor-proposal-sim.test.ts`, the two-size event
+golden in `tests/editor-proposal-sim.test.ts`, the offline local-agent flow in
+`tests/editor-agent-sim.test.ts`, the two-size event
 inspector/runtime round trip in `tests/editor-event-sim.test.ts`, and the
 real-GameView play/debug goldens in `tests/editor-playtest-sim.test.ts`.
 [`docs/editor-tutorial.md`](docs/editor-tutorial.md) follows one small

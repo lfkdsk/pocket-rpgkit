@@ -23,6 +23,8 @@
 //   {t:"ch",s}                  typed text (including IME output)
 //   {t:"paste",text}            pasted text
 //   {t:"proposals",proposals}   optional external proposal queue snapshot
+//   {t:"agent-ready",...}        local-agent capability handshake
+//   {t:"agent-state",...}        local-agent lifecycle update
 //
 // guest → host lines:
 //   {t:"loaded",request,ok,...} acknowledge a browser-correlated load
@@ -32,8 +34,11 @@
 //   {t:"map-read",request,...}  request one map shard by manifest entry
 //   {t:"project-save",...}      persist a shell plus dirty shards only
 //   {t:"proposal-review",proposal} persist one proposal's hunk decisions
+//   {t:"agent-start",...}        contextual natural-language request
+//   {t:"agent-cancel",id}        cancel the one active request
 
 import { getOps } from "@pocketjs/framework";
+import type { LocalAgentCancel, LocalAgentStart } from "./agent/types.ts";
 import { ServiceMessageAssembler, chunkServiceMessage } from "./engine/service-chunks.ts";
 
 export const COMPANION = "rpgkit-editor";
@@ -144,6 +149,14 @@ export type HostLine = {
   request?: number;
   proposals?: unknown;
   proposal?: unknown;
+  protocol?: string;
+  id?: string;
+  status?: string;
+  available?: boolean;
+  adapter?: string;
+  message?: string;
+  maxPromptChars?: number;
+  proposalIds?: unknown;
 };
 
 export interface Svc {
@@ -164,6 +177,8 @@ export interface Svc {
   /** Notify an enhanced companion that review metadata changed. The stock
    * desktop launcher also mirrors this through data.fs. */
   reviewProposal(proposal: unknown): void;
+  startAgent(request: LocalAgentStart): void;
+  cancelAgent(request: LocalAgentCancel): void;
 }
 
 type SvcLine =
@@ -264,6 +279,12 @@ export function connectSvc(): Svc | null {
     },
     reviewProposal(proposal) {
       send(JSON.stringify({ t: "proposal-review", proposal }));
+    },
+    startAgent(request) {
+      send(JSON.stringify(request));
+    },
+    cancelAgent(request) {
+      send(JSON.stringify(request));
     },
   };
 }
