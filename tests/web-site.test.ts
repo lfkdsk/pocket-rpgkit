@@ -4,7 +4,7 @@
 // the pages' URLs. tools/web-verify.ts plays the built site in Chrome.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { APPS, EXAMPLES } from "../tools/build-example.ts";
 import {
@@ -15,6 +15,7 @@ import {
   KIT_ROOT,
   loadSiteConfig,
   parseSiteConfig,
+  PREVIEW_APP_ID,
   renderLanding,
   renderPlayer,
   resolveGame,
@@ -28,6 +29,7 @@ import { fitViewport, type ViewportConfig } from "../tools/web/fit.ts";
 import { rpgkitBootFromSearch } from "../tools/web/boot.ts";
 import { verifyPlanHash } from "../vendor/pocketjs/framework/src/manifest/plan.ts";
 import { BTN, KEYMAP, keyMasks, keysFor, withKeys } from "../tools/web/keys.ts";
+import { loadProject } from "../editor/engine/document.ts";
 import { createMasterAudioHost } from "../tools/web/audio-control.ts";
 
 const config = loadSiteConfig(KIT_ROOT);
@@ -72,8 +74,8 @@ function urls(html: string): string[] {
 }
 
 describe("games", () => {
-  test("with no names, this repository builds every example and the editor", () => {
-    expect(defaultGameIds(KIT_ROOT)).toEqual([...APPS]);
+  test("with no names, this repository builds every example, the editor and the preview host", () => {
+    expect(defaultGameIds(KIT_ROOT)).toEqual([...APPS, PREVIEW_APP_ID]);
   });
 
   test("cards follow the metadata table, then the rest in build order", () => {
@@ -402,6 +404,72 @@ describe("pages", () => {
     expect(html).toContain("<kbd>←</kbd> <kbd>→</kbd></th><td>Step the timeline");
     expect(html).toContain("<kbd>A</kbd> <kbd>Enter</kbd> <kbd>Z</kbd></th><td>Walk into the finished village");
     expect(html).toContain('data-button="TRIANGLE">X</button>');
+  });
+});
+
+describe("preview host", () => {
+  const preview = resolveGame(KIT_ROOT, config, PREVIEW_APP_ID);
+
+  test("resolves against web-app from tools/preview/pocket.json", () => {
+    expect(preview.plan.target.id).toBe("web-app");
+    expect(preview.plan.app.output).toBe(PREVIEW_APP_ID);
+    expect(preview.title).toBe("Project Preview");
+    expect(preview.controls.length).toBeGreaterThan(0);
+  });
+
+  test("renders an ordinary player page for the preview bundle", () => {
+    const html = renderPlayer(site, preview, playerConfig(preview), false);
+    const json = /<script type="application\/json" id="pocket-game">(.*?)<\/script>/s.exec(html)![1]!;
+    const parsed = JSON.parse(json) as PlayerConfig;
+    expect(parsed.bundle).toBe("preview.js");
+    expect(parsed.wasm).toBe("../pocketjs.wasm");
+    expect(html).not.toContain("data-demo-controls");
+  });
+
+  test("games that do not opt into preview carry no preview markup", () => {
+    // The preview protocol lives entirely in the preview app's own bundle;
+    // every other player page must stay byte-for-byte free of it.
+    for (const id of EXAMPLES) {
+      const game = resolveGame(KIT_ROOT, config, id);
+      const html = renderPlayer(site, game, playerConfig(game), true);
+      expect(html).not.toContain("rpgkit-preview");
+      expect(html).not.toContain("preview-demo");
+      expect(html).not.toContain("__rpgkitPreview");
+    }
+  });
+
+  test("the landing page links the preview demo only when the preview app is built", () => {
+    const meadow = resolveGame(KIT_ROOT, config, "meadow");
+    const withPreview = renderLanding(site, [{ game: preview }, { game: meadow }]);
+    expect(withPreview).toContain('href="preview-demo.html"');
+    const withoutPreview = renderLanding(site, [{ game: meadow }]);
+    expect(withoutPreview).not.toContain("preview-demo.html");
+  });
+});
+
+describe("preview demo page", () => {
+  const path = join(KIT_ROOT, "tools", "web", "preview-demo.html");
+  const html = existsSync(path) ? readFileSync(path, "utf8") : "";
+
+  test("is a self-contained page with the protocol, host iframe and driver hooks", () => {
+    expect(html).toContain('id="host"');
+    expect(html).toContain('"rpgkit-preview/v1"');
+    expect(html).toContain("__previewDemo");
+    expect(html).toContain("preview-origin");
+    // Pure HTML/JS: no build step and no external resources.
+    expect(html).not.toContain("<script type=\"module\"");
+    expect(html).toContain('id="sample-project"');
+  });
+
+  test("its embedded sample project is a valid rpgkit-project/v1 document", () => {
+    const match = /<script type="application\/json" id="sample-project">([\s\S]*?)<\/script>/.exec(html);
+    expect(match).not.toBeNull();
+    const loaded = loadProject(match![1]!.trim());
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.project.format).toBe("rpgkit-project/v1");
+    expect(loaded.project.maps).toHaveLength(1);
+    const map = loaded.project.maps[0]!;
+    expect(map.ground).toHaveLength(map.width * map.height);
   });
 });
 

@@ -113,12 +113,20 @@ The links point to where each feature is described in detail.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
+| Protocol reference | Done | [Protocols](protocols.md) indexes the data, edit, QA, proposal, preview and save formats and the version/compatibility rules; the edit section states inline atomicity, sharded per-file publish with best-effort rollback (not crash-atomic), and the `validate`/map-id-rename all-shard exceptions |
 | `rpgkit-edit` | Done | Edits inline and sharded projects from scripts and agents, JSON in and JSON out, with reversible patches and targeted shard writes. Available on the CLI and as MCP tools; see [Edit API reference](edit-api.md) |
 | `rpgkit-check` | Done | Lint, input-lock audit, freeze scan, exploration coverage and schematic screenshots. Available on the CLI and as MCP tools; see [QA checks reference](qa-checks.md) |
 | `rpgkit-check reach` | Done | Real-engine breadth-first search with a replayable witness for every reached map (a 60 Hz button tape replayed and verified at 60 Hz in a fresh session — no claim is made about other host frame rates); states dedupe on the engine's canonical state fingerprint, which zeroes the frame clock and rebases every absolute time anchor (a fiber's `since`, an animation's `start`) onto it, so persistent audio and other condition-relevant state are always in the key and same-elapsed-time states merge; a notFound map is a lead with frontier stats, not a proof. Frame/state/time budgets are execution limits (the search may run at most one 6-tick block past `maxFrames`); see [QA checks reference](qa-checks.md) |
 | AI edit proposals reviewed in the editor | Done | Validated sidecar queue with ghost previews, per-hunk accept/reject, live conflict checks and crash-safe archival; currently limited to inline projects through the desktop bridge. See [Editor](../editor/README.md#what-it-does) |
 | Natural-language box in the editor that drives a local agent | Done | Inline desktop projects only. Built-in TraeCLI and Claude Code adapters plus a custom command template run with a scrubbed environment, bounded process group, and per-launch authenticated loopback companion. Requests carry current map/cell/event context and can only create review proposals through a proposal-only MCP server; see [Editor](../editor/README.md) and [agent integration](edit-api.md#editor-local-agent-integration) |
 | Explaining an event; health check with suggested fixes | Planned | |
+
+## Web embedding
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| `rpgkit-preview/v1` postMessage protocol | Done | Embed the real engine in another web page: `load` a project document, `start` at a tile or chapter, read `state`, inject `input`, `stop`. Origin-allowlisted, versioned, and bounded in UTF-8 bytes (a lone surrogate counts as the 3-byte U+FFFD, as `TextEncoder` encodes it): 4 MiB message, 64 chapters, 1 MiB snapshot, 36000-frame tape; over-budget input refused as `too-large` before any expensive work, and an oversized string is only scanned until the budget is exceeded; a present `requestId` must be a non-empty bounded string and notification errors stay contained. See [Protocols](protocols.md#5-preview-protocol--rpgkit-previewv1) |
+| Preview host app and reference frontend | Done | The site's `preview` player page is the host; `preview-demo.html` pastes a document and plays it. The frontend accepts replies only from the embedded host window (origin **and** source checked), so same-origin spoofs are ignored. Zero cost to other games: the protocol lives entirely in the preview app's own bundle |
 
 ## Hosts
 

@@ -1,0 +1,77 @@
+{
+  "assets/playtest/npc-bat.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-boy.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-chest-closed.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-chest-open.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-chest-relic.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-irongate.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-merchant.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-runestone-lit.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-runestone.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-slime.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-thorn.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-villager.png": {
+    "psm": 3
+  },
+  "assets/playtest/npc-wiz.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-dir0.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-dir1.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-dir2.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-dir3.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose0-l.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose0-r.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose1-l.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose1-r.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose2-l.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose2-r.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose3-l.png": {
+    "psm": 3
+  },
+  "assets/playtest/player-pose3-r.png": {
+    "psm": 3
+  }
+}

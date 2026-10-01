@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pocket RPG Kit — preview protocol demo</title>
+<meta name="description" content="Embed any rpgkit-project/v1 document in the preview host over postMessage: load, start at a tile, read state, inject input, stop.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Crect width='8' height='8' rx='1' fill='%230d0f14'/%3E%3Crect x='2' y='1' width='4' height='6' fill='%23f4c35a'/%3E%3Crect x='1' y='2' width='6' height='4' fill='%23f4c35a'/%3E%3Crect x='3' y='3' width='2' height='2' fill='%23fff3c4'/%3E%3C/svg%3E">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem; gap: 1.5rem;
+    display: flex; flex-wrap: wrap; align-items: flex-start;
+    background: #10131b; color: #d7dce6;
+    font: 14px/1.5 system-ui, sans-serif;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 0.25rem; }
+  p.sub { margin: 0 0 1rem; color: #8a93a8; }
+  .panel { background: #171c28; border: 1px solid #232a3b; border-radius: 8px; padding: 1rem; }
+  textarea {
+    width: 100%; height: 16rem; display: block; margin-bottom: 0.75rem;
+    background: #10131b; color: #d7dce6; border: 1px solid #2a3349; border-radius: 6px;
+    padding: 0.5rem; font: 12px/1.45 ui-monospace, monospace; resize: vertical;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center; }
+  .row label { color: #8a93a8; }
+  input {
+    width: 4.5rem; background: #10131b; color: #d7dce6;
+    border: 1px solid #2a3349; border-radius: 6px; padding: 0.3rem 0.4rem; font: inherit;
+  }
+  button {
+    background: #24304a; color: #e8ecf4; border: 1px solid #33405f; border-radius: 6px;
+    padding: 0.35rem 0.7rem; font: inherit; cursor: pointer;
+  }
+  button:hover { background: #2d3c5e; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #log {
+    height: 12rem; overflow: auto; margin: 0; padding: 0.5rem;
+    background: #10131b; border: 1px solid #2a3349; border-radius: 6px;
+    font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+  }
+  .log-err { color: #ff8a8a; }
+  .log-ok { color: #7fd39a; }
+  iframe {
+    width: 480px; height: 272px; border: 1px solid #2a3349; border-radius: 6px;
+    background: #000; display: block;
+  }
+  .caption { color: #8a93a8; font-size: 12px; margin: 0.35rem 0 0; }
+  code { background: #10131b; border: 1px solid #2a3349; border-radius: 4px; padding: 0 0.3rem; }
+</style>
+</head>
+<body>
+<section class="panel" style="flex: 1 1 30rem; max-width: 46rem;">
+  <h1>Preview protocol demo</h1>
+  <p class="sub">Paste an <code>rpgkit-project/v1</code> document, load it into the
+  host over <code>postMessage</code>, start at a tile, and read the running
+  state back. The protocol is <code>rpgkit-preview/v1</code>; see
+  <code>docs/protocols.md</code>.</p>
+  <textarea id="document" spellcheck="false" aria-label="Project document JSON"></textarea>
+  <div class="row">
+    <button id="load">Load</button>
+    <button id="start">Start at</button>
+    <label>map <input id="map" value="yard"></label>
+    <label>x <input id="x" type="number" min="0" value="2"></label>
+    <label>y <input id="y" type="number" min="0" value="2"></label>
+  </div>
+  <div class="row">
+    <button id="state">Read state</button>
+    <button id="right">Walk right 0.5s</button>
+    <button id="stop">Stop</button>
+    <span id="status" style="color:#8a93a8;"></span>
+  </div>
+  <pre id="log" aria-live="polite"></pre>
+</section>
+<section class="panel">
+  <iframe id="host" title="rpgkit-preview host"></iframe>
+  <p class="caption">The host page (<code>preview/</code>) runs the real engine
+  on the pasted document. It answers only the origin configured with
+  <code>?preview-origin=</code> (same-origin always allowed).</p>
+</section>
+
+<script type="application/json" id="sample-project">
+{
+  "format": "rpgkit-project/v1",
+  "title": "Preview Sample Yard",
+  "tileSize": 16,
+  "start": { "map": "yard", "x": 5, "y": 5, "dir": "up" },
+  "initialGold": 10,
+  "sheets": [{ "id": "town", "cols": 12, "rows": 11, "pak": "chunks" }],
+  "items": [],
+  "maps": [
+    {
+      "id": "yard",
+      "name": "Old Yard",
+      "width": 12,
+      "height": 8,
+      "sheets": ["town"],
+      "ground": [
+        "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0",
+        "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0",
+        "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0",
+        "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0",
+        "town.0", "town.0", "town.0", "town.0", "town.43", "town.43", "town.43", "town.43", "town.0", "town.0", "town.0", "town.0",
+        "town.39", "town.40", "town.41", "town.42", "town.39", "town.40", "town.41", "town.42", "town.39", "town.40", "town.41", "town.42",
+        "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0",
+        "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0", "town.0"
+      ],
+      "upper": [
+        [26, "town.2"],
+        [47, "town.2"],
+        [91, "town.2"]
+      ],
+      "events": [
+        {
+          "id": "gardener",
+          "name": "Gardener",
+          "x": 5,
+          "y": 2,
+          "pages": [
+            {
+              "trigger": "action",
+              "sprite": null,
+              "commands": [
+                { "op": "text", "lines": ["GARDENER: Welcome to the preview yard.", "This world arrived as a pasted JSON document."] },
+                { "op": "switch", "id": "met-gardener", "value": true }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+</script>
+
+<script>
+"use strict";
+const PROTOCOL = "rpgkit-preview/v1";
+const BTN = { SELECT: 0x0001, START: 0x0008, UP: 0x0010, RIGHT: 0x0020, DOWN: 0x0040, LEFT: 0x0080, LTRIGGER: 0x0100, RTRIGGER: 0x0200, TRIANGLE: 0x1000, CIRCLE: 0x2000, CROSS: 0x4000, SQUARE: 0x8000 };
+
+const hostFrame = document.getElementById("host");
+const logEl = document.getElementById("log");
+const statusEl = document.getElementById("status");
+document.getElementById("document").value =
+  document.getElementById("sample-project").textContent.trim();
+
+const state = { hostOrigin: null, ready: false, seq: 0, pending: new Map() };
+
+function log(text, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = text;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text) { statusEl.textContent = text; }
+
+window.addEventListener("message", (event) => {
+  if (state.hostOrigin && event.origin !== state.hostOrigin) return;
+  // The host is the iframe we embedded: a reply or ready event from any
+  // other window (even a same-origin one) is a spoof and is ignored.
+  if (event.source !== hostFrame.contentWindow) return;
+  const data = event.data;
+  if (!data || data.protocol !== PROTOCOL) return;
+  if (data.type === "event" && data.event === "ready") {
+    state.ready = true;
+    setStatus(`host ready (${state.hostOrigin})`);
+    log(`ready: protocol ${data.protocol} version ${data.version}`, "log-ok");
+    const waiter = state.onReady;
+    if (waiter) { state.onReady = null; waiter(); }
+    return;
+  }
+  if (data.type === "reply") {
+    const pending = state.pending.get(data.requestId);
+    if (!pending) return;
+    state.pending.delete(data.requestId);
+    const summary = JSON.stringify(data.ok ? data.result : data.error);
+    log(`reply ${data.requestId}: ${data.ok ? "ok" : "ERROR"} ${summary}`, data.ok ? "log-ok" : "log-err");
+    if (data.ok) pending.resolve(data.result);
+    else pending.reject(new Error(`${data.error.code}: ${data.error.message}`));
+  }
+});
+
+/** Point the iframe at a host page. `origins` are added to the host's
+ *  allowlist as ?preview-origin=; same-origin always works. */
+async function connect(url, origins = []) {
+  state.ready = false;
+  state.hostOrigin = null;
+  for (const pending of state.pending.values()) pending.reject(new Error("reconnected"));
+  state.pending.clear();
+  const sep = url.includes("?") ? "&" : "?";
+  const query = origins.length
+    ? sep + origins.map((o) => `preview-origin=${encodeURIComponent(o)}`).join("&")
+    : "";
+  hostFrame.src = url + query;
+  state.hostOrigin = new URL(url, document.baseURI).origin;
+  setStatus(`connecting to ${state.hostOrigin}…`);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout waiting for host ready")), 15000);
+    state.onReady = () => { clearTimeout(timer); resolve(); };
+  });
+}
+
+function send(type, payload = {}, timeoutMs = 5000) {
+  if (!state.ready) return Promise.reject(new Error("host is not ready"));
+  const requestId = `req-${++state.seq}`;
+  const message = { protocol: PROTOCOL, type, requestId, ...payload };
+  log(`send ${type} (${requestId})`);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      state.pending.delete(requestId);
+      reject(new Error(`timeout waiting for reply to ${type}`));
+    }, timeoutMs);
+    state.pending.set(requestId, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
+    hostFrame.contentWindow.postMessage(message, state.hostOrigin);
+  });
+}
+
+const demo = {
+  connect,
+  send,
+  /** Post a raw wire message with no reply tracking (tests and drivers). */
+  post: (message) => {
+    if (!state.hostOrigin) throw new Error("not connected");
+    hostFrame.contentWindow.postMessage(message, state.hostOrigin);
+  },
+  /** Send a raw wire message and settle on its reply (tests and drivers). */
+  request: (message, timeoutMs = 5000) => {
+    if (!state.ready) return Promise.reject(new Error("host is not ready"));
+    if (!message || typeof message.requestId !== "string" || message.requestId.length === 0) {
+      return Promise.reject(new Error("raw request needs a non-empty string requestId"));
+    }
+    log(`send ${message.type} (${message.requestId})`);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        state.pending.delete(message.requestId);
+        reject(new Error(`timeout waiting for reply to ${message.type}`));
+      }, timeoutMs);
+      state.pending.set(message.requestId, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      hostFrame.contentWindow.postMessage(message, state.hostOrigin);
+    });
+  },
+  ready: () => state.ready,
+  /** The id the next send() will use (tests that forge replies). */
+  nextRequestId: () => `req-${state.seq + 1}`,
+  loadSample: () => send("load", { document: document.getElementById("document").value }),
+  loadText: (text) => send("load", { document: text }),
+  startAt: (map, x, y, dir) => send("start", { map, x: Number(x), y: Number(y), ...(dir ? { dir } : {}) }),
+  readState: () => send("state"),
+  press: (name, frames = 30) => send("input", { buttons: BTN[name] ?? Number(name), frames: Number(frames) }),
+  stop: () => send("stop"),
+};
+window.__previewDemo = demo;
+
+document.getElementById("load").addEventListener("click", () => { demo.loadSample().catch((e) => log(e.message, "log-err")); });
+document.getElementById("start").addEventListener("click", () => {
+  demo.startAt(document.getElementById("map").value, document.getElementById("x").value, document.getElementById("y").value)
+    .catch((e) => log(e.message, "log-err"));
+});
+document.getElementById("state").addEventListener("click", () => { demo.readState().catch((e) => log(e.message, "log-err")); });
+document.getElementById("right").addEventListener("click", () => { demo.press("RIGHT", 30).catch((e) => log(e.message, "log-err")); });
+document.getElementById("stop").addEventListener("click", () => { demo.stop().catch((e) => log(e.message, "log-err")); });
+
+// Same-origin embed by default; the host page is a sibling of this one.
+connect("preview/", []).catch((e) => log(e.message, "log-err"));
+</script>
+</body>
+</html>

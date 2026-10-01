@@ -212,6 +212,11 @@ Alpine Post:
 bun vendor/pocket-rpgkit/tools/web.ts --project-root . alpine-post
 ```
 
+The site also serves **`preview-demo.html`**, the reference frontend for the
+`rpgkit-preview/v1` postMessage protocol: paste any `rpgkit-project/v1`
+document and play it in the embedded host — load, start at a tile, read
+state, inject input, stop. See [Protocols](#protocols).
+
 ## Quick start
 
 ```sh
@@ -560,6 +565,25 @@ constant 6-tick blocks (edges on block boundaries); each witness is replayed
 and verified at 60 Hz in a fresh session — the tool makes no claim about
 other host frame rates. The frame budget is an execution limit: the search
 may run at most one 6-tick block past `--max-frames`.
+
+## Protocols
+
+The kit speaks a small set of versioned protocols so that different
+frontends — the editor, the CLI, web pages, AI agents — can all read and
+write the same projects. [`docs/protocols.md`](docs/protocols.md) is the
+one-page reference:
+
+- **`rpgkit-project/v1`** — the project data format; `src/data/schema.json`
+  is normative, `src/data/CHANGELOG.md` records every change.
+- **`rpgkit-edit`** — JSON-in/JSON-out project editing with reversible
+  `rpgkit-edit/patch-v1` patches ([Edit API reference](docs/edit-api.md)).
+- **`rpgkit-check`** — QA checks over any project document
+  ([QA checks reference](docs/qa-checks.md)).
+- **`rpgkit-preview/v1`** — `postMessage` messages that embed the real engine
+  in another web page: `load` a project document, `start` at a tile or
+  chapter, read `state`, inject `input`, `stop`. The site ships a host page
+  and a [reference frontend](https://lfkdsk.github.io/pocketjs-rpgkit/preview-demo.html)
+  (`preview-demo.html`): paste a project JSON and play it.
 
 ## The format in one screen
 

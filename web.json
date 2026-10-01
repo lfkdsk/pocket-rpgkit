@@ -187,6 +187,25 @@
       ],
       "rasterDensity": 2
     },
+    "preview": {
+      "title": "Project Preview",
+      "description": "The rpgkit-preview/v1 host: another page embeds this player and hands it a project document over postMessage — load, start at a tile, read state, inject input, stop. Try it on the preview protocol demo page.",
+      "controls": [
+        {
+          "button": "DPAD",
+          "action": "Walk the loaded project"
+        },
+        {
+          "button": "CIRCLE",
+          "action": "Talk, confirm"
+        },
+        {
+          "button": "CROSS",
+          "action": "Cancel"
+        }
+      ],
+      "rasterDensity": 2
+    },
     "editor": {
       "title": "Pocket RPG Kit Editor",
       "description": "Edit maps and events with the mouse and keyboard, then play-test them immediately. Open a local project or start from Sunstone or Meadow; saves stay in this browser until you download the JSON.",

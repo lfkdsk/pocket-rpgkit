@@ -377,6 +377,7 @@ function sameDir(a: string, b: string): boolean {
 export function findManifest(projectRoot: string, id: string): string | undefined {
   for (const candidate of [
     join(projectRoot, "examples", id, "pocket.json"),
+    join(projectRoot, "tools", id, "pocket.json"),
     join(projectRoot, id, "pocket.json"),
   ]) {
     if (existsSync(candidate)) return candidate;
@@ -389,9 +390,12 @@ export function findManifest(projectRoot: string, id: string): string | undefine
   return undefined;
 }
 
+/** The kit's own site also builds the postMessage preview host. */
+export const PREVIEW_APP_ID = "preview";
+
 /** The games to build when none are named. */
 export function defaultGameIds(projectRoot: string): string[] {
-  if (sameDir(projectRoot, KIT_ROOT)) return [...APPS];
+  if (sameDir(projectRoot, KIT_ROOT)) return [...APPS, PREVIEW_APP_ID];
   const examples = join(projectRoot, "examples");
   if (existsSync(examples)) {
     const ids = readdirSync(examples)
@@ -694,6 +698,9 @@ function playerDemoControls(game: WebGame): string | undefined {
 /** The landing page at the site root. */
 export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
   const showcase = (site.showcase ?? []).map(showcaseCard);
+  const previewDemo = cards.some((card) => card.game.id === PREVIEW_APP_ID)
+    ? 'Embed a project document from another page: <a href="preview-demo.html">the preview protocol demo</a>. '
+    : "";
   const articles = cards.map(({ game, preview }) => {
     const href = `${game.id}/`;
     const chapterNav = chaptersNav(game);
@@ -730,7 +737,7 @@ export function renderLanding(site: SiteInfo, cards: readonly Card[]): string {
     ...regular,
     "</main>",
     '<footer class="site-footer">',
-    '<p>Runs on <a href="https://github.com/pocket-stack/pocketjs">PocketJS</a>, compiled to WebAssembly. ' +
+    `<p>${previewDemo}Runs on <a href="https://github.com/pocket-stack/pocketjs">PocketJS</a>, compiled to WebAssembly. ` +
       "Nothing to install; a keyboard works best. Art credits are on each game's page.</p>",
     "</footer>",
     "</body>",
@@ -978,6 +985,9 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
 
   copyFileSync(WASM_PATH, join(outdir, "pocketjs.wasm"));
   copyFileSync(join(KIT_ROOT, "tools", "web", "site.css"), join(outdir, "site.css"));
+  if (games.some((game) => game.id === PREVIEW_APP_ID)) {
+    copyFileSync(join(KIT_ROOT, "tools", "web", "preview-demo.html"), join(outdir, "preview-demo.html"));
+  }
   const player = await Bun.build({
     entrypoints: [join(KIT_ROOT, "tools", "web", "player.js")],
     target: "browser",

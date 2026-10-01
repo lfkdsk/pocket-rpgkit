@@ -91,9 +91,9 @@ shard checksum/schema/metadata mismatches; `READ_FAILED` covers a required
 missing shard; `PATH_OUTSIDE_ROOT` covers an unsafe entry; and
 `WRITE_CONFLICT` covers drift in either the shell or a targeted shard.
 
-Inline writes are atomic: a temp file in the same directory is written, its
-bytes are re-checked against the in-memory result, and it is renamed over the
-target. Sharded writes stage every changed shard and the shell, re-check all
+Inline writes are atomic: a temp file in the same directory is written, the
+target's current bytes are re-checked against the revision the edit started
+from, and the temp file is renamed over the target. Sharded writes stage every changed shard and the shell, re-check all
 source bytes before the first rename, then publish shards first and the shell
 manifest last. An ordinary later rename failure triggers best-effort rollback
 of already-published shards. If any input changed before publication, the

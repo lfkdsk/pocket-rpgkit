@@ -25,6 +25,8 @@ import {
   decideProposalHunks,
   parseProposal,
   previewProposalHunks,
+  proposalErrors,
+  proposalSemanticHash,
 } from "../editor/proposals/model.ts";
 import { syncEditorProposalBridge } from "../tools/lib/editor-proposal-bridge.ts";
 import {
@@ -647,5 +649,33 @@ describe("proposal sidecar storage", () => {
     expect(JSON.parse(invoke("withdraw-proposal", { id: "proposal-1" }).stdout.toString()))
       .toMatchObject({ ok: true, result: { withdrawn: true } });
     expect(readFileSync(file, "utf8")).toBe(source);
+  });
+});
+
+// The proposal example in docs/protocols.md must stay runnable: it is the
+// contract frontends design against, so the test extracts both JSON blocks
+// from that section and drives them through the real implementation.
+describe("docs/protocols.md proposal example", () => {
+  test("validates against the schema, matches its baseHash and applies", () => {
+    const docs = readFileSync(join(import.meta.dir, "..", "docs", "protocols.md"), "utf8");
+    const start = docs.indexOf("## 4. Proposal protocol");
+    const end = docs.indexOf("## 5.", start);
+    const section = docs.slice(start, end);
+    const fences = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => m[1]!);
+    expect(fences.length).toBe(2); // the proposal example and its minimal project
+    const example = JSON.parse(fences[0]!);
+    const project = JSON.parse(fences[1]!) as Project;
+
+    expect(proposalErrors(example)).toEqual([]);
+    const proposal = parseProposal(example);
+    expect(proposal.baseHash).toBe(proposalSemanticHash(project));
+
+    const assessment = assessProposal(project, example);
+    expect(assessment.baseMatches).toBe(true);
+    expect(assessment.hunks).toHaveLength(1);
+    expect(assessment.hunks[0]!.state).toBe("clean");
+
+    const applied = applyProposalHunks(project, example, [proposal.hunks[0]!.id]);
+    expect(applied.title).toBe("Proposal Demo (edited)");
   });
 });
