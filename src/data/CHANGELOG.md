@@ -205,6 +205,9 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   default, and callers can explicitly request checksum or full schema checks.
 - Split map entries are fully schema-validated at build time, emitted as stable
   ASCII JSON, and may be read as bytes through the bounded fast decoder.
+- Map entry sources may expose an optional `readText` method. The repository
+  prefers it over `read`, while old byte sources keep their existing decode,
+  checksum, missing-entry, and preparation behavior.
 - Non-zero transfer fades may prepare a destination in fixed deterministic
   units before the original map-swap tick. Preparation remains derived cache
   data; zero-fade transfers retain their all-at-once behavior.

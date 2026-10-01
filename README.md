@@ -339,6 +339,7 @@ import { createJsonMapRepository } from "./vendor/pocket-rpgkit/src/engine/map-r
 
 const repository = createJsonMapRepository(project.mapIndex, {
   read: (entry) => readFileSync(entry),
+  readText: (entry) => readFileSync(entry, "utf8"),
 });
 
 mount(() => <GameView
@@ -349,11 +350,14 @@ mount(() => <GameView
 ```
 
 The splitter fully validates every map and escapes non-ASCII characters as
-JSON `\uXXXX` sequences, making each entry stable ASCII bytes. Returning bytes
-from `read` lets the standard repository decode those entries in bounded 8 KiB
-`String.fromCharCode` chunks; a hand-authored entry containing bytes above
-`0x7f` automatically falls back to strict UTF-8 decoding. A synchronous source
-is trusted like the application bundle and skips the entry SHA-256 by default;
+JSON `\uXXXX` sequences, making each entry stable ASCII bytes. When a source
+provides `readText`, the repository prefers it and skips guest-side byte
+decoding. Otherwise `read` remains the compatible path: bytes use bounded 8 KiB
+`String.fromCharCode` chunks, and a hand-authored entry containing bytes above
+`0x7f` falls back to strict UTF-8 decoding. Entry SHA-256 remains the digest of
+the exact UTF-8 bytes; text sources re-encode their string for the same check
+without canonicalizing or normalizing it. A synchronous source is trusted like
+the application bundle and skips the entry SHA-256 by default;
 pass `{ verify: true }` as the third argument to recheck it. A source with
 `prepare` defaults to checksum verification because it normally crosses a
 network boundary. Runtime loading checks compilation-critical structure by
@@ -393,7 +397,7 @@ state, replay hashes and saves. For a shell project, save envelopes carry the
 shell manifest and map-schema identities; `restoreSessionEnvelope` rejects a
 different content build before acquiring the saved map, or reacquires that
 map if it was evicted. A non-zero transfer fade lets the standard synchronous
-repository prepare one fixed unit per reference tick (read/decode/parse,
+repository prepare one fixed unit per reference tick (read/optional byte decode/parse,
 validation, then world/passage compilation); the map is still published on
 the original fully-black tick. A zero-fade transfer keeps its single-frame
 synchronous acquire.

@@ -48,8 +48,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Extension-driven choices and KV1's generic runtime appearance, named-layer
 // and tile-property paths are shared GameView/session/interpreter code; moving
 // src/ui/battle/ out still produces this exact bundle while the distinctive
-// battle identifiers remain absent.
-const EXPECTED_BYTES = 482_523;
+// battle identifiers remain absent. The optional native FS text-read fast path
+// adds 525 bytes to the shared PocketJS filesystem SDK.
+const EXPECTED_BYTES = 483_048;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

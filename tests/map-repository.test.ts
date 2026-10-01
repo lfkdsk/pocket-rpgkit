@@ -149,6 +149,111 @@ describe("sharded map repository", () => {
     expect(trustedPrepared.acquire(start.meta.id).id).toBe(start.meta.id);
   });
 
+  test("a text-capable source prefers readText without reading bytes", () => {
+    const split = splitProjectMaps(fixture());
+    const start = split.entries[0]!;
+    let textReads = 0;
+    let byteReads = 0;
+    const repository = createJsonMapRepository(split.shell.mapIndex, {
+      read() {
+        byteReads++;
+        throw new Error("byte fallback must not run");
+      },
+      readText(entry) {
+        textReads++;
+        return entry === start.path ? start.text : undefined;
+      },
+    });
+
+    expect(repository.acquire(start.meta.id)).toEqual(fixture().maps[0]);
+    expect(textReads).toBe(1);
+    expect(byteReads).toBe(0);
+  });
+
+  test("verified text and byte sources hash the same UTF-8 payload", () => {
+    const expected = fixture().maps[0]!;
+    expected.name = "Caf\u00e9 \ud83d\ude80";
+    const text = canonicalJson(expected);
+    const bytes = utf8Encode(text);
+    const meta = {
+      id: expected.id,
+      width: expected.width,
+      height: expected.height,
+      entry: "maps/non-ascii.json",
+      sha256: sha256Text(text),
+    };
+    expect(text).toContain("Caf\u00e9 \ud83d\ude80");
+
+    const fromText = createJsonMapRepository([meta], {
+      read: () => { throw new Error("byte fallback must not run"); },
+      readText: () => text,
+    }, { verify: true });
+    const fromBytes = createJsonMapRepository([meta], {
+      read: () => bytes,
+    }, { verify: true });
+    expect(fromText.acquire(expected.id)).toEqual(expected);
+    expect(fromBytes.acquire(expected.id)).toEqual(expected);
+
+    const changedText = `${text} `;
+    const corruptText = createJsonMapRepository([meta], {
+      read: () => { throw new Error("byte fallback must not run"); },
+      readText: () => changedText,
+    }, { verify: true });
+    const corruptBytes = createJsonMapRepository([meta], {
+      read: () => utf8Encode(changedText),
+    }, { verify: true });
+    expect(() => corruptText.acquire(expected.id)).toThrow(/checksum mismatch/);
+    expect(() => corruptBytes.acquire(expected.id)).toThrow(/checksum mismatch/);
+  });
+
+  test("an unavailable readText keeps local-missing and async-not-ready errors", () => {
+    const split = splitProjectMaps(fixture());
+    let byteReads = 0;
+    const local = createJsonMapRepository(split.shell.mapIndex, {
+      read() {
+        byteReads++;
+        return split.entries[0]!.bytes;
+      },
+      readText: () => undefined,
+    });
+    expect(() => local.acquire("map_00")).toThrow(/missing entry/);
+    expect(byteReads).toBe(0);
+
+    const remote = createJsonMapRepository(split.shell.mapIndex, {
+      read() {
+        byteReads++;
+        return split.entries[0]!.bytes;
+      },
+      readText: () => undefined,
+      prepare: async () => {},
+    });
+    expect(() => remote.acquire("map_00")).toThrow(MapNotReadyError);
+    expect(() => remote.acquire("map_00")).toThrow(/not ready/);
+    expect(byteReads).toBe(0);
+  });
+
+  test("readText acquisition still takes two steps and then hits the cache", () => {
+    const split = splitProjectMaps(fixture());
+    const start = split.entries[0]!;
+    let textReads = 0;
+    const repository = createJsonMapRepository(split.shell.mapIndex, {
+      read: () => { throw new Error("byte fallback must not run"); },
+      readText(entry) {
+        textReads++;
+        return entry === start.path ? start.text : undefined;
+      },
+    }, { verify: true });
+
+    expect(repository.acquireStep!(start.meta.id)).toBeUndefined();
+    expect(textReads).toBe(1);
+    const ready = repository.acquireStep!(start.meta.id)!;
+    expect(ready).toEqual(fixture().maps[0]);
+    expect(textReads).toBe(1);
+    expect(repository.acquireStep!(start.meta.id)).toBe(ready);
+    expect(repository.acquire(start.meta.id)).toBe(ready);
+    expect(textReads).toBe(1);
+  });
+
   test("missing local entries are errors while async entries can be prepared", () => {
     const split = splitProjectMaps(fixture());
     const local = createJsonMapRepository(split.shell.mapIndex, { read: () => undefined });

@@ -371,6 +371,9 @@ export function decodeMapEntryBytes(bytes: Uint8Array): string {
 
 export interface MapEntrySource {
   read(entry: string): string | Uint8Array | undefined;
+  /** Optional host text fast path. When present it is authoritative: an
+   *  undefined result has the same missing/not-ready meaning as read(). */
+  readText?(entry: string): string | undefined;
   prepare?(entry: string): Promise<void>;
 }
 
@@ -404,7 +407,9 @@ export function createJsonMapRepository(
     if (!meta) throw new Error(`map repository: unknown map ${id}`);
     const staged = pending.get(id);
     if (!staged) {
-      const input = source.read(meta.entry);
+      const input = source.readText
+        ? source.readText(meta.entry)
+        : source.read(meta.entry);
       if (input === undefined) {
         if (source.prepare) throw new MapNotReadyError(id, meta.entry);
         throw new Error(`map repository: missing entry for ${id} (${meta.entry})`);
