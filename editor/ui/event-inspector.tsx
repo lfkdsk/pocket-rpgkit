@@ -391,10 +391,30 @@ function RowList(props: {
                     textColor: props.kind === "command" && branch() ? BRANCH : INK,
                   }}
                 >
-                  {compact(headerText(), headerRect().w - (rowGeom.readOnly ? 66 : 4))}
+                  {compact(headerText(), headerRect().w - (rowGeom.pick ? 44 : rowGeom.readOnly ? 66 : 4))}
                 </Text>
                 {rowGeom.readOnly ? <ReadOnlyBadge x={Math.max(2, headerRect().w - 64)} y={2} /> : null}
               </View>
+              {rowGeom.pick ? (
+                <View
+                  class="absolute flex-row items-center justify-center"
+                  style={{
+                    posType: 1,
+                    insetL: localRect(rowGeom.pick.rect, props.clip).x,
+                    insetT: localRect(rowGeom.pick.rect, props.clip).y,
+                    width: rowGeom.pick.rect.w,
+                    height: rowGeom.pick.rect.h,
+                    bgColor: isFocused(props.focus, rowGeom.pick.action) ? SELECTED : CONTROL,
+                    borderWidth: isFocused(props.focus, rowGeom.pick.action) ? 1 : 0,
+                    borderColor: ACCENT,
+                  }}
+                  debugName={`event-inspector-command-pick-${rowGeom.row}`}
+                >
+                  <Text class="text-xs" style={{ textColor: ACCENT, height: 12, lineHeight: 12 }}>
+                    PICK
+                  </Text>
+                </View>
+              ) : null}
               <For each={rowGeom.fields}>
                 {(fieldGeom, fieldIndex) => {
                   const sourceField = () => props.kind === "condition"
@@ -527,7 +547,7 @@ export function EventInspector(props: EventInspectorProps): JSX.Element {
         text="CONDITIONS (ALL)"
         x={4}
         y={layout().conditionActions[0]!.rect.y + 4}
-        width={layout().leftWidth - 56}
+        width={layout().leftWidth - 68}
       />
       <For each={layout().conditionActions}>
         {(c) => <DisplayControl control={c} focused={focused(c.action)} debugName={`event-inspector-${inspectorActionKey(c.action)}`} />}

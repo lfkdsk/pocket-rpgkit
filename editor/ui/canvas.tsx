@@ -7,19 +7,29 @@
 
 import { createMemo, For, Index } from "solid-js";
 import { Image, Text, View } from "@pocketjs/framework/components";
-import type { MapDef, TileId } from "../../src/engine/types.ts";
+import type { Dir, MapDef, TileId } from "../../src/engine/types.ts";
 import {
   type CanvasEvent,
   type EventDragPreview,
   visibleEventRect,
 } from "../engine/event-canvas.ts";
 import { TILE, mapOffset, type FrameGeom } from "../engine/layout.ts";
-import type { DenseUpper } from "../engine/model.ts";
+import type { DensePassage, DenseUpper } from "../engine/model.ts";
 import { INK, MARKER } from "./panels.tsx";
+
+/** One-sided edge rules for one map cell (from its ground tile's sheet). */
+export interface CellEdges {
+  enter?: Dir[];
+  exit?: Dir[];
+}
 
 export interface CanvasProps {
   map: MapDef;
   upper: DenseUpper;
+  /** Per-cell passage overrides (null = none). */
+  passage?: DensePassage | null;
+  /** Per-cell dirEdges (from the cell's ground tile sheet; null = none). */
+  edges?: readonly (CellEdges | null)[] | null;
   camX: number;
   camY: number;
   /** Fitted window (tile count + screen rect). */
@@ -48,6 +58,49 @@ const eventKey = (id: string, vx: number, vy: number, w: number, h: number): str
 function splitEventKey(key: string): { id: string; vx: number; vy: number; w: number; h: number } {
   const [id, vx, vy, w, h] = JSON.parse(key) as [string, number, number, number, number];
   return { id, vx, vy, w, h };
+}
+
+interface ArrowRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** true = enter rule (blue, points into the cell); false = exit (orange). */
+  enter: boolean;
+}
+
+/** 4-rect triangle per edge rule. An `enter` rule blocks entering the cell
+ *  FROM that side, so its arrow points INTO the cell; an `exit` rule blocks
+ *  leaving, so its arrow points OUT. */
+export function edgeArrowRects(edges: CellEdges | null): ArrowRect[] {
+  if (!edges) return [];
+  const rects: ArrowRect[] = [];
+  const push = (dir: Dir, enter: boolean) => {
+    if (dir === "left") {
+      const rows: [number, number][] = enter
+        ? [[0, 2], [0, 3], [0, 3], [0, 2]] // point right (into the cell)
+        : [[2, 2], [1, 3], [1, 3], [2, 2]]; // point left (out)
+      rows.forEach(([x, w], i) => rects.push({ x, y: 6 + i, w, h: 1, enter }));
+    } else if (dir === "right") {
+      const rows: [number, number][] = enter
+        ? [[14, 2], [13, 3], [13, 3], [14, 2]] // point left (into)
+        : [[12, 2], [12, 3], [12, 3], [12, 2]]; // point right (out)
+      rows.forEach(([x, w], i) => rects.push({ x, y: 6 + i, w, h: 1, enter }));
+    } else if (dir === "up") {
+      const cols: [number, number][] = enter
+        ? [[0, 2], [0, 3], [0, 3], [0, 2]] // point down (into)
+        : [[2, 2], [1, 3], [1, 3], [2, 2]]; // point up (out)
+      cols.forEach(([y, h], i) => rects.push({ x: 6 + i, y, w: 1, h, enter }));
+    } else {
+      const cols: [number, number][] = enter
+        ? [[14, 2], [13, 3], [13, 3], [14, 2]] // point up (into)
+        : [[12, 2], [12, 3], [12, 3], [12, 2]]; // point down (out)
+      cols.forEach(([y, h], i) => rects.push({ x: 6 + i, y, w: 1, h, enter }));
+    }
+  };
+  for (const dir of edges.enter ?? []) push(dir, true);
+  for (const dir of edges.exit ?? []) push(dir, false);
+  return rects;
 }
 
 export function Canvas(props: CanvasProps): JSX.Element {
@@ -111,6 +164,28 @@ export function Canvas(props: CanvasProps): JSX.Element {
       if (rect) keys.push(eventKey(rect.id, rect.vx, rect.vy, rect.w, rect.h));
     }
     return keys;
+  });
+
+  // Passage overrides + dirEdges for the visible window. Both are sparse;
+  // the memo emits one entry per affected screen cell so the overlay mounts
+  // a handful of nodes, not one per cell.
+  const overlayCells = createMemo(() => {
+    const out: { vx: number; vy: number; passage: "pass" | "block" | null; edges: CellEdges | null }[] = [];
+    const m = props.map;
+    const passage = props.passage;
+    const edges = props.edges;
+    for (let vy = 0; vy < props.rows; vy++) {
+      for (let vx = 0; vx < props.cols; vx++) {
+        const wx = props.camX + vx;
+        const wy = props.camY + vy;
+        if (wx >= m.width || wy >= m.height) continue;
+        const index = wy * m.width + wx;
+        const p = passage ? passage[index] ?? null : null;
+        const e = edges ? edges[index] ?? null : null;
+        if (p || e) out.push({ vx, vy, passage: p, edges: e });
+      }
+    }
+    return out;
   });
 
   return (
@@ -224,6 +299,56 @@ export function Canvas(props: CanvasProps): JSX.Element {
             }}
           />
         )}
+
+        {/* Passage overrides + one-sided dirEdges. Passage is a small
+            corner square (green pass / red block); each enter/exit edge is
+            a 4-rect triangle on its edge, blue for enter (blocked entering
+            from that side) and orange for exit (blocked leaving that way). */}
+        <For each={overlayCells()}>
+          {(cell) => (
+            <View
+              class="absolute"
+              style={{
+                posType: 1,
+                insetL: cell.vx * TILE,
+                insetT: cell.vy * TILE,
+                width: TILE,
+                height: TILE,
+              }}
+              debugName="editor-pass-overlay"
+            >
+              {cell.passage ? (
+                <View
+                  class="absolute"
+                  style={{
+                    posType: 1,
+                    insetL: 10,
+                    insetT: 10,
+                    width: 5,
+                    height: 5,
+                    bgColor: cell.passage === "pass" ? "#5fd38a" : "#ff6b5e",
+                    opacity: 0.9,
+                  }}
+                />
+              ) : null}
+              <For each={edgeArrowRects(cell.edges)}>
+                {(arrow) => (
+                  <View
+                    class="absolute"
+                    style={{
+                      posType: 1,
+                      insetL: arrow.x,
+                      insetT: arrow.y,
+                      width: arrow.w,
+                      height: arrow.h,
+                      bgColor: arrow.enter ? "#60a5fa" : "#f59e0b",
+                    }}
+                  />
+                )}
+              </For>
+            </View>
+          )}
+        </For>
 
         {props.cursorZone === "canvas" && (
           <View

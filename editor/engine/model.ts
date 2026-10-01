@@ -2,13 +2,28 @@
 // tile stroke, transactional event/page edits, and an undo/redo log capped at
 // HISTORY_LIMIT steps. No host APIs: sim tests and the UI share this file.
 
-import type { GameEvent, MapDef, Page, Project, TileId } from "../../src/engine/types.ts";
+import type { Command, Dir, GameEvent, MapDef, Page, Project, TileId } from "../../src/engine/types.ts";
+import {
+  battleBranchPath,
+  choiceBranchPath,
+  commandAddressKey,
+  ifBranchPath,
+  ROOT_COMMAND_PATH,
+  type CommandListPath,
+} from "./commands.ts";
 
-export type Layer = "ground" | "upper";
+export type Layer = "ground" | "upper" | "passage";
 export const HISTORY_LIMIT = 64; // spec: undo/redo for at least 32 steps
 
 /** Dense upper layer, length width*height: null = no star-layer cell. */
 export type DenseUpper = (TileId | null)[];
+
+/** Dense passage overrides, length width*height: null = no override. */
+export type PassageValue = "pass" | "block" | null;
+export type DensePassage = PassageValue[];
+
+/** The brush an edge stroke paints on the sheet of a cell's ground tile. */
+export type EdgeBrush = { kind: "enter" | "exit"; dir: Dir } | { kind: "clear" };
 
 interface TileHistoryEntry {
   kind: "tile";
@@ -34,7 +49,21 @@ interface EventHistoryEntry {
   afterSelection: EventSelection;
 }
 
-type HistoryEntry = TileHistoryEntry | EventHistoryEntry;
+/** A structural transaction: resize/rename/sheets/new/duplicate/delete map,
+ *  or a sheet dirEdges stroke. The project snapshot is the FLUSHED state
+ *  (pending upper/passage strokes compacted in), so restoring it needs no
+ *  dense cache — undo/redo rebuild the caches from the snapshot. */
+interface ProjectHistoryEntry {
+  kind: "project";
+  before: Project;
+  after: Project;
+  beforeMapIndex: number;
+  afterMapIndex: number;
+  beforeSelection: EventSelection;
+  afterSelection: EventSelection;
+}
+
+type HistoryEntry = TileHistoryEntry | EventHistoryEntry | ProjectHistoryEntry;
 
 interface OpenStroke {
   mapIndex: number;
@@ -43,6 +72,16 @@ interface OpenStroke {
    *  time so changing the palette selection mid-drag cannot mix brushes. */
   brush: TileId;
   before: TileId[];
+}
+
+interface OpenEdgeStroke {
+  brush: EdgeBrush;
+  /** Project snapshot before the stroke (sheet dirEdges are project-level). */
+  before: Project;
+  /** Canonical `sheet/cell` keys already sampled by this drag. Pointer
+   *  jitter and distinct map cells that use the same tile must not toggle
+   *  the same sheet entry more than once per stroke. */
+  visited: string[];
 }
 
 export interface EditorState {
@@ -60,8 +99,15 @@ export interface EditorState {
    *  [index, tile] ordering byte-for-byte. */
   upperDense: DenseUpper[];
   upperTouched: boolean[];
+  /** Per-map dense passage caches with the same touched/export contract. */
+  passageDense: DensePassage[];
+  passageTouched: boolean[];
   groundTouched: boolean[];
+  /** Brush for passage strokes ("pass"/"block"); erase strokes clear. */
+  passageBrush: "pass" | "block";
   stroke: OpenStroke | null;
+  /** Open sheet-dirEdges stroke (PASS mode edge tools), exclusive of stroke. */
+  edgeStroke: OpenEdgeStroke | null;
   past: HistoryEntry[];
   future: HistoryEntry[];
   dirty: boolean;
@@ -83,6 +129,22 @@ export function fromDenseUpper(dense: DenseUpper): [number, TileId][] {
   return pairs;
 }
 
+export function toDensePassage(map: MapDef): DensePassage {
+  const dense: DensePassage = new Array(map.width * map.height).fill(null);
+  for (const [index, value] of map.passage ?? []) {
+    if (index >= 0 && index < dense.length) dense[index] = value;
+  }
+  return dense;
+}
+
+export function fromDensePassage(dense: DensePassage): [number, "pass" | "block"][] {
+  const pairs: [number, "pass" | "block"][] = [];
+  dense.forEach((value, index) => {
+    if (value !== null) pairs.push([index, value]);
+  });
+  return pairs;
+}
+
 export function createEditorState(project: Project): EditorState {
   return {
     project,
@@ -93,8 +155,12 @@ export function createEditorState(project: Project): EditorState {
     selectedPageIndex: 0,
     upperDense: project.maps.map(toDenseUpper),
     upperTouched: project.maps.map(() => false),
+    passageDense: project.maps.map(toDensePassage),
+    passageTouched: project.maps.map(() => false),
     groundTouched: project.maps.map(() => false),
+    passageBrush: "pass",
     stroke: null,
+    edgeStroke: null,
     past: [],
     future: [],
     dirty: false,
@@ -129,9 +195,11 @@ export function canPaint(state: EditorState, tile: string): boolean {
   return cell >= 0 && cell < sheet.cols * sheet.rows;
 }
 
-function layerArray(state: EditorState, mapIndex: number, layer: Layer): TileId[] {
+function layerArray(state: EditorState, mapIndex: number, layer: Layer): (TileId | PassageValue)[] {
   const map = state.project.maps[mapIndex]!;
-  return layer === "ground" ? map.ground : state.upperDense[mapIndex]!;
+  if (layer === "ground") return map.ground;
+  if (layer === "upper") return state.upperDense[mapIndex]!;
+  return state.passageDense[mapIndex]!;
 }
 
 export function selectTile(state: EditorState, tile: TileId): EditorState {
@@ -140,27 +208,37 @@ export function selectTile(state: EditorState, tile: TileId): EditorState {
   return { ...state, tile };
 }
 
+export function selectPassageBrush(state: EditorState, brush: "pass" | "block"): EditorState {
+  if (state.passageBrush === brush) return state;
+  return { ...state, passageBrush: brush };
+}
+
 export function selectLayer(state: EditorState, layer: Layer): EditorState {
   if (state.layer === layer) return state;
-  // A switch mid-stroke commits nothing: the pointer-up model guarantees
-  // the stroke closed, but stay defensive so history cannot wedge.
-  return { ...state, layer, stroke: state.stroke ? null : state.stroke };
+  // A switch mid-stroke commits it (one history step) rather than dropping
+  // its already-applied cells without an undo entry.
+  if (state.stroke) state = strokeEnd(state);
+  if (state.edgeStroke) state = edgeStrokeEnd(state);
+  return { ...state, layer };
 }
 
 export function selectMap(state: EditorState, mapIndex: number): EditorState {
   if (mapIndex === state.mapIndex || mapIndex < 0 || mapIndex >= state.project.maps.length) {
     return state;
   }
+  if (state.stroke) state = strokeEnd(state);
+  if (state.edgeStroke) state = edgeStrokeEnd(state);
   return {
     ...state,
     mapIndex,
     selectedEventId: null,
     selectedPageIndex: 0,
     stroke: null,
+    edgeStroke: null,
   };
 }
 
-function withLayer(state: EditorState, mapIndex: number, layer: Layer, next: TileId[]): EditorState {
+function withLayer(state: EditorState, mapIndex: number, layer: Layer, next: (TileId | PassageValue)[]): EditorState {
   if (layer === "ground") {
     const maps = state.project.maps.slice();
     maps[mapIndex] = { ...maps[mapIndex]!, ground: next as (string | null)[] };
@@ -168,19 +246,30 @@ function withLayer(state: EditorState, mapIndex: number, layer: Layer, next: Til
     groundTouched[mapIndex] = true;
     return { ...state, project: { ...state.project, maps }, groundTouched };
   }
-  const upperDense = state.upperDense.slice();
-  upperDense[mapIndex] = next as DenseUpper;
-  const upperTouched = state.upperTouched.slice();
-  upperTouched[mapIndex] = true;
-  return { ...state, upperDense, upperTouched };
+  if (layer === "upper") {
+    const upperDense = state.upperDense.slice();
+    upperDense[mapIndex] = next as DenseUpper;
+    const upperTouched = state.upperTouched.slice();
+    upperTouched[mapIndex] = true;
+    return { ...state, upperDense, upperTouched };
+  }
+  const passageDense = state.passageDense.slice();
+  passageDense[mapIndex] = next as DensePassage;
+  const passageTouched = state.passageTouched.slice();
+  passageTouched[mapIndex] = true;
+  return { ...state, passageDense, passageTouched };
 }
 
 /** Begin a drag stroke on the active map/layer. `erase` selects the eraser
  *  brush for this stroke regardless of the palette selection (right button
  *  / modifier). The pre-stroke array is captured once for the undo log. */
 export function strokeStart(state: EditorState, erase = false): EditorState {
-  if (state.stroke) return state;
-  const brush = erase ? null : state.tile;
+  if (state.stroke || state.edgeStroke) return state;
+  const brush = erase
+    ? null
+    : state.layer === "passage"
+      ? state.passageBrush
+      : state.tile;
   return {
     ...state,
     stroke: {
@@ -202,7 +291,7 @@ export function paintCell(state: EditorState, index: number): EditorState {
   const layer = stroke.layer;
   const current = layerArray(state, stroke.mapIndex, layer).slice();
   const next = stroke.brush;
-  if (next !== null && !canPaint(state, next)) return state;
+  if (layer !== "passage" && next !== null && !canPaint(state, next)) return state;
   if (current[index] === next) return state;
   current[index] = next;
   return { ...withLayer(state, stroke.mapIndex, layer, current), dirty: true };
@@ -274,13 +363,48 @@ function applyEventHistory(
   };
 }
 
+/** Rebuild the per-map dense caches from a (flushed) project. A structural
+ *  snapshot always carries its layers compacted, so the caches are pure
+ *  derivations and every touched flag resets. */
+function rebuildCaches(project: Project): Pick<EditorState, "upperDense" | "upperTouched" | "passageDense" | "passageTouched" | "groundTouched"> {
+  return {
+    upperDense: project.maps.map(toDenseUpper),
+    upperTouched: project.maps.map(() => false),
+    passageDense: project.maps.map(toDensePassage),
+    passageTouched: project.maps.map(() => false),
+    groundTouched: project.maps.map(() => false),
+  };
+}
+
+function applyProjectHistory(state: EditorState, entry: ProjectHistoryEntry, undo: boolean): EditorState {
+  const project = undo ? entry.before : entry.after;
+  const mapIndex = undo ? entry.beforeMapIndex : entry.afterMapIndex;
+  const selection = undo ? entry.beforeSelection : entry.afterSelection;
+  return {
+    ...state,
+    project: cloneJson(project),
+    ...rebuildCaches(project),
+    mapIndex,
+    selectedEventId: selection.selectedEventId,
+    selectedPageIndex: selection.selectedPageIndex,
+  };
+}
+
 export function undo(state: EditorState): EditorState {
   const entry = state.past[state.past.length - 1];
-  if (!entry || state.stroke) return state;
+  if (!entry || state.stroke || state.edgeStroke) return state;
   if (entry.kind === "events") {
     const restored = applyEventHistory(state, entry, entry.before, entry.beforeSelection);
     return {
       ...restored,
+      past: state.past.slice(0, -1),
+      future: [...state.future, cloneJson(entry)],
+      dirty: true,
+    };
+  }
+  if (entry.kind === "project") {
+    return {
+      ...applyProjectHistory(state, entry, true),
       past: state.past.slice(0, -1),
       future: [...state.future, cloneJson(entry)],
       dirty: true,
@@ -302,11 +426,19 @@ export function undo(state: EditorState): EditorState {
 
 export function redo(state: EditorState): EditorState {
   const entry = state.future[state.future.length - 1];
-  if (!entry || state.stroke) return state;
+  if (!entry || state.stroke || state.edgeStroke) return state;
   if (entry.kind === "events") {
     const reapplied = applyEventHistory(state, entry, entry.after, entry.afterSelection);
     return {
       ...reapplied,
+      past: [...state.past, cloneJson(entry)],
+      future: state.future.slice(0, -1),
+      dirty: true,
+    };
+  }
+  if (entry.kind === "project") {
+    return {
+      ...applyProjectHistory(state, entry, false),
       past: [...state.past, cloneJson(entry)],
       future: state.future.slice(0, -1),
       dirty: true,
@@ -650,45 +782,59 @@ export function copyPage(state: EditorState): EditorState {
   return withTransactionPageSelection(state, nextState, pageIndex + 1);
 }
 
-/** Compact one touched upper layer back to sparse pairs. The runtime's
+/** Compact one touched dense layer back to sparse pairs. The runtime's
  *  dense rule is "the last pair at an index wins", so an UNEDITED index can
  *  legitimately hold several authored pairs (the village fences do): keep
  *  every one of those pairs verbatim. An edited index drops its authored
  *  pairs and emits the single new pair; an erased index emits nothing.
  *  Brand-new cells append in row-major order. */
-export function compactUpper(original: [number, TileId][] | undefined, dense: DenseUpper): [number, TileId][] {
+function compactSparse<T>(original: [number, T][] | undefined, dense: (T | null)[]): [number, T][] {
   const originalIndices = new Set<number>();
-  const lastOriginal = new Map<number, TileId>();
-  for (const [index, tile] of original ?? []) {
+  const lastOriginal = new Map<number, T>();
+  for (const [index, value] of original ?? []) {
     originalIndices.add(index);
-    lastOriginal.set(index, tile);
+    lastOriginal.set(index, value);
   }
-  const pairs: [number, TileId][] = [];
+  const pairs: [number, T][] = [];
   // 1. authored pairs: untouched indices keep every pair verbatim (duplicate
   //    indices are legal; the last pair is what the runtime paints).
-  for (const [index, tile] of original ?? []) {
-    if (dense[index] === lastOriginal.get(index)) pairs.push([index, tile]);
+  for (const [index, value] of original ?? []) {
+    if (dense[index] === lastOriginal.get(index)) pairs.push([index, value]);
   }
   // 2. edited indices emit their single new pair (erased = null, nothing).
   for (const index of originalIndices) {
-    const tile = dense[index];
-    if (tile !== null && tile !== lastOriginal.get(index)) pairs.push([index, tile]);
+    const value = dense[index];
+    if (value !== null && value !== lastOriginal.get(index)) pairs.push([index, value]);
   }
   // 3. brand-new cells append in row-major order.
-  dense.forEach((tile, index) => {
-    if (tile !== null && !originalIndices.has(index)) pairs.push([index, tile]);
+  dense.forEach((value, index) => {
+    if (value !== null && !originalIndices.has(index)) pairs.push([index, value]);
   });
   return pairs;
 }
 
-/** Export form: only touched upper maps compact (preserving authored pair
+export function compactUpper(original: [number, TileId][] | undefined, dense: DenseUpper): [number, TileId][] {
+  return compactSparse(original, dense);
+}
+
+export function compactPassage(
+  original: [number, "pass" | "block"][] | undefined,
+  dense: DensePassage,
+): [number, "pass" | "block"][] {
+  return compactSparse(original, dense);
+}
+
+/** Export form: only touched layers compact (preserving authored pair
  *  order); untouched maps keep their original arrays. The result is then
  *  validated by engine/document.ts before leaving the editor. */
 export function exportProject(state: EditorState): Project {
   if (state.stroke) state = strokeEnd(state);
+  if (state.edgeStroke) state = edgeStrokeEnd(state);
   const maps = state.project.maps.map((map, i) => {
-    if (state.upperTouched[i]) return { ...map, upper: compactUpper(map.upper, state.upperDense[i]!) };
-    return map;
+    let next = map;
+    if (state.upperTouched[i]) next = { ...next, upper: compactUpper(next.upper, state.upperDense[i]!) };
+    if (state.passageTouched[i]) next = { ...next, passage: compactPassage(next.passage, state.passageDense[i]!) };
+    return next;
   });
   return { ...state.project, maps };
 }
@@ -724,4 +870,521 @@ export function slotForTile(tiles: TileId[], tile: TileId): number {
   if (tile === null) return 0;
   const i = tiles.indexOf(tile);
   return i >= 0 ? i : -1;
+}
+
+// --- structural edits (map properties + map management) --------------------
+//
+// Every structural edit is ONE "project" history step. The snapshot stores
+// the FLUSHED project (pending upper/passage strokes compacted in), so undo
+// and redo rebuild the dense caches from the snapshot without losing a
+// stroke's effect. Tile/edge strokes stay open are refused here.
+
+export type StructuralResult =
+  | { ok: true; state: EditorState }
+  | { ok: false; error: string };
+
+export type ResizeResult =
+  | { ok: true; state: EditorState; croppedEvents: string[] }
+  | { ok: false; error: string };
+
+export type DeleteMapResult =
+  | { ok: true; state: EditorState }
+  | { ok: false; error: string; references: MapReference[] };
+
+interface StructuralTransform {
+  project: Project;
+  mapIndex: number;
+  selectedEventId: string | null;
+  selectedPageIndex: number;
+}
+
+function commitStructural(
+  state: EditorState,
+  transform: (project: Project) => StructuralTransform | null,
+): EditorState | null {
+  if (state.stroke || state.edgeStroke) return null;
+  const flushed = exportProject(state);
+  // exportProject intentionally preserves untouched nested objects. Give
+  // mutating structural transforms their own deep copy so neither the
+  // loaded project nor any prior EditorState can be changed in place.
+  const beforeSnapshot = cloneJson(flushed);
+  const result = transform(cloneJson(flushed));
+  if (!result) return state;
+  if (jsonEqual(beforeSnapshot, result.project)) return state;
+  const entry: ProjectHistoryEntry = {
+    kind: "project",
+    before: beforeSnapshot,
+    after: cloneJson(result.project),
+    beforeMapIndex: state.mapIndex,
+    afterMapIndex: result.mapIndex,
+    beforeSelection: selectionOf(state),
+    afterSelection: {
+      selectedEventId: result.selectedEventId,
+      selectedPageIndex: result.selectedPageIndex,
+    },
+  };
+  return {
+    ...state,
+    project: cloneJson(result.project),
+    ...rebuildCaches(result.project),
+    mapIndex: result.mapIndex,
+    selectedEventId: result.selectedEventId,
+    selectedPageIndex: result.selectedPageIndex,
+    past: pushHistory(state, entry),
+    future: [],
+    dirty: true,
+  };
+}
+
+/** Unwrap a structural result, turning a stroke-open refusal into an error. */
+function structural(state: EditorState, next: EditorState | null): StructuralResult {
+  return next === null
+    ? { ok: false, error: "finish the current stroke first" }
+    : { ok: true, state: next };
+}
+
+const MAP_ID_RE = /^[a-z0-9_-]+$/;
+
+function schemaSafeMapId(value: string): string {
+  if (MAP_ID_RE.test(value)) return value;
+  const safe = value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return safe || "map";
+}
+
+/** Return a project-unique, schema-safe map id, retaining `preferred`. */
+export function uniqueMapId(project: Project, preferred = "map"): string {
+  const base = schemaSafeMapId(preferred);
+  const used = new Set(project.maps.map((m) => m.id));
+  if (!used.has(base)) return base;
+  let suffix = 2;
+  while (used.has(`${base}-${suffix}`)) suffix++;
+  return `${base}-${suffix}`;
+}
+
+export interface MapReference {
+  /** Map containing the referencing command ("(common)" for common events). */
+  mapId: string;
+  eventId: string;
+  page: number;
+  /** Stable command-tree address, shared with the command editor. */
+  command: string;
+}
+
+/** Every transfer command (all event pages, all branch kinds, and common
+ *  events) whose map operand is the literal `mapId`. Variable operands are
+ *  not references. */
+export function mapReferences(project: Project, mapId: string): MapReference[] {
+  const refs: MapReference[] = [];
+  const scan = (
+    commands: readonly Command[] | undefined,
+    ctx: Omit<MapReference, "command">,
+    path: CommandListPath = ROOT_COMMAND_PATH,
+  ) => {
+    if (!commands) return;
+    commands.forEach((command, index) => {
+      const address = { path, index };
+      if (command.op === "transfer" && typeof command.map === "string" && command.map === mapId) {
+        refs.push({ ...ctx, command: commandAddressKey(address) });
+      }
+      if (command.op === "if") {
+        scan(command.then, ctx, ifBranchPath(address, "then"));
+        scan(command.else, ctx, ifBranchPath(address, "else"));
+      } else if (command.op === "choices") {
+        command.options.forEach((option, optionIndex) =>
+          scan(option.commands, ctx, choiceBranchPath(address, optionIndex))
+        );
+        scan(command.cancel?.commands, ctx, choiceBranchPath(address, "cancel"));
+      } else if (command.op === "battle") {
+        scan(command.onWin, ctx, battleBranchPath(address, "win"));
+        scan(command.onLose, ctx, battleBranchPath(address, "lose"));
+        scan(command.onEscape, ctx, battleBranchPath(address, "escape"));
+      }
+    });
+  };
+  for (const map of project.maps) {
+    for (const event of map.events ?? []) {
+      event.pages.forEach((page, pageIndex) =>
+        scan(page.commands, { mapId: map.id, eventId: event.id, page: pageIndex }),
+      );
+    }
+  }
+  for (const common of project.commonEvents ?? []) {
+    scan(common.commands, { mapId: "(common)", eventId: common.id, page: 0 });
+  }
+  return refs;
+}
+
+/** Rewrite every literal transfer operand `oldId` -> `newId` in place. */
+function rewriteTransferMapIds(project: Project, oldId: string, newId: string): void {
+  const scan = (commands: readonly Command[] | undefined) => {
+    if (!commands) return;
+    for (const command of commands) {
+      if (command.op === "transfer" && typeof command.map === "string" && command.map === oldId) {
+        command.map = newId;
+      }
+      if (command.op === "if") {
+        scan(command.then);
+        scan(command.else);
+      } else if (command.op === "choices") {
+        for (const option of command.options) scan(option.commands);
+        scan(command.cancel?.commands);
+      } else if (command.op === "battle") {
+        scan(command.onWin);
+        scan(command.onLose);
+        scan(command.onEscape);
+      }
+    }
+  };
+  for (const map of project.maps) {
+    for (const event of map.events ?? []) {
+      for (const page of event.pages) scan(page.commands);
+    }
+  }
+  for (const common of project.commonEvents ?? []) scan(common.commands);
+}
+
+/** Rename the active map's id. The start position and every transfer
+ *  command that names the old id follow. One undo step. */
+export function renameMap(state: EditorState, rawId: string): StructuralResult {
+  const map = state.project.maps[state.mapIndex];
+  if (!map) return { ok: false, error: "no map selected" };
+  const id = rawId.trim();
+  if (!MAP_ID_RE.test(id)) return { ok: false, error: "map id must match [a-z0-9_-]+" };
+  if (state.project.maps.some((m, i) => i !== state.mapIndex && m.id === id)) {
+    return { ok: false, error: `map id ${id} is already used` };
+  }
+  if (map.id === id) return { ok: true, state };
+  const mapIndex = state.mapIndex;
+  return structural(state, commitStructural(state, (project) => {
+    const oldId = project.maps[mapIndex]!.id;
+    project.maps[mapIndex]!.id = id;
+    if (project.start.map === oldId) project.start.map = id;
+    rewriteTransferMapIds(project, oldId, id);
+    return {
+      project,
+      mapIndex,
+      selectedEventId: state.selectedEventId,
+      selectedPageIndex: state.selectedPageIndex,
+    };
+  }));
+}
+
+/** Rename the active map's display name. One undo step. */
+export function setMapName(state: EditorState, rawName: string): StructuralResult {
+  const name = rawName.trim();
+  if (name.length === 0) return { ok: false, error: "name is required" };
+  if (name.length > 40) return { ok: false, error: "name must be at most 40 characters" };
+  const mapIndex = state.mapIndex;
+  if (state.project.maps[mapIndex]!.name === name) return { ok: true, state };
+  return structural(state, commitStructural(state, (project) => {
+    project.maps[mapIndex]!.name = name;
+    return {
+      project,
+      mapIndex,
+      selectedEventId: state.selectedEventId,
+      selectedPageIndex: state.selectedPageIndex,
+    };
+  }));
+}
+
+function resizeSparse<T>(
+  pairs: [number, T][] | undefined,
+  oldW: number,
+  oldH: number,
+  newW: number,
+  newH: number,
+): [number, T][] | undefined {
+  if (!pairs) return undefined;
+  const out: [number, T][] = [];
+  for (const [index, value] of pairs) {
+    const x = index % oldW;
+    const y = Math.floor(index / oldW);
+    if (x < newW && y < newH) out.push([y * newW + x, value]);
+  }
+  return out;
+}
+
+/** Resize the active map. Expansion fills new ground cells with void
+ *  (null); cropping drops out-of-range tiles and sparse pairs. Events whose
+ *  top-left leaves the map are cropped (their ids are returned so the UI
+ *  can warn); events partially outside keep their top-left and shrink. The
+ *  top-left corner is fixed — content is never translated. One undo step. */
+export function resizeMap(state: EditorState, rawW: number, rawH: number): ResizeResult {
+  const map = state.project.maps[state.mapIndex];
+  if (!map) return { ok: false, error: "no map selected" };
+  if (!Number.isFinite(rawW) || rawW !== Math.trunc(rawW) || rawW < 1 || rawW > 256) {
+    return { ok: false, error: "width must be an integer from 1 to 256" };
+  }
+  if (!Number.isFinite(rawH) || rawH !== Math.trunc(rawH) || rawH < 1 || rawH > 256) {
+    return { ok: false, error: "height must be an integer from 1 to 256" };
+  }
+  const width = rawW;
+  const height = rawH;
+  if (width === map.width && height === map.height) {
+    return { ok: true, state, croppedEvents: [] };
+  }
+  const mapIndex = state.mapIndex;
+  const oldW = map.width;
+  const oldH = map.height;
+  const croppedEvents: string[] = [];
+  const next = commitStructural(state, (project) => {
+    const target = project.maps[mapIndex]!;
+    const ground: (string | null)[] = new Array(width * height).fill(null);
+    for (let y = 0; y < Math.min(oldH, height); y++) {
+      for (let x = 0; x < Math.min(oldW, width); x++) {
+        ground[y * width + x] = target.ground[y * oldW + x] ?? null;
+      }
+    }
+    target.ground = ground;
+    target.width = width;
+    target.height = height;
+    const upper = resizeSparse(target.upper, oldW, oldH, width, height);
+    if (upper === undefined) delete target.upper;
+    else target.upper = upper;
+    const passage = resizeSparse(target.passage, oldW, oldH, width, height);
+    if (passage === undefined) delete target.passage;
+    else target.passage = passage;
+    const events = (target.events ?? []).flatMap((event): GameEvent[] => {
+      if (event.x >= width || event.y >= height) {
+        croppedEvents.push(event.id);
+        return [];
+      }
+      const w = event.w ?? 1;
+      const h = event.h ?? 1;
+      const nw = Math.min(w, width - event.x);
+      const nh = Math.min(h, height - event.y);
+      const adjusted: GameEvent = { ...event };
+      if (nw !== w) adjusted.w = nw;
+      if (nh !== h) adjusted.h = nh;
+      return [adjusted];
+    });
+    // A resize always materializes the post-resize event collection. Keep
+    // [] both when expanding an empty map and when cropping its last event.
+    target.events = events;
+    const selectedSurvives = state.selectedEventId !== null
+      && events.some((event) => event.id === state.selectedEventId);
+    return {
+      project,
+      mapIndex,
+      selectedEventId: selectedSurvives ? state.selectedEventId : null,
+      selectedPageIndex: selectedSurvives ? state.selectedPageIndex : 0,
+    };
+  });
+  if (next === null) return { ok: false, error: "finish the current stroke first" };
+  return { ok: true, state: next, croppedEvents };
+}
+
+/** Replace the active map's sheet list. Every id must name a project sheet
+ *  and the list must stay non-empty. One undo step. */
+export function setMapSheets(state: EditorState, sheets: string[]): StructuralResult {
+  if (sheets.length === 0) return { ok: false, error: "a map needs at least one sheet" };
+  const unknown = sheets.find((id) => !state.project.sheets.some((sheet) => sheet.id === id));
+  if (unknown) return { ok: false, error: `unknown sheet "${unknown}"` };
+  const deduped = [...new Set(sheets)];
+  const mapIndex = state.mapIndex;
+  const current = state.project.maps[mapIndex]!.sheets ?? [];
+  if (deduped.length === current.length && deduped.every((id, i) => id === current[i])) {
+    return { ok: true, state };
+  }
+  return structural(state, commitStructural(state, (project) => {
+    project.maps[mapIndex]!.sheets = deduped;
+    return {
+      project,
+      mapIndex,
+      selectedEventId: state.selectedEventId,
+      selectedPageIndex: state.selectedPageIndex,
+    };
+  }));
+}
+
+export interface NewMapOptions {
+  id?: string;
+  name?: string;
+  width?: number;
+  height?: number;
+  sheets?: string[];
+  /** Ground tile for every cell ("town.0"); null leaves the map void. */
+  fill?: string | null;
+}
+
+/** Create an empty map after the active one and select it. Event ids are
+ *  not involved (a fresh map has no events). One undo step. */
+export function newMap(state: EditorState, options: NewMapOptions = {}): StructuralResult {
+  const project = state.project;
+  const width = clampInteger(options.width ?? 20, 1, 256);
+  const height = clampInteger(options.height ?? 14, 1, 256);
+  const sheets = options.sheets
+    ?? project.maps[state.mapIndex]?.sheets
+    ?? project.sheets.slice(0, 1).map((sheet) => sheet.id);
+  if (sheets.length === 0) return { ok: false, error: "no sheets available for a new map" };
+  const unknown = sheets.find((id) => !project.sheets.some((sheet) => sheet.id === id));
+  if (unknown) return { ok: false, error: `unknown sheet "${unknown}"` };
+  const fill = options.fill ?? null;
+  if (fill !== null) {
+    const m = TILE_RE.exec(fill);
+    const sheetOk = m !== null && sheets.includes(m[1]!)
+      && project.sheets.some((sheet) => sheet.id === m[1]);
+    if (!sheetOk) return { ok: false, error: `fill tile ${fill} is not on this map's sheets` };
+    const cell = Number(m![2]!);
+    const sheet = project.sheets.find((s) => s.id === m![1])!;
+    if (cell < 0 || cell >= sheet.cols * sheet.rows) {
+      return { ok: false, error: `fill tile ${fill} is outside its sheet grid` };
+    }
+  }
+  const id = uniqueMapId(project, options.id ?? "map");
+  const name = options.name?.trim() || `Map ${project.maps.length + 1}`;
+  if (name.length > 40) return { ok: false, error: "name must be at most 40 characters" };
+  const map: MapDef = {
+    id,
+    name,
+    width,
+    height,
+    sheets: [...new Set(sheets)],
+    ground: new Array<string | null>(width * height).fill(fill),
+    events: [],
+  };
+  const insertAt = Math.min(state.mapIndex + 1, project.maps.length);
+  return structural(state, commitStructural(state, (flushed) => {
+    const maps = flushed.maps.slice();
+    maps.splice(insertAt, 0, map);
+    return { project: { ...flushed, maps }, mapIndex: insertAt, selectedEventId: null, selectedPageIndex: 0 };
+  }));
+}
+
+/** Duplicate the active map directly after it and select the copy.
+ *
+ * Event-id renumbering rule: event ids are MAP-LOCAL in this format (only
+ * transfer map operands and the start position reference maps; nothing
+ * references an event across maps), so the copy KEEPS every event id
+ * verbatim — they remain unique inside the copy and intra-map references
+ * (`place`/`moveRoute` {event}) stay valid. Only the map id gets a unique
+ * `-copy` suffix. One undo step. */
+export function duplicateMap(state: EditorState): StructuralResult {
+  const map = state.project.maps[state.mapIndex];
+  if (!map) return { ok: false, error: "no map selected" };
+  const insertAt = state.mapIndex + 1;
+  return structural(state, commitStructural(state, (flushed) => {
+    // Build the copy only after commitStructural has flushed the dense
+    // upper/passage caches into this transaction's isolated project.
+    const source = flushed.maps[state.mapIndex]!;
+    const copy = cloneJson(source);
+    copy.id = uniqueMapId(flushed, `${source.id}-copy`);
+    const maps = flushed.maps.slice();
+    maps.splice(insertAt, 0, copy);
+    return { project: { ...flushed, maps }, mapIndex: insertAt, selectedEventId: null, selectedPageIndex: 0 };
+  }));
+}
+
+/** Delete the active map. Refuses the only map and the start map. When
+ *  transfers reference the map and `confirm` is false, returns the
+ *  references so the UI can list them and ask for a second confirmation;
+ *  with `confirm: true` the map is deleted anyway. One undo step. */
+export function deleteMap(state: EditorState, confirm = false): DeleteMapResult {
+  const project = state.project;
+  const map = project.maps[state.mapIndex];
+  if (!map) return { ok: false, error: "no map selected", references: [] };
+  if (project.maps.length <= 1) return { ok: false, error: "cannot delete the only map", references: [] };
+  if (project.start.map === map.id) {
+    return { ok: false, error: "cannot delete the start map", references: [] };
+  }
+  const references = mapReferences(project, map.id);
+  if (references.length > 0 && !confirm) {
+    return { ok: false, error: `${references.length} transfer(s) target this map`, references };
+  }
+  const mapIndex = state.mapIndex;
+  const next = commitStructural(state, (flushed) => {
+    const maps = flushed.maps.slice();
+    maps.splice(mapIndex, 1);
+    return {
+      project: { ...flushed, maps },
+      mapIndex: Math.max(0, Math.min(mapIndex, maps.length - 1)),
+      selectedEventId: null,
+      selectedPageIndex: 0,
+    };
+  });
+  if (next === null) return { ok: false, error: "finish the current stroke first", references: [] };
+  return { ok: true, state: next };
+}
+
+// --- sheet dirEdges strokes (PASS mode edge tools) --------------------------
+
+/** Begin a stroke that toggles one-sided passage edges on the SHEET of the
+ *  painted cell's ground tile (dirEdges is sheet-level in this format). The
+ *  brush toggles an `enter`/`exit` direction, or clears the cell's entry.
+ *  Void cells (no ground tile) are ignored while painting. */
+export function edgeStrokeStart(state: EditorState, brush: EdgeBrush): EditorState {
+  if (state.stroke || state.edgeStroke) return state;
+  // Flush pending upper/passage paints into the project first, so the
+  // before/after snapshots and their undo/redo rebuilds cannot drop them.
+  const flushed = exportProject(state);
+  return {
+    ...state,
+    project: flushed,
+    ...rebuildCaches(flushed),
+    edgeStroke: { brush, before: cloneJson(flushed), visited: [] },
+  };
+}
+
+export function edgePaintCell(state: EditorState, index: number): EditorState {
+  const stroke = state.edgeStroke;
+  if (!stroke) return state;
+  const map = currentMap(state);
+  if (index < 0 || index >= map.width * map.height) return state;
+  const tile = map.ground[index];
+  if (typeof tile !== "string") return state;
+  const m = TILE_RE.exec(tile);
+  if (!m) return state;
+  const sheetId = m[1]!;
+  // Normalize the cell key the way the runtime does (String(Number(cell))),
+  // so a hand-authored "town.00" paints the same entry as "town.0".
+  const cell = String(Number(m[2]!));
+  const sheetIndex = state.project.sheets.findIndex((sheet) => sheet.id === sheetId);
+  if (sheetIndex < 0) return state;
+  const visitedKey = `${sheetId}\u0000${cell}`;
+  if (stroke.visited.includes(visitedKey)) return state;
+  const edgeStroke: OpenEdgeStroke = {
+    ...stroke,
+    visited: [...stroke.visited, visitedKey],
+  };
+  const sheet = state.project.sheets[sheetIndex]!;
+  const dirEdges: Record<string, { enter?: Dir[]; exit?: Dir[] }> = { ...(sheet.dirEdges ?? {}) };
+  if (stroke.brush.kind === "clear") {
+    if (dirEdges[cell] === undefined) return { ...state, edgeStroke };
+    delete dirEdges[cell];
+  } else {
+    const kind = stroke.brush.kind;
+    const entry: { enter?: Dir[]; exit?: Dir[] } = { ...(dirEdges[cell] ?? {}) };
+    const list = (entry[kind] ?? []).slice();
+    const at = list.indexOf(stroke.brush.dir);
+    if (at >= 0) list.splice(at, 1);
+    else list.push(stroke.brush.dir);
+    if (list.length === 0) delete entry[kind];
+    else entry[kind] = list;
+    if (Object.keys(entry).length === 0) delete dirEdges[cell];
+    else dirEdges[cell] = entry;
+  }
+  const sheets = state.project.sheets.slice();
+  const nextSheet: typeof sheet = { ...sheet };
+  if (Object.keys(dirEdges).length === 0) delete nextSheet.dirEdges;
+  else nextSheet.dirEdges = dirEdges;
+  sheets[sheetIndex] = nextSheet;
+  return { ...state, project: { ...state.project, sheets }, edgeStroke, dirty: true };
+}
+
+/** Close an edge stroke: one project-history entry covering every cell the
+ *  drag toggled. A stroke that changed nothing records no history. */
+export function edgeStrokeEnd(state: EditorState): EditorState {
+  const stroke = state.edgeStroke;
+  if (!stroke) return state;
+  if (jsonEqual(stroke.before, state.project)) return { ...state, edgeStroke: null };
+  const entry: ProjectHistoryEntry = {
+    kind: "project",
+    before: stroke.before,
+    after: cloneJson(state.project),
+    beforeMapIndex: state.mapIndex,
+    afterMapIndex: state.mapIndex,
+    beforeSelection: selectionOf(state),
+    afterSelection: selectionOf(state),
+  };
+  return { ...state, edgeStroke: null, past: pushHistory(state, entry), future: [], dirty: true };
 }

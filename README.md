@@ -195,8 +195,10 @@ own Kenney tile sheets.
 What it does today:
 
 - paint ground tiles by click or drag; the first header button cycles
-  ground, sparse upper (star), and event modes; right click or shift+click
-  erases tiles;
+  ground, sparse upper (star), passage, and event modes; right click or
+  shift+click erases tiles;
+- paint per-cell `passage` overrides (pass/block) and toggle one-sided
+  sheet `dirEdges` enter/exit edges, with corner markers and edge arrows;
 - select and drag full multi-cell event footprints; create, copy, delete,
   resize and name events;
 - add, delete, copy and reorder pages; edit triggers, sprites, facing,
@@ -204,8 +206,15 @@ What it does today:
 - inspect recursive command trees with visible `if`, choices and battle
   branches; structurally edit the built-in authoring commands while
   preserving `shop`, `ext`, `battle`, and advanced route payloads read-only;
-- undo/redo, one step per tile stroke or event transaction, 64 steps deep (header buttons or
-  Cmd+Z / Cmd+Shift+Z);
+- pick a transfer command's destination on the canvas (PICK button, then
+  click a cell on any map);
+- map inspector: rename (following `start.map` and every transfer),
+  resize, edit sheets, and create/duplicate/delete maps (delete lists
+  every transfer reference with a pageable command location and asks for a
+  second confirm); inspector-local notices keep crop lists and save errors
+  visible;
+- undo/redo, one step per tile stroke or event/map transaction, 64 steps
+  deep (header buttons or Cmd+Z / Cmd+Shift+Z);
 - switch between a document's maps; the palette shows the sheets the
   current map declares;
 - save through the schema validator (`src/data/schema.json`): an invalid
@@ -213,10 +222,10 @@ What it does today:
   for byte, and an edit reuses untouched event/source spans without a
   whole-file reformat.
 
-Not yet: passage overrides, map properties, creating maps, common-event
-lists, asset import, or a visual transfer destination picker. The grow
-example's generated settlement is not wired in: its sheet is synthesized by
-its cooker rather than cut from a source PNG.
+Not yet: common-event lists, asset import, or sheet-level `dirBlock` /
+`defaultPassage` editing. The grow example's generated settlement is not
+wired in: its sheet is synthesized by its cooker rather than cut from a
+source PNG.
 
 ```sh
 bun run editor                    # Sunstone, on a working copy in dist/editor/
@@ -267,7 +276,8 @@ bun run rpgkit-edit save --file game/data/project.json --json @apply.json
 ```
 
 The command set is `open`, `list-maps`, `list-events`, `list-pages`,
-`list-commands`, `paint-tile`, `paint-rect`, `fill-region`, `add-event`,
+`list-commands`, `update-map`, `paint-tile`, `paint-rect`, `fill-region`,
+`paint-passage`, `add-event`,
 `update-event`, `delete-event`, `add-page`, `update-page`, `delete-page`,
 `insert-command`, `delete-command`, `update-command`, `validate`, and `save`.
 Mutations use the same tile strokes, event/page transactions, recursive

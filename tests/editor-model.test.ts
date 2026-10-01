@@ -222,6 +222,44 @@ describe("editor document gate", () => {
   });
 });
 
+// --- save-time schema refusal ------------------------------------------------
+
+describe("save-time schema refusal", () => {
+  test("an untouched export validates and corruptions are refused with string paths", () => {
+    // The app's save gate is exactly validateProject(exportProject(state)).
+    const exported = exportProject(createEditorState(bundled("sunstone")));
+    expect(validateProject(exported)).toEqual([]);
+
+    // (ii) a ground cell that is neither a tile id nor null
+    const bogusCell = structuredClone(exported);
+    (bogusCell.maps[0]!.ground as unknown[])[0] = "bogus!!";
+    const bogusErrors = validateProject(bogusCell);
+    expect(bogusErrors.length).toBeGreaterThan(0);
+    expect(bogusErrors.every((e) => typeof e.path === "string")).toBe(true);
+
+    // (iii) an event whose pages array is empty
+    const noPages = structuredClone(exported);
+    expect(noPages.maps[0]!.events!.length).toBeGreaterThan(0);
+    noPages.maps[0]!.events![0]!.pages = [];
+    const noPagesErrors = validateProject(noPages);
+    expect(noPagesErrors.length).toBeGreaterThan(0);
+    expect(noPagesErrors.every((e) => typeof e.path === "string")).toBe(true);
+  });
+
+  test("a ground array shorter than width*height is NOT refused by the schema", () => {
+    // The v1 schema states the width*height ground length only in the ground
+    // property description; it carries no minItems, so the save gate accepts
+    // a shortened ground. This pins that gap so any future semantic check in
+    // the gate (or a schema constraint) is a deliberate change.
+    const exported = exportProject(createEditorState(bundled("sunstone")));
+    const shortened = structuredClone(exported);
+    const map = shortened.maps[0]!;
+    expect(map.ground.length).toBe(map.width * map.height);
+    map.ground = map.ground.slice(0, 1);
+    expect(validateProject(shortened)).toEqual([]);
+  });
+});
+
 // --- edit reducer -----------------------------------------------------------
 
 function paintStroke(s: EditorState, indices: number[]): EditorState {
@@ -408,12 +446,16 @@ describe("editor layout geometry", () => {
 
   test("header buttons partition the top strip and never overlap", () => {
     const bs = headerButtons(480);
-    expect(bs.map((b) => b.id)).toEqual(["layer", "doc", "mapprev", "mapnext", "undo", "redo", "save"]);
+    expect(bs.map((b) => b.id)).toEqual(["layer", "doc", "mapprev", "mapnext", "map", "undo", "redo", "save"]);
     for (let i = 1; i < bs.length; i++) {
       expect(bs[i]!.x).toBeGreaterThanOrEqual(bs[i - 1]!.x + bs[i - 1]!.w);
     }
     // every button has positive area (never an invisible hot zone)
     for (const b of bs) expect(b.w * b.h).toBeGreaterThan(40);
+    // the MAP button fits between > and UNDO at the narrow 480 width
+    const map = bs.find((b) => b.id === "map")!;
+    const undo = bs.find((b) => b.id === "undo")!;
+    expect(map.x + map.w).toBeLessThanOrEqual(undo.x);
   });
 
   test("hit-test partitions header, palette and cells", () => {

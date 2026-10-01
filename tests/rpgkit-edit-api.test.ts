@@ -176,6 +176,56 @@ describe("rpgkit edit tile operations", () => {
   });
 });
 
+describe("rpgkit edit map operations", () => {
+  test("updates map properties through the editor model and rewrites transfer references", () => {
+    const project = fixture();
+    project.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "transfer", map: "map", x: 2, y: 1, dir: "left",
+    });
+    const source = serializeProject(project);
+    const updated = success(executeEditOperation(source, "update-map", {
+      map: "map",
+      changes: { id: "renamed", name: "Renamed map", width: 5, height: 2, sheets: ["s"] },
+    }));
+    const after = JSON.parse(updated.output) as Project;
+    expect(after.start.map).toBe("renamed");
+    expect(after.maps[0]).toMatchObject({
+      id: "renamed", name: "Renamed map", width: 5, height: 2, sheets: ["s"],
+    });
+    expect(after.maps[0]!.ground).toHaveLength(10);
+    expect(after.maps[0]!.events![0]!.pages[0]!.commands.at(-1)).toMatchObject({
+      op: "transfer", map: "renamed", x: 2, y: 1, dir: "left",
+    });
+    expect(updated.addresses).toEqual(["map:map", "map:renamed"]);
+    expect(applyEditPatch(after, updated.patch!, "reverse")).toEqual(project);
+  });
+
+  test("paints and clears per-cell passage overrides through the editor model", () => {
+    const source = serializeProject(fixture());
+    const blocked = success(executeEditOperation(source, "paint-passage", {
+      map: "map", x: 2, y: 1, value: "block",
+    }));
+    const afterBlock = JSON.parse(blocked.output) as Project;
+    expect(afterBlock.maps[0]!.passage).toEqual([[6, "block"]]);
+    expect(blocked.addresses).toEqual(["map:map/layer:passage/tile:2,1"]);
+    expect(applyEditPatch(afterBlock, blocked.patch!, "reverse")).toEqual(fixture());
+
+    const cleared = success(executeEditOperation(blocked.output, "paint-passage", {
+      map: "map", x: 2, y: 1, value: null,
+    }));
+    expect((JSON.parse(cleared.output) as Project).maps[0]!.passage).toEqual([]);
+  });
+
+  test("rejects unsupported map fields and passage values with field paths", () => {
+    expect(executeEditOperation(serializeProject(fixture()), "update-map", {
+      map: "map", changes: { simulationHz: 60 },
+    }).response).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT", path: "$.changes" } });
+    expect(executeEditOperation(serializeProject(fixture()), "paint-passage", {
+      map: "map", x: 0, y: 0, value: "maybe",
+    }).response).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT", path: "$.value" } });
+  });
+});
+
 describe("rpgkit edit event and page operations", () => {
   test("adds, updates and deletes events through editor transactions", () => {
     const source = serializeProject(fixture());

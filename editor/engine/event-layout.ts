@@ -84,9 +84,10 @@ export type EventInspectorAction =
   | { kind: "condition-field"; row: number; field: string; readOnly: boolean }
   | { kind: "command-action"; action: CommandAction }
   | { kind: "command-select"; row: number }
-  | { kind: "command-field"; row: number; field: string; readOnly: boolean };
+  | { kind: "command-field"; row: number; field: string; readOnly: boolean }
+  | { kind: "command-pick"; row: number };
 
-export interface InspectorControl<A extends EventInspectorAction = EventInspectorAction> {
+export interface InspectorControl<A = EventInspectorAction> {
   rect: InspectorRect;
   action: A;
   label: string;
@@ -99,6 +100,8 @@ export interface InspectorRowGeometry {
   rect: InspectorRect;
   header: InspectorControl;
   fields: InspectorControl[];
+  /** Transfer rows only: the PICK button at the header's right edge. */
+  pick?: InspectorControl;
   readOnly: boolean;
 }
 
@@ -147,132 +150,17 @@ const CONTROL_H = 20;
 const SECTION_H = 22;
 const PAGE_TAB_W = 42;
 
-function printable(value: unknown): string {
-  if (value === null) return "null";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "?";
-  }
-}
-
-function own(value: unknown, key: string): unknown {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
-}
-
-function commandField(key: string, label: string, value: unknown, readOnly = false): InspectorField {
-  const printableValue = value === undefined ? "" : printable(value);
-  return { key, label, value: printableValue, ...(readOnly ? { readOnly: true } : {}) };
-}
-
 export function inspectorCommandOp(row: InspectorCommandRow): string {
   return row.op ?? row.command?.op ?? "unknown";
 }
 
-/** Default editable rows for a command-tree FlatCommandRow. An adapter may
- * override these by supplying `fields`; otherwise the renderer and hit-test
- * derive the same stable dotted keys directly from the command payload. */
+/** Editable rows for a command row. The app always supplies `fields` (see
+ * commandInspectorRows in event-fields.ts), so they are returned verbatim;
+ * an adapter that omits them gets an empty list. No field keys are derived
+ * from the command payload here — the dotted keys the reducer understands
+ * live exclusively in event-fields.ts. */
 export function inspectorCommandFields(row: InspectorCommandRow): readonly InspectorField[] {
-  if (row.fields) return row.fields;
-  const command = row.command;
-  if (!command) return [];
-  const op = inspectorCommandOp(row);
-  switch (op) {
-    case "text": {
-      const lines = own(command, "lines");
-      const fields = Array.isArray(lines)
-        ? lines.map((line, index) => commandField(`lines.${index}`, `LINE ${index + 1}`, line))
-        : [];
-      const cps = own(command, "cps");
-      if (cps !== undefined) fields.push(commandField("cps", "CPS", cps));
-      return fields;
-    }
-    case "choices": {
-      const fields = [commandField("prompt", "PROMPT", own(command, "prompt"))];
-      const options = own(command, "options");
-      if (Array.isArray(options)) {
-        options.forEach((option, index) => fields.push(commandField(
-          `options.${index}.text`,
-          `OPTION ${index + 1}`,
-          own(option, "text"),
-        )));
-      }
-      return fields;
-    }
-    case "switch": return [
-      commandField("id", "ID", own(command, "id")),
-      commandField("value", "VALUE", own(command, "value")),
-    ];
-    case "variable": {
-      const set = own(command, "set");
-      const fields = [
-        commandField("id", "ID", own(command, "id")),
-        commandField("set.op", "OP", own(set, "op")),
-      ];
-      for (const key of ["value", "min", "max", "from"] as const) {
-        const value = own(set, key);
-        if (value !== undefined) fields.push(commandField(`set.${key}`, key.toUpperCase(), value));
-      }
-      return fields;
-    }
-    case "selfSwitch": return [
-      commandField("key", "KEY", own(command, "key")),
-      commandField("value", "VALUE", own(command, "value")),
-    ];
-    case "if": return [commandField("if", "IF", own(command, "if"))];
-    case "transfer": return [
-      commandField("map", "MAP", own(command, "map")),
-      commandField("x", "X", own(command, "x")),
-      commandField("y", "Y", own(command, "y")),
-      commandField("dir", "DIR", own(command, "dir")),
-      commandField("fade", "FADE", own(command, "fade")),
-    ];
-    case "wait": return [commandField("seconds", "SECONDS", own(command, "seconds"))];
-    case "gold": return [
-      commandField("set", "OP", own(command, "set")),
-      commandField("amount", "AMOUNT", own(command, "amount")),
-    ];
-    case "item": return [
-      commandField("item", "ITEM", own(command, "item")),
-      commandField("set", "OP", own(command, "set")),
-      commandField("count", "COUNT", own(command, "count")),
-    ];
-    case "se": return [
-      commandField("name", "NAME", own(command, "name")),
-      commandField("volume", "VOLUME", own(command, "volume")),
-      commandField("pitch", "PITCH", own(command, "pitch")),
-    ];
-    case "common": return [commandField("id", "ID", own(command, "id"))];
-    case "place": return [
-      commandField("target", "TARGET", own(command, "target")),
-      commandField("x", "X", own(command, "x")),
-      commandField("y", "Y", own(command, "y")),
-      commandField("dir", "DIR", own(command, "dir")),
-    ];
-    case "moveRoute": {
-      const route = own(command, "route");
-      const steps = own(route, "steps");
-      return [
-        commandField("target", "TARGET", own(command, "target")),
-        commandField("wait", "WAIT", own(command, "wait")),
-        commandField("route.steps", "STEPS", Array.isArray(steps) ? steps.map(printable).join(",") : ""),
-        commandField("route.repeat", "REPEAT", own(route, "repeat")),
-        commandField("route.skippable", "SKIP", own(route, "skippable")),
-      ];
-    }
-    case "erase":
-    case "exit":
-    case "lockInput":
-    case "unlockInput":
-      return [];
-    default:
-      // Opaque payloads remain inspectable but never acquire an editable
-      // field target by accident.
-      return [commandField("payload", "DATA", command, true)];
-  }
+  return row.fields ?? [];
 }
 
 function rect(x: number, y: number, w: number, h: number): InspectorRect {
@@ -321,6 +209,12 @@ function addVisibleRows(
   for (const row of rows) {
     const header = visibleControl(row.header, clip);
     if (header) hitRegions.push(header);
+    // The PICK button overlaps the header's right edge; push it after the
+    // header so reverse hit-testing finds the button first.
+    if (row.pick) {
+      const pick = visibleControl(row.pick, clip);
+      if (pick) hitRegions.push(pick);
+    }
     for (const field of row.fields) {
       const visible = visibleControl(field, clip);
       if (visible) hitRegions.push(visible);
@@ -426,8 +320,8 @@ export function createEventInspectorLayout(
 
   const conditionBarY = routeY + SECTION_H * 2 + 2;
   const conditionActions: InspectorControl[] = [
-    control("+", rect(leftWidth - 49, conditionBarY, 20, CONTROL_H), { kind: "condition-action", action: "add" }),
-    control("DEL", rect(leftWidth - 27, conditionBarY, 24, CONTROL_H), { kind: "condition-action", action: "delete" }),
+    control("+", rect(leftWidth - 60, conditionBarY, 20, CONTROL_H), { kind: "condition-action", action: "add" }),
+    control("DEL", rect(leftWidth - 36, conditionBarY, 32, CONTROL_H), { kind: "condition-action", action: "delete" }),
   ];
   hitRegions.push(...conditionActions);
   const conditionClip = rect(PAD, conditionBarY + CONTROL_H + 2, leftWidth - PAD * 2, height - (conditionBarY + CONTROL_H + 2) - PAD);
@@ -504,6 +398,17 @@ export function createEventInspectorLayout(
       rect(rowRect.x, rowY, rowRect.w, CONTROL_H),
       { kind: "command-select" as const, row },
     );
+    // Transfer rows get a PICK button at the header's right edge: click it,
+    // then click a cell on any map to fill map/x/y/dir from the canvas.
+    // (Registered in hitRegions by addVisibleRows, after the row header.)
+    let pick: InspectorControl | undefined;
+    if (inspectorCommandOp(command) === "transfer") {
+      pick = control(
+        "PICK",
+        rect(rowRect.x + rowRect.w - 40, rowY, 36, CONTROL_H),
+        { kind: "command-pick" as const, row },
+      );
+    }
     const fields = fieldsList.map((field, fieldIndex) => control(
       field.label,
       rect(rowRect.x + 8, rowY + CONTROL_H + fieldIndex * INSPECTOR_ROW_H, rowRect.w - 8, INSPECTOR_ROW_H),
@@ -514,7 +419,7 @@ export function createEventInspectorLayout(
         readOnly: readOnly || field.readOnly === true,
       },
     ));
-    commandRows.push({ row, key: command.key, rect: rowRect, header, fields, readOnly });
+    commandRows.push({ row, key: command.key, rect: rowRect, header, fields, readOnly, pick });
     rowY += rowH + GAP;
   });
   addVisibleRows(hitRegions, commandRows, commandClip);
@@ -583,5 +488,6 @@ export function inspectorActionKey(action: EventInspectorAction | null): string 
     case "command-action": return `command-action:${action.action}`;
     case "command-select": return `command:${action.row}`;
     case "command-field": return `command:${action.row}:${action.field}`;
+    case "command-pick": return `command-pick:${action.row}`;
   }
 }

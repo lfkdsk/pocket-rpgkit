@@ -71,6 +71,56 @@ export const PAL_KEY_ERASER = "__eraser__";
 
 export const EVENT_TOOL_IDS = ["new", "edit", "copy", "delete"] as const;
 export type EventTool = (typeof EVENT_TOOL_IDS)[number];
+export const EVENT_TOOL_COLS = 1;
+
+/** Passage-mode tools. The first three paint the map's passage overrides;
+ *  the rest toggle one-sided dirEdges on the SHEET of the painted cell's
+ *  ground tile (the in- and out- tools edit enter/exit lists; clr-edge
+ *  drops the cell's entry). */
+export const PASS_TOOL_IDS = [
+  "pass", "block", "clear", "clr-edge",
+  "in-down", "out-down",
+  "in-left", "out-left",
+  "in-right", "out-right",
+  "in-up", "out-up",
+] as const;
+export type PassTool = (typeof PASS_TOOL_IDS)[number];
+export const PASS_TOOL_COLS = 2;
+
+export const PASS_TOOL_LABELS: Record<PassTool, string> = {
+  "pass": "PASS",
+  "block": "BLOCK",
+  "clear": "CLEAR",
+  "clr-edge": "CLR-EDGE",
+  "in-down": "IN-DN",
+  "out-down": "OUT-DN",
+  "in-left": "IN-LT",
+  "out-left": "OUT-LT",
+  "in-right": "IN-RT",
+  "out-right": "OUT-RT",
+  "in-up": "IN-UP",
+  "out-up": "OUT-UP",
+};
+
+/** Passage tools replace the tile palette in PASS mode: a 2-column grid.
+ *  Coordinates are panel-relative (the panel starts at HEADER_H), matching
+ *  PalettePanel/EventPanel convention. */
+export function passToolButtons(): { id: PassTool; x: number; y: number; w: number; h: number }[] {
+  return PASS_TOOL_IDS.map((id, index) => ({
+    id,
+    x: 6 + (index % PASS_TOOL_COLS) * 67,
+    y: 33 + Math.floor(index / PASS_TOOL_COLS) * 27,
+    w: 63,
+    h: 24,
+  }));
+}
+
+export function hitPassTool(x: number, y: number): PassTool | null {
+  for (const button of passToolButtons()) {
+    if (inside(x, y, button)) return button.id;
+  }
+  return null;
+}
 
 /** Event-mode tools replace the tile palette. Coordinates are local to that
  * panel (whose screen top is HEADER_H), matching PalettePanel's convention. */
@@ -89,7 +139,7 @@ export type Layer = "ground" | "upper";
 
 // Header buttons (y 2..18).
 export interface ButtonGeom extends FrameGeom {
-  id: "layer" | "doc" | "mapprev" | "mapnext" | "undo" | "redo" | "save";
+  id: "layer" | "doc" | "mapprev" | "mapnext" | "map" | "undo" | "redo" | "save";
 }
 
 export function headerButtons(vpW: number): ButtonGeom[] {
@@ -104,6 +154,7 @@ export function headerButtons(vpW: number): ButtonGeom[] {
     mk("doc", 52, 36),
     mk("mapprev", 92, 20),
     mk("mapnext", 116, 20),
+    mk("map", 140, 44),
     undo,
     redo,
     save,

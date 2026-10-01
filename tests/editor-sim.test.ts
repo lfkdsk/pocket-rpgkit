@@ -623,8 +623,9 @@ simDescribe("editor budget", () => {
     const js = statSync(appBundle("editor") + ".js").size;
     // 264 baked 16x16 tile PNGs + styles/two font atlases: under 360 KB.
     expect(pak).toBeLessThan(360_000);
-    // Shared framework + tile editor + structured event inspector and the
-    // two bundled documents: keep the complete editor under 550 KB.
-    expect(js).toBeLessThan(550_000);
+    // Shared framework + tile editor + structured event inspector, the map
+    // inspector/passage mode/transfer picking (E2) and the two bundled
+    // documents: keep the complete editor under 600 KB.
+    expect(js).toBeLessThan(600_000);
   });
 });

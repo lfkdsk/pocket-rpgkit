@@ -230,7 +230,7 @@ describe("event inspector scrolling and clipping", () => {
     });
   });
 
-  test("accepts command-tree rows directly and derives semantic field rows", () => {
+  test("command-tree rows without explicit fields render headers only", () => {
     const rows = flattenCommands([
       { op: "switch", id: "gate", value: true },
       { op: "if", if: { kind: "switch", id: "branch" }, then: [
@@ -246,15 +246,39 @@ describe("event inspector scrolling and clipping", () => {
       conditions: [],
       commands: rows,
     });
-    expect(layout.commandRows.map((row) => row.fields.map((entry) =>
-      entry.action.kind === "command-field" ? entry.action.field : ""
-    ))).toEqual([
-      ["id", "value"],
-      ["if"],
-      ["seconds"],
-      ["payload"],
-    ]);
+    // The layout never derives editable keys from the command payload: rows
+    // without `fields` contribute only their header control.
+    expect(layout.commandRows.map((row) => row.fields)).toEqual([[], [], [], []]);
     expect(layout.commandRows[2]!.rect.x).toBeGreaterThan(layout.commandRows[1]!.rect.x);
     expect(layout.commandRows[3]!.readOnly).toBe(true);
   });
+});
+
+describe("condition action button geometry", () => {
+  for (const [width, height, leftWidth] of [[480, 272, 210], [720, 480, 260]] as const) {
+    test(`DEL fits its label without overlapping the title at ${width}px`, () => {
+      const layout = createEventInspectorLayout({
+        width,
+        height,
+        pageCount: 1,
+        activePage: 0,
+        conditions,
+        commands,
+      });
+      expect(layout.leftWidth).toBe(leftWidth);
+      const [add, del] = layout.conditionActions;
+      expect(add!.label).toBe("+");
+      expect(del!.label).toBe("DEL");
+      // Pinned geometry: + at leftWidth-60 (w=20), DEL at leftWidth-36 (w=32).
+      expect({ x: add!.rect.x, w: add!.rect.w }).toEqual({ x: leftWidth - 60, w: 20 });
+      expect({ x: del!.rect.x, w: del!.rect.w }).toEqual({ x: leftWidth - 36, w: 32 });
+      // compact() in the renderer allows floor((w-8)/6) chars; DEL needs 3.
+      expect(Math.floor((del!.rect.w - 8) / 6)).toBeGreaterThanOrEqual(3);
+      // The buttons never overlap each other and stay inside the left column.
+      expect(add!.rect.x + add!.rect.w).toBeLessThanOrEqual(del!.rect.x);
+      expect(del!.rect.x + del!.rect.w).toBeLessThanOrEqual(leftWidth);
+      // The CONDITIONS (ALL) title (x=4, width=leftWidth-68) ends 4px before +.
+      expect(4 + (leftWidth - 68)).toBe(add!.rect.x - 4);
+    });
+  }
 });

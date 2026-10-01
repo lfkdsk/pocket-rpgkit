@@ -21,6 +21,19 @@ const event = { type: "string", minLength: 1, description: "Stable map-local eve
 const page = { type: "integer", minimum: 0, description: "Zero-based page index returned by rpgkit_pages_list." };
 const tile = { type: ["string", "null"], description: "Tile id such as town.43, or null to erase." };
 const layer = { type: "string", enum: ["ground", "upper"], default: "ground" };
+const mapChanges = {
+  type: "object",
+  additionalProperties: false,
+  minProperties: 1,
+  properties: {
+    id: { type: "string", pattern: "^[a-z0-9_-]+$" },
+    name: { type: "string", minLength: 1, maxLength: 40 },
+    width: { type: "integer", minimum: 1, maximum: 256 },
+    height: { type: "integer", minimum: 1, maximum: 256 },
+    sheets: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1 } },
+  },
+};
+const passage = { type: ["string", "null"], enum: ["pass", "block", null], description: "Per-cell passage override, or null to clear it." };
 const dryRun = { type: "boolean", default: false, description: "Compute and validate the edit, diff and reversible patch without writing the file." };
 const address = {
   type: "object",
@@ -145,9 +158,11 @@ export const EDIT_TOOLS: readonly EditToolDefinition[] = [
   tool("rpgkit_events_list", "List map events", "list-events", "List every event on an inline map with stable map/event addresses and page counts.", { map }, ["map"]),
   tool("rpgkit_pages_list", "List event pages", "list-pages", "List pages in priority order with stable map/event/page addresses, conditions, triggers and command counts.", { map, event }, ["map", "event"]),
   tool("rpgkit_commands_list", "List command tree", "list-commands", "Flatten one page's recursive command tree. Each row includes a reusable structured commandAddress, stable text address, branch, summary and read-only flag.", { map, event, page }, ["map", "event", "page"]),
+  tool("rpgkit_map_update", "Update map properties", "update-map", "Rename a map or update its display name, size and sheet list through the editor model. Literal transfer references follow an id rename; resize reports cropped event ids.", { map, changes: mapChanges }, ["map", "changes"], true),
   tool("rpgkit_tile_paint", "Paint one tile", "paint-tile", "Paint or erase one ground/upper cell using the editor stroke model. The tile must belong to a sheet declared by the map.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
   tool("rpgkit_tile_rect", "Paint tile rectangle", "paint-rect", "Paint or erase a complete in-bounds rectangle as one editor stroke and one reversible patch.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 }, tile }, ["map", "x", "y", "width", "height", "tile"], true),
   tool("rpgkit_tile_fill", "Flood-fill tile region", "fill-region", "Four-way flood-fill the contiguous region containing x,y on ground or upper. null erases the region.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
+  tool("rpgkit_passage_paint", "Paint passage override", "paint-passage", "Set one map cell's passage override to pass or block, or clear it with null, through the editor stroke model.", { map, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, value: passage }, ["map", "x", "y", "value"], true),
   tool("rpgkit_event_add", "Add event", "add-event", "Add a complete schema-shaped event through the editor event transaction model. IDs must be unique on the map and the footprint must fit.", { map, event: eventValue }, ["map", "event"], true),
   tool("rpgkit_event_update", "Update event fields", "update-event", "Update event id/name/x/y/w/h. Use null to remove optional name/w/h; page content is edited with page tools.", { map, event, changes: { type: "object", additionalProperties: false, properties: { id: { type: "string", pattern: "^[A-Za-z0-9_-]+$" }, name: { type: ["string", "null"] }, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, w: { type: ["integer", "null"], minimum: 1 }, h: { type: ["integer", "null"], minimum: 1 } } } }, ["map", "event", "changes"], true),
   tool("rpgkit_event_delete", "Delete event", "delete-event", "Delete one map-local event and return its old value in the structured result.", { map, event }, ["map", "event"], true),

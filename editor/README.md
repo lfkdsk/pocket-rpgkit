@@ -8,8 +8,9 @@ those examples' own tile art.
 ## What it does
 
 - **Tile painting**: click or drag on the canvas to paint ground cells.
-  The first header button cycles **GROUND → UPPER → EVENT**. Upper is the
-  sparse star layer drawn above characters at runtime. Right click or
+  The first header button cycles **GROUND → UPPER → PASS → EVENT**. Upper is
+  the sparse star layer drawn above characters at runtime; PASS paints
+  passage overrides and one-way edges (see below). Right click or
   shift+click erases; palette slot 0 is the eraser brush.
 - **Events**: EVENT mode selects the topmost event under the pointer and
   highlights its full `w`×`h` footprint. Drag anywhere in that footprint to
@@ -34,18 +35,46 @@ those examples' own tile art.
   transaction is one history step, 64 steps deep.
   **UNDO**/**REDO** in the header, or Cmd+Z / Cmd+Shift+Z (Ctrl on Linux).
 - **Maps**: **<** and **>** switch between the document's maps; the palette
-  shows every cell of the sheets the current map declares.
+  shows every cell of the sheets the current map declares. The **MAP** header
+  button opens the map inspector:
+  - **properties**: id (rename follows `start.map` and every transfer that
+    names the old id), display name, width/height (resize expands with void
+    or crops; events fully outside are cropped and listed in a persistent
+    inspector notice, partially outside clamp — every resize is one undo
+    step), and the sheet list. Unknown fields the schema adds later are
+    preserved untouched.
+  - **NEW** creates an empty map after the current one (20×14, its sheets,
+    filled with cell 0 of its first declared sheet) and selects it; **DUP**
+    copies the map with a unique
+    `-copy` id (event ids are map-local, so the copy keeps them verbatim
+    and intra-map `place`/`moveRoute` references stay valid); **DEL** refuses
+    the only map and the start map, pages every transfer targeting the map
+    with its source and recursive command address, and needs a second click
+    to confirm. Crop warnings, save errors, and delete confirmation remain
+    visible while the inspector is open.
+- **Passage overrides**: the LAYER button cycles GROUND → UPPER → **PASS** →
+  EVENT. PASS mode paints per-cell `passage` overrides (PASS / BLOCK /
+  CLEAR brushes, green/red corner markers) and toggles one-sided
+  `dirEdges` on the sheet of the painted cell's ground tile (IN-*/OUT-*
+  tools for enter/exit edges, CLR-EDGE to clear; blue arrows point into
+  the cell, orange out). Both are undoable drag strokes.
+  Button-only navigation follows the visible two-column PASS tool grid, so
+  every operation is reachable without changing the tile palette's layout.
+- **Transfer picking**: a transfer command's inspector row has a **PICK**
+  button. Click it, switch maps with **<**/**>**, click any cell, and the
+  command's map/x/y/dir fill from the canvas. The map/x/y/dir fields stay
+  text-editable, so `$variable` operands still work.
 - **Open and save**: the document is parsed and checked against
   `src/data/schema.json` on load, and again before every save, which
   refuses an invalid export with the first schema error in the status bar.
   An unedited document saves back byte for byte. After an edit, unchanged
-  source spans — including other event objects, their property order, and
-  whitespace — are reused rather than reformatting the whole file.
+  source spans — including other event and map objects, their property order,
+  and whitespace — are reused rather than reformatting the whole file.
 
-Not yet: map properties, passage overrides, new maps, common-event lists,
-asset import, or a destination-map point picker. Transfer coordinates are
-numeric fields for now. `shop`, `ext`, and `battle` setup payloads and
-advanced object-shaped movement steps are shown and preserved but not edited
+Not yet: common-event lists, asset import, sheet-level `dirBlock`/`defaultPassage`
+editing (the PASS tools paint map `passage` overrides and sheet `dirEdges`
+only). `shop`, `ext`, and `battle` setup payloads and advanced
+object-shaped movement steps are shown and preserved but not edited
 in place; their existing branch commands remain navigable and reorderable.
 
 ## Running

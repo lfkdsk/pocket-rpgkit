@@ -50,8 +50,8 @@ interface JsonNode {
  * use a different indentation or property order. Re-stringifying the whole
  * document after changing one event would turn that local edit into a noisy
  * full-file rewrite. This small JSON span parser lets us replace only changed
- * values. Existing array elements are patched recursively; when an events
- * array changes length, unchanged events are reused by id byte-for-byte.
+ * values. Existing array elements are patched recursively; when an events or
+ * maps array changes length, unchanged objects are reused by id byte-for-byte.
  * Invalid source is impossible here (loadProject is the gate), and callers
  * can fall back to serializeProject if a stale source/project pair is passed.
  */
@@ -108,8 +108,8 @@ function patchNode(source: string, node: JsonNode, before: unknown, after: unkno
       }
       return applyLocalReplacements(source, node, replacements);
     }
-    if (path.at(-1) === "events") {
-      const keyed = patchEventArray(source, node, before, after, path);
+    if (path.at(-1) === "events" || path.at(-1) === "maps") {
+      const keyed = patchIdArray(source, node, before, after, path);
       if (keyed !== null) return keyed;
     }
   }
@@ -117,7 +117,7 @@ function patchNode(source: string, node: JsonNode, before: unknown, after: unkno
   return stringifyAt(after, source, node.start);
 }
 
-function patchEventArray(
+function patchIdArray(
   source: string,
   node: JsonNode,
   before: unknown[],

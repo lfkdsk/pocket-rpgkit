@@ -20,7 +20,7 @@ export interface Cursor {
   button: number;
 }
 
-export const HEADER_ORDER = ["layer", "doc", "mapprev", "mapnext", "undo", "redo", "save"] as const;
+export const HEADER_ORDER = ["layer", "doc", "mapprev", "mapnext", "map", "undo", "redo", "save"] as const;
 export type HeaderButton = (typeof HEADER_ORDER)[number];
 
 export function initialCursor(tx: number, ty: number): Cursor {
@@ -35,6 +35,9 @@ export interface CursorWorld {
   camX: number;
   camY: number;
   paletteSize: number;
+  /** Number of columns in the active palette/panel. Tile palettes default
+   *  to PAL_COLS; compact tool panels pass their actual visual width. */
+  paletteCols?: number;
   headerSize: number;
 }
 
@@ -91,12 +94,21 @@ export function stepCursor(
   }
 
   if (cur.zone === "palette") {
-    const rows = Math.ceil(world.paletteSize / PAL_COLS);
+    const explicitCols = world.paletteCols;
+    const cols = explicitCols ?? PAL_COLS;
     let { slot } = cur;
-    const col = slot % PAL_COLS;
-    const row = Math.floor(slot / PAL_COLS);
-    if (dir === 1) return { cursor: cur, camX, camY }; // palette is the leftmost zone
+    const col = slot % cols;
+    const row = Math.floor(slot / cols);
+    if (dir === 1) {
+      if (explicitCols !== undefined && col > 0) {
+        return { cursor: { ...cur, slot: slot - 1 }, camX, camY };
+      }
+      return { cursor: cur, camX, camY }; // palette is the leftmost zone
+    }
     if (dir === 3) {
+      if (explicitCols !== undefined && col + 1 < cols && slot + 1 < world.paletteSize) {
+        return { cursor: { ...cur, slot: slot + 1 }, camX, camY };
+      }
       return {
         cursor: { ...cur, zone: "canvas", tx: x0, ty: Math.min(world.mapH - 1, y0 + row) },
         camX,
@@ -105,11 +117,10 @@ export function stepCursor(
     }
     if (dir === 0 || dir === 2) {
       const d = dir === 0 ? 1 : -1;
-      const next = col + (row + d) * PAL_COLS;
+      const next = col + (row + d) * cols;
       if (next >= 0 && next < world.paletteSize) slot = next;
       return { cursor: { ...cur, slot }, camX, camY };
     }
-    void rows;
     return { cursor: cur, camX, camY };
   }
 
@@ -123,8 +134,9 @@ export function stepCursor(
     };
   }
   if (dir === 1 && tx === x0) {
+    const cols = world.paletteCols ?? PAL_COLS;
     return {
-      cursor: { ...cur, zone: "palette", slot: Math.min(world.paletteSize - 1, paletteRowForY(ty, y0, world.viewRows) * PAL_COLS) },
+      cursor: { ...cur, zone: "palette", slot: Math.min(world.paletteSize - 1, paletteRowForY(ty, y0, world.viewRows) * cols) },
       camX,
       camY,
     };

@@ -43,11 +43,16 @@ import {
   deleteSelectedEvent,
   exportProject,
   paintCell,
+  renameMap,
+  resizeMap,
   selectEvent,
   selectLayer,
   selectMap,
+  selectPassageBrush,
   selectPage,
   selectTile,
+  setMapName,
+  setMapSheets,
   strokeEnd,
   strokeStart,
   toDenseUpper,
@@ -77,9 +82,11 @@ import {
 
 const COMMAND_SET: ReadonlySet<string> = new Set(EDIT_COMMANDS);
 const WRITE_COMMANDS: ReadonlySet<EditCommandName> = new Set([
+  "update-map",
   "paint-tile",
   "paint-rect",
   "fill-region",
+  "paint-passage",
   "add-event",
   "update-event",
   "delete-event",
@@ -98,9 +105,11 @@ const ARGUMENT_KEYS: Record<EditCommandName, readonly string[]> = {
   "list-events": ["map"],
   "list-pages": ["map", "event"],
   "list-commands": ["map", "event", "page"],
+  "update-map": ["map", "changes"],
   "paint-tile": ["map", "layer", "x", "y", "tile"],
   "paint-rect": ["map", "layer", "x", "y", "width", "height", "tile"],
   "fill-region": ["map", "layer", "x", "y", "tile"],
+  "paint-passage": ["map", "x", "y", "value"],
   "add-event": ["map", "event"],
   "update-event": ["map", "event", "changes"],
   "delete-event": ["map", "event"],
@@ -797,7 +806,100 @@ interface MutationResult {
   result: unknown;
 }
 
+function modelFailure(error: string, path: string): never {
+  throw new EditApiError("INVALID_ARGUMENT", error, path);
+}
+
 function mutate(command: EditCommandName, project: Project, args: Record<string, unknown>): MutationResult {
+  if (command === "update-map") {
+    const mapId = stringArg(args, "map");
+    const { map, index: mapIndex } = findMap(project, mapId);
+    const changes = objectArg(args, "changes");
+    const allowed = ["id", "name", "width", "height", "sheets"] as const;
+    const unknown = Object.keys(changes).filter((key) => !allowed.includes(key as typeof allowed[number]));
+    if (unknown.length > 0) {
+      throw new EditApiError(
+        "INVALID_ARGUMENT",
+        `unsupported map field(s): ${unknown.join(", ")}`,
+        "$.changes",
+        allowed,
+        unknown,
+      );
+    }
+    let state = editorAt(project, mapIndex);
+    let croppedEvents: string[] = [];
+    if (own(changes, "id")) {
+      if (typeof changes.id !== "string") {
+        throw new EditApiError("INVALID_ARGUMENT", "map id must be a string", "$.changes.id", "string", changes.id);
+      }
+      const result = renameMap(state, changes.id);
+      if (!result.ok) modelFailure(result.error, "$.changes.id");
+      state = result.state;
+    }
+    if (own(changes, "name")) {
+      if (typeof changes.name !== "string") {
+        throw new EditApiError("INVALID_ARGUMENT", "map name must be a string", "$.changes.name", "string", changes.name);
+      }
+      const result = setMapName(state, changes.name);
+      if (!result.ok) modelFailure(result.error, "$.changes.name");
+      state = result.state;
+    }
+    if (own(changes, "width") || own(changes, "height")) {
+      const width = integerArg(changes, "width", { min: 1, max: 256, optional: true }) ?? map.width;
+      const height = integerArg(changes, "height", { min: 1, max: 256, optional: true }) ?? map.height;
+      const result = resizeMap(state, width, height);
+      if (!result.ok) modelFailure(result.error, own(changes, "width") ? "$.changes.width" : "$.changes.height");
+      state = result.state;
+      croppedEvents = result.croppedEvents;
+    }
+    if (own(changes, "sheets")) {
+      if (!Array.isArray(changes.sheets) || changes.sheets.some((id) => typeof id !== "string" || id.length === 0)) {
+        throw new EditApiError(
+          "INVALID_ARGUMENT",
+          "map sheets must be a non-empty array of non-empty strings",
+          "$.changes.sheets",
+          "non-empty string array",
+          changes.sheets,
+        );
+      }
+      const result = setMapSheets(state, changes.sheets as string[]);
+      if (!result.ok) modelFailure(result.error, "$.changes.sheets");
+      state = result.state;
+    }
+    const edited = exportProject(state);
+    const updated = edited.maps[state.mapIndex]!;
+    return {
+      project: edited,
+      addresses: updated.id === mapId ? [mapAddress(mapId)] : [mapAddress(mapId), mapAddress(updated.id)],
+      result: { map: cloneJson(updated), croppedEvents },
+    };
+  }
+
+  if (command === "paint-passage") {
+    const mapId = stringArg(args, "map");
+    const { map, index: mapIndex } = findMap(project, mapId);
+    const x = integerArg(args, "x", { min: 0, max: map.width - 1 })!;
+    const y = integerArg(args, "y", { min: 0, max: map.height - 1 })!;
+    if (!own(args, "value")) {
+      throw new EditApiError("INVALID_ARGUMENT", "value is required; pass null explicitly to clear", "$.value", "pass, block, or null");
+    }
+    const value = args.value;
+    if (value !== null && value !== "pass" && value !== "block") {
+      throw new EditApiError("INVALID_ARGUMENT", "value must be pass, block, or null", "$.value", ["pass", "block", null], value);
+    }
+    let state = editorAt(project, mapIndex);
+    state = selectLayer(state, "passage");
+    if (value !== null) state = selectPassageBrush(state, value);
+    state = strokeStart(state, value === null);
+    state = paintCell(state, y * map.width + x);
+    state = strokeEnd(state);
+    return {
+      project: exportProject(state),
+      addresses: [tileAddress(mapId, "passage", x, y)],
+      result: { map: mapId, x, y, value },
+    };
+  }
+
   if (command === "paint-tile" || command === "paint-rect" || command === "fill-region") {
     const mapId = stringArg(args, "map");
     const { map, index: mapIndex } = findMap(project, mapId);

@@ -39,30 +39,44 @@ import {
   createEditorState,
   createEventAt,
   currentMap,
+  deleteMap,
   deletePage,
   deleteSelectedEvent,
+  duplicateMap,
   duplicateSelectedEvent,
+  edgePaintCell,
+  edgeStrokeEnd,
+  edgeStrokeStart,
   eventMarkers,
   exportProject,
+  mapReferences,
   markSaved,
   movePage,
   moveSelectedEvent,
+  newMap,
   paintCell,
   paletteTiles,
   redo,
+  renameMap,
   renameSelectedEvent,
+  resizeMap,
   resizeSelectedEvent,
   selectEvent,
   selectLayer,
   selectMap,
   selectPage,
+  selectPassageBrush,
   selectTile,
+  setMapName,
+  setMapSheets,
   slotForTile,
   strokeEnd,
   strokeStart,
   undo,
   updateSelectedPage,
+  type EdgeBrush,
   type EditorState,
+  type MapReference,
 } from "./engine/model.ts";
 import { loadProject, serializeProjectPreservingSource, validateProject } from "./engine/document.ts";
 import { BUNDLED_PROJECTS } from "./engine/projects.ts";
@@ -75,17 +89,24 @@ import {
   PAL_PITCH,
   PAL_W,
   clampCam,
+  EVENT_TOOL_COLS,
   EVENT_TOOL_IDS,
+  PASS_TOOL_COLS,
+  PASS_TOOL_IDS,
+  PASS_TOOL_LABELS,
   fittedView,
   headerButtons,
   hitEventTool,
+  hitPassTool,
   hitTest,
+  type PassTool,
 } from "./engine/layout.ts";
 import { HEADER_ORDER, initialCursor, stepCursor, type Cursor } from "./engine/cursor.ts";
 import { connectSvc, type HostLine, type Svc } from "./svc.ts";
 import { hasFs, readProject, writeProject } from "./store.ts";
 import { Banner, EventPanel, HeaderButton, PalettePanel, type PaletteThumb } from "./ui/panels.tsx";
-import { Canvas } from "./ui/canvas.tsx";
+import { PassPanel } from "./ui/pass-panel.tsx";
+import { Canvas, type CellEdges } from "./ui/canvas.tsx";
 import { DIM, GOOD, BAD } from "./ui/panels.tsx";
 import {
   eventDragDestination,
@@ -133,7 +154,14 @@ import {
   type EventInspectorAction,
   type InspectorScrollOffsets,
 } from "./engine/event-layout.ts";
+import {
+  createMapInspectorLayout,
+  hitTestMapInspector,
+  type MapInspectorAction,
+  type MapField,
+} from "./engine/map-layout.ts";
 import { EventInspector, flattenInspectorConditions } from "./ui/event-inspector.tsx";
+import { MapInspector } from "./ui/map-inspector.tsx";
 
 type Notice = { kind: "info" | "good" | "bad"; text: string };
 
@@ -198,11 +226,59 @@ export function EditorApp(): JSX.Element {
   const [inspectorScroll, setInspectorScroll] = createSignal<InspectorScrollOffsets>({
     ...ZERO_INSPECTOR_SCROLL,
   });
+  const [passTool, setPassTool] = createSignal<PassTool>("pass");
+  const [mapInspectorOpen, setMapInspectorOpen] = createSignal(false);
+  const [mapFocus, setMapFocus] = createSignal<MapInspectorAction | null>(null);
+  const [mapInput, setMapInput] = createSignal("");
+  const [deleteRefs, setDeleteRefs] = createSignal<{
+    mapId: string;
+    references: MapReference[];
+  } | null>(null);
+  const [mapReferencePage, setMapReferencePage] = createSignal(0);
+  const [pendingPick, setPendingPick] = createSignal<{
+    mapIndex: number;
+    eventId: string;
+    pageIndex: number;
+    address: CommandAddress;
+    /** Object identity pins the exact command revision. Map switches retain
+     *  it; undo/redo and structural command changes do not. */
+    command: Page["commands"][number];
+  } | null>(null);
+
+  // Input transactions live beside the reactive editor state. Mode changes
+  // must close both halves together: reducer strokes and these UI latches.
+  let pointerDown: false | "paint" | "erase" | "event" | "pass" | "edge" = false;
+  let eventDrag: { event: GameEvent; start: { x: number; y: number } } | null = null;
+  let pointerX = PAL_W;
+  let prevButtons = 0;
+  let strokeOpen = false;
+  let edgeStrokeOpen = false;
 
   const tileTextures = createTileTextures();
 
   const map = createMemo(() => currentMap(editor()));
   const markers = createMemo(() => eventMarkers(map()));
+  /** PASS mode: the active layer is the passage override layer. Event mode
+   *  is orthogonal to the layer (the layer cycle passes through PASS on the
+   *  way to EVENT), so it must exclude event mode explicitly. */
+  const passMode = createMemo(() => !eventMode() && editor().layer === "passage");
+  const passageDense = createMemo(() => editor().passageDense[editor().mapIndex] ?? null);
+  /** Per-cell dirEdges for the current map, resolved from each cell's ground
+   *  tile sheet (dirEdges is sheet-level in this format). */
+  const cellEdges = createMemo<(CellEdges | null)[]>(() => {
+    const m = map();
+    const out: (CellEdges | null)[] = new Array(m.width * m.height).fill(null);
+    const sheets = new Map(editor().project.sheets.map((sheet) => [sheet.id, sheet]));
+    for (let i = 0; i < m.ground.length; i++) {
+      const tile = m.ground[i];
+      if (typeof tile !== "string") continue;
+      const match = /^([a-z0-9_-]+)\.(\d+)$/.exec(tile);
+      if (!match) continue;
+      const edges = sheets.get(match[1]!)?.dirEdges?.[String(Number(match[2]!))];
+      if (edges) out[i] = edges;
+    }
+    return out;
+  });
   const selectedEvent = createMemo<GameEvent | null>(() => {
     const id = editor().selectedEventId;
     return id === null ? null : (map().events ?? []).find((event) => event.id === id) ?? null;
@@ -225,6 +301,17 @@ export function EditorApp(): JSX.Element {
       conditions: conditionRows(),
       commands: commandRows(),
       scroll: inspectorScroll(),
+    });
+  });
+  const mapInspectorLayout = createMemo(() => {
+    if (!mapInspectorOpen()) return null;
+    const pendingDelete = deleteRefs();
+    return createMapInspectorLayout({
+      width: vp().w,
+      height: vp().h - HEADER_H,
+      referenceCount: pendingDelete?.references.length ?? 0,
+      referencePage: mapReferencePage(),
+      showNotice: notice().text.length > 0,
     });
   });
   // Content-compared: a paint stroke replaces the project object, but the
@@ -265,6 +352,13 @@ export function EditorApp(): JSX.Element {
       setPalScroll(0);
       setEventMode(false);
       setInspectorOpen(false);
+      setMapInspectorOpen(false);
+      setMapFocus(null);
+      setMapInput("");
+      setDeleteRefs(null);
+      setMapReferencePage(0);
+      setPendingPick(null);
+      setPassTool("pass");
       setEventPlacement({ x: 0, y: 0 });
       setDragPreview(null);
       setInspectorSelection({ condition: null, command: null });
@@ -294,6 +388,10 @@ export function EditorApp(): JSX.Element {
     const next = (e.mapIndex + delta + count) % count;
     if (next === e.mapIndex) return;
     const switched = selectMap(e, next);
+    setDeleteRefs(null);
+    setMapReferencePage(0);
+    // pendingPick survives map switches: picking a target on another map is
+    // the whole point of the flow.
     batch(() => {
       setEditor(switched);
       setCam(clampCameraTo(switched, cam()));
@@ -304,6 +402,10 @@ export function EditorApp(): JSX.Element {
     let e = editor();
     if (e.stroke) {
       e = strokeEnd(e);
+      setEditor(e);
+    }
+    if (e.edgeStroke) {
+      e = edgeStrokeEnd(e);
       setEditor(e);
     }
     const candidate = exportProject(e);
@@ -351,7 +453,22 @@ export function EditorApp(): JSX.Element {
     });
   };
 
+  /** Commit any live paint transaction and clear every pointer/gamepad
+   *  latch before a mode boundary changes how releases are interpreted. */
+  const finishActiveInput = (): void => {
+    let e = editor();
+    if (e.stroke) e = strokeEnd(e);
+    if (e.edgeStroke) e = edgeStrokeEnd(e);
+    if (e !== editor()) setEditor(e);
+    pointerDown = false;
+    eventDrag = null;
+    setDragPreview(null);
+    strokeOpen = false;
+    edgeStrokeOpen = false;
+  };
+
   const toggleLayer = (): void => {
+    finishActiveInput();
     const e = editor();
     if (eventMode()) {
       setEventMode(false);
@@ -364,6 +481,12 @@ export function EditorApp(): JSX.Element {
       const next = selectLayer(e, "upper");
       setEditor(next);
       setNotice({ kind: "info", text: "LAYER: UPPER" });
+      return;
+    }
+    if (e.layer === "upper") {
+      const next = selectLayer(e, "passage");
+      setEditor(next);
+      setNotice({ kind: "info", text: "MODE: PASSAGE (PASS/BLOCK/EDGE TOOLS)" });
       return;
     }
     setEventMode(true);
@@ -380,22 +503,29 @@ export function EditorApp(): JSX.Element {
     else if (id === "doc") switchDoc();
     else if (id === "mapprev") switchMap(-1);
     else if (id === "mapnext") switchMap(1);
+    else if (id === "map") toggleMapInspector();
     else if (id === "undo") {
+      setPendingPick(null);
       const e = editor();
       if (canUndo(e)) {
         const u = undo(e);
         batch(() => {
           setEditor(u);
           setCam(clampCameraTo(u, cam()));
+          setDeleteRefs(null);
+          setMapReferencePage(0);
         });
       }
     } else if (id === "redo") {
+      setPendingPick(null);
       const e = editor();
       if (canRedo(e)) {
         const r = redo(e);
         batch(() => {
           setEditor(r);
           setCam(clampCameraTo(r, cam()));
+          setDeleteRefs(null);
+          setMapReferencePage(0);
         });
       }
     } else if (id === "save") performSave();
@@ -425,6 +555,7 @@ export function EditorApp(): JSX.Element {
       return;
     }
     resetInspectorRows();
+    setMapInspectorOpen(false);
     setInspectorOpen(true);
   };
 
@@ -726,6 +857,10 @@ export function EditorApp(): JSX.Element {
       clearInspectorInput();
       return;
     }
+    if (action.kind === "command-pick") {
+      beginPick(action.row);
+      return;
+    }
     if (action.kind === "command-action") {
       if (action.action === "add") {
         setInspectorFocus(action);
@@ -778,14 +913,254 @@ export function EditorApp(): JSX.Element {
     }
   };
 
+  // --- map inspector -------------------------------------------------------
+  const closeMapInspector = (): void => {
+    setMapFocus(null);
+    setMapInput("");
+    setDeleteRefs(null);
+    setMapReferencePage(0);
+    setMapInspectorOpen(false);
+  };
+
+  const toggleMapInspector = (): void => {
+    if (mapInspectorOpen()) {
+      closeMapInspector();
+      return;
+    }
+    if (pendingPick()) return; // picking owns the canvas
+    // the two inspectors are mutually exclusive (they share the canvas area)
+    setInspectorOpen(false);
+    setDeleteRefs(null);
+    setMapReferencePage(0);
+    setMapInspectorOpen(true);
+  };
+
+  const mapFieldValue = (field: MapField): string => {
+    const m = currentMap(editor());
+    if (field === "id") return m.id;
+    if (field === "name") return m.name;
+    if (field === "width") return String(m.width);
+    if (field === "height") return String(m.height);
+    return (m.sheets ?? []).join(",");
+  };
+
+  const commitMapField = (field: MapField, raw: string): boolean => {
+    const e = editor();
+    if (field === "id") {
+      const r = renameMap(e, raw);
+      if (!r.ok) {
+        setNotice({ kind: "bad", text: r.error.toUpperCase() });
+        return false;
+      }
+      setEditor(r.state);
+      setDeleteRefs(null);
+      setMapReferencePage(0);
+      setNotice({ kind: "info", text: `MAP ID: ${raw.trim()}` });
+      return true;
+    }
+    if (field === "name") {
+      const r = setMapName(e, raw);
+      if (!r.ok) {
+        setNotice({ kind: "bad", text: r.error.toUpperCase() });
+        return false;
+      }
+      setEditor(r.state);
+      setDeleteRefs(null);
+      setMapReferencePage(0);
+      setNotice({ kind: "info", text: "MAP NAME UPDATED" });
+      return true;
+    }
+    if (field === "width" || field === "height") {
+      if (!/^-?\d+$/.test(raw.trim())) {
+        setNotice({ kind: "bad", text: "SIZE MUST BE AN INTEGER" });
+        return false;
+      }
+      const m = currentMap(e);
+      const r = resizeMap(e, field === "width" ? Number(raw) : m.width, field === "height" ? Number(raw) : m.height);
+      if (!r.ok) {
+        setNotice({ kind: "bad", text: r.error.toUpperCase() });
+        return false;
+      }
+      setEditor(r.state);
+      setDeleteRefs(null);
+      setMapReferencePage(0);
+      setCam(clampCameraTo(r.state, cam()));
+      setNotice(r.croppedEvents.length > 0
+        ? { kind: "bad", text: `RESIZED; CROPPED ${r.croppedEvents.length} EVENT(S): ${r.croppedEvents.join(", ")} — UNDO RESTORES` }
+        : { kind: "info", text: "MAP RESIZED" });
+      return true;
+    }
+    // sheets
+    const sheets = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const r = setMapSheets(e, sheets);
+    if (!r.ok) {
+      setNotice({ kind: "bad", text: r.error.toUpperCase() });
+      return false;
+    }
+    setEditor(r.state);
+    setDeleteRefs(null);
+    setMapReferencePage(0);
+    setNotice({ kind: "info", text: "MAP SHEETS UPDATED" });
+    return true;
+  };
+
+  const activateMapInspector = (action: MapInspectorAction): void => {
+    if (action.kind === "close") {
+      closeMapInspector();
+      return;
+    }
+    if (action.kind === "field") {
+      setMapFocus(action);
+      setMapInput(mapFieldValue(action.field));
+      return;
+    }
+    if (action.kind === "reference-page") {
+      const layout = mapInspectorLayout();
+      if (!layout) return;
+      setMapReferencePage(Math.max(
+        0,
+        Math.min(layout.referencePageCount - 1, layout.referencePage + action.delta),
+      ));
+      return;
+    }
+    const e = editor();
+    if (action.action === "new") {
+      // A new map inherits the current map's sheets and fills with the first
+      // sheet's cell 0 (a walkable default) rather than blocking void.
+      const sheets = currentMap(e).sheets ?? e.project.sheets.slice(0, 1).map((s) => s.id);
+      const fill = sheets.length > 0 ? `${sheets[0]}.0` : null;
+      const r = newMap(e, { sheets, fill });
+      if (!r.ok) {
+        setNotice({ kind: "bad", text: r.error.toUpperCase() });
+        return;
+      }
+      setEditor(r.state);
+      setDeleteRefs(null);
+      setMapReferencePage(0);
+      setCam(clampCameraTo(r.state, cam()));
+      setNotice({ kind: "info", text: `NEW MAP: ${currentMap(r.state).id}` });
+      return;
+    }
+    if (action.action === "dup") {
+      const r = duplicateMap(e);
+      if (!r.ok) {
+        setNotice({ kind: "bad", text: r.error.toUpperCase() });
+        return;
+      }
+      setEditor(r.state);
+      setDeleteRefs(null);
+      setMapReferencePage(0);
+      setCam(clampCameraTo(r.state, cam()));
+      setNotice({ kind: "info", text: `DUPLICATED MAP: ${currentMap(r.state).id}` });
+      return;
+    }
+    // del: a first click lists the transfers that target this map; a second
+    // click (with the same map still active) confirms the delete.
+    const mapId = currentMap(e).id;
+    if (deleteRefs()?.mapId !== mapId) {
+      const refs = mapReferences(e.project, mapId);
+      if (refs.length > 0) {
+        setDeleteRefs({ mapId, references: refs });
+        setMapReferencePage(0);
+        setNotice({ kind: "bad", text: `${refs.length} TRANSFER(S) TARGET THIS MAP — DEL AGAIN TO CONFIRM` });
+        return;
+      }
+    }
+    const r = deleteMap(e, true);
+    if (!r.ok) {
+      setNotice({ kind: "bad", text: r.error.toUpperCase() });
+      return;
+    }
+    setEditor(r.state);
+    setDeleteRefs(null);
+    setMapReferencePage(0);
+    setCam(clampCameraTo(r.state, cam()));
+    setNotice({ kind: "info", text: "MAP DELETED" });
+  };
+
+  // --- passage tools --------------------------------------------------------
+  const selectPassTool = (tool: PassTool): void => {
+    setPassTool(tool);
+    setNotice({ kind: "info", text: `PASS TOOL: ${PASS_TOOL_LABELS[tool]}` });
+  };
+
+  /** The edge brush for the current pass tool, or null for cell brushes. */
+  const edgeBrushFor = (tool: PassTool): EdgeBrush | null => {
+    if (tool === "clr-edge") return { kind: "clear" };
+    if (tool === "in-down" || tool === "out-down") return { kind: tool === "in-down" ? "enter" : "exit", dir: "down" };
+    if (tool === "in-left" || tool === "out-left") return { kind: tool === "in-left" ? "enter" : "exit", dir: "left" };
+    if (tool === "in-right" || tool === "out-right") return { kind: tool === "in-right" ? "enter" : "exit", dir: "right" };
+    if (tool === "in-up" || tool === "out-up") return { kind: tool === "in-up" ? "enter" : "exit", dir: "up" };
+    return null;
+  };
+
+  // --- transfer target picking ----------------------------------------------
+  const beginPick = (row: number): void => {
+    const e = editor();
+    const event = selectedEvent();
+    const cmdRow = commandRows()[row];
+    if (!event || !cmdRow) return;
+    setPendingPick({
+      mapIndex: e.mapIndex,
+      eventId: event.id,
+      pageIndex: e.selectedPageIndex,
+      address: cmdRow.address,
+      command: cmdRow.command,
+    });
+    setInspectorOpen(false);
+    setMapInspectorOpen(false);
+    clearInspectorInput();
+    setMapFocus(null);
+    setMapInput("");
+    setNotice({ kind: "info", text: "PICK TRANSFER TARGET: CLICK A CELL (L/R SWITCH MAPS, ESC CANCELS)" });
+  };
+
+  const applyPick = (tx: number, ty: number): void => {
+    const pick = pendingPick();
+    if (!pick) return;
+    const targetMapId = currentMap(editor()).id;
+    let e = selectMap(editor(), pick.mapIndex);
+    e = selectEvent(e, pick.eventId, pick.pageIndex);
+    const page = e.project.maps[pick.mapIndex]?.events?.find((ev) => ev.id === pick.eventId)?.pages[pick.pageIndex];
+    const list = page ? getCommandList(page.commands, pick.address.path) : null;
+    const command = list?.[pick.address.index];
+    if (!page || !command || command !== pick.command || command.op !== "transfer") {
+      setPendingPick(null);
+      setNotice({ kind: "bad", text: "PICK CANCELLED: COMMAND CHANGED" });
+      return;
+    }
+    const keepDir = typeof command.dir === "string" ? command.dir : "down";
+    let edited = editCommandField(command, "map", targetMapId);
+    if (!edited.ok) {
+      setPendingPick(null);
+      setNotice({ kind: "bad", text: edited.error.toUpperCase() });
+      return;
+    }
+    edited = editCommandField(edited.value, "x", String(tx));
+    if (edited.ok) edited = editCommandField(edited.value, "y", String(ty));
+    if (edited.ok) edited = editCommandField(edited.value, "dir", keepDir);
+    if (!edited.ok) {
+      setPendingPick(null);
+      setNotice({ kind: "bad", text: edited.error.toUpperCase() });
+      return;
+    }
+    const commands = updateCommand(page.commands, pick.address, edited.value);
+    const next = updateSelectedPage(e, (current) => ({ ...current, commands }));
+    setEditor(next);
+    // The pick may have switched maps; clamp the camera back to the event's map.
+    setCam(clampCameraTo(next, cam()));
+    setPendingPick(null);
+    setInspectorOpen(true);
+    setInspectorSelection({ condition: null, command: null });
+    setNotice({ kind: "info", text: `TARGET SET: ${targetMapId} ${tx},${ty} ${keepDir}` });
+  };
+
   // --- pointer interaction ------------------------------------------------
   // false      no button held
   // "paint"    primary held (left)
   // "erase"    secondary/shift held
-  let pointerDown: false | "paint" | "erase" | "event" = false;
-  let eventDrag: { event: GameEvent; start: { x: number; y: number } } | null = null;
-  let pointerX = PAL_W;
-
+  // "pass"     passage override stroke (PASS mode cell brush)
+  // "edge"     sheet dirEdges stroke (PASS mode edge brush)
   const cellPaint = (tx: number, ty: number): void => {
     const e = editor();
     const m = currentMap(e);
@@ -805,8 +1180,10 @@ export function EditorApp(): JSX.Element {
     if (m.t !== "mouse") return;
     // A bare release (host Reset on focus loss) ends the stroke anywhere.
     if (m.x === undefined || m.y === undefined) {
-      if (pointerDown === "paint" || pointerDown === "erase") {
+      if (pointerDown === "paint" || pointerDown === "erase" || pointerDown === "pass") {
         setEditor(strokeEnd(editor()));
+      } else if (pointerDown === "edge") {
+        setEditor(edgeStrokeEnd(editor()));
       }
       eventDrag = null;
       setDragPreview(null);
@@ -816,6 +1193,25 @@ export function EditorApp(): JSX.Element {
     const x = m.x | 0;
     const y = m.y | 0;
     pointerX = x;
+
+    if (mapInspectorOpen()) {
+      if (m.d && !pointerDown) {
+        pointerDown = "event";
+        if (y < HEADER_H) {
+          const hit = hitAt(x, y);
+          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+        } else {
+          const layout = mapInspectorLayout();
+          if (layout) {
+            const action = hitTestMapInspector(layout, x, y - HEADER_H);
+            if (action) activateMapInspector(action);
+          }
+        }
+      } else if (!m.d) {
+        pointerDown = false;
+      }
+      return;
+    }
 
     if (inspectorOpen()) {
       if (m.d && !pointerDown) {
@@ -842,12 +1238,40 @@ export function EditorApp(): JSX.Element {
       if (!pointerDown) {
         // Press edge: buttons and palette slots activate only here, so a
         // drag that starts on the header does not repaint the map.
-        pointerDown = kind;
         const hit = hitAt(x, y);
         if (hit?.kind === "button") {
+          pointerDown = kind;
           activateHeader(HEADER_ORDER.indexOf(hit.id));
           return;
         }
+        // Transfer-target picking owns canvas cells in every mode.
+        if (pendingPick() && hit?.kind === "cell") {
+          applyPick(hit.tx, hit.ty);
+          return;
+        }
+        if (passMode() && x < PAL_W && y >= HEADER_H && y < vp().h - STATUS_H) {
+          const tool = hitPassTool(x, y - HEADER_H);
+          if (tool) selectPassTool(tool);
+          return;
+        }
+        if (passMode() && hit?.kind === "cell") {
+          const tool = passTool();
+          const edgeBrush = edgeBrushFor(tool);
+          setHover({ x: hit.tx, y: hit.ty });
+          if (edgeBrush) {
+            setEditor(edgeStrokeStart(editor(), edgeBrush));
+            setEditor(edgePaintCell(editor(), hit.ty * map().width + hit.tx));
+            pointerDown = "edge";
+          } else {
+            let e = selectPassageBrush(editor(), tool === "block" ? "block" : "pass");
+            e = strokeStart(e, tool === "clear");
+            setEditor(e);
+            cellPaint(hit.tx, hit.ty);
+            pointerDown = "pass";
+          }
+          return;
+        }
+        pointerDown = kind;
         if (eventMode() && x < PAL_W && y >= HEADER_H && y < vp().h - STATUS_H) {
           const tool = hitEventTool(x, y - HEADER_H);
           if (tool) activateEventTool(tool);
@@ -882,6 +1306,12 @@ export function EditorApp(): JSX.Element {
           setHover({ x: hit.tx, y: hit.ty });
           setDragPreview({ id: eventDrag.event.id, ...destination });
         }
+      } else if (pointerDown === "edge") {
+        const hit = hitAt(x, y);
+        if (hit?.kind === "cell") {
+          setHover({ x: hit.tx, y: hit.ty });
+          setEditor(edgePaintCell(editor(), hit.ty * map().width + hit.tx));
+        }
       } else {
         // Held move: only canvas cells extend the stroke.
         const hit = hitAt(x, y);
@@ -899,6 +1329,8 @@ export function EditorApp(): JSX.Element {
         }
         eventDrag = null;
         setDragPreview(null);
+      } else if (pointerDown === "edge") {
+        setEditor(edgeStrokeEnd(editor()));
       } else {
         setEditor(strokeEnd(editor()));
       }
@@ -916,9 +1348,6 @@ export function EditorApp(): JSX.Element {
   };
 
   // --- buttons interaction (always live; the gamepad mode without svc) ---
-  let prevButtons = 0;
-  let strokeOpen = false;
-
   const stepButtons = (buttons: number): void => {
     const edge = buttons & ~prevButtons;
     const released = prevButtons & ~buttons;
@@ -930,9 +1359,12 @@ export function EditorApp(): JSX.Element {
     // comes from the mouse and cmd-key chords. The gamepad fallback (no
     // companion) keeps the full button vocabulary.
     const pointerMode = svc !== null;
-    if (inspectorOpen()) {
+    if (inspectorOpen() || mapInspectorOpen()) {
       if (!pointerMode) {
-        if (edge & BTN.CROSS) closeInspector();
+        if (edge & BTN.CROSS) {
+          if (inspectorOpen()) closeInspector();
+          else closeMapInspector();
+        }
         if (edge & BTN.SQUARE) activateHeader(HEADER_ORDER.indexOf("undo"));
         if (edge & BTN.TRIANGLE) activateHeader(HEADER_ORDER.indexOf("redo"));
         if (edge & BTN.START) performSave();
@@ -950,7 +1382,16 @@ export function EditorApp(): JSX.Element {
         viewRows: viewRows(),
         camX: c.x,
         camY: c.y,
-        paletteSize: eventMode() ? EVENT_TOOL_IDS.length : palette().length,
+        paletteSize: eventMode()
+          ? EVENT_TOOL_IDS.length
+          : passMode()
+            ? PASS_TOOL_IDS.length
+            : palette().length,
+        paletteCols: eventMode()
+          ? EVENT_TOOL_COLS
+          : passMode()
+            ? PASS_TOOL_COLS
+            : undefined,
         headerSize: HEADER_ORDER.length,
       });
       cur = r.cursor;
@@ -969,7 +1410,14 @@ export function EditorApp(): JSX.Element {
       if (edge & BTN.START) performSave();
     }
 
-    if (!pointerMode && eventMode() && edge & (BTN.CIRCLE | BTN.CROSS)) {
+    // Transfer-target picking owns the canvas in every mode.
+    if (!pointerMode && pendingPick() && cur.zone === "canvas" && (edge & BTN.CIRCLE)) {
+      applyPick(cur.tx, cur.ty);
+    } else if (!pointerMode && pendingPick() && (edge & BTN.CROSS)) {
+      // CROSS cancels a pending pick instead of deleting an event.
+      setPendingPick(null);
+      setNotice({ kind: "info", text: "PICK CANCELLED" });
+    } else if (!pointerMode && eventMode() && edge & (BTN.CIRCLE | BTN.CROSS)) {
       const remove = (edge & BTN.CROSS) !== 0;
       if (cur.zone === "palette") {
         if (!remove) activateEventTool(EVENT_TOOL_IDS[cur.slot] ?? "new");
@@ -980,6 +1428,28 @@ export function EditorApp(): JSX.Element {
         const event = topmostEventAt(markers(), cur.tx, cur.ty);
         setEditor(selectEvent(editor(), event?.id ?? null));
         if (remove && event) setEditor(deleteSelectedEvent(selectEvent(editor(), event.id)));
+      }
+    } else if (!pointerMode && passMode() && edge & (BTN.CIRCLE | BTN.CROSS)) {
+      if (cur.zone === "palette") {
+        if (edge & BTN.CIRCLE) selectPassTool(PASS_TOOL_IDS[cur.slot] ?? "pass");
+      } else if (cur.zone === "header") {
+        if (edge & BTN.CIRCLE) activateHeader(cur.button);
+      } else if (cur.zone === "canvas" && !strokeOpen && !edgeStrokeOpen) {
+        const m = map();
+        if (cur.tx < m.width && cur.ty < m.height) {
+          const tool = passTool();
+          const edgeBrush = edgeBrushFor(tool);
+          if (edgeBrush) {
+            setEditor(edgeStrokeStart(editor(), edgeBrush));
+            setEditor((e) => edgePaintCell(e, cur.ty * m.width + cur.tx));
+            edgeStrokeOpen = true;
+          } else {
+            let e = selectPassageBrush(editor(), tool === "block" ? "block" : "pass");
+            e = strokeStart(e, tool === "clear");
+            setEditor(e);
+            strokeOpen = true;
+          }
+        }
       }
     } else if (!pointerMode && edge & (BTN.CIRCLE | BTN.CROSS)) {
       const erase = (edge & BTN.CROSS) !== 0;
@@ -992,15 +1462,37 @@ export function EditorApp(): JSX.Element {
         setEditor(strokeStart(editor(), erase));
       }
     }
-    if (!pointerMode && !eventMode() && strokeOpen && cur.zone === "canvas" && (buttons & (BTN.CIRCLE | BTN.CROSS))) {
+    if (!pointerMode && !eventMode() && !passMode() && strokeOpen && cur.zone === "canvas" && (buttons & (BTN.CIRCLE | BTN.CROSS))) {
       const m = map();
       if (cur.tx < m.width && cur.ty < m.height) {
         setEditor((e) => paintCell(e, cur.ty * m.width + cur.tx));
       }
     }
-    if (!pointerMode && !eventMode() && released & (BTN.CIRCLE | BTN.CROSS) && strokeOpen) {
+    if (!pointerMode && passMode() && strokeOpen && cur.zone === "canvas" && (buttons & (BTN.CIRCLE | BTN.CROSS))) {
+      const m = map();
+      if (cur.tx < m.width && cur.ty < m.height) {
+        setEditor((e) => paintCell(e, cur.ty * m.width + cur.tx));
+      }
+    }
+    if (!pointerMode && passMode() && edgeStrokeOpen && cur.zone === "canvas" && (buttons & (BTN.CIRCLE | BTN.CROSS))) {
+      const m = map();
+      if (cur.tx < m.width && cur.ty < m.height) {
+        setEditor((e) => edgePaintCell(e, cur.ty * m.width + cur.tx));
+      }
+    }
+    if (!pointerMode && !eventMode() && !passMode() && released & (BTN.CIRCLE | BTN.CROSS) && strokeOpen) {
       setEditor((e) => strokeEnd(e));
       strokeOpen = false;
+    }
+    if (!pointerMode && passMode() && released & (BTN.CIRCLE | BTN.CROSS)) {
+      if (strokeOpen) {
+        setEditor((e) => strokeEnd(e));
+        strokeOpen = false;
+      }
+      if (edgeStrokeOpen) {
+        setEditor((e) => edgeStrokeEnd(e));
+        edgeStrokeOpen = false;
+      }
     }
 
     batch(() => {
@@ -1008,7 +1500,8 @@ export function EditorApp(): JSX.Element {
       if (c.x !== cam().x || c.y !== cam().y) setCam(c);
       // Keep the gamepad cursor's palette row inside the scrolled strip.
       if (cur.zone === "palette" && !eventMode()) {
-        const rowTop = Math.floor(cur.slot / PAL_COLS) * PAL_PITCH;
+        const columns = passMode() ? PASS_TOOL_COLS : PAL_COLS;
+        const rowTop = Math.floor(cur.slot / columns) * PAL_PITCH;
         const view = vp().h - HEADER_H - STATUS_H - PAL_GRID_TOP - PAL_PITCH;
         const y = palScroll();
         if (rowTop < y) setPalScroll(rowTop);
@@ -1073,13 +1566,31 @@ export function EditorApp(): JSX.Element {
           const max = Math.max(0, stripH - panelH);
           setPalScroll((y) => Math.max(0, Math.min(max, y + Math.sign(line.dy!) * 16)));
         } else if (line.t === "ch" && typeof line.s === "string") {
-          if (inspectorFocus()) setInputBuffer((value) => (value + line.s!).slice(0, 4096));
+          if (mapFocus()) setMapInput((value) => (value + line.s!).slice(0, 4096));
+          else if (inspectorFocus()) setInputBuffer((value) => (value + line.s!).slice(0, 4096));
         } else if (line.t === "paste" && typeof line.text === "string") {
-          if (inspectorFocus()) setInputBuffer((value) => (value + line.text!).slice(0, 4096));
+          if (mapFocus()) setMapInput((value) => (value + line.text!).slice(0, 4096));
+          else if (inspectorFocus()) setInputBuffer((value) => (value + line.text!).slice(0, 4096));
         } else if (line.t === "key") {
           const name = line.k ?? "";
           const focus = inspectorFocus();
-          if (focus && name === "Enter") {
+          const mapFocusAction = mapFocus();
+          if (pendingPick() && (name === "Escape" || name === "Esc")) {
+            setPendingPick(null);
+            setNotice({ kind: "info", text: "PICK CANCELLED" });
+          } else if (mapFocusAction && mapFocusAction.kind === "field" && name === "Enter") {
+            if (commitMapField(mapFocusAction.field, mapInput())) {
+              setMapFocus(null);
+              setMapInput("");
+            }
+          } else if (mapFocusAction && (name === "Escape" || name === "Esc")) {
+            setMapFocus(null);
+            setMapInput("");
+          } else if (mapFocusAction && name === "Backspace") {
+            setMapInput((value) => value.slice(0, -1));
+          } else if (!mapFocusAction && mapInspectorOpen() && (name === "Escape" || name === "Esc")) {
+            closeMapInspector();
+          } else if (focus && name === "Enter") {
             if (focus.kind === "condition-action" || focus.kind === "command-action") commitAddPrompt();
             else commitInspectorField(focus, inputBuffer());
           } else if (focus && (name === "Escape" || name === "Esc")) {
@@ -1116,7 +1627,15 @@ export function EditorApp(): JSX.Element {
     loadNotice: loadNotice(),
     hostFile: hostFile(),
     eventMode: eventMode(),
+    passMode: passMode(),
+    passTool: passTool(),
     inspectorOpen: inspectorOpen(),
+    mapInspectorOpen: mapInspectorOpen(),
+    mapFocus: mapFocus(),
+    mapInput: mapInput(),
+    deleteRefs: deleteRefs(),
+    mapReferencePage: mapReferencePage(),
+    pendingPick: pendingPick(),
     eventPlacement: eventPlacement(),
     inspectorSelection: inspectorSelection(),
     inspectorFocus: inspectorFocus(),
@@ -1148,11 +1667,16 @@ export function EditorApp(): JSX.Element {
     const m = currentMap(e);
     const dirty = e.dirty ? "*" : "";
     const mode = svc ? "PTR" : "PAD";
-    const sel = eventMode() ? e.selectedEventId ?? "NO EVENT" : e.tile ?? "ERASE";
+    const sel = eventMode()
+      ? e.selectedEventId ?? "NO EVENT"
+      : passMode()
+        ? PASS_TOOL_LABELS[passTool()]
+        : e.tile ?? "ERASE";
     const h = hover();
     const pos = h ? ` ${h.x},${h.y}` : "";
-    const layer = eventMode() ? "EVENTS" : e.layer.toUpperCase();
-    return `${mode} | ${doc().id}${dirty} | ${m.id} ${m.width}x${m.height} | ${layer} | ${sel}${pos} | ${notice().text}`;
+    const layer = eventMode() ? "EVENTS" : passMode() ? "PASS" : e.layer.toUpperCase();
+    const pick = pendingPick() ? " | PICK TARGET" : "";
+    return `${mode} | ${doc().id}${dirty} | ${m.id} ${m.width}x${m.height} | ${layer} | ${sel}${pos}${pick} | ${notice().text}`;
   };
 
   return (
@@ -1192,6 +1716,22 @@ export function EditorApp(): JSX.Element {
             scroll={inspectorScroll()}
           />
         </View>
+      ) : mapInspectorOpen() ? (
+        <View
+          class="absolute"
+          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H }}
+        >
+          <MapInspector
+            width={vp().w}
+            height={vp().h - HEADER_H}
+            map={map()}
+            references={deleteRefs()?.references ?? []}
+            referencePage={mapReferencePage()}
+            notice={notice()}
+            focus={mapFocus()}
+            inputBuffer={mapInput()}
+          />
+        </View>
       ) : (
         <>
           {banner() ? <Banner width={Math.max(0, vp().w - PAL_W)} /> : null}
@@ -1199,6 +1739,12 @@ export function EditorApp(): JSX.Element {
           {eventMode() ? (
             <EventPanel
               selected={selectedEvent()}
+              cursorTool={cursor().zone === "palette" ? cursor().slot : -1}
+              panelH={vp().h - HEADER_H - STATUS_H}
+            />
+          ) : passMode() ? (
+            <PassPanel
+              selected={passTool()}
               cursorTool={cursor().zone === "palette" ? cursor().slot : -1}
               panelH={vp().h - HEADER_H - STATUS_H}
             />
@@ -1215,6 +1761,8 @@ export function EditorApp(): JSX.Element {
           <Canvas
             map={map()}
             upper={editor().upperDense[editor().mapIndex]!}
+            passage={passageDense()}
+            edges={cellEdges()}
             camX={cam().x}
             camY={cam().y}
             cols={viewCols()}
@@ -1261,10 +1809,11 @@ export function EditorApp(): JSX.Element {
 }
 
 function headerLabel(id: (typeof HEADER_ORDER)[number], eventMode: boolean, layer: EditorState["layer"]): string {
-  if (id === "layer") return eventMode ? "EVENT" : layer === "ground" ? "GROUND" : "UPPER";
+  if (id === "layer") return eventMode ? "EVENT" : layer === "ground" ? "GROUND" : layer === "upper" ? "UPPER" : "PASS";
   if (id === "doc") return "DOC";
   if (id === "mapprev") return "<";
   if (id === "mapnext") return ">";
+  if (id === "map") return "MAP";
   if (id === "undo") return "UNDO";
   if (id === "redo") return "REDO";
   return "SAVE";

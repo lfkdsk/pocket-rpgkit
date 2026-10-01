@@ -29,7 +29,9 @@ import {
   type EditorState,
 } from "../editor/engine/model.ts";
 import { validateProject } from "../editor/engine/document.ts";
-import type { GameEvent, Project } from "../src/engine/types.ts";
+import { editCommandField } from "../editor/engine/event-fields.ts";
+import { commandAddress, ROOT_COMMAND_PATH, updateCommand } from "../editor/engine/commands.ts";
+import type { Command, GameEvent, Project } from "../src/engine/types.ts";
 
 const action = (text: string) => ({
   trigger: "action" as const,
@@ -276,6 +278,57 @@ describe("editor event pages", () => {
     expect(deletePage(state)).toBe(state);
     expect(updateSelectedPage(state, (page) => page)).toBe(state);
     expect(movePage(state, 12)).toBe(state);
+  });
+
+  test("movePage keeps the moved page selected and undo/redo restores order and selection", () => {
+    const p = project();
+    p.maps[0]!.events![0]!.pages = [
+      { trigger: "action", commands: [{ op: "text", lines: ["first"] }] },
+      { trigger: "playerTouch", commands: [{ op: "text", lines: ["second"] }] },
+      { trigger: "autorun", commands: [{ op: "text", lines: ["third"] }] },
+    ];
+    const triggers = (s: EditorState) => selectedEvent(s).pages.map((page) => page.trigger);
+
+    let state = selectEvent(createEditorState(p), "event", 0);
+    state = movePage(state, 2);
+    expect(triggers(state)).toEqual(["playerTouch", "autorun", "action"]);
+    expect(state.selectedPageIndex).toBe(2);
+
+    state = undo(state);
+    expect(triggers(state)).toEqual(["action", "playerTouch", "autorun"]);
+    expect(state.selectedPageIndex).toBe(0);
+
+    state = redo(state);
+    expect(triggers(state)).toEqual(["playerTouch", "autorun", "action"]);
+    expect(state.selectedPageIndex).toBe(2);
+  });
+
+  test("a command field edit through the app path records one undo step", () => {
+    let state = selectEvent(createEditorState(project()), "event", 0);
+    const before = selectedEvent(state).pages[0]!.commands[0] as Extract<Command, { op: "text" }>;
+    expect(before.lines).toEqual(["one"]);
+
+    // Same wiring as app.tsx: editCommandField produces the replacement
+    // command, updateCommand splices it into the page's command tree.
+    const edited = editCommandField(before, "lines", "one\nedited");
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) throw new Error(edited.error);
+    const address = commandAddress(ROOT_COMMAND_PATH, 0);
+    state = updateSelectedPage(state, (page) => ({
+      ...page,
+      commands: updateCommand(page.commands, address, edited.value),
+    }));
+    expect(state.past).toHaveLength(1);
+    const after = selectedEvent(state).pages[0]!.commands[0] as Extract<Command, { op: "text" }>;
+    expect(after.lines).toEqual(["one", "edited"]);
+
+    state = undo(state);
+    const restored = selectedEvent(state).pages[0]!.commands[0] as Extract<Command, { op: "text" }>;
+    expect(restored.lines).toEqual(["one"]);
+
+    state = redo(state);
+    const redone = selectedEvent(state).pages[0]!.commands[0] as Extract<Command, { op: "text" }>;
+    expect(redone.lines).toEqual(["one", "edited"]);
   });
 });
 
