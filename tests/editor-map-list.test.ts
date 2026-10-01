@@ -18,7 +18,9 @@ describe("virtualized editor map list", () => {
       expect(windowed.end).toBeLessThanOrEqual(263);
     }
     expect(first.first).toBe(0);
+    expect(first.scroll).toBe(0);
     expect(last.end).toBe(263);
+    expect(last.scroll).toBe(last.maxScroll);
   });
 
   test("hit testing accounts for scroll and rejects chrome", () => {

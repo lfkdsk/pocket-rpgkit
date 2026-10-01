@@ -2,7 +2,7 @@
 // by engine/event-layout.ts; PocketJS views have no DOM click handlers.
 
 import { Text, View } from "@pocketjs/framework/components";
-import { createMemo, For } from "solid-js";
+import { createMemo, For, Show } from "solid-js";
 import type { Condition, GameEvent, Page } from "../../src/engine/types.ts";
 import { isEditableCondition } from "../engine/commands.ts";
 import { conditionFields } from "../engine/event-fields.ts";
@@ -12,6 +12,7 @@ import {
 } from "../engine/event-resources.ts";
 import {
   createEventInspectorLayout,
+  inspectorControlFullyVisible,
   inspectorActionKey,
   inspectorCommandFields,
   inspectorCommandOp,
@@ -25,6 +26,7 @@ import {
   type InspectorRowGeometry,
   type InspectorScrollOffsets,
 } from "../engine/event-layout.ts";
+import { editorTextWidth, fitEditorText } from "./text-fit.ts";
 
 export type {
   EventInspectorAction,
@@ -46,6 +48,7 @@ const DIM = "#9aa4b8";
 const ACCENT = "#ffd24a";
 const BRANCH = "#60a5fa";
 const READ_ONLY = "#8d3d52";
+const READ_ONLY_BADGE_W = 76;
 
 /** Friendly names for screen-presentation commands in the editable rows. */
 const SCREEN_COMMAND_LABELS: Readonly<Record<string, string>> = Object.freeze({
@@ -97,11 +100,6 @@ function stringValue(value: unknown): string {
   } catch {
     return "?";
   }
-}
-
-function compact(value: string, width: number): string {
-  const max = Math.max(2, Math.floor((width - 8) / 6));
-  return value.length <= max ? value : `${value.slice(0, Math.max(1, max - 1))}…`;
 }
 
 function localRect(r: InspectorRect, clip: InspectorRect): InspectorRect {
@@ -222,7 +220,7 @@ function DisplayControl(props: {
   const r = () => props.rect ?? props.control.rect;
   const text = () => {
     const value = props.value === undefined ? "" : ` ${stringValue(props.value)}`;
-    return compact(`${props.control.label}${value}`, r().w);
+    return fitEditorText(`${props.control.label}${value}`, Math.max(0, r().w - 6));
   };
   return (
     <View
@@ -254,7 +252,7 @@ function ReadOnlyBadge(props: { x: number; y: number }): JSX.Element {
   return (
     <View
       class="absolute flex-row items-center justify-center"
-      style={{ posType: 1, insetL: props.x, insetT: props.y, width: 62, height: 14, bgColor: READ_ONLY }}
+      style={{ posType: 1, insetL: props.x, insetT: props.y, width: READ_ONLY_BADGE_W, height: 14, bgColor: READ_ONLY }}
     >
       <Text class="text-xs" style={{ height: 10, lineHeight: 10, textColor: INK }}>
         READ ONLY
@@ -328,6 +326,12 @@ function RowList(props: {
   focus: EventInspectorProps["focus"];
   inputBuffer: string;
 }): JSX.Element {
+  // Draw only complete text/control lines. The group background may meet a
+  // clip edge, but PocketJS never leaves a misleading half-line of glyphs.
+  const visibleRows = () => props.geometry.filter((row) =>
+    inspectorControlFullyVisible(row.header, props.clip)
+    || row.fields.some((field) => inspectorControlFullyVisible(field, props.clip))
+  );
   return (
     <View
       class="absolute"
@@ -342,7 +346,7 @@ function RowList(props: {
       }}
       debugName={`event-inspector-${props.kind}-list`}
     >
-      <For each={props.geometry}>
+      <For each={visibleRows()}>
         {(rowGeom) => {
           const command = () => props.commands[rowGeom.row];
           const condition = () => props.conditions[rowGeom.row];
@@ -364,37 +368,42 @@ function RowList(props: {
                   bgColor: props.selected === rowGeom.row ? SELECTED : ROW,
                 }}
               />
-              <View
-                class="absolute flex-row items-center"
-                style={{
-                  posType: 1,
-                  insetL: headerRect().x,
-                  insetT: headerRect().y,
-                  width: headerRect().w,
-                  height: headerRect().h,
-                  bgColor: props.selected === rowGeom.row ? SELECTED : ROW,
-                  borderWidth: isFocused(props.focus, rowGeom.header.action) ? 1 : 0,
-                  borderColor: ACCENT,
-                  overflow: 1,
-                }}
-                debugName={`event-inspector-${props.kind}-${rowGeom.row}`}
-              >
-                <Text
-                  class="text-xs absolute"
+              <Show when={inspectorControlFullyVisible(rowGeom.header, props.clip)}>
+                <View
+                  class="absolute flex-row items-center"
                   style={{
                     posType: 1,
-                    insetL: 3,
-                    insetT: 3,
-                    height: 12,
-                    lineHeight: 12,
-                    textColor: props.kind === "command" && branch() ? BRANCH : INK,
+                    insetL: headerRect().x,
+                    insetT: headerRect().y,
+                    width: headerRect().w,
+                    height: headerRect().h,
+                    bgColor: props.selected === rowGeom.row ? SELECTED : ROW,
+                    borderWidth: isFocused(props.focus, rowGeom.header.action) ? 1 : 0,
+                    borderColor: ACCENT,
+                    overflow: 1,
                   }}
+                  debugName={`event-inspector-${props.kind}-${rowGeom.row}`}
                 >
-                  {compact(headerText(), headerRect().w - (rowGeom.pick ? 44 : rowGeom.readOnly ? 66 : 4))}
-                </Text>
-                {rowGeom.readOnly ? <ReadOnlyBadge x={Math.max(2, headerRect().w - 64)} y={2} /> : null}
-              </View>
-              {rowGeom.pick ? (
+                  <Text
+                    class="text-xs absolute"
+                    style={{
+                      posType: 1,
+                      insetL: 3,
+                      insetT: 3,
+                      height: 12,
+                      lineHeight: 12,
+                      textColor: props.kind === "command" && branch() ? BRANCH : INK,
+                    }}
+                  >
+                    {fitEditorText(
+                      headerText(),
+                      Math.max(0, headerRect().w - (rowGeom.pick ? 44 : rowGeom.readOnly ? READ_ONLY_BADGE_W + 6 : 6)),
+                    )}
+                  </Text>
+                  {rowGeom.readOnly ? <ReadOnlyBadge x={Math.max(2, headerRect().w - READ_ONLY_BADGE_W - 2)} y={2} /> : null}
+                </View>
+              </Show>
+              {rowGeom.pick && inspectorControlFullyVisible(rowGeom.pick, props.clip) ? (
                 <View
                   class="absolute flex-row items-center justify-center"
                   style={{
@@ -414,11 +423,13 @@ function RowList(props: {
                   </Text>
                 </View>
               ) : null}
-              <For each={rowGeom.fields}>
-                {(fieldGeom, fieldIndex) => {
+              <For each={rowGeom.fields
+                .map((fieldGeom, sourceIndex) => ({ fieldGeom, sourceIndex }))
+                .filter(({ fieldGeom }) => inspectorControlFullyVisible(fieldGeom, props.clip))}>
+                {({ fieldGeom, sourceIndex }) => {
                   const sourceField = () => props.kind === "condition"
-                    ? condition()?.fields[fieldIndex()]
-                    : command() ? inspectorCommandFields(command()!)[fieldIndex()] : undefined;
+                    ? condition()?.fields[sourceIndex]
+                    : command() ? inspectorCommandFields(command()!)[sourceIndex] : undefined;
                   const focused = () => isFocused(props.focus, fieldGeom.action);
                   const shownValue = () => focused() ? `${props.inputBuffer}_` : sourceField()?.value;
                   const actionReadOnly = () => fieldGeom.action.kind === "condition-field" || fieldGeom.action.kind === "command-field"
@@ -431,7 +442,7 @@ function RowList(props: {
                       value={shownValue()}
                       focused={focused()}
                       readOnly={actionReadOnly()}
-                      debugName={`event-inspector-${props.kind}-${rowGeom.row}-field-${sourceField()?.key ?? fieldIndex()}`}
+                      debugName={`event-inspector-${props.kind}-${rowGeom.row}-field-${sourceField()?.key ?? sourceIndex}`}
                     />
                   );
                 }}
@@ -483,10 +494,10 @@ export function EventInspector(props: EventInspectorProps): JSX.Element {
       />
       <Text
         class="text-xs absolute"
-        style={{ posType: 1, insetL: 58, insetT: 6, height: 12, lineHeight: 12, textColor: headerColor() }}
+        style={{ posType: 1, insetL: 58, insetT: 6, width: Math.max(0, props.width - 64), height: 12, lineHeight: 12, textColor: headerColor() }}
         debugName="event-inspector-edit-prompt"
       >
-        {compact(headerMessage(), props.width - 64)}
+        {fitEditorText(headerMessage(), Math.max(0, props.width - 64))}
       </Text>
 
       <For each={layout().eventFields}>
@@ -578,7 +589,7 @@ export function EventInspector(props: EventInspectorProps): JSX.Element {
         }}
       />
       <SectionTitle
-        text="COMMANDS"
+        text={editorTextWidth("COMMANDS") <= Math.max(20, layout().commandActions[0]!.rect.x - layout().leftWidth - 10) ? "COMMANDS" : "CMD"}
         x={layout().leftWidth + 6}
         y={layout().bodyTop + 7}
         width={Math.max(20, layout().commandActions[0]!.rect.x - layout().leftWidth - 10)}

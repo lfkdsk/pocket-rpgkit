@@ -45,6 +45,13 @@ a guard test.
   transaction is one history step, 64 steps deep.
   **UNDO**/**REDO** in the header, or Cmd+Z / Cmd+Shift+Z / Cmd+Y (Cmd is
   Ctrl on Linux).
+- **Compact and resizable layouts**: the editor follows live desktop and web
+  viewport changes. At widths below 616 px the less-frequent document, map
+  navigation, and play-state actions move behind **MORE**; at the 400 px web
+  minimum, undo/redo move there too. Labels and dynamic values use the baked
+  font's measured pixel width, long prose wraps or truncates at word
+  boundaries, and the status bar keeps map, dimensions, layer, and selection
+  visible before adding transient notices.
 - **In-editor playtest (inline projects)**: **PLAY** starts the production `GameView` and
   reducer from the current in-memory document, including unsaved edits. The
   most recently selected canvas cell on the current map becomes the
@@ -159,13 +166,13 @@ Field text uses these common spellings:
   replacement for validation or for game-provided resources that the project
   document cannot enumerate.
 
-Only authored command arrays form branches. `if`, ordinary `choices`, and
-`battle` expose their respective branch lists; select a battle and use
-`<op>@win`, `<op>@lose`, or `<op>@escape` to insert into its result branches.
+Only authored command arrays form branches. `if`, ordinary `choices`, `battle`,
+and `scene` expose their respective branch lists. Select a battle and use
+`<op>@win`, `<op>@lose`, or `<op>@escape` to insert into its result branches;
+select a scene and use `<op>@done` or `<op>@cancel`.
 `extChoice` is not an authored branch container: its rows come dynamically
 from the registered extension provider, while `write` describes optional
-result variables. The current project schema also has no generic `scene`
-command; `battle` is the authored entry point for the existing battle scene.
+result variables.
 
 Not yet: common-event lists, asset import, sheet-level `dirBlock`/`defaultPassage`
 editing (the PASS tools paint map `passage` overrides and sheet `dirEdges`

@@ -67,6 +67,7 @@ const REF_LINE_H = 12;
 const REF_HEADER_H = 28;
 const PAGER_H = 18;
 const NOTICE_MIN_H = 42;
+const NOTICE_MIN_VISIBLE_H = 30;
 
 function rect(x: number, y: number, w: number, h: number): InspectorRect {
   return { x, y, w: Math.max(0, w), h: Math.max(0, h) };
@@ -179,9 +180,11 @@ export function createMapInspectorLayout(options: MapInspectorOptions): MapInspe
   // With references present the notice gets a compact but readable footer;
   // without them it owns the whole remaining body, so long save/crop errors
   // wrap instead of being reduced to a single ellipsized status line.
+  const minReferenceH = REF_HEADER_H + REF_LINE_H + ROW_GAP + (referenceCount > 1 ? PAGER_H : 0);
+  const availableNoticeH = Math.max(0, contentH - minReferenceH - ROW_GAP);
   const noticeH = showNotice
     ? referenceCount > 0
-      ? Math.min(Math.max(0, contentH - 48), NOTICE_MIN_H)
+      ? availableNoticeH >= NOTICE_MIN_VISIBLE_H ? Math.min(availableNoticeH, NOTICE_MIN_H) : 0
       : contentH
     : 0;
   const noticeY = showNotice ? contentBottom - noticeH : contentBottom;
@@ -193,8 +196,8 @@ export function createMapInspectorLayout(options: MapInspectorOptions): MapInspe
   const sizeWithoutPager = Math.max(1, Math.floor(rowSpaceWithoutPager / REF_LINE_H));
   const needsPager = referenceCount > sizeWithoutPager;
   const rowSpace = Math.max(0, rowSpaceWithoutPager - (needsPager ? PAGER_H + ROW_GAP : 0));
-  const referencePageSize = referenceCount > 0 ? Math.max(1, Math.floor(rowSpace / REF_LINE_H)) : 0;
-  const referencePageCount = referenceCount > 0 ? Math.ceil(referenceCount / referencePageSize) : 0;
+  const referencePageSize = referenceCount > 0 ? Math.max(0, Math.floor(rowSpace / REF_LINE_H)) : 0;
+  const referencePageCount = referencePageSize > 0 ? Math.ceil(referenceCount / referencePageSize) : 0;
   const requestedPage = Math.floor(options.referencePage ?? 0);
   const referencePage = referencePageCount > 0 ? clamp(requestedPage, 0, referencePageCount - 1) : 0;
   const rangeStart = referencePage * referencePageSize;

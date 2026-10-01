@@ -9,7 +9,7 @@ import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
-import { fittedView, headerButtons, HEADER_H, TILE } from "../editor/engine/layout.ts";
+import { fittedView, headerButtons, HEADER_H, TILE, type HeaderActionId } from "../editor/engine/layout.ts";
 import {
   playtestDebugRows,
 } from "../editor/engine/playtest.ts";
@@ -36,11 +36,6 @@ const H = 272;
 const SLOT2: [number, number] = [3 + 2 * 13 + 6, HEADER_H + 33 + 6];
 const SUNSTONE = BUNDLED_PROJECTS.find((document) => document.id === "sunstone")!;
 const MEADOW = BUNDLED_PROJECTS.find((document) => document.id === "meadow")!;
-const PLAY_BUTTON = headerButtons(W).find((button) => button.id === "play")!;
-const PLAY_POINT: [number, number] = [
-  PLAY_BUTTON.x + Math.floor(PLAY_BUTTON.w / 2),
-  PLAY_BUTTON.y + Math.floor(PLAY_BUTTON.h / 2),
-];
 
 function frame(world: BoundEditorWorld, mask = 0): void {
   world.frame(mask);
@@ -70,6 +65,17 @@ function svcLine(inbox: string[], world: BoundEditorWorld, line: object): void {
 function click(inbox: string[], world: BoundEditorWorld, x: number, y: number, extra: object = {}): void {
   svcLine(inbox, world, { t: "mouse", x, y, d: true, ...extra });
   svcLine(inbox, world, { t: "mouse", x, y, d: false, ...extra });
+}
+
+function clickHeader(inbox: string[], world: BoundEditorWorld, id: HeaderActionId): void {
+  let button = headerButtons(W).find((candidate) => candidate.id === id);
+  if (!button) {
+    const more = headerButtons(W).find((candidate) => candidate.id === "more")!;
+    click(inbox, world, more.x + Math.floor(more.w / 2), more.y + Math.floor(more.h / 2));
+    button = headerButtons(W, true).find((candidate) => candidate.id === id);
+  }
+  expect(button).toBeDefined();
+  click(inbox, world, button!.x + Math.floor(button!.w / 2), button!.y + Math.floor(button!.h / 2));
 }
 
 function pixel(framebuffer: Uint8Array, x: number, y: number): [number, number, number, number] {
@@ -184,7 +190,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(before.editor.project.maps[0].ground[8 * 20 + 5]).toBe("town.1");
     expect(before.playStartCell).toEqual({ mapId: "village", x: 4, y: 8 });
 
-    click(inbox, world, ...PLAY_POINT); // PLAY
+    clickHeader(inbox, world, "play");
     for (let i = 0; i < 3; i++) frame(world);
 
     const playing = probes.state();
@@ -225,10 +231,10 @@ simDescribe("editor in-memory playtest", () => {
     expect(stopped.editor.past).toHaveLength(1);
     expect(stopped.notice.text).toContain("UNDO HISTORY PRESERVED");
 
-    click(inbox, world, 350, 10); // UNDO
+    clickHeader(inbox, world, "undo");
     expect(probes.state().editor.past).toHaveLength(0);
     expect(probes.state().editor.project.maps[0].ground[8 * 20 + 5]).toBe("town.0");
-    click(inbox, world, 398, 10); // REDO
+    clickHeader(inbox, world, "redo");
     expect(probes.state().editor.past).toHaveLength(1);
     expect(probes.state().editor.project.maps[0].ground[8 * 20 + 5]).toBe("town.1");
   });
@@ -241,7 +247,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(debugProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, ...PLAY_POINT); // PLAY
+    clickHeader(inbox, world, "play");
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(0);
 
@@ -262,17 +268,17 @@ simDescribe("editor in-memory playtest", () => {
 
     click(inbox, world, 28, 11); // STOP captures the switch/variable banks
     expect(probes.state().hasLastPlayState).toBe(true);
-    click(inbox, world, 310, 10); // STATE -> LAST
+    clickHeader(inbox, world, "state");
     expect(probes.state().carryPrevious).toBe(true);
-    click(inbox, world, ...PLAY_POINT);
+    clickHeader(inbox, world, "play");
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.sw.switches["debug-page-active"]).toBe(true);
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(1);
 
     click(inbox, world, 28, 11);
-    click(inbox, world, 310, 10); // STATE -> FRESH
+    clickHeader(inbox, world, "state");
     expect(probes.state().carryPrevious).toBe(false);
-    click(inbox, world, ...PLAY_POINT);
+    clickHeader(inbox, world, "play");
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.sw.switches["debug-page-active"]).toBeUndefined();
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(0);
@@ -287,7 +293,7 @@ simDescribe("editor in-memory playtest", () => {
     const world = await bootSvc(inbox, outbox);
     const probes = world.probes();
 
-    click(inbox, world, ...PLAY_POINT); // PLAY
+    clickHeader(inbox, world, "play");
     expect(probes.state().playtest).toBe(true);
     svcLine(inbox, world, { t: "key", k: "s", cmd: true, sh: false, alt: false, ctl: true, request: 71 });
     expect(outbox.map((line) => JSON.parse(line)).at(-1)).toMatchObject({ t: "save", request: 71 });
@@ -307,7 +313,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(fallbackProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, ...PLAY_POINT);
+    clickHeader(inbox, world, "play");
     for (let i = 0; i < 5; i++) frame(world);
     const playing = probes.state();
     expect(playing.playIssues.map((issue: { kind: string }) => issue.kind)).toEqual([
@@ -339,7 +345,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(debugProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, ...PLAY_POINT);
+    clickHeader(inbox, world, "play");
     for (let i = 0; i < 3; i++) frame(world);
     const game = world.render().slice();
     expect(treeHas(world.getTree(), "editor-playtest-root")).toBe(true);
@@ -349,7 +355,7 @@ simDescribe("editor in-memory playtest", () => {
     // A world cell below the chrome is real green-dominant tile art.
     const ground = pixel(game, 80 + 4 * TILE + 8, 32 + 8 * TILE + 8);
     expect(ground[1]).toBeGreaterThan(ground[0]);
-    expect(await golden("game", game)).toBe("30601139");
+    expect(await golden("game", game)).toBe("306190d1");
 
     click(inbox, world, 83, 11);
     frame(world);
@@ -362,6 +368,6 @@ simDescribe("editor in-memory playtest", () => {
     const inside = pixel(debug, panel.x + 8, panel.y + 8);
     expect(inside[0]).toBeLessThan(60);
     expect(inside[1]).toBeLessThan(70);
-    expect(await golden("debug", debug)).toBe("cf3bcabe");
+    expect(await golden("debug", debug)).toBe("992039b9");
   });
 });

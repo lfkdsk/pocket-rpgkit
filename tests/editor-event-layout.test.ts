@@ -6,6 +6,7 @@ import {
   createEventInspectorLayout,
   hitTestEventInspector,
   inspectorActionKey,
+  inspectorControlFullyVisible,
   type EventInspectorAction,
   type InspectorCommandRow,
   type InspectorConditionRow,
@@ -13,6 +14,7 @@ import {
   type InspectorRect,
 } from "../editor/engine/event-layout.ts";
 import { flattenCommands } from "../editor/engine/commands.ts";
+import { HEADER_H, STATUS_H } from "../editor/engine/layout.ts";
 
 const conditions: InspectorConditionRow[] = [
   {
@@ -64,7 +66,7 @@ for (const [width, height] of [[480, 272], [720, 480]] as const) {
   describe(`event inspector ${width}x${height}`, () => {
     const layout = createEventInspectorLayout({
       width,
-      height,
+      height: height - HEADER_H - STATUS_H,
       pageCount: 3,
       activePage: 1,
       conditions,
@@ -79,7 +81,7 @@ for (const [width, height] of [[480, 272], [720, 480]] as const) {
         expect(region.rect.x).toBeGreaterThanOrEqual(0);
         expect(region.rect.y).toBeGreaterThanOrEqual(0);
         expect(region.rect.x + region.rect.w).toBeLessThanOrEqual(width);
-        expect(region.rect.y + region.rect.h).toBeLessThanOrEqual(height);
+        expect(region.rect.y + region.rect.h).toBeLessThanOrEqual(height - HEADER_H - STATUS_H);
         expect(region.rect.w).toBeGreaterThan(0);
         expect(region.rect.h).toBeGreaterThan(0);
       }
@@ -128,8 +130,15 @@ for (const [width, height] of [[480, 272], [720, 480]] as const) {
         "add", "delete",
       ]);
       const row = layout.conditionRows[0]!;
-      expectHit(layout, row.header);
-      row.fields.forEach((control) => expectHit(layout, control));
+      const visible = [row.header, ...row.fields].filter((control) =>
+        inspectorControlFullyVisible(control, layout.conditionClip)
+      );
+      expect(visible.length).toBeGreaterThan(0);
+      visible.forEach((control) => expectHit(layout, control));
+      for (const control of [row.header, ...row.fields].filter((candidate) => !visible.includes(candidate))) {
+        const [x, y] = center(control.rect);
+        expect(hitTestEventInspector(layout, x, y)).toBeNull();
+      }
       expect(row.fields.map((control) => control.action.kind === "condition-field" && control.action.field)).toEqual([
         "id", "op", "value",
       ]);
@@ -178,7 +187,7 @@ describe("event inspector scrolling and clipping", () => {
   test("scrolled rows retain semantic indices and cannot hit through list clips", () => {
     const layout = createEventInspectorLayout({
       width: 480,
-      height: 272,
+      height: 272 - HEADER_H - STATUS_H,
       pageCount: 12,
       activePage: 9,
       conditions: manyConditions,
@@ -186,8 +195,9 @@ describe("event inspector scrolling and clipping", () => {
       scroll: { pagesX: 180, conditionsY: 84, commandsY: 96 },
     });
 
-    // Raw geometry is allowed above the clip; only its intersection is in
-    // hitRegions, so the fixed toolbars remain clickable.
+    // Raw geometry is allowed above the clip; only complete control lines
+    // enter hitRegions, so fixed toolbars remain clickable and no half-line
+    // presents a misleading target.
     expect(layout.conditionRows[0]!.rect.y).toBeLessThan(layout.conditionClip.y);
     expect(layout.commandRows[0]!.rect.y).toBeLessThan(layout.commandClip.y);
     expectHit(layout, layout.conditionActions[0]!);
@@ -207,6 +217,7 @@ describe("event inspector scrolling and clipping", () => {
     // Horizontal page scrolling retains original page indices.
     expect(layout.pageTabs.length).toBeGreaterThan(0);
     expect(layout.pageTabs[0]!.action).toMatchObject({ kind: "page-select", page: 4 });
+    expect(layout.pageTabs.some((tab) => tab.action.kind === "page-select" && tab.action.page === 9)).toBe(true);
   });
 
   test("ext rows are marked read-only down through field actions", () => {

@@ -4,7 +4,8 @@ import { canonicalMapJson, createJsonMapRepository } from "../src/engine/map-rep
 import { splitProjectMaps } from "../tools/lib/map-project.ts";
 import { ServiceMessageAssembler } from "../editor/engine/service-chunks.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
-import { fittedView, HEADER_H, TILE } from "../editor/engine/layout.ts";
+import { fittedView, headerButtons, HEADER_H, STATUS_H, TILE, type HeaderActionId } from "../editor/engine/layout.ts";
+import { mapListWindow } from "../editor/engine/map-list.ts";
 import { appPreflight } from "./helpers/boot.ts";
 import { bootEditorWorld, installEditorSimIsolation, type BoundEditorWorld } from "./helpers/editor-session.ts";
 
@@ -81,6 +82,17 @@ function click(inbox: string[], world: BoundEditorWorld, x: number, y: number): 
   send(inbox, world, { t: "mouse", x, y, d: false, b: 0 });
 }
 
+function clickHeader(inbox: string[], world: BoundEditorWorld, id: HeaderActionId, width = W): void {
+  let button = headerButtons(width).find((candidate) => candidate.id === id);
+  if (!button) {
+    const more = headerButtons(width).find((candidate) => candidate.id === "more")!;
+    click(inbox, world, more.x + Math.floor(more.w / 2), more.y + Math.floor(more.h / 2));
+    button = headerButtons(width, true).find((candidate) => candidate.id === id);
+  }
+  expect(button).toBeDefined();
+  click(inbox, world, button!.x + Math.floor(button!.w / 2), button!.y + Math.floor(button!.h / 2));
+}
+
 function logicalMessages(outbox: string[]): Record<string, unknown>[] {
   const assembler = new ServiceMessageAssembler();
   const messages: Record<string, unknown>[] = [];
@@ -154,7 +166,7 @@ simDescribe("sharded visual editor", () => {
       mapListOpen: false,
       notice: { kind: "bad", text: "PROPOSALS ARE UNAVAILABLE FOR SHARDED PROJECTS" },
     });
-    click(inbox, world, 210, 10); // PROPOSALS
+    clickHeader(inbox, world, "proposals");
     expect(world.probes().state()).toMatchObject({
       proposalOpen: false,
       pendingProposals: [],
@@ -166,10 +178,20 @@ simDescribe("sharded visual editor", () => {
     expect(logicalMessages(outbox).filter((message) => message.t === "proposal-review")).toEqual([]);
 
     // MAP opens the virtualized catalog. End + Enter requests only map 262.
-    click(inbox, world, 162, 10);
+    clickHeader(inbox, world, "map");
     expect(world.probes().state().mapListOpen).toBe(true);
     expect(world.probes().state().visibleMapRows).toBeLessThanOrEqual(14);
     send(inbox, world, { t: "key", k: "End", cmd: false, sh: false, alt: false, ctl: false });
+    expect(world.probes().state().mapListCursor).toBe(262);
+    world.resizeViewport(720, 480);
+    frame(world);
+    frame(world);
+    expect(world.probes().state().mapListScroll).toBe(
+      mapListWindow(263, 480 - HEADER_H - STATUS_H, Infinity).maxScroll,
+    );
+    world.resizeViewport(W, H);
+    frame(world);
+    frame(world);
     expect(world.probes().state().mapListCursor).toBe(262);
     send(inbox, world, { t: "key", k: "Enter", cmd: false, sh: false, alt: false, ctl: false });
     outgoing = logicalMessages(outbox);

@@ -178,22 +178,11 @@ function control<A extends EventInspectorAction>(
   return { label, rect: r, action };
 }
 
-function intersects(a: InspectorRect, b: InspectorRect): boolean {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
-
-function intersection(a: InspectorRect, b: InspectorRect): InspectorRect | null {
-  if (!intersects(a, b)) return null;
-  const x = Math.max(a.x, b.x);
-  const y = Math.max(a.y, b.y);
-  const right = Math.min(a.x + a.w, b.x + b.w);
-  const bottom = Math.min(a.y + a.h, b.y + b.h);
-  return rect(x, y, right - x, bottom - y);
-}
-
-function visibleControl(c: InspectorControl, clip: InspectorRect): InspectorControl | null {
-  const clipped = intersection(c.rect, clip);
-  return clipped ? { ...c, rect: clipped } : null;
+export function inspectorControlFullyVisible(control: InspectorControl, clip: InspectorRect): boolean {
+  return control.rect.x >= clip.x
+    && control.rect.y >= clip.y
+    && control.rect.x + control.rect.w <= clip.x + clip.w
+    && control.rect.y + control.rect.h <= clip.y + clip.h;
 }
 
 function normalizeScroll(scroll: Partial<InspectorScrollOffsets> | undefined): InspectorScrollOffsets {
@@ -210,17 +199,12 @@ function addVisibleRows(
   clip: InspectorRect,
 ): void {
   for (const row of rows) {
-    const header = visibleControl(row.header, clip);
-    if (header) hitRegions.push(header);
+    if (inspectorControlFullyVisible(row.header, clip)) hitRegions.push(row.header);
     // The PICK button overlaps the header's right edge; push it after the
     // header so reverse hit-testing finds the button first.
-    if (row.pick) {
-      const pick = visibleControl(row.pick, clip);
-      if (pick) hitRegions.push(pick);
-    }
+    if (row.pick && inspectorControlFullyVisible(row.pick, clip)) hitRegions.push(row.pick);
     for (const field of row.fields) {
-      const visible = visibleControl(field, clip);
-      if (visible) hitRegions.push(visible);
+      if (inspectorControlFullyVisible(field, clip)) hitRegions.push(field);
     }
   }
 }
@@ -284,16 +268,26 @@ export function createEventInspectorLayout(
   const tabsClip = rect(tabsX, pagesY, width - tabsX - PAD, CONTROL_H);
   const pageTabs: InspectorControl[] = [];
   const pageCount = Math.max(0, Math.floor(options.pageCount));
+  const lastTabRight = pageCount > 0 ? tabsX + (pageCount - 1) * (PAGE_TAB_W + GAP) + PAGE_TAB_W : tabsX;
+  const maxPagesX = Math.max(0, lastTabRight - (tabsClip.x + tabsClip.w));
+  let pagesX = Math.min(scroll.pagesX, maxPagesX);
+  if (pageCount > 0) {
+    const activePage = Math.max(0, Math.min(pageCount - 1, Math.floor(options.activePage)));
+    const activeLeft = tabsX + activePage * (PAGE_TAB_W + GAP);
+    const activeRight = activeLeft + PAGE_TAB_W;
+    if (activeLeft - pagesX < tabsClip.x) pagesX = activeLeft - tabsClip.x;
+    else if (activeRight - pagesX > tabsClip.x + tabsClip.w) pagesX = activeRight - (tabsClip.x + tabsClip.w);
+    pagesX = Math.max(0, Math.min(maxPagesX, pagesX));
+  }
   for (let page = 0; page < pageCount; page++) {
     const raw = control(
       `P${page + 1}`,
-      rect(tabsX + page * (PAGE_TAB_W + GAP) - scroll.pagesX, pagesY, PAGE_TAB_W, CONTROL_H),
+      rect(tabsX + page * (PAGE_TAB_W + GAP) - pagesX, pagesY, PAGE_TAB_W, CONTROL_H),
       { kind: "page-select" as const, page },
     );
-    const visible = visibleControl(raw, tabsClip);
-    if (visible) {
-      pageTabs.push(visible);
-      hitRegions.push(visible);
+    if (inspectorControlFullyVisible(raw, tabsClip)) {
+      pageTabs.push(raw);
+      hitRegions.push(raw);
     }
   }
 
@@ -364,13 +358,21 @@ export function createEventInspectorLayout(
   const commandX = leftWidth + 2;
   const commandW = width - commandX;
   const commandBarY = bodyTop + 3;
-  const commandActionSpecs: readonly [CommandAction, string, number][] = [
-    ["add", "+", 25],
-    ["delete", "DEL", 32],
-    ["up", "UP", 27],
-    ["down", "DN", 27],
-    ["copy", "COPY", 40],
-  ];
+  const commandActionSpecs: readonly [CommandAction, string, number][] = width < 440
+    ? [
+      ["add", "+", 20],
+      ["delete", "DEL", 30],
+      ["up", "UP", 24],
+      ["down", "DN", 26],
+      ["copy", "CPY", 34],
+    ]
+    : [
+      ["add", "+", 25],
+      ["delete", "DEL", 32],
+      ["up", "UP", 27],
+      ["down", "DN", 27],
+      ["copy", "COPY", 40],
+    ];
   const commandActions: InspectorControl[] = [];
   x = commandX + commandW - PAD;
   for (let i = commandActionSpecs.length - 1; i >= 0; i--) {

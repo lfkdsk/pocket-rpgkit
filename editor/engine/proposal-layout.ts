@@ -18,11 +18,11 @@ export interface ProposalRect {
 export const PROPOSAL_ROW_H = 30;
 export const PROPOSAL_LIST_TOP = 28;
 export const PROPOSAL_HUNK_TOP = 88;
-export const PROPOSAL_HUNK_H = 22;
+export const PROPOSAL_HUNK_H = 26;
 
 export function proposalVisibleRows(panelH: number, detail: boolean): number {
   const top = detail ? PROPOSAL_HUNK_TOP : PROPOSAL_LIST_TOP;
-  const bottom = detail ? 58 : 4;
+  const bottom = detail ? 76 : 28;
   const height = detail ? PROPOSAL_HUNK_H : PROPOSAL_ROW_H;
   return Math.max(1, Math.floor((panelH - top - bottom) / height));
 }
@@ -35,10 +35,10 @@ export function proposalRowRect(index: number, detail: boolean): ProposalRect {
 
 export function proposalActionRects(panelH: number): { action: ProposalPanelAction; rect: ProposalRect }[] {
   return [
-    { action: { kind: "back" }, rect: { x: 4, y: 3, w: 42, h: 18 } },
-    { action: { kind: "accept" }, rect: { x: 4, y: panelH - 49, w: 42, h: 20 } },
-    { action: { kind: "reject" }, rect: { x: 49, y: panelH - 49, w: 42, h: 20 } },
-    { action: { kind: "accept-all" }, rect: { x: 94, y: panelH - 49, w: 42, h: 20 } },
+    { action: { kind: "back" }, rect: { x: 4, y: 3, w: 46, h: 18 } },
+    { action: { kind: "accept" }, rect: { x: 4, y: panelH - 72, w: 64, h: 20 } },
+    { action: { kind: "reject" }, rect: { x: 72, y: panelH - 72, w: 64, h: 20 } },
+    { action: { kind: "accept-all" }, rect: { x: 4, y: panelH - 49, w: 132, h: 20 } },
   ];
 }
 

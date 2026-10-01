@@ -18,15 +18,20 @@ import {
   type InspectorControl,
 } from "../editor/engine/event-layout.ts";
 import {
+  compactHeader,
   eventToolButtons,
   fittedView,
+  headerButtons,
   HEADER_H,
   PASS_TOOL_IDS,
+  STATUS_H,
   TILE,
   passToolButtons,
+  type HeaderActionId,
 } from "../editor/engine/layout.ts";
 import { initialCursor, stepCursor } from "../editor/engine/cursor.ts";
 import { createMapInspectorLayout } from "../editor/engine/map-layout.ts";
+import { proposalActionRects } from "../editor/engine/proposal-layout.ts";
 import { appPreflight, fnv1a } from "./helpers/boot.ts";
 import {
   bootEditorWorld,
@@ -41,7 +46,7 @@ const simDescribe = preflight.ok ? describe : describe.skip;
 installEditorSimIsolation();
 
 const SUNSTONE = BUNDLED_PROJECTS.find((document) => document.id === "sunstone")!;
-const MODERN_COMMAND_SCREENSHOT_PIN = "0a9304ca";
+const MODERN_COMMAND_SCREENSHOT_PIN = "7418c3a6";
 type World = BoundEditorWorld;
 let live: World | null = null;
 const probes = () => live!.probes();
@@ -56,11 +61,13 @@ async function bootSvc(
   outbox: string[],
   width = 480,
   height = 272,
+  inspectOps?: (ops: Record<string, unknown>) => void,
 ): Promise<World> {
   const world = await bootEditorWorld(
     60,
     undefined,
     (ops) => {
+      inspectOps?.(ops);
       ops.svcOpen = () => true;
       ops.svcPoll = () => (inbox.length ? inbox.splice(0).join("\n") : null);
       ops.svcSend = (line: string) => outbox.push(line);
@@ -70,6 +77,32 @@ async function bootSvc(
   live = world;
   for (let i = 0; i < 4; i++) frame(world);
   return world;
+}
+
+interface DebugTreeNode {
+  n?: string;
+  t?: string;
+  x?: string;
+  k?: DebugTreeNode[];
+}
+
+function findDebugNode(node: DebugTreeNode, name: string): DebugTreeNode | null {
+  if (node.n === name) return node;
+  for (const child of node.k ?? []) {
+    const found = findDebugNode(child, name);
+    if (found) return found;
+  }
+  return null;
+}
+
+function debugText(node: DebugTreeNode): string {
+  return node.t === "#text" ? node.x ?? "" : (node.k ?? []).map(debugText).join("");
+}
+
+function headerTexts(world: World): string[] {
+  const header = findDebugNode(world.getTree() as DebugTreeNode, "editor-header");
+  expect(header).not.toBeNull();
+  return (header!.k ?? []).map(debugText);
 }
 
 async function bootPad(width = 480, height = 272): Promise<World> {
@@ -87,6 +120,17 @@ function line(inbox: string[], world: World, value: object): void {
 function click(inbox: string[], world: World, x: number, y: number): void {
   line(inbox, world, { t: "mouse", x, y, d: true });
   line(inbox, world, { t: "mouse", x, y, d: false });
+}
+
+function clickHeader(inbox: string[], world: World, id: HeaderActionId, width = 480): void {
+  let button = headerButtons(width).find((candidate) => candidate.id === id);
+  if (!button) {
+    const more = headerButtons(width).find((candidate) => candidate.id === "more")!;
+    click(inbox, world, more.x + Math.floor(more.w / 2), more.y + Math.floor(more.h / 2));
+    button = headerButtons(width, true).find((candidate) => candidate.id === id);
+  }
+  expect(button).toBeDefined();
+  click(inbox, world, button!.x + Math.floor(button!.w / 2), button!.y + Math.floor(button!.h / 2));
 }
 
 function drag(inbox: string[], world: World, from: [number, number], to: [number, number]): void {
@@ -132,7 +176,7 @@ function inspectorLayout(width: number, height: number): EventInspectorLayout {
   const page = event.pages[state.selectedPageIndex]!;
   return createEventInspectorLayout({
     width,
-    height: height - HEADER_H,
+    height: height - HEADER_H - STATUS_H,
     pageCount: event.pages.length,
     activePage: state.selectedPageIndex,
     // The scripted events in this file have no page conditions; condition
@@ -163,6 +207,112 @@ function enterEventMode(inbox: string[], world: World): void {
   expect(probes().state().eventMode).toBe(true);
 }
 
+simDescribe("editor responsive chrome", () => {
+  test("measured labels fit at 480x272 and after a live resize to 720x480", async () => {
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    let measureText: ((text: string, slot: number) => number) | undefined;
+    const world = await bootSvc(inbox, outbox, 480, 272, (ops) => {
+      measureText = ops.measureText as (text: string, slot: number) => number;
+    });
+    expect(measureText).toBeDefined();
+    const measure = measureText!;
+
+    const assertHeaderFits = (width: number, secondary: boolean): void => {
+      const labels = headerTexts(world);
+      const buttons = headerButtons(width, secondary);
+      expect(labels).toHaveLength(buttons.length);
+      for (let index = 0; index < buttons.length; index++) {
+        expect(measure(labels[index]!, 0)).toBeLessThanOrEqual(buttons[index]!.w - 8);
+        expect(labels[index]!.endsWith("…")).toBe(false);
+      }
+    };
+    const assertStatusFits = (width: number): void => {
+      const status = findDebugNode(world.getTree() as DebugTreeNode, "editor-status");
+      expect(status).not.toBeNull();
+      const text = debugText(status!);
+      expect(measure(text, 0)).toBeLessThanOrEqual(width - 8);
+      expect(text).toContain("village 20x13");
+      expect(text).toContain("GROUND");
+      expect(text).toContain("ERASE");
+    };
+
+    expect(compactHeader(480)).toBe(true);
+    assertHeaderFits(480, false);
+    assertStatusFits(480);
+    const more = headerButtons(480).find((button) => button.id === "more")!;
+    click(inbox, world, more.x + Math.floor(more.w / 2), more.y + Math.floor(more.h / 2));
+    assertHeaderFits(480, true);
+    const back = headerButtons(480, true).find((button) => button.id === "more")!;
+    click(inbox, world, back.x + Math.floor(back.w / 2), back.y + Math.floor(back.h / 2));
+
+    world.resizeViewport(720, 480);
+    frame(world);
+    frame(world);
+    expect(compactHeader(720)).toBe(false);
+    assertHeaderFits(720, false);
+    assertStatusFits(720);
+
+    // These fixed-width labels share the same baked 12 px face. Pin their
+    // real host measurements against the containers used at both target
+    // viewport heights, so a font or copy change cannot silently overlap.
+    for (const [width, height] of [[480, 272], [720, 480]] as const) {
+      const panelH = height - HEADER_H - STATUS_H;
+      const proposalLabels = ["BACK", "ACCEPT", "REJECT", "ACCEPT ALL"];
+      const proposalActions = proposalActionRects(panelH);
+      for (let index = 0; index < proposalActions.length; index++) {
+        expect(measure(proposalLabels[index]!, 0)).toBeLessThanOrEqual(proposalActions[index]!.rect.w - 8);
+      }
+      for (const line of ["SELECT HUNK", "TO LOCATE"]) {
+        expect(measure(line, 0)).toBeLessThanOrEqual(130);
+      }
+      for (const [index, label] of ["NEW", "EDIT", "COPY", "DELETE"].entries()) {
+        expect(measure(label, 0)).toBeLessThanOrEqual(eventToolButtons()[index]!.w - 6);
+      }
+      expect(measure("TILES (0=ERASE)", 0)).toBeLessThanOrEqual(134);
+      expect(measure("READ ONLY", 0)).toBeLessThanOrEqual(68);
+      for (const line of [
+        "GAMEPAD MODE · DPAD MOVE",
+        "O PAINT · X ERASE · SEL LAYER",
+        "L/R MAP · START SAVE",
+      ]) {
+        expect(measure(line, 0)).toBeLessThanOrEqual(width - 148);
+      }
+    }
+  });
+
+  test("scrolled long command rows keep visible E5 fields paired with their values", async () => {
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    const world = await bootSvc(inbox, outbox, 400, 240);
+    const project = JSON.parse(SUNSTONE.json) as Project;
+    const elder = project.maps[0]!.events!.find((event) => event.id === "elder")!;
+    elder.pages[0]!.commands = [{
+      op: "screenTint",
+      layer: "world",
+      color: { r: 11, g: 22, b: 33, a: 44 },
+      duration: 5,
+      wait: true,
+    }];
+    expect(probes().inject(JSON.stringify(project))).toEqual({ ok: true });
+
+    enterEventMode(inbox, world);
+    click(inbox, world, ...cellPoint(400, 240, 9, 5));
+    click(inbox, world, ...eventToolPoint("edit"));
+    line(inbox, world, { t: "mouse", x: 350, y: 180, d: false });
+    line(inbox, world, { t: "scroll", dy: 1 });
+
+    const tree = world.getTree() as DebugTreeNode;
+    expect(findDebugNode(tree, "event-inspector-command-0-field-layer")).toBeNull();
+    const green = findDebugNode(tree, "event-inspector-command-0-field-color.g");
+    expect(green).not.toBeNull();
+    expect(debugText(green!)).toContain("G 22");
+    const blue = findDebugNode(tree, "event-inspector-command-0-field-color.b");
+    expect(blue).not.toBeNull();
+    expect(debugText(blue!)).toContain("B 33");
+  });
+});
+
 simDescribe("event editor pointer integration", () => {
   test("selects and drags a multi-cell event, then copies/deletes/undoes through visible controls", async () => {
     const inbox: string[] = [];
@@ -189,7 +339,7 @@ simDescribe("event editor pointer integration", () => {
     expect(probes().state().editor.selectedEventId).toBe("elder-copy");
     click(inbox, world, ...eventToolPoint("delete"));
     expect(probes().state().editor.project.maps[0].events).toHaveLength(beforeCopy);
-    click(inbox, world, 350, 10); // undo delete
+    clickHeader(inbox, world, "undo");
     expect(probes().state().editor.project.maps[0].events).toHaveLength(beforeCopy + 1);
   });
 
@@ -228,7 +378,7 @@ simDescribe("event editor pointer integration", () => {
     typeText(inbox, world, "Hello from the editor.");
     key(inbox, world, "Enter");
 
-    click(inbox, world, 450, 10); // SAVE remains reachable above inspector
+    clickHeader(inbox, world, "save");
     const saveLines = outbox
       .map((value) => JSON.parse(value) as { t: string; text?: string })
       .filter((value) => value.t === "save");
@@ -398,8 +548,8 @@ function pixel(framebuffer: Uint8Array, width: number, x: number, y: number): [n
 }
 
 const screenshotPins: Record<string, string> = {
-  "480x272": "d0bd4ba3",
-  "720x480": "e091b303",
+  "480x272": "79499b2f",
+  "720x480": "dc360881",
 };
 
 simDescribe("event inspector responsive rendering", () => {
@@ -451,9 +601,9 @@ simDescribe("map management + transfer picking end to end", () => {
     const s = () => probes().state();
 
     // 1. MAP header -> NEW creates an empty map after the village.
-    click(inbox, world, 162, 10); // MAP header button (x 140..184)
+    clickHeader(inbox, world, "map");
     expect(s().mapInspectorOpen).toBe(true);
-    const mapLayout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    const mapLayout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     const newAction = mapLayout.actions.find(
       (a) => a.action.kind === "action" && a.action.action === "new",
     )!;
@@ -474,7 +624,7 @@ simDescribe("map management + transfer picking end to end", () => {
     expect(s().mapInspectorOpen).toBe(false);
 
     // 2. Back to the village, create an event at the start cell (9,9).
-    click(inbox, world, 102, 10); // "<" header
+    clickHeader(inbox, world, "mapprev");
     expect(s().editor.mapIndex).toBe(0);
     enterEventMode(inbox, world);
     click(inbox, world, ...cellPoint(480, 272, 9, 9));
@@ -498,7 +648,7 @@ simDescribe("map management + transfer picking end to end", () => {
     expect(s().inspectorOpen).toBe(false);
 
     // 4. Switch to the new map and click cell (3,4) to fill the target.
-    click(inbox, world, 126, 10); // ">" header
+    clickHeader(inbox, world, "mapnext");
     expect(s().editor.mapIndex).toBe(1);
     click(inbox, world, ...cellPoint(480, 272, 3, 4));
     // the pick applied and the inspector reopened on the event
@@ -511,7 +661,7 @@ simDescribe("map management + transfer picking end to end", () => {
     expect(transfer).toMatchObject({ map: "grove", x: 3, y: 4, dir: "keep" });
 
     // 5. SAVE and reload into a runtime session.
-    click(inbox, world, 450, 10); // SAVE header
+    clickHeader(inbox, world, "save");
     const saves = outbox
       .map((l) => JSON.parse(l) as { t: string; text?: string })
       .filter((m) => m.t === "save");
@@ -563,7 +713,7 @@ simDescribe("map management + transfer picking end to end", () => {
     clickInspectorControl(inbox, world, transferB.pick!);
     expect(probes().state().pendingPick).not.toBeNull();
 
-    click(inbox, world, 350, 10); // undo insertion of transfer B
+    clickHeader(inbox, world, "undo");
     expect(probes().state().pendingPick).toBeNull();
 
     // A pending pick also cannot survive a redo that inserts a command in
@@ -572,11 +722,11 @@ simDescribe("map management + transfer picking end to end", () => {
     layout = inspectorLayout(480, 272);
     clickInspectorControl(inbox, world, layout.commandRows.find((row) => row.pick)!.pick!);
     expect(probes().state().pendingPick).not.toBeNull();
-    click(inbox, world, 398, 10); // redo insertion of transfer B
+    clickHeader(inbox, world, "redo");
     expect(probes().state().pendingPick).toBeNull();
-    click(inbox, world, 350, 10); // leave only the original A again
+    clickHeader(inbox, world, "undo");
 
-    click(inbox, world, 126, 10); // target map would be forest
+    clickHeader(inbox, world, "mapnext");
     click(inbox, world, ...cellPoint(480, 272, 3, 4));
 
     const after = (JSON.parse(probes().export().text) as Project)
@@ -675,7 +825,7 @@ simDescribe("passage mode (pointer)", () => {
     expect(px[0]).toBeGreaterThan(200); // red corner marker
     expect(px[1]).toBeLessThan(120);
     // undo removes just the new override
-    click(inbox, world, 350, 10); // UNDO
+    clickHeader(inbox, world, "undo");
     const undone = JSON.parse(probes().export().text) as Project;
     expect(undone.maps[0]!.passage).toEqual(before);
   });
@@ -716,7 +866,7 @@ simDescribe("passage mode (pointer)", () => {
     const px = pixel(fb, 480, vp.frame.x + 2, vp.frame.y + 8);
     expect(px[2]).toBeGreaterThan(150); // blue-dominant arrow pixel
     // undo removes the edge
-    click(inbox, world, 350, 10);
+    clickHeader(inbox, world, "undo");
     const undone = JSON.parse(probes().export().text) as Project;
     expect(undone.sheets.find((sheet) => sheet.id === "town")!.dirEdges).toBeUndefined();
   });
@@ -845,8 +995,8 @@ simDescribe("map inspector (pointer)", () => {
           ? requested.split(",")
           : requested;
 
-      click(inbox, world, 162, 10); // MAP
-      const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+      clickHeader(inbox, world, "map");
+      const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
       const control = layout.fields.find(
         (candidate) => candidate.action.kind === "field" && candidate.action.field === field,
       )!;
@@ -857,12 +1007,12 @@ simDescribe("map inspector (pointer)", () => {
       key(inbox, world, "Enter");
       expect(probes().state().editor.project.maps[0]![field]).toEqual(expected);
 
-      click(inbox, world, 350, 10); // UNDO
+      clickHeader(inbox, world, "undo");
       expect(probes().state().editor.project.maps[0]![field]).toEqual(before);
-      click(inbox, world, 398, 10); // REDO
+      clickHeader(inbox, world, "redo");
       expect(probes().state().editor.project.maps[0]![field]).toEqual(expected);
 
-      click(inbox, world, 450, 10); // SAVE through the real svc path
+      clickHeader(inbox, world, "save");
       const saves = outbox
         .map((value) => JSON.parse(value) as { t: string; text?: string })
         .filter((value) => value.t === "save");
@@ -880,8 +1030,8 @@ simDescribe("map inspector (pointer)", () => {
     const inbox: string[] = [];
     const outbox: string[] = [];
     const world = await bootSvc(inbox, outbox);
-    click(inbox, world, 162, 10); // MAP
-    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    clickHeader(inbox, world, "map");
+    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     const create = layout.actions.find(
       (candidate) => candidate.action.kind === "action" && candidate.action.action === "new",
     )!;
@@ -899,7 +1049,7 @@ simDescribe("map inspector (pointer)", () => {
     expect(resized.width).toBe(21);
     expect(resized.events).toEqual([]);
     expect(probes().export()).toMatchObject({ ok: true, errors: [] });
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
     const saves = outbox
       .map((value) => JSON.parse(value) as { t: string; text?: string })
       .filter((value) => value.t === "save");
@@ -926,9 +1076,9 @@ simDescribe("map inspector (pointer)", () => {
       }],
     })));
     expect(probes().inject(JSON.stringify(project))).toEqual({ ok: true });
-    click(inbox, world, 126, 10); // target map
-    click(inbox, world, 162, 10); // MAP
-    let layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    clickHeader(inbox, world, "mapnext");
+    clickHeader(inbox, world, "map");
+    let layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     const del = layout.actions.find(
       (candidate) => candidate.action.kind === "action" && candidate.action.action === "del",
     )!;
@@ -943,7 +1093,7 @@ simDescribe("map inspector (pointer)", () => {
     expect(pending.references.filter((ref) => ref.eventId.startsWith("review-ref-"))).toHaveLength(12);
     layout = createMapInspectorLayout({
       width: 480,
-      height: 272 - HEADER_H,
+      height: 272 - HEADER_H - STATUS_H,
       referenceCount: pending.references.length,
       referencePage: 0,
       showNotice: true,
@@ -968,8 +1118,8 @@ simDescribe("map inspector (pointer)", () => {
       { id: "cropped-review", x: 19, y: 12, pages: [{ trigger: "action", commands: [] }] },
     ];
     expect(probes().inject(JSON.stringify(project))).toEqual({ ok: true });
-    click(inbox, world, 162, 10); // MAP
-    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    clickHeader(inbox, world, "map");
+    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     const width = layout.fields.find(
       (candidate) => candidate.action.kind === "field" && candidate.action.field === "width",
     )!;
@@ -986,7 +1136,7 @@ simDescribe("map inspector (pointer)", () => {
     expect(tree).toContain("cropped-review");
     const noticeLayout = createMapInspectorLayout({
       width: 480,
-      height: 272 - HEADER_H,
+      height: 272 - HEADER_H - STATUS_H,
       showNotice: true,
     });
     expect(pixel(
@@ -1001,13 +1151,13 @@ simDescribe("map inspector (pointer)", () => {
     const inbox: string[] = [];
     const outbox: string[] = [];
     const world = await bootSvc(inbox, outbox);
-    click(inbox, world, 162, 10); // MAP
+    clickHeader(inbox, world, "map");
 
     // The app's test probe exposes the live state; remove one required field
     // solely to drive the real performSave validation/refusal boundary.
     const invalidMap = probes().state().editor.project.maps[0] as { events?: unknown[] };
     delete invalidMap.events;
-    click(inbox, world, 450, 10); // SAVE
+    clickHeader(inbox, world, "save");
 
     expect(outbox.map((value) => JSON.parse(value)).filter((value) => value.t === "save")).toHaveLength(0);
     expect(probes().state().notice).toMatchObject({ kind: "bad" });
@@ -1017,7 +1167,7 @@ simDescribe("map inspector (pointer)", () => {
     expect(tree).toContain("EXPORT REFUSED");
     const noticeLayout = createMapInspectorLayout({
       width: 480,
-      height: 272 - HEADER_H,
+      height: 272 - HEADER_H - STATUS_H,
       showNotice: true,
     });
     expect(pixel(
@@ -1033,9 +1183,9 @@ simDescribe("map inspector (pointer)", () => {
     const outbox: string[] = [];
     const world = await bootSvc(inbox, outbox);
     const s = () => probes().state();
-    click(inbox, world, 162, 10); // MAP header
+    clickHeader(inbox, world, "map");
     expect(s().mapInspectorOpen).toBe(true);
-    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     // rename the village (clear the field first, like the event inspector)
     const idField = layout.fields.find((f) => f.action.kind === "field" && f.action.field === "id")!;
     clickInspectorControl(inbox, world, idField);
@@ -1051,9 +1201,9 @@ simDescribe("map inspector (pointer)", () => {
     key(inbox, world, "Enter");
     expect(s().editor.project.maps[0]!.width).toBe(25);
     // undo resize, then rename
-    click(inbox, world, 350, 10); // UNDO
+    clickHeader(inbox, world, "undo");
     expect(s().editor.project.maps[0]!.width).toBe(20);
-    click(inbox, world, 350, 10); // UNDO
+    clickHeader(inbox, world, "undo");
     expect(s().editor.project.maps[0]!.id).toBe("village");
   });
 
@@ -1062,8 +1212,8 @@ simDescribe("map inspector (pointer)", () => {
     const outbox: string[] = [];
     const world = await bootSvc(inbox, outbox);
     const s = () => probes().state();
-    click(inbox, world, 162, 10); // MAP
-    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    clickHeader(inbox, world, "map");
+    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     const dup = layout.actions.find((a) => a.action.kind === "action" && a.action.action === "dup")!;
     clickInspectorControl(inbox, world, dup);
     expect(s().editor.project.maps).toHaveLength(4);
@@ -1087,17 +1237,17 @@ simDescribe("map inspector (pointer)", () => {
     click(inbox, world, ...eventToolPoint("edit"));
     expect(s().inspectorOpen).toBe(true);
     // opening the map inspector closes the event inspector
-    click(inbox, world, 162, 10); // MAP header
+    clickHeader(inbox, world, "map");
     expect(s().mapInspectorOpen).toBe(true);
     expect(s().inspectorOpen).toBe(false);
     // close the map inspector, reopen the event inspector, then open the map
     // inspector again: only one is ever open
-    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H });
+    const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
     click(inbox, world, layout.close.rect.x + 24, HEADER_H + layout.close.rect.y + 9);
     expect(s().mapInspectorOpen).toBe(false);
     click(inbox, world, ...eventToolPoint("edit"));
     expect(s().inspectorOpen).toBe(true);
-    click(inbox, world, 162, 10);
+    clickHeader(inbox, world, "map");
     expect(s().mapInspectorOpen).toBe(true);
     expect(s().inspectorOpen).toBe(false);
   });

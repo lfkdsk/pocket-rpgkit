@@ -11,6 +11,8 @@ export interface MapListWindow {
   first: number;
   end: number;
   maxScroll: number;
+  /** Clamped offset shared by rendering and hit testing. */
+  scroll: number;
 }
 
 export function mapListWindow(
@@ -28,6 +30,7 @@ export function mapListWindow(
     first: Math.max(0, firstVisible - overscan),
     end: Math.min(count, firstVisible + visibleRows + overscan),
     maxScroll,
+    scroll,
   };
 }
 

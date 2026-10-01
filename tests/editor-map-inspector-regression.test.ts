@@ -13,7 +13,7 @@ import {
   wrapMapInspectorNotice,
   type MapInspectorLayout,
 } from "../editor/engine/map-layout.ts";
-import { HEADER_H } from "../editor/engine/layout.ts";
+import { HEADER_H, STATUS_H } from "../editor/engine/layout.ts";
 
 function center(rect: { x: number; y: number; w: number; h: number }): [number, number] {
   return [rect.x + Math.floor(rect.w / 2), rect.y + Math.floor(rect.h / 2)];
@@ -32,7 +32,7 @@ for (const [screenWidth, screenHeight] of [[480, 272], [720, 480]] as const) {
   describe(`map inspector visibility at ${screenWidth}x${screenHeight}`, () => {
     const layout = createMapInspectorLayout({
       width: screenWidth,
-      height: screenHeight - HEADER_H,
+      height: screenHeight - HEADER_H - STATUS_H,
       referenceCount: 23,
       referencePage: 0,
       showNotice: true,
@@ -66,7 +66,7 @@ for (const [screenWidth, screenHeight] of [[480, 272], [720, 480]] as const) {
       const notice = "RESIZED; CROPPED 4 EVENT(S): north-gate, south-gate, inn-door, long-secret-passage — UNDO RESTORES";
       const noticeLayout = createMapInspectorLayout({
         width: screenWidth,
-        height: screenHeight - HEADER_H,
+        height: screenHeight - HEADER_H - STATUS_H,
         showNotice: true,
       });
       const lines = wrapMapInspectorNotice(notice, noticeLayout.noticeClip.w);
@@ -80,7 +80,7 @@ describe("map inspector complete reference paging", () => {
     const referenceCount = 23;
     const first = createMapInspectorLayout({
       width: 480,
-      height: 272 - HEADER_H,
+      height: 272 - HEADER_H - STATUS_H,
       referenceCount,
       referencePage: -99,
       showNotice: true,
@@ -91,7 +91,7 @@ describe("map inspector complete reference paging", () => {
     for (let page = 0; page < first.referencePageCount; page++) {
       const layout = createMapInspectorLayout({
         width: 480,
-        height: 272 - HEADER_H,
+        height: 272 - HEADER_H - STATUS_H,
         referenceCount,
         referencePage: page,
         showNotice: true,
@@ -103,7 +103,7 @@ describe("map inspector complete reference paging", () => {
 
     const last = createMapInspectorLayout({
       width: 480,
-      height: 272 - HEADER_H,
+      height: 272 - HEADER_H - STATUS_H,
       referenceCount,
       referencePage: 999,
       showNotice: true,

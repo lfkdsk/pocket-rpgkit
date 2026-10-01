@@ -15,6 +15,7 @@ import {
   PAL_W,
   eventToolButtons,
 } from "../engine/layout.ts";
+import { fitEditorText } from "./text-fit.ts";
 
 export const INK = "#e6e9f0";
 export const DIM = "#9aa4b8";
@@ -47,14 +48,15 @@ export function HeaderButton(props: {
         borderWidth: props.focus ? 1 : 0,
         borderColor: ACCENT,
         opacity: props.enabled ? 1 : 0.4,
+        overflow: 1,
       }}
       debugName={`editor-header-${props.label}`}
     >
       <Text
         class="text-xs"
-        style={{ textColor: props.enabled ? INK : DIM, lineHeight: 12, height: 12 }}
+        style={{ width: Math.max(0, props.w - 8), textAlign: 1, textColor: props.enabled ? INK : DIM, lineHeight: 12, height: 12 }}
       >
-        {props.label}
+        {fitEditorText(props.label, Math.max(0, props.w - 8))}
       </Text>
     </View>
   );
@@ -99,7 +101,7 @@ export function PalettePanel(props: {
     >
       <Text
         class="absolute text-xs"
-        style={{ posType: 1, insetL: PAL_PAD, insetT: 4, textColor: DIM, lineHeight: 12, height: 12 }}
+        style={{ posType: 1, insetL: PAL_PAD, insetT: 4, width: PAL_W - PAL_PAD * 2, textColor: DIM, lineHeight: 12, height: 12 }}
       >
         TILES (0=ERASE)
       </Text>
@@ -149,14 +151,14 @@ export function EventPanel(props: {
       style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: PAL_W, height: props.panelH, bgColor: PANEL, overflow: 1 }}
       debugName="editor-event-tools"
     >
-      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 5, textColor: ACCENT, height: 12, lineHeight: 12 }}>
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 5, width: PAL_W - 12, textColor: ACCENT, height: 12, lineHeight: 12 }}>
         EVENTS
       </Text>
       <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 22, width: PAL_W - 12, textColor: INK, height: 12, lineHeight: 12 }}>
-        {props.selected ? props.selected.id : "NO SELECTION"}
+        {fitEditorText(props.selected ? props.selected.id : "NO SELECTION", PAL_W - 12)}
       </Text>
       <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 39, width: PAL_W - 12, textColor: DIM, height: 12, lineHeight: 12 }}>
-        {props.selected ? `${props.selected.x},${props.selected.y}  ${props.selected.w ?? 1}x${props.selected.h ?? 1}` : "CLICK MAP, THEN NEW"}
+        {fitEditorText(props.selected ? `${props.selected.x},${props.selected.y}  ${props.selected.w ?? 1}x${props.selected.h ?? 1}` : "CLICK MAP, THEN NEW", PAL_W - 12)}
       </Text>
       <For each={eventToolButtons()}>
         {(button, index) => {
@@ -177,8 +179,8 @@ export function EventPanel(props: {
               }}
               debugName={`editor-event-tool-${button.id}`}
             >
-              <Text class="text-xs" style={{ textColor: enabled() ? INK : DIM, height: 12, lineHeight: 12 }}>
-                {labels[button.id]}
+              <Text class="text-xs" style={{ width: Math.max(0, button.w - 6), textAlign: 1, textColor: enabled() ? INK : DIM, height: 12, lineHeight: 12 }}>
+                {fitEditorText(labels[button.id], Math.max(0, button.w - 6))}
               </Text>
             </View>
           );
@@ -193,8 +195,7 @@ export function EventPanel(props: {
 
 export function Banner(props: { width: number }): JSX.Element {
   // Gamepad-mode strip: visible whenever no companion channel is present.
-  // It carries BOTH the warning and the control legend across two lines, so
-  // the editor is never silently dead.
+  // Three short rows preserve every binding at the 400 px web minimum.
   return (
     <View
       class="absolute flex-col"
@@ -209,11 +210,14 @@ export function Banner(props: { width: number }): JSX.Element {
       }}
       debugName="editor-no-svc-banner"
     >
-      <Text class="text-xs absolute" style={{ posType: 1, insetL: 4, insetT: 2, textColor: ACCENT, lineHeight: 10, height: 10 }}>
-        NO POINTER COMPANION - GAMEPAD MODE
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 4, insetT: 1, width: Math.max(0, props.width - 8), textColor: ACCENT, lineHeight: 10, height: 10 }}>
+        GAMEPAD MODE · DPAD MOVE
       </Text>
-      <Text class="text-xs absolute" style={{ posType: 1, insetL: 4, insetT: 17, textColor: ACCENT, lineHeight: 10, height: 10 }}>
-        DPAD MOVE O PAINT X ERASE SEL LAYER L/R MAP START SAVE
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 4, insetT: 14, width: Math.max(0, props.width - 8), textColor: ACCENT, lineHeight: 10, height: 10 }}>
+        O PAINT · X ERASE · SEL LAYER
+      </Text>
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 4, insetT: 27, width: Math.max(0, props.width - 8), textColor: ACCENT, lineHeight: 10, height: 10 }}>
+        L/R MAP · START SAVE
       </Text>
     </View>
   );

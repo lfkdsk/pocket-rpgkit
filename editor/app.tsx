@@ -97,10 +97,12 @@ import {
   PASS_TOOL_IDS,
   PASS_TOOL_LABELS,
   fittedView,
+  compactHeader,
   headerButtons,
   hitEventTool,
   hitPassTool,
   hitTest,
+  type HeaderButtonId,
   type PassTool,
 } from "./engine/layout.ts";
 import { HEADER_ORDER, initialCursor, stepCursor, type Cursor } from "./engine/cursor.ts";
@@ -218,6 +220,7 @@ import { createPlaytestAssets } from "./engine/playtest-view.ts";
 import type { GameAssets } from "../src/ui/game-assets.ts";
 import type { SessionState } from "../src/engine/session.ts";
 import { PlaytestSurface, type PlaytestPort } from "./ui/playtest.tsx";
+import { editorTextWidth, fitEditorText } from "./ui/text-fit.ts";
 
 type Notice = { kind: "info" | "good" | "bad"; text: string };
 
@@ -316,6 +319,7 @@ export function EditorApp(): JSX.Element {
   const [palScroll, setPalScroll] = createSignal(0);
   const [hover, setHover] = createSignal<{ x: number; y: number } | null>(null);
   const [cursor, setCursor] = createSignal<Cursor>(initialCursor(0, 0));
+  const [headerMenuOpen, setHeaderMenuOpen] = createSignal(false);
   const [savedText, setSavedText] = createSignal<string | null>(null);
   const [loadNotice, setLoadNotice] = createSignal<string | null>(null);
   /** True once the host's --file document is open: SAVE writes that file,
@@ -403,6 +407,20 @@ export function EditorApp(): JSX.Element {
     workspaceRevision();
     return shardedWorkspace()?.catalog ?? [];
   });
+  const mapListPanelHeight = (viewportHeight = vp().h): number =>
+    Math.max(0, viewportHeight - HEADER_H - STATUS_H);
+  const applyViewport = (width: number, height: number): void => {
+    setVp({ w: width, h: height });
+    if (!compactHeader(width)) setHeaderMenuOpen(false);
+    if (mapListOpen()) {
+      setMapListScroll((scroll) => revealMapListRow(
+        mapListCursor(),
+        catalog().length,
+        mapListPanelHeight(height),
+        scroll,
+      ));
+    }
+  };
   const dirtyEntries = createMemo<ReadonlySet<string>>(() => {
     workspaceRevision();
     const workspace = shardedWorkspace();
@@ -413,7 +431,7 @@ export function EditorApp(): JSX.Element {
   });
   const visibleMapRows = createMemo(() => {
     if (!mapListOpen()) return 0;
-    const windowed = mapListWindow(catalog().length, vp().h - HEADER_H, mapListScroll());
+    const windowed = mapListWindow(catalog().length, mapListPanelHeight(), mapListScroll());
     return windowed.end - windowed.first;
   });
   const pendingProposals = createMemo(() =>
@@ -478,7 +496,7 @@ export function EditorApp(): JSX.Element {
     if (!event) return null;
     return createEventInspectorLayout({
       width: vp().w,
-      height: vp().h - HEADER_H,
+      height: vp().h - HEADER_H - STATUS_H,
       pageCount: event.pages.length,
       activePage: editor().selectedPageIndex,
       conditions: conditionRows(),
@@ -491,7 +509,7 @@ export function EditorApp(): JSX.Element {
     const pendingDelete = deleteRefs();
     return createMapInspectorLayout({
       width: vp().w,
-      height: vp().h - HEADER_H,
+      height: vp().h - HEADER_H - STATUS_H,
       referenceCount: pendingDelete?.references.length ?? 0,
       referencePage: mapReferencePage(),
       showNotice: notice().text.length > 0,
@@ -587,7 +605,7 @@ export function EditorApp(): JSX.Element {
         setEditor(createEditorState(project));
         setCatalogIndex(target);
         setMapListCursor(target);
-        setMapListScroll(revealMapListRow(target, entries.length, vp().h - HEADER_H, mapListScroll()));
+        setMapListScroll(revealMapListRow(target, entries.length, mapListPanelHeight(), mapListScroll()));
         setMapListOpen(false);
         setLoadingMapIndex(null);
         setCam({ x: 0, y: 0 });
@@ -1447,6 +1465,17 @@ export function EditorApp(): JSX.Element {
     } else if (id === "save") performSave();
   };
 
+  const secondaryHeader = (): boolean => compactHeader(vp().w) && headerMenuOpen();
+  const visibleHeaderButtons = () => headerButtons(vp().w, secondaryHeader());
+  const activateHeaderButton = (id: HeaderButtonId): void => {
+    if (id === "more") {
+      setHeaderMenuOpen((open) => !open);
+      return;
+    }
+    setHeaderMenuOpen(false);
+    activateHeader(HEADER_ORDER.indexOf(id));
+  };
+
   const pickPalette = (slot: number): void => {
     const tile = palette()[slot] ?? null;
     setEditor(selectTile(editor(), tile));
@@ -1853,7 +1882,7 @@ export function EditorApp(): JSX.Element {
     if (entries.length === 0) return;
     const next = Math.max(0, Math.min(entries.length - 1, mapListCursor() + delta));
     setMapListCursor(next);
-    setMapListScroll(revealMapListRow(next, entries.length, vp().h - HEADER_H, mapListScroll()));
+    setMapListScroll(revealMapListRow(next, entries.length, mapListPanelHeight(), mapListScroll()));
   };
 
   const openMapListSelection = (): void => {
@@ -1872,7 +1901,7 @@ export function EditorApp(): JSX.Element {
         setMapListScroll(revealMapListRow(
           catalogIndex(),
           catalog().length,
-          vp().h - HEADER_H,
+          mapListPanelHeight(),
           mapListScroll(),
         ));
         setMapListOpen(true);
@@ -2143,7 +2172,7 @@ export function EditorApp(): JSX.Element {
     return hitTest(x, y, vp().w, vp().h, fit().frame, cam().x, cam().y, palette().length, palScroll(), {
       w: m.width,
       h: m.height,
-    });
+    }, secondaryHeader());
   };
 
   const handleMouseLine = (m: HostLine): void => {
@@ -2173,12 +2202,12 @@ export function EditorApp(): JSX.Element {
         pointerDown = "event";
         if (y < HEADER_H) {
           const hit = hitAt(x, y);
-          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+          if (hit?.kind === "button") activateHeaderButton(hit.id);
         } else {
           const index = hitMapListRow(
             y - HEADER_H,
             catalog().length,
-            vp().h - HEADER_H,
+            mapListPanelHeight(),
             mapListScroll(),
           );
           if (index !== null) {
@@ -2197,7 +2226,7 @@ export function EditorApp(): JSX.Element {
         pointerDown = "event";
         if (y < HEADER_H) {
           const hit = hitAt(x, y);
-          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+          if (hit?.kind === "button") activateHeaderButton(hit.id);
         } else {
           const layout = mapInspectorLayout();
           if (layout) {
@@ -2216,7 +2245,7 @@ export function EditorApp(): JSX.Element {
         pointerDown = "event";
         if (y < HEADER_H) {
           const hit = hitAt(x, y);
-          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+          if (hit?.kind === "button") activateHeaderButton(hit.id);
         } else {
           const layout = inspectorLayout();
           if (layout) {
@@ -2235,7 +2264,7 @@ export function EditorApp(): JSX.Element {
         pointerDown = "event";
         if (y < HEADER_H) {
           const hit = hitAt(x, y);
-          if (hit?.kind === "button") activateHeader(HEADER_ORDER.indexOf(hit.id));
+          if (hit?.kind === "button") activateHeaderButton(hit.id);
         } else if (x < PAL_W && y < vp().h - STATUS_H) {
           const proposal = selectedProposal() === null ? undefined : pendingProposals()[selectedProposal()!];
           const action = hitProposalPanel(
@@ -2267,7 +2296,7 @@ export function EditorApp(): JSX.Element {
         if (hit?.kind === "cell") setPlayStartCell({ mapId: map().id, x: hit.tx, y: hit.ty });
         if (hit?.kind === "button") {
           pointerDown = kind;
-          activateHeader(HEADER_ORDER.indexOf(hit.id));
+          activateHeaderButton(hit.id);
           return;
         }
         // Transfer-target picking owns canvas cells in every mode.
@@ -2466,7 +2495,7 @@ export function EditorApp(): JSX.Element {
           : passMode()
             ? PASS_TOOL_COLS
             : undefined,
-        headerSize: HEADER_ORDER.length,
+        headerSize: visibleHeaderButtons().length,
       });
       cur = r.cursor;
       c = { x: r.camX, y: r.camY };
@@ -2499,7 +2528,10 @@ export function EditorApp(): JSX.Element {
       if (cur.zone === "palette") {
         if (!remove) activateEventTool(EVENT_TOOL_IDS[cur.slot] ?? "new");
       } else if (cur.zone === "header") {
-        if (!remove) activateHeader(cur.button);
+        if (!remove) {
+          const id = visibleHeaderButtons()[cur.button]?.id;
+          if (id) activateHeaderButton(id);
+        }
       } else {
         setEventPlacement({ x: cur.tx, y: cur.ty });
         const event = topmostEventAt(markers(), cur.tx, cur.ty);
@@ -2510,7 +2542,10 @@ export function EditorApp(): JSX.Element {
       if (cur.zone === "palette") {
         if (edge & BTN.CIRCLE) selectPassTool(PASS_TOOL_IDS[cur.slot] ?? "pass");
       } else if (cur.zone === "header") {
-        if (edge & BTN.CIRCLE) activateHeader(cur.button);
+        if (edge & BTN.CIRCLE) {
+          const id = visibleHeaderButtons()[cur.button]?.id;
+          if (id) activateHeaderButton(id);
+        }
       } else if (cur.zone === "canvas" && !strokeOpen && !edgeStrokeOpen) {
         const m = map();
         if (cur.tx < m.width && cur.ty < m.height) {
@@ -2533,7 +2568,10 @@ export function EditorApp(): JSX.Element {
       if (cur.zone === "palette") {
         if (!erase) pickPalette(cur.slot);
       } else if (cur.zone === "header") {
-        if (!erase) activateHeader(cur.button);
+        if (!erase) {
+          const id = visibleHeaderButtons()[cur.button]?.id;
+          if (id) activateHeaderButton(id);
+        }
       } else if (!strokeOpen) {
         strokeOpen = true;
         setEditor(strokeStart(editor(), erase));
@@ -2573,6 +2611,9 @@ export function EditorApp(): JSX.Element {
     }
 
     batch(() => {
+      if (cur.zone === "header") {
+        cur = { ...cur, button: Math.min(cur.button, Math.max(0, visibleHeaderButtons().length - 1)) };
+      }
       setCursor(cur);
       if (c.x !== cam().x || c.y !== cam().y) setCam(c);
       // Keep the gamepad cursor's palette row inside the scrolled strip.
@@ -2590,12 +2631,19 @@ export function EditorApp(): JSX.Element {
 
   // --- per-frame pump -----------------------------------------------------
   onFrame((buttons) => {
+    // Dynamic web and desktop hosts resize the core before this callback.
+    // Polling the authoritative viewport keeps chrome geometry correct even
+    // when no companion-specific resize message is available.
+    const liveViewport = hostViewport(getOps());
+    if (liveViewport && (liveViewport.w !== vp().w || liveViewport.h !== vp().h)) {
+      applyViewport(liveViewport.w, liveViewport.h);
+    }
     settlePendingHostSave();
     if (playProject()) {
       if (svc) {
         for (const line of svc.poll()) {
           if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
-            setVp({ w: line.w, h: line.h });
+            applyViewport(line.w, line.h);
           } else if (line.t === "mouse") {
             handlePlaytestMouseLine(line);
           } else if (line.t === "key" && (line.k === "Escape" || line.k === "Esc")) {
@@ -2617,7 +2665,7 @@ export function EditorApp(): JSX.Element {
     if (svc) {
       for (const line of svc.poll()) {
         if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
-          setVp({ w: line.w, h: line.h });
+          applyViewport(line.w, line.h);
         } else if (line.t === "project" && typeof line.shell === "string") {
           loadHostShardedProject(line);
         } else if ((line.t === "map-data" || line.t === "map-error") && line.request !== undefined) {
@@ -2645,7 +2693,7 @@ export function EditorApp(): JSX.Element {
           handleMouseLine(line);
         } else if (line.t === "scroll" && typeof line.dy === "number") {
           if (mapListOpen()) {
-            const windowed = mapListWindow(catalog().length, vp().h - HEADER_H, mapListScroll());
+            const windowed = mapListWindow(catalog().length, mapListPanelHeight(), mapListScroll());
             setMapListScroll((value) => Math.max(
               0,
               Math.min(windowed.maxScroll, value + Math.sign(line.dy!) * 44),
@@ -2823,7 +2871,7 @@ export function EditorApp(): JSX.Element {
     };
   };
 
-  const buttonsRow = createMemo(() => headerButtons(vp().w));
+  const buttonsRow = createMemo(visibleHeaderButtons);
 
   const statusLine = (): string => {
     const e = editor();
@@ -2841,7 +2889,24 @@ export function EditorApp(): JSX.Element {
     const pick = pendingPick() ? " | PICK TARGET" : "";
     const selectedStart = playStartCell();
     const start = selectedStart?.mapId === m.id ? ` | START ${selectedStart.x},${selectedStart.y}` : "";
-    return `${mode} | ${doc().id}${dirty} | ${m.id} ${m.width}x${m.height} | ${layer} | ${sel}${pos}${start}${pick} | ${notice().text}`;
+    const width = Math.max(0, vp().w - 8);
+    const core = `${m.id} ${m.width}x${m.height} | ${layer} | ${sel}`;
+    const details = `${pos}${start}${pick}`;
+    const noticeText = notice().text;
+    const full = `${mode} | ${doc().id}${dirty} | ${core}${details} | ${noticeText}`;
+    if (editorTextWidth(full) <= width) return full;
+
+    // On narrow screens the editing context is more useful than a transient
+    // notice. Keep map/layer/selection intact, then spend any remaining pixels
+    // on details and a word-boundary-fitted notice.
+    let line = editorTextWidth(core) <= width ? core : fitEditorText(core, width);
+    if (details && editorTextWidth(line + details) <= width) line += details;
+    if (!noticeText) return line;
+    const separator = " | ";
+    const remaining = width - editorTextWidth(line + separator);
+    if (remaining <= editorTextWidth("…")) return line;
+    const fittedNotice = fitEditorText(noticeText, remaining);
+    return fittedNotice ? `${line}${separator}${fittedNotice}` : line;
   };
 
   return (
@@ -2872,7 +2937,7 @@ export function EditorApp(): JSX.Element {
         <For each={buttonsRow()}>
           {(b, i) => (
             <HeaderButton
-              label={headerLabel(b.id, eventMode(), editor().layer, carryPrevious(), b.w)}
+              label={headerLabel(b.id, eventMode(), editor().layer, carryPrevious(), secondaryHeader())}
               x={b.x}
               w={b.w}
               focus={cursor().zone === "header" && cursor().button === i()}
@@ -2885,7 +2950,7 @@ export function EditorApp(): JSX.Element {
       {mapListOpen() && shardedWorkspace() ? (
         <View
           class="absolute"
-          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H }}
+          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: mapListPanelHeight() }}
         >
           <MapList
             entries={catalog()}
@@ -2895,17 +2960,17 @@ export function EditorApp(): JSX.Element {
             dirtyEntries={dirtyEntries()}
             scrollY={mapListScroll()}
             width={vp().w}
-            height={vp().h - HEADER_H}
+            height={mapListPanelHeight()}
           />
         </View>
       ) : inspectorOpen() && selectedEvent() ? (
         <View
           class="absolute"
-          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H }}
+          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H - STATUS_H }}
         >
           <EventInspector
             width={vp().w}
-            height={vp().h - HEADER_H}
+            height={vp().h - HEADER_H - STATUS_H}
             event={selectedEvent()!}
             activePage={editor().selectedPageIndex}
             conditionRows={conditionRows()}
@@ -2920,11 +2985,11 @@ export function EditorApp(): JSX.Element {
       ) : mapInspectorOpen() ? (
         <View
           class="absolute"
-          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H }}
+          style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: vp().w, height: vp().h - HEADER_H - STATUS_H }}
         >
           <MapInspector
             width={vp().w}
-            height={vp().h - HEADER_H}
+            height={vp().h - HEADER_H - STATUS_H}
             map={map()}
             references={deleteRefs()?.references ?? []}
             referencePage={mapReferencePage()}
@@ -2991,32 +3056,34 @@ export function EditorApp(): JSX.Element {
             cursor={cursor().zone === "canvas" ? { x: cursor().tx, y: cursor().ty } : { x: -99, y: -99 }}
           />
 
-          <View
-            class="absolute flex-row items-center"
-            style={{
-              posType: 1,
-              insetL: 0,
-              insetT: vp().h - STATUS_H,
-              width: vp().w,
-              height: STATUS_H,
-              bgColor: "#1b2230",
-            }}
-            debugName="editor-status"
-          >
-            <Text
-              class="text-xs"
-              style={{
-                insetL: 4,
-                textColor: notice().kind === "bad" ? BAD : notice().kind === "good" ? GOOD : DIM,
-                lineHeight: 12,
-                height: 12,
-              }}
-            >
-              {statusLine()}
-            </Text>
-          </View>
         </>
       )}
+      <View
+        class="absolute flex-row items-center"
+        style={{
+          posType: 1,
+          insetL: 0,
+          insetT: vp().h - STATUS_H,
+          width: vp().w,
+          height: STATUS_H,
+          bgColor: "#1b2230",
+          overflow: 1,
+        }}
+        debugName="editor-status"
+      >
+        <Text
+          class="text-xs"
+          style={{
+            insetL: 4,
+            width: Math.max(0, vp().w - 8),
+            textColor: notice().kind === "bad" ? BAD : notice().kind === "good" ? GOOD : DIM,
+            lineHeight: 12,
+            height: 12,
+          }}
+        >
+          {statusLine()}
+        </Text>
+      </View>
         </>
       )}
     </View>
@@ -3024,26 +3091,27 @@ export function EditorApp(): JSX.Element {
 }
 
 function headerLabel(
-  id: (typeof HEADER_ORDER)[number],
+  id: HeaderButtonId,
   eventMode: boolean,
   layer: EditorState["layer"],
   carryPrevious: boolean,
-  width: number,
+  secondary: boolean,
 ): string {
   if (id === "layer") return eventMode ? "EVENT" : layer === "ground" ? "GROUND" : layer === "upper" ? "UPPER" : "PASS";
   if (id === "doc") return "DOC";
-  if (id === "mapprev") return "<";
-  if (id === "mapnext") return ">";
+  if (id === "mapprev") return secondary ? "PREV" : "<";
+  if (id === "mapnext") return secondary ? "NEXT" : ">";
   if (id === "map") return "MAP";
-  if (id === "proposals") return width < 40 ? "AI" : "PROPOSALS";
-  if (id === "play") return width < 32 ? "GO" : "PLAY";
-  if (id === "state") return width < 36 ? (carryPrevious ? "L" : "F") : carryPrevious ? "STATE LAST" : "STATE FRESH";
+  if (id === "proposals") return "PROPOSALS";
+  if (id === "play") return "PLAY";
+  if (id === "state") return carryPrevious ? "STATE LAST" : "STATE FRESH";
   if (id === "undo") return "UNDO";
   if (id === "redo") return "REDO";
+  if (id === "more") return secondary ? "BACK" : "MORE";
   return "SAVE";
 }
 
-function headerEnabled(id: (typeof HEADER_ORDER)[number], e: EditorState, hostFile: boolean): boolean {
+function headerEnabled(id: HeaderButtonId, e: EditorState, hostFile: boolean): boolean {
   if (id === "doc") return !hostFile;
   if (id === "undo") return canUndo(e);
   if (id === "redo") return canRedo(e);

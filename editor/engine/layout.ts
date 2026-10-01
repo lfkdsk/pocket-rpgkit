@@ -9,7 +9,7 @@ import { TILE } from "../../src/engine/tiles.ts";
 export { TILE };
 export const HEADER_H = 20;
 export const STATUS_H = 18;
-export const BANNER_H = 34; // gamepad-mode strip (two absolute 12px rows)
+export const BANNER_H = 42; // gamepad-mode strip (three compact 12px rows)
 export const PAL_W = 140;
 export const VIEW_COLS = 20; // largest cell window
 export const VIEW_ROWS = 14;
@@ -138,42 +138,67 @@ export function hitEventTool(x: number, y: number): EventTool | null {
 export type Layer = "ground" | "upper";
 
 // Header buttons (y 2..18).
+export type HeaderActionId = "layer" | "doc" | "mapprev" | "mapnext" | "map" | "proposals" | "play" | "state" | "undo" | "redo" | "save";
+export type HeaderButtonId = HeaderActionId | "more";
 export interface ButtonGeom extends FrameGeom {
-  id: "layer" | "doc" | "mapprev" | "mapnext" | "map" | "proposals" | "play" | "state" | "undo" | "redo" | "save";
+  id: HeaderButtonId;
 }
 
-export function headerButtons(vpW: number): ButtonGeom[] {
+/** Width at which every full header label plus an 8 px text inset fits. */
+export const FULL_HEADER_MIN_W = 616;
+
+export function compactHeader(vpW: number): boolean {
+  return vpW < FULL_HEADER_MIN_W;
+}
+
+/** Header geometry. Compact viewports keep the common actions in the first
+ * row and put document/navigation/state controls behind MORE. At 400 px, the
+ * edit pair joins that secondary row too; no button is squeezed below its
+ * measured 12 px label width. */
+export function headerButtons(vpW: number, secondary = false): ButtonGeom[] {
   const y = 2;
   const h = HEADER_H - 4;
   const mk = (id: ButtonGeom["id"], x: number, w: number): ButtonGeom => ({ id, x, y, w, h });
-  const save = mk("save", vpW - 4 - 52, 52);
-  const redo = mk("redo", save.x - 4 - 44, 44);
-  const undo = mk("undo", redo.x - 4 - 44, 44);
-  // At the 400px minimum viewport the three review/play controls collapse to
-  // compact labels, while wider windows retain the original descriptive
-  // widths. Keep four pixels between controls and the right-aligned edit row.
-  const toolsX = 188;
-  const toolsWidth = Math.max(48, undo.x - 4 - toolsX - 8);
-  const proposalWidth = Math.min(56, Math.max(20, toolsWidth - 28));
-  const playWidth = Math.min(44, Math.max(20, toolsWidth - proposalWidth - 8));
-  const stateWidth = Math.min(88, Math.max(8, toolsWidth - proposalWidth - playWidth));
-  const playX = toolsX + proposalWidth + 4;
-  const stateX = playX + playWidth + 4;
-  return [
-    // GROUND is the longest layer label. Give it enough room for every
-    // glyph at the baked 12px font size; the former 44px box clipped its G.
-    mk("layer", 4, 52),
-    mk("doc", 60, 28),
-    mk("mapprev", 92, 20),
-    mk("mapnext", 116, 20),
-    mk("map", 140, 44),
-    mk("proposals", toolsX, proposalWidth),
-    mk("play", playX, playWidth),
-    mk("state", stateX, stateWidth),
-    undo,
-    redo,
-    save,
-  ];
+  if (!compactHeader(vpW)) {
+    const buttons: ButtonGeom[] = [];
+    let x = 4;
+    for (const [id, w] of [
+      ["layer", 64], ["doc", 40], ["mapprev", 28], ["mapnext", 28],
+      ["map", 44], ["proposals", 84], ["play", 44], ["state", 92],
+    ] as const) {
+      buttons.push(mk(id, x, w));
+      x += w + 4;
+    }
+    const save = mk("save", vpW - 52, 48);
+    const redo = mk("redo", save.x - 52, 48);
+    const undo = mk("undo", redo.x - 52, 48);
+    return [...buttons, undo, redo, save];
+  }
+
+  if (secondary) {
+    const specs: readonly (readonly [HeaderButtonId, number])[] = [
+      ["more", 44], ["doc", 36], ["mapprev", 44], ["mapnext", 45], ["state", 90],
+      ...(vpW < 460 ? [["undo", 44], ["redo", 42]] as const : []),
+    ];
+    let x = 4;
+    return specs.map(([id, w]) => {
+      const button = mk(id, x, w);
+      x += w + 4;
+      return button;
+    });
+  }
+
+  const buttons: ButtonGeom[] = [];
+  let x = 4;
+  for (const [id, w] of [
+    ["layer", 64], ["map", 44], ["proposals", 84], ["play", 44], ["more", 52],
+    ...(vpW >= 460 ? [["undo", 44], ["redo", 42]] as const : []),
+  ] as const) {
+    buttons.push(mk(id, x, w));
+    x += w + 4;
+  }
+  buttons.push(mk("save", vpW - 52, 48));
+  return buttons;
 }
 
 export type Hit =
@@ -217,9 +242,10 @@ export function hitTest(
   paletteSize: number,
   palScrollY: number,
   map?: { w: number; h: number },
+  secondaryHeader = false,
 ): Hit {
   if (y < HEADER_H) {
-    for (const b of headerButtons(vpW)) {
+    for (const b of headerButtons(vpW, secondaryHeader)) {
       if (inside(x, y, b)) return { kind: "button", id: b.id };
     }
     return null;

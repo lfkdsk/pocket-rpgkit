@@ -8,6 +8,7 @@ import {
   mapListWindow,
 } from "../engine/map-list.ts";
 import { ACCENT, BUTTON, BUTTON_ON, DIM, GOOD, INK, PANEL } from "./panels.tsx";
+import { fitEditorText } from "./text-fit.ts";
 
 export interface MapListProps {
   entries: readonly MapIndexEntry[];
@@ -41,9 +42,9 @@ export function MapList(props: MapListProps): JSX.Element {
     >
       <Text
         class="absolute text-xs"
-        style={{ posType: 1, insetL: MAP_LIST_PAD, insetT: 7, height: 12, lineHeight: 12, textColor: ACCENT }}
+        style={{ posType: 1, insetL: MAP_LIST_PAD, insetT: 7, width: Math.max(0, props.width - MAP_LIST_PAD * 2), height: 12, lineHeight: 12, textColor: ACCENT }}
       >
-        {`MAPS ${props.entries.length}  (ENTER OPEN, ESC CLOSE)`}
+        {fitEditorText(`MAPS ${props.entries.length}  (ENTER OPEN, ESC CLOSE)`, Math.max(0, props.width - MAP_LIST_PAD * 2))}
       </Text>
       <Index each={visible()}>
         {(entry, localIndex) => {
@@ -58,7 +59,7 @@ export function MapList(props: MapListProps): JSX.Element {
               style={{
                 posType: 1,
                 insetL: MAP_LIST_PAD,
-                insetT: MAP_LIST_HEADER_H + index() * MAP_LIST_ROW_H - props.scrollY,
+                insetT: MAP_LIST_HEADER_H + index() * MAP_LIST_ROW_H - windowed().scroll,
                 width: Math.max(0, props.width - MAP_LIST_PAD * 2),
                 height: MAP_LIST_ROW_H - 2,
                 bgColor: selected() ? BUTTON_ON : BUTTON,
@@ -79,7 +80,10 @@ export function MapList(props: MapListProps): JSX.Element {
                   textColor: active() ? GOOD : loading() ? ACCENT : dirty() ? ACCENT : INK,
                 }}
               >
-                {`${active() ? ">" : " "}${dirty() ? "*" : " "} ${index() + 1}. ${entry().id}  ${entry().width}x${entry().height}${loading() ? "  LOADING" : ""}`}
+                {fitEditorText(
+                  `${active() ? ">" : " "}${dirty() ? "*" : " "} ${index() + 1}. ${entry().id}  ${entry().width}x${entry().height}${loading() ? "  LOADING" : ""}`,
+                  Math.max(0, props.width - 22),
+                )}
               </Text>
             </View>
           );

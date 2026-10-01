@@ -10,7 +10,7 @@ import type { Project } from "../src/engine/types.ts";
 import { sha256Text } from "../src/engine/map-repository.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
 import { serializeProjectPreservingSource } from "../editor/engine/document.ts";
-import { HEADER_H, STATUS_H, TILE, fittedView, mapOffset } from "../editor/engine/layout.ts";
+import { HEADER_H, STATUS_H, TILE, fittedView, headerButtons, mapOffset, type HeaderActionId } from "../editor/engine/layout.ts";
 import { proposalActionRects } from "../editor/engine/proposal-layout.ts";
 import { createProposalFromOperations } from "../editor/api/proposals.ts";
 import { applyProposalHunks, proposalSemanticHash } from "../editor/proposals/model.ts";
@@ -105,6 +105,12 @@ function click(inbox: string[], world: World, x: number, y: number): void {
   send(inbox, world, { t: "mouse", x, y, d: false });
 }
 
+function clickHeader(inbox: string[], world: World, id: HeaderActionId): void {
+  const button = headerButtons(W).find((candidate) => candidate.id === id);
+  expect(button).toBeDefined();
+  click(inbox, world, button!.x + Math.floor(button!.w / 2), button!.y + Math.floor(button!.h / 2));
+}
+
 function changedPixels(before: Uint8Array, after: Uint8Array, x0: number, y0: number): number {
   let changed = 0;
   for (let y = y0; y < y0 + TILE; y++) {
@@ -149,7 +155,7 @@ simDescribe("editor proposal review", () => {
     const before = world.render().slice();
 
     send(inbox, world, { t: "proposals", proposals: [proposal] });
-    click(inbox, world, 210, 10); // PROPOSALS
+    clickHeader(inbox, world, "proposals");
     click(inbox, world, 12, HEADER_H + 34); // first queue row
 
     const previewState = probes().state();
@@ -180,7 +186,7 @@ simDescribe("editor proposal review", () => {
       await Bun.write(goldenUrl, encodePNG(previewFrame, W, H));
       console.log(`editor proposal golden 480x272: ${hash}`);
     }
-    if (!process.env.EDITOR_PROPOSAL_UPDATE_GOLDEN) expect(hash).toBe("6cbf4813");
+    if (!process.env.EDITOR_PROPOSAL_UPDATE_GOLDEN) expect(hash).toBe("e9b62066");
     const png = new Uint8Array(await Bun.file(goldenUrl).arrayBuffer());
     const decoded = decodePng(png);
     expect({ width: decoded.width, height: decoded.height }).toEqual({ width: W, height: H });
@@ -212,7 +218,7 @@ simDescribe("editor proposal review", () => {
     expect(probes().state().proposals[0]!.hunks.map((hunk: { decision?: { status: string } }) => hunk.decision?.status))
       .toEqual(["accepted", undefined]);
 
-    click(inbox2, world2, 210, 10);
+    clickHeader(inbox2, world2, "proposals");
     click(inbox2, world2, 12, HEADER_H + 34);
     expect(probes().state().selectedProposalHunk).toBe(1);
     const beforeReject = probes().export().text;
@@ -253,7 +259,7 @@ simDescribe("editor proposal review", () => {
     const outbox: string[] = [];
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "proposals", proposals: [proposal] });
-    click(inbox, world, 210, 10);
+    clickHeader(inbox, world, "proposals");
     const before = world.render().slice();
     click(inbox, world, 12, HEADER_H + 34);
 
@@ -277,7 +283,7 @@ simDescribe("editor proposal review", () => {
       .toEqual(["rejected", undefined]);
     expect(probes().state()).toMatchObject({ cam: { x: 0, y: 0 }, proposalPreview: { maps: [] } });
 
-    click(inbox, world, 210, 10); // close PROPOSALS
+    clickHeader(inbox, world, "proposals");
     expect(probes().state()).toMatchObject({ cam: { x: 0, y: 0 }, proposalOpen: false });
   });
 
@@ -288,7 +294,7 @@ simDescribe("editor proposal review", () => {
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "load", text: SUNSTONE.json });
 
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
     expect(outbox.map((line) => JSON.parse(line)).filter((line) => line.t === "save")).toHaveLength(1);
     expect(readFsText(fs, EDITOR_SAVE_REQUEST_PATH)).toBe("");
   });
@@ -301,7 +307,7 @@ simDescribe("editor proposal review", () => {
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "load", text: SUNSTONE.json });
 
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
     expect(outbox.map((line) => JSON.parse(line)).filter((line) => line.t === "save")).toEqual([]);
     expect(readFsText(fs, EDITOR_SAVE_REQUEST_PATH)).toBe("");
     expect(probes().state().notice.text).toContain("HOST SAVE BRIDGE IS NOT READY");
@@ -318,13 +324,13 @@ simDescribe("editor proposal review", () => {
     const outbox: string[] = [];
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "load", text: SUNSTONE.json });
-    click(inbox, world, 210, 10);
+    clickHeader(inbox, world, "proposals");
     click(inbox, world, 12, HEADER_H + 34);
     const actions = proposalActionRects(H - HEADER_H - STATUS_H);
     const accept = actions.find((item) => item.action.kind === "accept")!.rect;
     click(inbox, world, accept.x + 4, HEADER_H + accept.y + 4);
 
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
     expect(outbox.map((line) => JSON.parse(line)).filter((line) => line.t === "save")).toHaveLength(0);
     expect(probes().state().notice.text).toContain("WAITING FOR HOST PROPOSAL APPLY");
 
@@ -332,7 +338,7 @@ simDescribe("editor proposal review", () => {
     writeFsText(fs, PROPOSAL_HOST_STATE_PATH, `${JSON.stringify({
       projectHash: proposalSemanticHash(acceptedProject),
     }, null, 2)}\n`);
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
 
     const request = JSON.parse(readFsText(fs, EDITOR_SAVE_REQUEST_PATH));
     expect(request).toMatchObject({
@@ -354,7 +360,7 @@ simDescribe("editor proposal review", () => {
     writeFsText(fs, PROPOSAL_HOST_STATE_PATH, `${JSON.stringify({
       projectHash: proposalSemanticHash(externallyEdited),
     }, null, 2)}\n`);
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
     expect(outbox.map((line) => JSON.parse(line)).filter((line) => line.t === "save")).toHaveLength(0);
     expect(JSON.parse(readFsText(fs, EDITOR_SAVE_REQUEST_PATH)).id).toBe(request.id);
     expect(probes().state().notice.text).toContain("HOST FILE CHANGED SINCE IT WAS LOADED");
@@ -371,7 +377,7 @@ simDescribe("editor proposal review", () => {
     const outbox: string[] = [];
     const world = await boot(inbox, outbox, fs);
     send(inbox, world, { t: "load", text: SUNSTONE.json });
-    click(inbox, world, 210, 10);
+    clickHeader(inbox, world, "proposals");
     click(inbox, world, 12, HEADER_H + 34);
     const actions = proposalActionRects(H - HEADER_H - STATUS_H);
     const accept = actions.find((item) => item.action.kind === "accept")!.rect;
@@ -383,7 +389,7 @@ simDescribe("editor proposal review", () => {
     writeFsText(fs, PROPOSAL_HOST_STATE_PATH, `${JSON.stringify({
       projectHash: proposalSemanticHash(hostMerged),
     }, null, 2)}\n`);
-    click(inbox, world, 450, 10);
+    clickHeader(inbox, world, "save");
 
     expect(outbox.map((line) => JSON.parse(line)).filter((line) => line.t === "save")).toHaveLength(0);
     expect(probes().state().notice.text).toContain("HOST FILE CHANGED DURING PROPOSAL REVIEW");

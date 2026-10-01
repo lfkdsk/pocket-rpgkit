@@ -32,7 +32,14 @@ import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
 import { createSession, startSession, stepSession } from "../src/engine/session.ts";
 import type { Project } from "../src/engine/types.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
-import { fittedView, HEADER_H, PAL_W, TILE } from "../editor/engine/layout.ts";
+import {
+  fittedView,
+  headerButtons,
+  HEADER_H,
+  PAL_W,
+  TILE,
+  type HeaderActionId,
+} from "../editor/engine/layout.ts";
 import { appBundle, appPreflight, fnv1a } from "./helpers/boot.ts";
 import { bootEditorWorld, installEditorSimIsolation, type BoundEditorWorld } from "./helpers/editor-session.ts";
 
@@ -89,6 +96,16 @@ const svcLine = (inbox: string[], world: World, line: object): void => {
 const click = (inbox: string[], world: World, x: number, y: number, extra: object = {}): void => {
   svcLine(inbox, world, { t: "mouse", x, y, d: true, ...extra });
   svcLine(inbox, world, { t: "mouse", x, y, d: false, ...extra });
+};
+const clickHeader = (inbox: string[], world: World, id: HeaderActionId): void => {
+  let button = headerButtons(W).find((candidate) => candidate.id === id);
+  if (!button) {
+    const more = headerButtons(W).find((candidate) => candidate.id === "more")!;
+    click(inbox, world, more.x + Math.floor(more.w / 2), more.y + Math.floor(more.h / 2));
+    button = headerButtons(W, true).find((candidate) => candidate.id === id);
+  }
+  if (!button) throw new Error(`missing header action: ${id}`);
+  click(inbox, world, button.x + Math.floor(button.w / 2), button.y + Math.floor(button.h / 2));
 };
 const pulse = (world: World, mask: number): void => {
   frame(world, mask);
@@ -171,16 +188,19 @@ simDescribe("editor boot", () => {
     // the same strip rows over the PALETTE stay the panel fill (banner
     // starts at the palette edge, never over it)
     expect(px(fb, 10, HEADER_H + 4).join(",")).toBe(darkPanel.join(","));
-    // every header button's center is filled (not the header background):
-    // LAYER 30, DOC 74, < 102, > 126, MAP 162, PROPOSALS 216,
-    // PLAY 270, STATE 310, UNDO 350, REDO 398, SAVE 450.
-    for (const cx of [30, 74, 102, 126, 162, 210, 280, 350, 398, 450]) {
-      expect(px(fb, cx, 10).join(",")).not.toBe(darkPanel.join(","));
+    // Every currently visible header button's center is filled (not the
+    // header background). The geometry is responsive, so derive probes from
+    // the same pure layout model used by rendering and pointer hit-testing.
+    for (const button of headerButtons(W)) {
+      const cx = button.x + Math.floor(button.w / 2);
+      const cy = button.y + Math.floor(button.h / 2);
+      expect(px(fb, cx, cy).join(",")).not.toBe(darkPanel.join(","));
     }
     // Pin the first G and final D separately. The former 44px layer box
     // clipped away the G while still leaving a plausible-looking ROUND.
-    expect(labelPixels(fb, 4, 6, 8, 9)).toBe(22);
-    expect(labelPixels(fb, 45, 6, 9, 9)).toBe(29);
+    const layer = headerButtons(W).find((button) => button.id === "layer")!;
+    expect(labelPixels(fb, layer.x + 7, 6, 7, 9)).toBe(22);
+    expect(labelPixels(fb, layer.x + 51, 6, 7, 9)).toBe(24);
     // palette eraser slot (0): the thumbnail row starts below the label at
     // absolute y HEADER_H + PAL_GRID_TOP; the swatch has its dark-red fill
     // and the red "X" glyph somewhere in the 12x12 thumbnail box
@@ -438,17 +458,16 @@ simDescribe("editor pointer mode (svc companion)", () => {
     click(inbox, world, ...SLOT2); // town.1
     click(inbox, world, x, y); // paint (4,8)
     const before = outbox.length;
-    click(inbox, world, 450, 10); // SAVE
+    clickHeader(inbox, world, "save");
     const saves = outbox.slice(before).map((l) => JSON.parse(l) as { t: string; text?: string }).filter((m) => m.t === "save");
     expect(saves).toHaveLength(1);
     const saved = JSON.parse(saves[0]!.text!) as Project;
     expect(saved.format).toBe("rpgkit-project/v1");
     expect(saved.maps[0]!.ground[8 * 20 + 4]).toBe("town.1");
     expect(g().state().editor.dirty).toBe(false);
-    // UNDO (x center 350) then REDO (x center 398) header clicks
-    click(inbox, world, 350, 10);
+    clickHeader(inbox, world, "undo");
     expect(g().state().editor.past).toHaveLength(0);
-    click(inbox, world, 398, 10);
+    clickHeader(inbox, world, "redo");
     expect(g().state().editor.past).toHaveLength(1);
     expect(JSON.parse(g().export().text).maps[0].ground[8 * 20 + 4]).toBe("town.1");
   });
@@ -490,7 +509,7 @@ simDescribe("editor pointer mode (svc companion)", () => {
     expect(s.editor.project.maps[0]!.width).toBe(20);
     expect(outbox.map((line) => JSON.parse(line)).at(-1)).toEqual({ t: "loaded", ok: true, request: 41 });
     // DOC would swap another project in under the host file: refused
-    click(inbox, world, 70, 10);
+    clickHeader(inbox, world, "doc");
     expect(g().state().notice.kind).toBe("bad");
     expect(g().state().editor.project.title).toBe("Pocket RPG Kit — Mini Meadow");
     // all four meadow events show a marker, including the three under
@@ -666,7 +685,8 @@ simDescribe("editor budget", () => {
     // 43,650 B), and KG1's scene branch ADD dispatch, scene fields and
     // play-test scene placeholder, the merged editor is 1,195,808 B. Large
     // (sharded) project editing adds the lazy shard workspace, chunked
-    // companion transport and virtual map catalog: 1,232,242 B.
+    // companion transport and virtual map catalog: 1,232,242 B. Measured
+    // text fitting and the responsive header bring it to 1,242,030 B.
     expect(js).toBeLessThan(1_250_000);
   });
 });

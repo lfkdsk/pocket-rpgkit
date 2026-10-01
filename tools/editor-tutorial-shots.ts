@@ -19,6 +19,7 @@ import {
   headerButtons,
   HEADER_H,
   paletteSlotOrigin,
+  STATUS_H,
   passToolButtons,
   TILE,
 } from "../editor/engine/layout.ts";
@@ -176,7 +177,7 @@ async function bootFresh(): Promise<Ctx> {
       const page = event.pages[s.selectedPageIndex]!;
       return createEventInspectorLayout({
         width: W,
-        height: H - HEADER_H,
+        height: H - HEADER_H - STATUS_H,
         pageCount: event.pages.length,
         activePage: s.selectedPageIndex,
         conditions: flattenConditions(page),
@@ -367,7 +368,7 @@ function createGrove(ctx: Ctx): void {
   ctx.key("Escape"); // close the event inspector
   ctx.click(...ctx.headerCenter("map"));
   check(ctx.state().mapInspectorOpen === true, "map inspector did not open");
-  const layout = createMapInspectorLayout({ width: W, height: H - HEADER_H });
+  const layout = createMapInspectorLayout({ width: W, height: H - HEADER_H - STATUS_H });
   const newAction = layout.actions.find((a) => a.action.kind === "action" && a.action.action === "new")!;
   ctx.click(newAction.rect.x + 30, HEADER_H + newAction.rect.y + 10);
   check(ctx.state().editor.project.maps.length === 4, "NEW did not create a map");
@@ -380,7 +381,7 @@ function createGrove(ctx: Ctx): void {
 }
 
 function closeMapInspector(ctx: Ctx): void {
-  const layout = createMapInspectorLayout({ width: W, height: H - HEADER_H });
+  const layout = createMapInspectorLayout({ width: W, height: H - HEADER_H - STATUS_H });
   ctx.click(layout.close.rect.x + 24, HEADER_H + layout.close.rect.y + 9);
   check(ctx.state().mapInspectorOpen === false, "map inspector did not close");
 }

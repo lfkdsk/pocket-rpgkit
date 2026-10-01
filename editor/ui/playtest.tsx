@@ -30,6 +30,7 @@ import {
 import { PLAYTEST_BATTLE_RULES, playtestSceneRules } from "../engine/playtest-view.ts";
 import { playtestSceneIds } from "../engine/playtest.ts";
 import { ACCENT, BUTTON, BUTTON_ON, DIM, INK, PANEL } from "./panels.tsx";
+import { fitEditorText } from "./text-fit.ts";
 
 interface RuntimeGlobal {
   __rpgSessionState?: SessionState;
@@ -57,8 +58,7 @@ export interface PlaytestSurfaceProps {
 function EditorBattleScene(props: BattleSceneViewProps): JSX.Element {
   const setup = () => {
     const state = props.state as { setup?: JsonValue };
-    const text = JSON.stringify(state.setup ?? null);
-    return text.length > 64 ? `${text.slice(0, 61)}...` : text;
+    return fitEditorText(JSON.stringify(state.setup ?? null), Math.max(0, props.width - 16));
   };
   return (
     <View
@@ -67,8 +67,8 @@ function EditorBattleScene(props: BattleSceneViewProps): JSX.Element {
       debugName="editor-playtest-battle-placeholder"
     >
       <Text class="text-lg" style={{ textColor: ACCENT, lineHeight: 22, height: 22 }}>BATTLE PREVIEW</Text>
-      <Text class="text-xs" style={{ textColor: INK, lineHeight: 14, height: 14 }}>{setup()}</Text>
-      <Text class="text-xs" style={{ textColor: DIM, lineHeight: 14, height: 14 }}>CIRCLE: WIN   CROSS: ESCAPE</Text>
+      <Text class="text-xs" style={{ width: Math.max(0, props.width - 16), textAlign: 1, textColor: INK, lineHeight: 14, height: 14 }}>{setup()}</Text>
+      <Text class="text-xs" style={{ width: Math.max(0, props.width - 16), textAlign: 1, textColor: DIM, lineHeight: 14, height: 14 }}>{fitEditorText("CIRCLE: WIN   CROSS: ESCAPE", Math.max(0, props.width - 16))}</Text>
     </View>
   );
 }
@@ -78,10 +78,10 @@ function EditorBattleScene(props: BattleSceneViewProps): JSX.Element {
  *  preview says which scene it stands in for. */
 function makeEditorScenePlaceholder(id: string): SceneComponent {
   return function EditorScenePlaceholder(props: BattleSceneViewProps): JSX.Element {
+    const textWidth = () => Math.max(0, props.width - 16);
     const args = () => {
       const state = props.state as { args?: JsonValue };
-      const text = JSON.stringify(state.args ?? null);
-      return text.length > 64 ? `${text.slice(0, 61)}...` : text;
+      return fitEditorText(JSON.stringify(state.args ?? null), textWidth());
     };
     return (
       <View
@@ -90,9 +90,9 @@ function makeEditorScenePlaceholder(id: string): SceneComponent {
         debugName={`editor-playtest-scene-placeholder-${id}`}
       >
         <Text class="text-lg" style={{ textColor: ACCENT, lineHeight: 22, height: 22 }}>SCENE PREVIEW</Text>
-        <Text class="text-xs" style={{ textColor: INK, lineHeight: 14, height: 14 }}>{id}</Text>
-        <Text class="text-xs" style={{ textColor: INK, lineHeight: 14, height: 14 }}>{args()}</Text>
-        <Text class="text-xs" style={{ textColor: DIM, lineHeight: 14, height: 14 }}>CIRCLE: OK   CROSS: CANCEL</Text>
+        <Text class="text-xs" style={{ width: textWidth(), textAlign: 1, textColor: INK, lineHeight: 14, height: 14 }}>{fitEditorText(id, textWidth())}</Text>
+        <Text class="text-xs" style={{ width: textWidth(), textAlign: 1, textColor: INK, lineHeight: 14, height: 14 }}>{args()}</Text>
+        <Text class="text-xs" style={{ width: textWidth(), textAlign: 1, textColor: DIM, lineHeight: 14, height: 14 }}>{fitEditorText("CIRCLE: OK   CROSS: CANCEL", textWidth())}</Text>
       </View>
     );
   };
@@ -196,14 +196,14 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
           <Text class="text-xs" style={{ textColor: INK, lineHeight: 12, height: 12 }}>DEBUG</Text>
         </View>
         <Text class="absolute text-xs" style={{ posType: 1, insetL: 118, insetT: 4, width: Math.max(0, props.width - 122), textColor: ACCENT, lineHeight: 12, height: 12 }}>
-          {`PLAY ${currentState()?.mapId ?? props.project.start.map}  START/ESC: STOP  SELECT: DEBUG`}
+          {fitEditorText(`PLAY ${currentState()?.mapId ?? props.project.start.map} · START/ESC STOP · SELECT DEBUG`, Math.max(0, props.width - 122))}
         </Text>
       </View>
 
       {warning() ? (
         <View class="absolute" style={{ posType: 1, insetL: 0, insetT: PLAYTEST_BAR_H, width: props.width, height: 20, bgColor: "#5b3b13", opacity: 0.96, zIndex: 901 }} debugName="editor-playtest-warning">
           <Text class="text-xs" style={{ insetL: 5, insetT: 3, width: props.width - 10, textColor: "#ffe092", lineHeight: 12, height: 12 }}>
-            {props.issues[0]!.message}
+            {fitEditorText(props.issues[0]!.message, Math.max(0, props.width - 10))}
           </Text>
         </View>
       ) : null}
@@ -215,7 +215,7 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
           debugName="editor-playtest-debug-panel"
         >
           <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: 4, width: panel().w - 10, textColor: ACCENT, lineHeight: 12, height: 12 }}>
-            {`LIVE STATE  F${currentState()?.frame ?? 0}`}
+            {fitEditorText(`LIVE STATE · F${currentState()?.frame ?? 0}`, Math.max(0, panel().w - 10))}
           </Text>
           <For each={playtestTabRects(panel())}>
             {(entry) => (
@@ -231,10 +231,10 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
               const rect = () => playtestRowRect(panel(), index());
               return (
                 <View class="absolute" style={{ posType: 1, insetL: rect().x - panel().x, insetT: rect().y - panel().y, width: rect().w, height: rect().h, bgColor: index() % 2 ? "#202a3b" : "#17202e" }} debugName={`editor-playtest-row-${row.kind}-${row.label}`}>
-                  <Text class="absolute text-xs" style={{ posType: 1, insetL: 4, insetT: 3, width: rect().w - 70, textColor: INK, lineHeight: 11, height: 11 }}>{row.label}</Text>
+                  <Text class="absolute text-xs" style={{ posType: 1, insetL: 4, insetT: 3, width: Math.max(0, rect().w - 74), textColor: INK, lineHeight: 11, height: 11 }}>{fitEditorText(row.label, Math.max(0, rect().w - 74))}</Text>
                   {row.kind !== "run" ? <Text class="absolute text-xs" style={{ posType: 1, insetL: rect().w - 66, insetT: 3, width: 10, textColor: DIM, lineHeight: 11, height: 11 }}>-</Text> : null}
                   <Text class="absolute text-xs" style={{ posType: 1, insetL: rect().w - 52, insetT: 3, width: row.kind === "run" ? 50 : 32, textColor: row.kind === "switch" && row.value ? "#5fd38a" : ACCENT, lineHeight: 11, height: 11 }}>
-                    {valueText(row.value)}
+                    {fitEditorText(valueText(row.value), row.kind === "run" ? 50 : 32)}
                   </Text>
                   {row.kind !== "run" ? <Text class="absolute text-xs" style={{ posType: 1, insetL: rect().w - 14, insetT: 3, width: 10, textColor: DIM, lineHeight: 11, height: 11 }}>+</Text> : null}
                 </View>

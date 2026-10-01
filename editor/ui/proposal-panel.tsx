@@ -7,10 +7,7 @@ import {
   proposalVisibleRows,
 } from "../engine/proposal-layout.ts";
 import { ACCENT, BAD, BUTTON, BUTTON_ON, DIM, GOOD, INK, PANEL } from "./panels.tsx";
-
-function clipped(text: string, length: number): string {
-  return text.length <= length ? text : `${text.slice(0, Math.max(1, length - 1))}…`;
-}
+import { fitEditorText, wrapEditorText } from "./text-fit.ts";
 
 export function ProposalPanel(props: {
   proposals: EditProposal[];
@@ -62,10 +59,10 @@ export function ProposalPanel(props: {
                   debugName={`editor-proposal-${item.id}`}
                 >
                   <Text class="absolute text-xs" style={{ posType: 1, insetL: 3, insetT: 2, width: 125, textColor: INK, height: 10, lineHeight: 10 }}>
-                    {clipped(item.title, 20)}
+                    {fitEditorText(item.title, 125)}
                   </Text>
                   <Text class="absolute text-xs" style={{ posType: 1, insetL: 3, insetT: 15, width: 125, textColor: conflict() ? BAD : DIM, height: 10, lineHeight: 10 }}>
-                    {clipped(`${item.author} · ${pending()}/${item.hunks.length}${conflict() ? " CONFLICT" : ""}`, 24)}
+                    {fitEditorText(`${item.author} · ${pending()}/${item.hunks.length}${conflict() ? " CONFLICT" : ""}`, 125)}
                   </Text>
                 </View>
               );
@@ -83,13 +80,13 @@ export function ProposalPanel(props: {
               <Text class="text-xs" style={{ textColor: INK, height: 10, lineHeight: 10 }}>BACK</Text>
             </View>
             <Text class="absolute text-xs" style={{ posType: 1, insetL: 50, insetT: 6, width: 85, textColor: ACCENT, height: 11, lineHeight: 11 }}>
-              {clipped(selected().title, 13)}
+              {fitEditorText(selected().title, 85)}
             </Text>
             <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: 26, width: 130, textColor: DIM, height: 11, lineHeight: 11 }}>
-              BY {clipped(selected().author, 18)}
+              {fitEditorText(`BY ${selected().author}`, 130)}
             </Text>
             <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: 42, width: 130, textColor: INK, height: 32, lineHeight: 10 }}>
-              {clipped(selected().rationale, 58)}
+              {wrapEditorText(selected().rationale, 130, 3).join("\n")}
             </Text>
             <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: 75, width: 130, textColor: DIM, height: 10, lineHeight: 10 }}>
               HUNKS
@@ -112,10 +109,10 @@ export function ProposalPanel(props: {
                     }}
                     debugName={`editor-proposal-hunk-${hunk.id}`}
                   >
-                    <Text class="absolute text-xs" style={{ posType: 1, insetL: 3, insetT: 2, width: 125, textColor: color(), height: 10, lineHeight: 10 }}>
-                      {clipped(`${index() + 1}. ${hunk.summary}`, 21)}
+                    <Text class="absolute text-xs" style={{ posType: 1, insetL: 3, insetT: 2, width: 126, textColor: color(), height: 10, lineHeight: 10 }}>
+                      {fitEditorText(`${index() + 1}. ${hunk.summary}`, 126)}
                     </Text>
-                    <Text class="absolute text-xs" style={{ posType: 1, insetL: 3, insetT: 12, width: 125, textColor: color(), height: 9, lineHeight: 9 }}>
+                    <Text class="absolute text-xs" style={{ posType: 1, insetL: 3, insetT: 14, width: 126, textAlign: 2, textColor: color(), height: 9, lineHeight: 9 }}>
                       {decision()?.toUpperCase() ?? state().toUpperCase()}
                     </Text>
                   </View>
@@ -124,7 +121,7 @@ export function ProposalPanel(props: {
             </For>
             <For each={actions().slice(1)}>
               {(item) => {
-                const label = item.action.kind === "accept" ? "ACCEPT" : item.action.kind === "reject" ? "REJECT" : "ALL";
+                const label = item.action.kind === "accept" ? "ACCEPT" : item.action.kind === "reject" ? "REJECT" : "ACCEPT ALL";
                 const selectedHunk = () => selected().hunks[props.selectedHunk];
                 const enabled = () => item.action.kind === "accept-all"
                   ? selected().hunks.some((hunk, index) => !hunk.decision &&
@@ -149,8 +146,8 @@ export function ProposalPanel(props: {
           </>
         )}
       </Show>
-      <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: props.panelH - 22, width: 130, textColor: DIM, height: 11, lineHeight: 11 }}>
-        SELECT HUNK TO LOCATE
+      <Text class="absolute text-xs" style={{ posType: 1, insetL: 5, insetT: props.panelH - 25, width: 130, textColor: DIM, height: 22, lineHeight: 10 }}>
+        {proposal() ? "SELECT HUNK\nTO LOCATE" : "SELECT PROPOSAL\nTO REVIEW"}
       </Text>
     </View>
   );

@@ -5,6 +5,7 @@
 import { Text, View } from "@pocketjs/framework/components";
 import { For } from "solid-js";
 import { HEADER_H, PASS_TOOL_LABELS, passToolButtons } from "../engine/layout.ts";
+import { fitEditorText } from "./text-fit.ts";
 
 const INK = "#e6e9f0";
 const DIM = "#9aa4b8";
@@ -24,7 +25,7 @@ export function PassPanel(props: {
       style={{ posType: 1, insetL: 0, insetT: HEADER_H, width: 140, height: props.panelH, bgColor: PANEL, overflow: 1 }}
       debugName="editor-pass-tools"
     >
-      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 5, textColor: ACCENT, height: 12, lineHeight: 12 }}>
+      <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 5, width: 128, textColor: ACCENT, height: 12, lineHeight: 12 }}>
         PASSAGE
       </Text>
       <Text class="text-xs absolute" style={{ posType: 1, insetL: 6, insetT: 19, width: 128, textColor: DIM, height: 12, lineHeight: 12 }}>
@@ -50,8 +51,8 @@ export function PassPanel(props: {
               }}
               debugName={`editor-pass-${button.id}`}
             >
-              <Text class="text-xs" style={{ textColor: selected() ? ACCENT : INK, height: 12, lineHeight: 12 }}>
-                {PASS_TOOL_LABELS[button.id]}
+              <Text class="text-xs" style={{ width: Math.max(0, button.w - 6), textAlign: 1, textColor: selected() ? ACCENT : INK, height: 12, lineHeight: 12 }}>
+                {fitEditorText(PASS_TOOL_LABELS[button.id], Math.max(0, button.w - 6))}
               </Text>
             </View>
           );

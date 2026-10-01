@@ -293,7 +293,11 @@ table.controls td { padding: 4px 0; color: var(--muted); }
   opacity: .6;
 }
 .editor-status,
-.editor-privacy { margin: 7px 0 0; font-size: 13px; }
+.editor-privacy {
+  margin: 7px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .editor-status { color: var(--muted); }
 .editor-status.error { color: #ffb4a8; }
 .editor-privacy { color: var(--accent); }

@@ -33,6 +33,7 @@ import {
   fittedView,
   FRAME_H,
   FRAME_W,
+  compactHeader,
   headerButtons,
   hitTest,
   mapOffset,
@@ -531,27 +532,32 @@ describe("editor layout geometry", () => {
   test("header buttons partition the top strip and never overlap", () => {
     const bs = headerButtons(480);
     expect(bs.map((b) => b.id)).toEqual([
+      "layer", "map", "proposals", "play", "more", "undo", "redo", "save",
+    ]);
+    expect(headerButtons(480, true).map((b) => b.id)).toEqual([
+      "more", "doc", "mapprev", "mapnext", "state",
+    ]);
+    expect(headerButtons(400, true).map((b) => b.id)).toEqual([
+      "more", "doc", "mapprev", "mapnext", "state", "undo", "redo",
+    ]);
+    expect(compactHeader(480)).toBe(true);
+    expect(compactHeader(720)).toBe(false);
+    expect(headerButtons(720).map((b) => b.id)).toEqual([
       "layer", "doc", "mapprev", "mapnext", "map", "proposals", "play", "state", "undo", "redo", "save",
     ]);
-    for (let i = 1; i < bs.length; i++) {
-      expect(bs[i]!.x).toBeGreaterThanOrEqual(bs[i - 1]!.x + bs[i - 1]!.w);
-    }
-    // every button has positive area (never an invisible hot zone)
-    for (const b of bs) expect(b.w * b.h).toBeGreaterThan(40);
-    expect(bs.find((b) => b.id === "layer")).toMatchObject({ x: 4, w: 52 });
-    expect(bs.find((b) => b.id === "doc")).toMatchObject({ x: 60, w: 28 });
-    // PLAY and STATE occupy the gap between MAP and the right-aligned edit
-    // buttons, including the editor's 400px minimum viewport.
-    const map = bs.find((b) => b.id === "map")!;
-    const play = bs.find((b) => b.id === "play")!;
-    const state = bs.find((b) => b.id === "state")!;
-    const undo = bs.find((b) => b.id === "undo")!;
-    expect(map.x + map.w).toBeLessThanOrEqual(play.x);
-    expect(play.x + play.w).toBeLessThanOrEqual(state.x);
-    expect(state.x + state.w).toBeLessThanOrEqual(undo.x);
-    const narrow = headerButtons(400);
-    for (let i = 1; i < narrow.length; i++) {
-      expect(narrow[i]!.x).toBeGreaterThanOrEqual(narrow[i - 1]!.x + narrow[i - 1]!.w);
+    expect(bs.find((b) => b.id === "layer")).toMatchObject({ x: 4, w: 64 });
+
+    for (const width of [400, 480, 720, 960]) {
+      for (const row of [headerButtons(width), ...(compactHeader(width) ? [headerButtons(width, true)] : [])]) {
+        for (let i = 1; i < row.length; i++) {
+          expect(row[i]!.x).toBeGreaterThanOrEqual(row[i - 1]!.x + row[i - 1]!.w);
+        }
+        for (const button of row) {
+          expect(button.w * button.h).toBeGreaterThan(40);
+          expect(button.x).toBeGreaterThanOrEqual(0);
+          expect(button.x + button.w).toBeLessThanOrEqual(width);
+        }
+      }
     }
   });
 

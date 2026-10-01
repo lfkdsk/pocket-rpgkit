@@ -14,6 +14,7 @@ import {
   headerButtons,
   HEADER_H,
   paletteSlotOrigin,
+  STATUS_H,
   TILE,
 } from "../editor/engine/layout.ts";
 import {
@@ -143,7 +144,7 @@ function inspectorLayout(): EventInspectorLayout {
   const page = event.pages[s.selectedPageIndex]!;
   return createEventInspectorLayout({
     width: W,
-    height: H - HEADER_H,
+    height: H - HEADER_H - STATUS_H,
     pageCount: event.pages.length,
     activePage: s.selectedPageIndex,
     conditions: flattenConditions(page),
@@ -377,7 +378,7 @@ simDescribe("tutorial step 4: new map and portals", () => {
     click(inbox, world, ...headerCenter("map"));
     expect(probes().state().mapInspectorOpen).toBe(true);
     {
-      const layout = createMapInspectorLayout({ width: W, height: H - HEADER_H });
+      const layout = createMapInspectorLayout({ width: W, height: H - HEADER_H - STATUS_H });
       const newAction = layout.actions.find((a) => a.action.kind === "action" && a.action.action === "new")!;
       click(inbox, world, newAction.rect.x + 30, HEADER_H + newAction.rect.y + 10);
       expect(probes().state().editor.project.maps).toHaveLength(4);

@@ -14,11 +14,11 @@ import {
   mapInspectorDeletePrompt,
   mapInspectorReferenceHeading,
   visibleMapReferenceRange,
-  wrapMapInspectorNotice,
   type MapInspectorAction,
   type MapInspectorLayout,
   type MapInspectorReference,
 } from "../engine/map-layout.ts";
+import { fitEditorText, wrapEditorText } from "./text-fit.ts";
 
 const BG = "#10141d";
 const HEADER = "#172033";
@@ -42,11 +42,6 @@ export interface MapInspectorProps {
   notice?: { kind: "info" | "good" | "bad"; text: string } | null;
   focus: MapInspectorAction | string | null;
   inputBuffer: string;
-}
-
-function compact(value: string, width: number): string {
-  const max = Math.max(2, Math.floor((width - 8) / 6));
-  return value.length <= max ? value : `${value.slice(0, Math.max(1, max - 1))}…`;
 }
 
 function isFocused(focus: MapInspectorProps["focus"], action: MapInspectorAction): boolean {
@@ -89,15 +84,15 @@ function Control(props: {
     >
       <Text
         class="text-xs absolute"
-        style={{ posType: 1, insetL: 3, insetT: 3, height: 12, lineHeight: 12, textColor: DIM }}
+        style={{ posType: 1, insetL: 3, insetT: 3, width: 58, height: 12, lineHeight: 12, textColor: DIM }}
       >
-        {props.control.label}
+        {fitEditorText(props.control.label, 58)}
       </Text>
       <Text
         class="text-xs absolute"
-        style={{ posType: 1, insetL: 64, insetT: 3, height: 12, lineHeight: 12, textColor: INK }}
+        style={{ posType: 1, insetL: 64, insetT: 3, width: Math.max(0, props.control.rect.w - 68), height: 12, lineHeight: 12, textColor: INK }}
       >
-        {compact(props.value, props.control.rect.w - 64)}
+        {fitEditorText(props.value, Math.max(0, props.control.rect.w - 68))}
       </Text>
     </View>
   );
@@ -119,7 +114,11 @@ export function MapInspector(props: MapInspectorProps): JSX.Element {
     return formattedReferences().slice(range.start, range.end);
   });
   const noticeLines = createMemo(() =>
-    wrapMapInspectorNotice(props.notice?.text ?? "", layout().noticeClip.w)
+    wrapEditorText(
+      props.notice?.text ?? "",
+      Math.max(0, layout().noticeClip.w - 6),
+      Math.max(0, Math.floor((layout().noticeClip.h - 6) / 12)),
+    )
   );
   const focused = (action: MapInspectorAction) => isFocused(props.focus, action);
   const buffered = (action: MapInspectorAction, value: string) =>
@@ -150,10 +149,10 @@ export function MapInspector(props: MapInspectorProps): JSX.Element {
       />
       <Text
         class="text-xs absolute"
-        style={{ posType: 1, insetL: 58, insetT: 6, height: 12, lineHeight: 12, textColor: INK }}
+        style={{ posType: 1, insetL: 58, insetT: 6, width: Math.max(0, props.width - 64), height: 12, lineHeight: 12, textColor: INK }}
         debugName="map-inspector-title"
       >
-        {compact(`MAP ${props.map.id}`, props.width - 64)}
+        {fitEditorText(`MAP ${props.map.id}`, Math.max(0, props.width - 64))}
       </Text>
 
       <For each={layout().fields}>
@@ -194,16 +193,16 @@ export function MapInspector(props: MapInspectorProps): JSX.Element {
         >
           <Text
             class="text-xs absolute"
-            style={{ posType: 1, insetL: 0, insetT: 0, height: 12, lineHeight: 12, textColor: BAD }}
+            style={{ posType: 1, insetL: 0, insetT: 0, width: layout().refsClip.w, height: 12, lineHeight: 12, textColor: BAD }}
           >
-            {mapInspectorReferenceHeading(formattedReferences().length)}
+            {fitEditorText(mapInspectorReferenceHeading(formattedReferences().length), layout().refsClip.w)}
           </Text>
           <Text
             class="text-xs absolute"
-            style={{ posType: 1, insetL: 0, insetT: 14, height: 12, lineHeight: 12, textColor: BAD }}
+            style={{ posType: 1, insetL: 0, insetT: 14, width: layout().refsClip.w, height: 12, lineHeight: 12, textColor: BAD }}
             debugName="map-inspector-delete-confirm"
           >
-            {mapInspectorDeletePrompt()}
+            {fitEditorText(mapInspectorDeletePrompt(), layout().refsClip.w)}
           </Text>
           <For each={visibleReferences()}>
             {(ref, i) => (
@@ -213,13 +212,14 @@ export function MapInspector(props: MapInspectorProps): JSX.Element {
                   posType: 1,
                   insetL: 0,
                   insetT: 28 + i() * 12,
+                  width: layout().refsClip.w,
                   height: 12,
                   lineHeight: 12,
                   textColor: DIM,
                 }}
                 debugName={`map-inspector-reference-${i()}`}
               >
-                {compact(ref, layout().refsClip.w)}
+                {fitEditorText(ref, layout().refsClip.w)}
               </Text>
             )}
           </For>
@@ -228,8 +228,10 @@ export function MapInspector(props: MapInspectorProps): JSX.Element {
               class="text-xs absolute"
               style={{
                 posType: 1,
-                insetL: 108,
+                insetL: Math.max(108, layout().refsClip.w - 100),
                 insetT: layout().refsClip.h - 15,
+                width: Math.min(96, Math.max(0, layout().refsClip.w - 108)),
+                textAlign: 2,
                 height: 12,
                 lineHeight: 12,
                 textColor: INK,
