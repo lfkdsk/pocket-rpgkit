@@ -8,6 +8,7 @@ import { deepClone } from "./clone.ts";
 import { cloneAudioState, type AudioState } from "./audio.ts";
 import { assertJsonValue } from "./extensions.ts";
 import type { ExtensionReadContext } from "./extensions.ts";
+import type { GameScene } from "./scene.ts";
 import type { Dir, JsonValue, VariableValue } from "./types.ts";
 
 export interface BattleInput {
@@ -16,6 +17,10 @@ export interface BattleInput {
   cancelEdge?: boolean;
   upEdge?: boolean;
   downEdge?: boolean;
+  /** KG1: horizontal edges. Battle rules ignore them; game scenes (name
+   *  input grids) navigate with them. */
+  leftEdge?: boolean;
+  rightEdge?: boolean;
 }
 
 export type BattleResult = "win" | "lose" | "escape" | "draw";
@@ -83,17 +88,16 @@ export interface BattleScene {
   returnAudio?: AudioState | null;
 }
 
-export type SceneSlot = BattleScene;
+export type SceneSlot = BattleScene | GameScene;
 
 export function cloneScene(scene: SceneSlot | null): SceneSlot | null {
   if (scene === null) return null;
-  assertJsonValue(scene.state, "battle scene state");
+  assertJsonValue(scene.state, `${scene.kind} scene state`);
   return {
-    kind: "battle",
-    fiber: scene.fiber,
+    ...scene,
     state: deepClone(scene.state),
     pausedTicks: scene.pausedTicks ?? 0,
-    ...(scene.returnAudio !== undefined
+    ...(scene.kind === "battle" && scene.returnAudio !== undefined
       ? { returnAudio: scene.returnAudio === null ? null : cloneAudioState(scene.returnAudio) }
       : {}),
   };

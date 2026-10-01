@@ -50,6 +50,7 @@ import {
   keyedEventsOf,
   messageHoldsPlayer,
   ownRecord,
+  pruneStaleQueuedRequests,
   randInt,
   replaceItemCounts,
   rngNext,
@@ -63,9 +64,11 @@ import {
   type InterpState,
   type SoundCue,
   type PendingBattle,
+  type PendingScene,
   type SwitchState,
   type WorldIdleBlockers,
   type WorldOptions,
+  continueScene,
 } from "./interpreter.ts";
 import {
   assertJsonValue,
@@ -81,6 +84,7 @@ import {
   type BattleRules,
   type SceneSlot,
 } from "./battle.ts";
+import type { SceneInput, SceneRules } from "./scene.ts";
 import {
   createChars,
   installRoute,
@@ -285,6 +289,8 @@ export interface Session {
   /** Function registry/codec lives outside reducer state. */
   extensions: ExtensionRuntime;
   battle: BattleRules | null;
+  /** KG1: game-registered scene reducers keyed by scene id. */
+  scenes: Record<string, SceneRules>;
   /** Scene policy is immutable host configuration, never reducer state. */
   sceneOptions: Required<SceneOptions>;
 }
@@ -303,6 +309,10 @@ export interface SessionOptions {
   verifyMapManifest?: boolean;
   extensions?: ExtensionOptions;
   battle?: BattleRules;
+  /** KG1: scene reducers keyed by namespaced id ("game.pc",
+   *  "rpgkit.nameInput", …). Every scene id referenced by project content
+   *  must be registered or createSession throws. */
+  scenes?: Record<string, SceneRules>;
   scene?: SceneOptions;
   /** Opt-in fiber-start trace forwarded to every world (see
    *  WorldOptions.onFiberStart). Coverage/QA tools use it to observe pages
@@ -329,6 +339,9 @@ function visitCommands(commands: readonly Command[], found: Set<string>): void {
       if (command.onWin) visitCommands(command.onWin, found);
       if (command.onLose) visitCommands(command.onLose, found);
       if (command.onEscape) visitCommands(command.onEscape, found);
+    } else if (command.op === "scene") {
+      if (command.onDone) visitCommands(command.onDone, found);
+      if (command.onCancel) visitCommands(command.onCancel, found);
     }
   }
 }
@@ -343,6 +356,9 @@ function commandsUseBattle(commands: readonly Command[]): boolean {
       command.options.some((option) => commandsUseBattle(option.commands)) ||
       commandsUseBattle(command.cancel?.commands ?? [])
     )) return true;
+    if (command.op === "scene" && (
+      commandsUseBattle(command.onDone ?? []) || commandsUseBattle(command.onCancel ?? [])
+    )) return true;
   }
   return false;
 }
@@ -356,6 +372,54 @@ function mapUsesBattle(map: MapDef): boolean {
 function assertBattleRegistered(rules: BattleRules | null, used: boolean): void {
   if (used && rules === null) {
     throw new Error("createSession: project uses battle commands but no BattleRules were registered");
+  }
+}
+
+/** KG1: every scene id referenced by project content (map events, common
+ *  events, nested branches) must have a registered SceneRules. */
+function sceneIdsInCommands(commands: readonly Command[], found: Set<string>): void {
+  for (const command of commands) {
+    if (command.op === "scene") found.add(command.id);
+    if (command.op === "if") {
+      sceneIdsInCommands(command.then, found);
+      if (command.else) sceneIdsInCommands(command.else, found);
+    } else if (command.op === "choices") {
+      for (const option of command.options) sceneIdsInCommands(option.commands, found);
+      if (command.cancel) sceneIdsInCommands(command.cancel.commands, found);
+    } else if (command.op === "battle") {
+      if (command.onWin) sceneIdsInCommands(command.onWin, found);
+      if (command.onLose) sceneIdsInCommands(command.onLose, found);
+      if (command.onEscape) sceneIdsInCommands(command.onEscape, found);
+    } else if (command.op === "scene") {
+      if (command.onDone) sceneIdsInCommands(command.onDone, found);
+      if (command.onCancel) sceneIdsInCommands(command.onCancel, found);
+    }
+  }
+}
+
+function mapSceneIds(map: MapDef): Set<string> {
+  const found = new Set<string>();
+  for (const event of map.events ?? []) {
+    for (const page of event.pages) sceneIdsInCommands(page.commands, found);
+  }
+  return found;
+}
+
+function assertScenesRegistered(
+  scenes: Record<string, SceneRules>,
+  used: ReadonlySet<string>,
+): void {
+  const missing: string[] = [];
+  for (const id of used) {
+    if (!extensionCallNameValid(id)) {
+      missing.push(`${id} (invalid namespaced scene id)`);
+    } else if (!scenes[id]) {
+      missing.push(id);
+    }
+  }
+  if (missing.length > 0) {
+    missing.sort();
+    throw new Error(`createSession: unregistered scene ids: ${missing.join(", ")}`);
   }
 }
 
@@ -432,6 +496,7 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
   }
   assertRegisteredExtensions(sess.extensions, mapExtensionCalls(map));
   assertBattleRegistered(sess.battle, mapUsesBattle(map));
+  assertScenesRegistered(sess.scenes, mapSceneIds(map));
   startupProfileMark("map-acquire:validated");
   // Compile into locals first. A throw leaves the live cache and simulation
   // untouched, which is what an async caller needs before retrying a frame.
@@ -474,6 +539,7 @@ export function prepareSessionMapStep(sess: Session, id: string): boolean {
       }
       assertRegisteredExtensions(sess.extensions, mapExtensionCalls(map));
       assertBattleRegistered(sess.battle, mapUsesBattle(map));
+      assertScenesRegistered(sess.scenes, mapSceneIds(map));
       preparation.map = map;
     }
     return false;
@@ -538,6 +604,11 @@ export function createSession(
   };
   assertRegisteredExtensions(extensions, commonExtensionCalls(commonEvents));
   assertBattleRegistered(options.battle ?? null, commonEvents.some((event) => commandsUseBattle(event.commands)));
+  assertScenesRegistered(options.scenes ?? {}, (() => {
+    const found = new Set<string>();
+    for (const event of commonEvents) sceneIdsInCommands(event.commands, found);
+    return found;
+  })());
   startupProfileMark("session-create:registrations");
   if (isProjectShell(project)) {
     if (!maps) throw new Error("map repository: ProjectShell requires a MapRepository");
@@ -569,6 +640,7 @@ export function createSession(
       worldOptions,
       extensions,
       battle: options.battle ?? null,
+      scenes: options.scenes ?? {},
       sceneOptions: { worldContinues: options.scene?.worldContinues === true },
     };
     acquireSessionMap(session, project.start.map);
@@ -579,6 +651,7 @@ export function createSession(
   for (const map of project.maps) {
     assertRegisteredExtensions(extensions, mapExtensionCalls(map));
     assertBattleRegistered(options.battle ?? null, mapUsesBattle(map));
+    assertScenesRegistered(options.scenes ?? {}, mapSceneIds(map));
   }
   const inlineMaps = new Map<string, MapDef>(project.maps.map((m) => [m.id, m]));
   // Interpreter worlds compile at the FIXED motion reference: waits, text
@@ -608,6 +681,7 @@ export function createSession(
     worldOptions,
     extensions,
     battle: options.battle ?? null,
+    scenes: options.scenes ?? {},
     sceneOptions: { worldContinues: options.scene?.worldContinues === true },
   };
 }
@@ -741,6 +815,22 @@ function sessionConditionContext(
     context.mapHeight = world.map.height;
   }
   return context;
+}
+
+/** B2: before consuming a battle/scene queue, drop requests whose parallel
+ *  fiber's page went stale since the last fold (a completion on the previous
+ *  frame, or a command earlier in this tick). The guard at the call sites
+ *  means a scene-free project (empty queues) never reaches here, so the
+ *  condition-context build below costs nothing on the hot path. */
+function pruneStaleQueuedScenes(sess: Session, s: SessionState): void {
+  const world = sess.worlds.get(s.mapId);
+  const map = sess.maps.get(s.mapId);
+  if (!world || !map) return;
+  const extension: ExtensionScope = { runtime: sess.extensions, ext: s.ext };
+  const eventPages = world.needsEventPages === true || s.interp.eventAppearances !== undefined
+    ? eventPagesOf(map, s.chars)
+    : undefined;
+  pruneStaleQueuedRequests(s.interp, world, s.move.facing, extension, sessionConditionContext(world, s, eventPages));
 }
 
 /** The baked map table plus blocking-character bodies, held as a sparse
@@ -971,6 +1061,8 @@ const NO_MAP_INPUT: SessionInput = {
   cancelEdge: false,
   upEdge: false,
   downEdge: false,
+  leftEdge: false,
+  rightEdge: false,
 };
 
 function battleInput(input: SessionInput): Readonly<BattleInput> {
@@ -980,6 +1072,16 @@ function battleInput(input: SessionInput): Readonly<BattleInput> {
     cancelEdge: input.cancelEdge === true,
     upEdge: input.upEdge === true,
     downEdge: input.downEdge === true,
+  };
+}
+
+/** KG1: scene input adds the horizontal edges name-input grids navigate
+ *  with; battle scenes receive the battleInput subset instead. */
+function sceneInput(input: SessionInput): Readonly<SceneInput> {
+  return {
+    ...battleInput(input),
+    leftEdge: input.leftEdge === true,
+    rightEdge: input.rightEdge === true,
   };
 }
 
@@ -1048,6 +1150,7 @@ function startBattleScene(sess: Session, s: SessionState, request: PendingBattle
       variables: keyedRecord(s.interp.sw.variables),
       items: keyedRecord(s.interp.sw.items),
       gold: s.interp.sw.gold,
+      playerName: s.interp.sw.playerName,
     },
   );
   if (started === null) {
@@ -1091,6 +1194,193 @@ function startNextBattleScene(sess: Session, s: SessionState): void {
     if (!fiberIsExternal(s.interp, request.fiber)) continue;
     if (startBattleScene(sess, s, request)) return;
   }
+}
+
+/** KG1: consume one queued game-scene request. Same lifecycle as a battle
+ *  scene: one RNG draw seeds start(), a null result resumes the fiber
+ *  without consuming the slot, and stale requests from canceled parallel
+ *  fibers are discarded as content data. */
+function startGameScene(sess: Session, s: SessionState, request: PendingScene): boolean {
+  if (s.scene !== null) {
+    throw new Error("scene queue invariant: cannot start while a scene is active");
+  }
+  const rules = sess.scenes[request.id];
+  if (!rules) {
+    throw new Error(`scene queue invariant: no SceneRules registered for ${JSON.stringify(request.id)}`);
+  }
+  const draw = rngNext(s.interp.sw.rng);
+  s.interp.sw.rng = draw.next;
+  s.sw = s.interp.sw;
+  const seed = Math.floor(draw.value * 4294967296) >>> 0;
+  const startExt = cloneExtension(sess.extensions, s.ext);
+  const started = rules.start(
+    startExt,
+    deepClone(request.args),
+    seed,
+    {
+      ext: cloneExtension(sess.extensions, s.ext),
+      switches: keyedRecord(s.interp.sw.switches),
+      variables: keyedRecord(s.interp.sw.variables),
+      items: keyedRecord(s.interp.sw.items),
+      gold: s.interp.sw.gold,
+      playerName: s.interp.sw.playerName,
+    },
+  );
+  if (started === null) {
+    s.interp = continueExternal(s.interp, request.fiber);
+    s.sw = s.interp.sw;
+    return false;
+  }
+  if (typeof started !== "object" || Array.isArray(started)) {
+    throw new Error("scene start: SceneStart object or null required");
+  }
+  assertJsonValue(started.state, "scene start state");
+  s.ext = cloneExtension(sess.extensions, started.ext, "scene start extension state");
+  s.scene = {
+    kind: "scene",
+    id: request.id,
+    fiber: request.fiber,
+    state: deepClone(started.state),
+    pausedTicks: 0,
+  };
+  return true;
+}
+
+function startNextGameScene(sess: Session, s: SessionState): void {
+  while (s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
+    const request = s.interp.pendingScenes!.shift()!;
+    if (!fiberIsExternal(s.interp, request.fiber)) continue;
+    if (startGameScene(sess, s, request)) return;
+  }
+}
+
+/** KG1: advance the game-owned scene reducer once for this host frame, then
+ *  atomically commit a terminal result. The commit body mirrors
+ *  advanceBattleScene (ext/writes/switches/items/gold/transfer plus the
+ *  pausedTicks clock shift) with playerName added; cancelled completions
+ *  commit nothing and run onCancel. Invalid return shapes are registered
+ *  SceneRules programming errors and intentionally throw. */
+function advanceGameScene(
+  sess: Session,
+  s: SessionState,
+  input: Readonly<SceneInput>,
+  ticks: number,
+): void {
+  const scene = s.scene;
+  if (!scene || scene.kind !== "scene") return;
+  const rules = sess.scenes[scene.id];
+  if (!rules) return;
+  if (ticks > 0) {
+    const stepped = rules.step(deepClone(scene.state), input, ticks);
+    assertJsonValue(stepped, "scene step state");
+    scene.state = deepClone(stepped);
+  }
+  const completion = rules.done(deepClone(scene.state));
+  if (completion === null) return;
+  if (typeof completion !== "object" || Array.isArray(completion)) {
+    throw new Error("scene done: SceneCompletion object or null required");
+  }
+  const cancelled = completion.cancelled === true;
+  let nextExt = s.ext;
+  if (!cancelled && completion.ext !== undefined) {
+    nextExt = cloneExtension(sess.extensions, completion.ext, "scene completion extension state");
+  }
+  const writes: [string, string | number][] = [];
+  const switches: [string, boolean][] = [];
+  if (!cancelled && completion.writes !== undefined) {
+    if (completion.writes === null || typeof completion.writes !== "object" || Array.isArray(completion.writes)) {
+      throw new Error("scene completion writes must be a record");
+    }
+    for (const id of Object.keys(completion.writes)) {
+      const value = completion.writes[id];
+      if (typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value))) {
+        throw new Error(`scene completion write ${JSON.stringify(id)} must be a string or finite number`);
+      }
+      writes.push([id, value]);
+    }
+  }
+  if (!cancelled && completion.switches !== undefined) {
+    if (completion.switches === null || typeof completion.switches !== "object" || Array.isArray(completion.switches)) {
+      throw new Error("scene completion switches must be a record");
+    }
+    for (const id of Object.keys(completion.switches)) {
+      const value = completion.switches[id];
+      if (typeof value !== "boolean") {
+        throw new Error(`scene completion switch ${JSON.stringify(id)} must be a boolean`);
+      }
+      switches.push([id, value]);
+    }
+  }
+  let itemReplacements: Record<string, number> | undefined;
+  if (!cancelled && completion.items !== undefined) {
+    if (completion.items === null || typeof completion.items !== "object" || Array.isArray(completion.items)) {
+      throw new Error("scene completion items must be a record");
+    }
+    itemReplacements = keyedRecord();
+    for (const id of Object.keys(completion.items)) {
+      const value = completion.items[id];
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`scene completion item ${JSON.stringify(id)} must be a finite number`);
+      }
+      itemReplacements[id] = value;
+    }
+  }
+  let gold: number | undefined;
+  if (!cancelled && completion.gold !== undefined) {
+    if (typeof completion.gold !== "number" || !Number.isFinite(completion.gold)) {
+      throw new Error("scene completion gold must be a finite number");
+    }
+    gold = Math.max(0, clampFiniteVar(completion.gold));
+  }
+  let playerName: string | undefined;
+  if (!cancelled && completion.playerName !== undefined) {
+    if (
+      typeof completion.playerName !== "string" ||
+      completion.playerName.length === 0 ||
+      completion.playerName.length > 24
+    ) {
+      throw new Error("scene completion playerName must be a string of length 1..24");
+    }
+    playerName = completion.playerName;
+  }
+  const transfer = cancelled ? null : completionTransfer(completion.transfer);
+  const items = itemReplacements === undefined
+    ? undefined
+    : replaceItemCounts(s.interp.sw.items, itemReplacements, sess.worldOptions.inventory);
+
+  s.ext = nextExt;
+  const variables = writes.length > 0 ? ownRecord(s.interp.sw, "variables") : null;
+  for (const [id, value] of writes) {
+    variables![id] = typeof value === "number" ? clampFiniteVar(value) : value;
+  }
+  const switchBank = switches.length > 0 ? ownRecord(s.interp.sw, "switches") : null;
+  for (const [id, value] of switches) switchBank![id] = value;
+  if (items !== undefined) s.interp.sw.items = items;
+  if (gold !== undefined) s.interp.sw.gold = gold;
+  if (playerName !== undefined) s.interp.sw.playerName = playerName;
+  if (scene.pausedTicks > 0) {
+    const shift = (fiber: SessionState["interp"]["main"]): void => {
+      if (
+        fiber?.mode === "wait" ||
+        fiber?.mode === "text" ||
+        fiber?.mode === "animWait"
+      ) {
+        fiber.since += scene.pausedTicks;
+      }
+    };
+    shift(s.interp.main);
+    for (const fiber of Object.values(s.interp.parallels)) shift(fiber);
+    // Same clock-shift rationale as advanceBattleScene: absolute map
+    // animation starts move by the paused duration so playback resumes from
+    // the same visual frame.
+    const anims = s.interp.anims;
+    if (anims !== undefined) {
+      s.interp.anims = anims.map((a) => ({ ...a, start: a.start + scene.pausedTicks }));
+    }
+  }
+  s.interp = continueScene(s.interp, scene.fiber, cancelled, transfer);
+  s.sw = s.interp.sw;
+  s.scene = null;
 }
 
 /** Advance only the interpreter's absolute reference clock. The elapsed
@@ -1150,7 +1440,7 @@ function advanceBattleScene(
 ): void {
   const scene = s.scene;
   const rules = sess.battle;
-  if (!scene || !rules) return;
+  if (!scene || scene.kind !== "battle" || !rules) return;
   if (ticks > 0) {
     const stepped = rules.step(deepClone(scene.state), input, ticks);
     assertJsonValue(stepped, "battle step state");
@@ -1340,12 +1630,21 @@ export function stepSession(
   }
   if (s.scene) {
     const sceneTicks = sceneAtFrameStart ? ticks : Math.max(0, ticks - sceneStartedAt);
-    advanceBattleScene(
-      sess,
-      s,
-      sceneAtFrameStart ? battleInput(input) : battleInput(NO_MAP_INPUT),
-      sceneTicks,
-    );
+    if (s.scene.kind === "battle") {
+      advanceBattleScene(
+        sess,
+        s,
+        sceneAtFrameStart ? battleInput(input) : battleInput(NO_MAP_INPUT),
+        sceneTicks,
+      );
+    } else {
+      advanceGameScene(
+        sess,
+        s,
+        sceneAtFrameStart ? sceneInput(input) : sceneInput(NO_MAP_INPUT),
+        sceneTicks,
+      );
+    }
   }
   if (sess.audioCues && frameCues !== undefined) s.interp.cues = frameCues;
   return s;
@@ -1364,8 +1663,19 @@ function stepReferenceTick(
   // A completion is observed after the previous host frame's reference-tick
   // batch. Its successor therefore starts on this next reference tick, never
   // recursively on the completion frame.
+  if (
+    s.scene === null &&
+    (s.interp.pendingBattles.length > 0 || (s.interp.pendingScenes?.length ?? 0) > 0)
+  ) {
+    // B2: a completion on the previous frame may have invalidated a queued
+    // parallel's page; cancel it before it can grab the scene slot.
+    pruneStaleQueuedScenes(sess, s);
+  }
   if (s.scene === null && s.interp.pendingBattles.length > 0) {
     startNextBattleScene(sess, s);
+  }
+  if (s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
+    startNextGameScene(sess, s);
   }
 
   // Full-screen scenes own the reference clock by default. Games that need
@@ -1706,8 +2016,20 @@ function stepReferenceTick(
     }
   }
   s.sw = s.interp.sw;
+  if (
+    s.scene === null &&
+    (s.interp.pendingBattles.length > 0 || (s.interp.pendingScenes?.length ?? 0) > 0)
+  ) {
+    // B2: a command earlier in this tick's fold may have invalidated a
+    // queued parallel's page after cancelStaleParallels ran; re-check
+    // against the post-fold switch bank before the end-of-tick consumption.
+    pruneStaleQueuedScenes(sess, s);
+  }
   if (s.scene === null && s.interp.pendingBattles.length > 0) {
     startNextBattleScene(sess, s);
+  }
+  if (s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
+    startNextGameScene(sess, s);
   }
   if (s.interp.pendingTransfer) {
     const t = s.interp.pendingTransfer;

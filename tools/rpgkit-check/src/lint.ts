@@ -39,6 +39,9 @@
 //                                   real state)
 //   lint/choices-empty              choices with no options and no cancel —
 //                                   a modal that can never be dismissed
+//   lint/scene-id                   a scene id used by the document; scene
+//                                   rules are code-side, so the id is listed
+//                                   for a registration review (info)
 
 import type {
   Command,
@@ -170,6 +173,9 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
 
   const switches = new Map<string, Usage>();
   const variables = new Map<string, Usage>();
+  // First location of each scene id, so the registration review lists one
+  // finding per id even when many commands open the same scene.
+  const sceneIds = new Map<string, FindingLocation>();
 
   let pageCount = 0;
   let commandCount = 0;
@@ -471,6 +477,9 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           if (command.write?.key) note(variables, command.write.key, "writes", cloc);
           if (command.write?.cancelled) note(variables, command.write.cancelled, "writes", cloc);
           break;
+        case "scene":
+          if (!sceneIds.has(command.id)) sceneIds.set(command.id, cloc);
+          break;
         default:
           break;
       }
@@ -601,6 +610,22 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
       ? (project.maps.find((m) => m.id === [...callers][0]!) ?? null)
       : null;
     walkCommandTree(common.commands, loc, hostMap);
+  }
+
+  // ---- scene ids ----------------------------------------------------------
+  //
+  // Scene rules are code-side (SessionOptions.scenes); the document cannot
+  // register them. List each used id once so a reviewer can verify the
+  // registration — an unregistered id makes createSession throw at startup.
+
+  for (const [id, loc] of sceneIds) {
+    findings.push(makeFinding(
+      "lint/scene-id",
+      "info",
+      `scene id ${JSON.stringify(id)} is used by the document but has no registration in it`,
+      "register SceneRules for it in code (the kit ships nameInputRules for \"rpgkit.nameInput\") or fix the id; an unregistered scene id throws at session startup",
+      loc,
+    ));
   }
 
   // ---- usage findings -----------------------------------------------------

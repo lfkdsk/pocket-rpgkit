@@ -24,7 +24,7 @@ import {
 
 /** The demo rules read nothing from the session; start() still gets the
  *  read-only context every BattleRules implementation receives. */
-const CONTEXT: ExtensionReadContext = { ext: null, switches: {}, variables: {}, items: {}, gold: 0 };
+const CONTEXT: ExtensionReadContext = { ext: null, switches: {}, variables: {}, items: {}, gold: 0, playerName: "Player" };
 
 const BTN_UP = 0x0010;
 const BTN_RIGHT = 0x0020;

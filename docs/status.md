@@ -66,7 +66,7 @@ The links point to where each feature is described in detail.
 | --- | --- | --- |
 | Battle scenes and battle UI kit | Done | A game registers a battle scene; `battle` parks the event until it ends and runs its win/lose/escape branch. The kit provides state-driven battle UI blocks; see [Battle UI kit](../README.md#battle-ui-kit-pocket-rpgkituibattle) |
 | The map world stays alive during battles | Done | Entering or leaving a battle does not rebuild the map. The map/dialog stay mounted but hidden; map clocks freeze by default, while battle audio can switch and restore without remounting its driver |
-| Generic full-screen game scenes and a name-input screen | Planned | In progress. The current project schema has no generic `scene` command; its only authored scene entry point is `battle` |
+| Generic full-screen game scenes and a name-input screen | Done | A game registers `SceneRules` by id; `scene` parks the event until the scene completes and runs `onDone`/`onCancel`, with atomic writes to variables, switches, items, gold and the player name. The built-in name-input scene (`rpgkit.nameInput`) is an MV-style grid editor with held-key repeat. Scenes freeze the world by default and keep the map mounted but hidden, like battles. Limitation: the name-input grid recreates its cell nodes on every active host frame (the UI framework freezes dynamic styles at mount for list-created components), so an open name-input scene pays that churn each frame; scene-free projects are unaffected |
 | Menu and save access switches, game over, return to title | Planned | |
 
 ## Saves, rewind and demos

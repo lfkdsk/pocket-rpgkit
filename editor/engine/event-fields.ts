@@ -566,6 +566,11 @@ export function commandFields(
     case "resumeBgm":
     case "saveBgm":
     case "replayBgm": return [];
+    case "scene":
+      return [
+        field("id", "SCENE ID", command.id),
+        field("args", "ARGS JSON", command.args === undefined ? OMIT : JSON.stringify(command.args), "text", undefined, false, `JSON value passed to the scene, or ${OMIT}`),
+      ];
   }
 }
 
@@ -1205,6 +1210,18 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
       if (key === "setup") {
         const value = jsonValue(raw, "battle setup");
         return value.ok ? good({ ...command, setup: value.value }) : value;
+      }
+      break;
+    }
+    case "scene": {
+      if (key === "id") {
+        const id = raw.trim();
+        return id === "" ? bad("scene id must not be empty") : good({ ...command, id });
+      }
+      if (key === "args") {
+        if (raw === OMIT || raw.trim() === "") return good(setOptional(command, "args", undefined));
+        const value = jsonValue(raw, "scene args");
+        return value.ok ? good(setOptional(command, "args", value.value)) : value;
       }
       break;
     }

@@ -67,7 +67,7 @@ export type PlaytestDebugRow =
   | { kind: "run"; label: string; value: string };
 
 export interface PlaytestIssue {
-  kind: "extension" | "battle" | "backdrop";
+  kind: "extension" | "battle" | "backdrop" | "scene";
   key: string;
   message: string;
 }
@@ -205,6 +205,7 @@ interface CommandScan {
   extensions?: Set<string>;
   battles?: Set<string>;
   backdrops?: Set<string>;
+  scenes?: Set<string>;
 }
 
 function addCommands(commands: readonly Command[], scan: CommandScan): void {
@@ -237,6 +238,10 @@ function addCommands(commands: readonly Command[], scan: CommandScan): void {
       addCommands(command.onWin ?? [], scan);
       addCommands(command.onLose ?? [], scan);
       addCommands(command.onEscape ?? [], scan);
+    } else if (command.op === "scene") {
+      scan.scenes?.add(command.id);
+      addCommands(command.onDone ?? [], scan);
+      addCommands(command.onCancel ?? [], scan);
     }
   }
 }
@@ -249,6 +254,7 @@ function scanProject(project: Project): Required<CommandScan> {
     extensions: new Set<string>(),
     battles: new Set<string>(),
     backdrops: new Set<string>(),
+    scenes: new Set<string>(),
   };
   for (const common of project.commonEvents ?? []) {
     if (common.conditionSwitch) scan.switches.add(common.conditionSwitch);
@@ -267,6 +273,14 @@ function scanProject(project: Project): Required<CommandScan> {
 
 function sorted(values: Iterable<string>): string[] {
   return [...values].sort();
+}
+
+/** Every scene id referenced by the document (map events, common events,
+ *  nested branches). The playtest session registers a placeholder for each
+ *  so an unregistered scene id previews instead of throwing. */
+export function playtestSceneIds(project: Project): string[] {
+  const scan = scanProject(project);
+  return sorted(scan.scenes);
 }
 
 /** Stable rows for the debug panel: authored ids plus values introduced by
@@ -302,6 +316,13 @@ export function diagnosePlaytestProject(project: Project): PlaytestIssue[] {
       kind: "battle",
       key: "battle",
       message: "Preview fallback: battle uses the editor WIN / ESCAPE placeholder.",
+    });
+  }
+  for (const id of sorted(scan.scenes)) {
+    issues.push({
+      kind: "scene",
+      key: id,
+      message: `Preview fallback: scene ${id} uses the editor OK / CANCEL placeholder.`,
     });
   }
   for (const key of sorted(scan.backdrops)) {

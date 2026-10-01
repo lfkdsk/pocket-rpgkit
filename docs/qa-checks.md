@@ -3,6 +3,10 @@
 `rpgkit-check` runs QA tools over any `rpgkit-project/v1` document. The
 dynamic checks (`locks`, `freeze`, `reach`, `explore`) drive the real engine
 on a copy of the project; `lint` is static; `shot` renders schematic maps.
+Game-owned extension calls, battles and scenes run through noop fallbacks
+(unknown extensions are accepted as no-ops, battles complete instantly,
+scenes complete on their first frame through `onDone`), so the checks
+measure event/lock/world liveness, not game logic.
 
 ## Invocation
 
@@ -34,7 +38,8 @@ envelope is:
 
 `loc` fields are all optional; `commandPath` interleaves indexes and branch
 tags (`then`, `else`, `options`, `cancel`, `onWin`, `onLose`, `onEscape`,
-`common`). `shot` returns an array instead of the envelope (see below).
+`onDone`, `onCancel`, `common`). `shot` returns an array instead of the
+envelope (see below).
 
 ## Exit codes
 
@@ -239,6 +244,7 @@ prerequisite is a thrown error (exit 2).
 | `lint/tileproperty-out-of-bounds` | error | a `tileProperty` command (throws at runtime) or condition (always false) addresses a cell outside the host map | move the cell inside the map or remove the clause |
 | `lint/map-unreachable` | warning | no sequence of literal-id transfers reaches the map from the start map | dynamic transfers can still reach it; add a transfer path or remove the map |
 | `lint/choices-empty` | error or warning | a choices modal with no options and no cancel (error), or empty branches (warning) | add an option or a cancel branch; give branches commands or remove them |
+| `lint/scene-id` | info | a scene id is used by the document but has no registration in it | scene rules are code-side (`SessionOptions.scenes`); register `SceneRules` for it (the kit ships `nameInputRules` for `rpgkit.nameInput`) or fix the id — an unregistered id throws at session startup |
 
 ### `locks`
 

@@ -8,6 +8,7 @@ import {
   choiceBranchPath,
   commandAddressKey,
   ifBranchPath,
+  sceneBranchPath,
   ROOT_COMMAND_PATH,
   type CommandListPath,
 } from "./commands.ts";
@@ -1026,6 +1027,9 @@ export function mapReferences(project: Project, mapId: string): MapReference[] {
         scan(command.onWin, ctx, battleBranchPath(address, "win"));
         scan(command.onLose, ctx, battleBranchPath(address, "lose"));
         scan(command.onEscape, ctx, battleBranchPath(address, "escape"));
+      } else if (command.op === "scene") {
+        scan(command.onDone, ctx, sceneBranchPath(address, "done"));
+        scan(command.onCancel, ctx, sceneBranchPath(address, "cancel"));
       }
     });
   };
@@ -1060,6 +1064,9 @@ function rewriteTransferMapIds(project: Project, oldId: string, newId: string): 
         scan(command.onWin);
         scan(command.onLose);
         scan(command.onEscape);
+      } else if (command.op === "scene") {
+        scan(command.onDone);
+        scan(command.onCancel);
       }
     }
   };

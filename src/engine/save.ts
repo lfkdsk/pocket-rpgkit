@@ -73,6 +73,7 @@ export function canSave(player: MovementState, interp: InterpState, scene: unkno
     interp.pendingPlacements.length === 0 &&
     interp.abortedRoutes.length === 0 &&
     interp.pendingBattles.length === 0 &&
+    (interp.pendingScenes?.length ?? 0) === 0 &&
     scene === null
   );
 }
@@ -134,6 +135,9 @@ function normalizeInterp(snap: SaveSnapshot): SaveSnapshot {
   snap.interp.pendingTransfer = null;
   snap.interp.pendingMoveRoutes = [];
   snap.interp.pendingBattles = [];
+  // The scene queue is runtime-only: it must be empty at a save point, so
+  // the field is dropped from the snapshot rather than serialized.
+  delete (snap.interp as Partial<InterpState>).pendingScenes;
   snap.interp.pendingPlacements = [];
   snap.interp.abortedRoutes = [];
   return snap;

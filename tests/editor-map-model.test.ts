@@ -450,6 +450,36 @@ describe("map property edits", () => {
     expect(mapReferences(exportProject(r.state), "b2")).toHaveLength(9);
   });
 
+  test("rename follows transfers inside scene onDone/onCancel", () => {
+    // B6: scene result branches are command containers; a transfer inside
+    // them must both block map deletion (mapReferences) and be rewritten on
+    // rename, exactly like battle result branches.
+    const project = makeProject();
+    const evt = project.maps[0]!.events![0]!;
+    evt.pages[0]!.commands.push({
+      op: "scene",
+      id: "game.pc",
+      onDone: [transferTo("b")],
+      onCancel: [transferTo("b")],
+    });
+    const refs = mapReferences(project, "b");
+    expect(refs.filter((ref) => ref.command.startsWith("s4:")).map((ref) => ref.command)).toEqual([
+      "s4:done#0",
+      "s4:cancel#0",
+    ]);
+    let s = createEditorState(project);
+    s = selectMap(s, 1); // map b, the transfer target
+    const r = renameMap(s, "b2");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const exported = exportProject(r.state);
+    expect(mapReferences(exported, "b")).toEqual([]);
+    const scene = exported.maps[0]!.events![0]!.pages[0]!.commands.find((c) => c.op === "scene") as
+      Extract<Command, { op: "scene" }>;
+    expect((scene.onDone![0] as Extract<Command, { op: "transfer" }>).map).toBe("b2");
+    expect((scene.onCancel![0] as Extract<Command, { op: "transfer" }>).map).toBe("b2");
+  });
+
   test("mapReferences identifies every same-page and common transfer by stable command address", () => {
     const refs = mapReferences(makeProject(), "b");
     expect(refs).toEqual([

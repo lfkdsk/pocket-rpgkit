@@ -421,6 +421,19 @@ export type Command =
       onWin?: Command[];
       onLose?: Command[];
       onEscape?: Command[];
+    }
+  /** Open a game-registered full-screen scene by id (PC, journal, name
+   *  input, …). The game owns the pure SceneRules reducer and the UI
+   *  component; the interpreter parks the fiber until the scene completes,
+   *  then runs onDone (or onCancel when the player cancelled). The scene
+   *  can write variables, switches, items, gold, the player name, ext
+   *  state, and (rarely) transfer the player. */
+  | {
+      op: "scene";
+      id: string;
+      args?: JsonValue;
+      onDone?: Command[];
+      onCancel?: Command[];
     };
 
 /** A page's activation gate. Every present clause must hold (AND). The

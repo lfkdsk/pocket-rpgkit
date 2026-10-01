@@ -456,6 +456,46 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   the same visual frame. Frames taller than one tile shift up by half their
   height, matching Tuxemon's map view anchor.
 
+## v1 amendment — 2026-09-30 (game scenes and name input)
+
+One optional, backwards-compatible command plus one built-in scene. Every
+v1.0/v1.1 document stays valid; the new command is optional.
+
+- **`scene` command:** `{ op:"scene", id, args?, onDone?, onCancel? }` opens
+  a game-registered full-screen scene by namespaced id (a PC, journal,
+  trading screen, name input). The game supplies a pure `SceneRules`
+  reducer (`start`/`step`/`done`, same contract as `BattleRules`) and a UI
+  component; the event fiber parks until the scene completes, then runs
+  `onDone` (or `onCancel`). A completion can write `ext`, variables,
+  switches, item counts, gold, the player name, and (rarely) transfer the
+  player. Scenes use the same main-first, parallel-after publication ordering as
+  battles (within one tick the session consumes battle requests before scene
+  requests), frozen-world
+  default (`scene.worldContinues` opts out), save-point exclusion, rewind
+  keyframing, and 60/30/20/4 Hz parity; `worldIdle` is false while a scene
+  is queued or active. Runtime gains a `pendingScenes` queue that must be
+  empty at a save point; the field is runtime-only and is dropped from
+  snapshots rather than serialized (older saves without the field load
+  fine). The normative schema identity is refreshed as usual.
+- **Built-in name input scene** (`rpgkit.nameInput`): a generic MV-style
+  name entry, not a byte-for-byte port of MV or Tuxemon. Args `{ variable?,
+  maxLength?, default?, title?, charset?, columns?, allowEmpty?,
+  swallowCancel? }`; without `variable` the committed name replaces the
+  player name, with one it writes that variable. The buffer prefills from
+  the live value; an empty commit is refused unless `allowEmpty` is set with
+  a variable target. `maxLength` clamps to 1..24 (default 8; Tuxemon uses
+  15), a custom `charset` keeps only printable single code units (every
+  non-printable code point is dropped — controls, format characters such as
+  zero-width/BOM, line/paragraph separators, private-use, unassigned and
+  surrogate code units; space separators such as U+00A0 render a cell and
+  stay), and
+  `swallowCancel: true` swallows the cancel key to match Tuxemon's
+  `escape_key_exits=False` (default: cancel closes and runs `onCancel`).
+  Held-key repeat is 0.50 s / 0.10 s on the reference clock (Tuxemon
+  0.50 s / 0.08 s), identical at 60/30/20/4 Hz for the same virtual time.
+  MV's back-key-deletes-char and empty-confirm-restores-default are not
+  implemented; Tuxemon's empty player initial and species-name monster
+  initial are reached by passing `default`.
 ## v1 amendment — 2026-09-30 (screen presentation commands)
 
 - `screenFade` independently fades the complete presentation out to an

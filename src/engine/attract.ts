@@ -33,6 +33,7 @@ import type { MapRepository, ProjectSource } from "./types.ts";
 import type { Modal } from "./interpreter.ts";
 import type { ExtensionOptions } from "./extensions.ts";
 import type { BattleRules } from "./battle.ts";
+import type { SceneRules } from "./scene.ts";
 import { deepClone } from "./clone.ts";
 import {
   acquireSessionMap,
@@ -146,6 +147,8 @@ export interface AttractOptions {
    * outside the rewind timeline; refolds reuse them against fresh state. */
   extensions?: ExtensionOptions;
   battle?: BattleRules;
+  /** KG1: game-scene reducers keyed by id, forwarded to createSession. */
+  scenes?: Record<string, SceneRules>;
   scene?: SceneOptions;
 }
 
@@ -185,7 +188,8 @@ export interface AttractKeyframeEntry {
   estimatedBytes: number;
   interval: boolean;
   mapBoundary: boolean;
-  battleBoundary: boolean;
+  /** KG1: true when a scene (battle or game scene) opened or closed. */
+  sceneBoundary: boolean;
 }
 
 export interface AttractKeyframeStats {
@@ -317,6 +321,7 @@ export class AttractController {
       maps: opts.maps,
       extensions: opts.extensions,
       battle: opts.battle,
+      scenes: opts.scenes,
       scene: opts.scene,
     });
     this.idleFrames = opts.idleFrames ?? this.hz * 10;
@@ -396,7 +401,7 @@ export class AttractController {
         estimatedBytes: keyframe.estimatedBytes,
         interval: keyframe.interval,
         mapBoundary: keyframe.mapBoundary,
-        battleBoundary: keyframe.battleBoundary,
+        sceneBoundary: keyframe.sceneBoundary,
       })),
     };
   }
@@ -582,13 +587,14 @@ export class AttractController {
       cancelEdge: !!(pressed & BTN_CROSS),
       upEdge: !!(pressed & BTN_UP),
       downEdge: !!(pressed & BTN_DOWN),
+      leftEdge: !!(pressed & BTN_LEFT),
+      rightEdge: !!(pressed & BTN_RIGHT),
     });
   }
 
   private fold(mask: number, timelineFlags = 0): SessionState {
     const beforeMap = this.state.mapId;
     const beforeScene = this.state.scene !== null;
-    const beforeBattle = this.state.scene?.kind === "battle";
     const beforeModal = this.state.interp.modal;
     const beforeModalInstance = this.modalKey(this.state);
     this.state = this.reduce(this.state, mask, this.lastFolded);
@@ -618,15 +624,15 @@ export class AttractController {
     this.sourceFrame++;
     this.captureKeyframe(
       beforeMap !== this.state.mapId,
-      beforeBattle !== (this.state.scene?.kind === "battle"),
+      beforeScene !== (this.state.scene !== null),
     );
     return this.state;
   }
 
-  private captureKeyframe(mapBoundary: boolean, battleBoundary: boolean): void {
+  private captureKeyframe(mapBoundary: boolean, sceneBoundary: boolean): void {
     const interval = this.keyframeIntervalFrames > 0 &&
       this.sourceFrame % this.keyframeIntervalFrames === 0;
-    if ((!interval && !mapBoundary && !battleBoundary) || this.keyframeMaxBytes === 0) return;
+    if ((!interval && !mapBoundary && !sceneBoundary) || this.keyframeMaxBytes === 0) return;
 
     const state = deepClone(this.state);
     const payload = {
@@ -644,7 +650,7 @@ export class AttractController {
       stage: this.stage,
       interval,
       mapBoundary,
-      battleBoundary,
+      sceneBoundary,
     };
     const estimatedBytes = utf8ByteLength(JSON.stringify(payload));
     if (estimatedBytes > this.keyframeMaxBytes) return;

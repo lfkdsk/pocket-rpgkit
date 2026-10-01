@@ -82,7 +82,7 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The PSP work ported from lfkdsk/pocketjs-tuxemon#1 adds 5,196 shared
 // PocketJS framework bytes (bounded host image residency, deferred frame
 // queue release, externally indexed pak support).
-const EXPECTED_BYTES = 718_032;
+const EXPECTED_BYTES = 736_187;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
@@ -101,6 +101,20 @@ describe("KB4 does not reach games that never opt into battle", () => {
       "CommandGrid",
       "TileTextureCache:",
       "pinned working set exceeds",
+    ]) {
+      expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
+    }
+  });
+
+  maybeTest("sunstone's bundle text contains none of the name-input scene's identifiers", () => {
+    // The built-in name-input scene rides along only in games that import it;
+    // sunstone never does, so its scene id, debug name and args stay absent.
+    const text = readFileSync(SUNSTONE_JS, "utf8");
+    for (const needle of [
+      "rpgkit-name-input-scene",
+      "rpgkit.nameInput",
+      "NameInputScene",
+      "swallowCancel",
     ]) {
       expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
     }

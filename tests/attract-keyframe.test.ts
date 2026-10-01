@@ -309,12 +309,12 @@ describe("KR2 rewind keyframes", () => {
 
       const boundaries = keyed.keyframeStats().entries;
       expect(boundaries.some((entry) => entry.mapBoundary)).toBe(true);
-      expect(boundaries.filter((entry) => entry.battleBoundary)).toHaveLength(2);
+      expect(boundaries.filter((entry) => entry.sceneBoundary)).toHaveLength(2);
       expect(boundaries.every((entry) => !entry.interval)).toBe(true);
       signatures.push(canonicalJson(boundaries.map((entry) => ({
         sourceFrame: entry.sourceFrame,
         mapBoundary: entry.mapBoundary,
-        battleBoundary: entry.battleBoundary,
+        sceneBoundary: entry.sceneBoundary,
       }))));
 
       stepPair(keyed, fromZero, BTN_LTRIGGER);
@@ -534,12 +534,12 @@ describe("KR2 rewind keyframes", () => {
     for (const hz of [60, 30, 20, 4] as const) {
       const { lengths, entries } = probeRun(project, tape, hz, options);
       expect(entries.some((entry) => entry.mapBoundary)).toBe(true);
-      expect(entries.filter((entry) => entry.battleBoundary)).toHaveLength(2);
+      expect(entries.filter((entry) => entry.sceneBoundary)).toHaveLength(2);
       signatures.push(canonicalJson(entries.map((entry) => ({
         sourceFrame: entry.sourceFrame,
         timelineFrame: entry.timelineFrame,
         mapBoundary: entry.mapBoundary,
-        battleBoundary: entry.battleBoundary,
+        sceneBoundary: entry.sceneBoundary,
       }))));
       for (const [index, keyframe] of entries.entries()) {
         const boundary = keyframe.timelineFrame;

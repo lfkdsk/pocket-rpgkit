@@ -8,6 +8,7 @@ import {
   playtestDebugCatalog,
   playtestEventPages,
   playtestFibers,
+  playtestSceneIds,
   playtestStartCell,
 } from "../editor/engine/playtest.ts";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../editor/engine/model.ts";
 import { createSession, startSession, stepSession } from "../src/engine/session.ts";
 import type { Command, Project } from "../src/engine/types.ts";
+import { PLAYTEST_SCENE_RULES, playtestSceneRules } from "../editor/engine/playtest-view.ts";
 
 function project(commands: Command[] = []): Project {
   return {
@@ -246,6 +248,62 @@ describe("editor playtest diagnostics", () => {
     ]);
     expect(() => createSession(p, 60, { extensions: { allowUnknown: true } }))
       .toThrow("no BattleRules were registered");
+  });
+
+  test("reports a scene fallback and routes confirm/cancel through the placeholder", () => {
+    const p = project([
+      {
+        op: "scene",
+        id: "game.pc",
+        args: { box: 6 },
+        onDone: [{ op: "switch", id: "gate.open", value: true }],
+      },
+    ]);
+    p.maps[0]!.events![0]!.pages[0]!.trigger = "autorun";
+    expect(diagnosePlaytestProject(p)).toContainEqual({
+      kind: "scene",
+      key: "game.pc",
+      message: "Preview fallback: scene game.pc uses the editor OK / CANCEL placeholder.",
+    });
+    expect(playtestSceneIds(p)).toEqual(["game.pc"]);
+
+    // Without the placeholder the engine refuses the session.
+    expect(() => createSession(p, 60, { extensions: { allowUnknown: true } }))
+      .toThrow("unregistered scene ids");
+
+    // With the placeholder the session starts and confirm completes the
+    // scene through its onDone branch.
+    const session = createSession(p, 60, {
+      extensions: { allowUnknown: true },
+      scenes: playtestSceneRules(p),
+    });
+    let state = startSession(p, session);
+    for (let guard = 0; state.scene === null && guard < 30; guard++) {
+      state = stepSession(session, state, { buttons: 0 });
+    }
+    expect(state.scene?.kind).toBe("scene");
+    state = stepSession(session, state, { buttons: 0, confirmEdge: true });
+    // The completion resumes the parked fiber; onDone runs on the next tick.
+    for (let guard = 0; guard < 30; guard++) {
+      state = stepSession(session, state, { buttons: 0 });
+      if (state.sw.switches["gate.open"] === true) break;
+    }
+    expect(state.scene).toBeNull();
+    expect(state.sw.switches["gate.open"]).toBe(true);
+
+    // The cancel edge completes as cancelled (onCancel, no writes).
+    const start = PLAYTEST_SCENE_RULES.start(null, {}, 0, {
+      ext: null,
+      switches: {},
+      variables: {},
+      items: {},
+      gold: 0,
+      playerName: "",
+    })!;
+    const cancelled = PLAYTEST_SCENE_RULES.done(
+      PLAYTEST_SCENE_RULES.step(start.state, { buttons: 0, cancelEdge: true }, 1),
+    );
+    expect(cancelled).toEqual({ ext: null, cancelled: true });
   });
 
   test("projects the active event page and every interpreter fiber address", () => {

@@ -95,7 +95,8 @@ describe("K4 fix 3 — restore refuses a checksum-valid envelope with an out-of-
     const snap = createSnapshot("a", player, {
       frame: 0, sw: createSwitchState(), main: null, parallels: {}, modal: null,
       erased: {}, touched: {}, inputLocked: false, placements: {}, anims: [], cues: [],
-      pendingTransfer: null, pendingMoveRoutes: [], pendingBattles: [], pendingPlacements: [],
+      pendingTransfer: null, pendingMoveRoutes: [], pendingBattles: [], pendingScenes: [],
+      pendingPlacements: [],
       abortedRoutes: [],
     }, 0);
     const envelope = JSON.parse(encodeEnvelope(snap)) as { state: unknown; checksum: string };

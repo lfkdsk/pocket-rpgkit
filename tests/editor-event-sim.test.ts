@@ -11,6 +11,7 @@ import { createSession, startSession, stepSession } from "../src/engine/session.
 import type { Command, GameEvent, Project } from "../src/engine/types.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
 import { commandInspectorRows } from "../editor/engine/event-fields.ts";
+import { flattenCommands } from "../editor/engine/commands.ts";
 import {
   createEventInspectorLayout,
   type EventInspectorLayout,
@@ -581,6 +582,61 @@ simDescribe("map management + transfer picking end to end", () => {
     const after = (JSON.parse(probes().export().text) as Project)
       .maps[0]!.events![0]!.pages[0]!.commands;
     expect(after).toEqual([{ op: "text", lines: ["anchor"] }, transferA]);
+  });
+
+  test("adds the first command into scene @done and @cancel branches through the ADD prompt", async () => {
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    const world = await bootSvc(inbox, outbox);
+    const project = JSON.parse(SUNSTONE.json) as Project;
+    project.maps[0]!.events = [{
+      id: "scene-review",
+      name: "Scene review",
+      x: 0,
+      y: 0,
+      pages: [{ trigger: "action", commands: [{ op: "scene", id: "pc.box" }] }],
+    }];
+    expect(probes().inject(JSON.stringify(project))).toEqual({ ok: true });
+
+    enterEventMode(inbox, world);
+    click(inbox, world, ...cellPoint(480, 272, 0, 0));
+    click(inbox, world, ...eventToolPoint("edit"));
+
+    const sceneLayoutRow = () => {
+      const state = probes().state().editor;
+      const page = selectedEvent().pages[state.selectedPageIndex]!;
+      const key = flattenCommands(page.commands).find((row) => row.command.op === "scene")!.key;
+      return inspectorLayout(480, 272).commandRows.find((row) => row.key === key)!;
+    };
+    const addAction = () => inspectorLayout(480, 272).commandActions.find(
+      (action) => action.action.kind === "command-action" && action.action.action === "add",
+    )!;
+    const sceneCommand = () => selectedEvent().pages[0]!.commands[0] as Extract<Command, { op: "scene" }>;
+
+    // Select the scene row, then ADD into its (absent) done branch.
+    clickInspectorControl(inbox, world, sceneLayoutRow().header);
+    clickInspectorControl(inbox, world, addAction());
+    typeText(inbox, world, "text@done");
+    key(inbox, world, "Enter");
+    expect(sceneCommand().onDone).toEqual([{ op: "text", lines: [""] }]);
+    expect(sceneCommand().onCancel).toBeUndefined();
+
+    // Same for the cancel branch.
+    clickInspectorControl(inbox, world, sceneLayoutRow().header);
+    clickInspectorControl(inbox, world, addAction());
+    typeText(inbox, world, "text@cancel");
+    key(inbox, world, "Enter");
+    expect(sceneCommand().onCancel).toEqual([{ op: "text", lines: [""] }]);
+
+    // An unknown branch name is rejected without touching either branch.
+    clickInspectorControl(inbox, world, sceneLayoutRow().header);
+    clickInspectorControl(inbox, world, addAction());
+    typeText(inbox, world, "text@bogus");
+    key(inbox, world, "Enter");
+    expect(probes().state().notice).toMatchObject({ kind: "bad" });
+    expect(probes().state().notice.text).toContain("INVALID @BRANCH");
+    expect(sceneCommand().onDone).toHaveLength(1);
+    expect(sceneCommand().onCancel).toHaveLength(1);
   });
 });
 

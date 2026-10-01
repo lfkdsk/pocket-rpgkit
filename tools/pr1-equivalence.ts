@@ -524,6 +524,7 @@ async function battleTraces(root: string): Promise<Trace[]> {
       recorder.capture(state);
       if (
         state.scene === null && state.interp.pendingBattles.length === 0 &&
+        (state.interp.pendingScenes?.length ?? 0) === 0 &&
         state.sw.switches["done.a-first"] && state.sw.switches["done.z-second"]
       ) break;
     }

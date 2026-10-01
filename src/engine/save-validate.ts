@@ -26,7 +26,7 @@ const INTEGER_OPS = new Set([
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
   "mapAnim", "stopAnim", "appearance", "layer", "tileProperty",
   "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon", "screenBackdrop",
-  "ext", "extChoice", "battle",
+  "ext", "extChoice", "battle", "scene",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -887,6 +887,23 @@ function validateProg(prog: unknown, path: string): string | null {
         }
         break;
       }
+      case "scene": {
+        if (typeof ins.id !== "string" || ins.id.length === 0) {
+          return fail(`${here}.id`, "non-empty string required");
+        }
+        const problem = jsonValueProblem(ins.args, `${here}.args`);
+        if (problem) return problem;
+        for (const branch of ["onDone", "onCancel"] as const) {
+          if (ins[branch] !== null && !Array.isArray(ins[branch])) {
+            return fail(`${here}.${branch}`, "program array or null required");
+          }
+          if (Array.isArray(ins[branch])) {
+            const e = validateProg(ins[branch], `${here}.${branch}`);
+            if (e) return e;
+          }
+        }
+        break;
+      }
     }
   }
   return null;
@@ -1547,6 +1564,9 @@ export function validateSnapshot(snap: unknown): string | null {
   }
   if (!Array.isArray(it.pendingBattles) || it.pendingBattles.length !== 0) {
     return "state.interp.pendingBattles: no queued battles at a save point";
+  }
+  if (it.pendingScenes !== undefined && (!Array.isArray(it.pendingScenes) || it.pendingScenes.length !== 0)) {
+    return "state.interp.pendingScenes: no queued scenes at a save point";
   }
   if (!Array.isArray(it.pendingPlacements) || it.pendingPlacements.length !== 0) {
     return "state.interp.pendingPlacements: no pending event placements at a save point";

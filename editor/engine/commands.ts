@@ -18,7 +18,8 @@ export type CommandListPathSegment =
   | { readonly kind: "if"; readonly index: number; readonly branch: "then" | "else" }
   | { readonly kind: "choices"; readonly index: number; readonly branch: "option"; readonly option: number }
   | { readonly kind: "choices"; readonly index: number; readonly branch: "cancel" }
-  | { readonly kind: "battle"; readonly index: number; readonly branch: "win" | "lose" | "escape" };
+  | { readonly kind: "battle"; readonly index: number; readonly branch: "win" | "lose" | "escape" }
+  | { readonly kind: "scene"; readonly index: number; readonly branch: "done" | "cancel" };
 
 export type CommandListPath = readonly CommandListPathSegment[];
 
@@ -58,9 +59,17 @@ export function battleBranchPath(
   return [...parent.path, { kind: "battle", index: parent.index, branch }];
 }
 
+export function sceneBranchPath(
+  parent: CommandAddress,
+  branch: "done" | "cancel",
+): CommandListPath {
+  return [...parent.path, { kind: "scene", index: parent.index, branch }];
+}
+
 function segmentKey(segment: CommandListPathSegment): string {
   if (segment.kind === "if") return `i${segment.index}:${segment.branch}`;
   if (segment.kind === "battle") return `b${segment.index}:${segment.branch}`;
+  if (segment.kind === "scene") return `s${segment.index}:${segment.branch}`;
   return segment.branch === "cancel"
     ? `c${segment.index}:cancel`
     : `c${segment.index}:option:${segment.option}`;
@@ -122,6 +131,7 @@ export const EDITABLE_COMMAND_OPS = [
   "ext",
   "extChoice",
   "battle",
+  "scene",
 ] as const;
 
 export type EditableCommandOp = (typeof EDITABLE_COMMAND_OPS)[number];
@@ -268,6 +278,9 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
       break;
     case "battle":
       command = { op, setup: null };
+      break;
+    case "scene":
+      command = { op, id: "game.scene" };
       break;
   }
   return command as CommandOf<Op>;
@@ -455,6 +468,8 @@ export function commandSummary(command: unknown): string {
       return "Stop all map animations";
     case "battle":
       return `Battle ${jsonPreview(command.setup)}`;
+    case "scene":
+      return `Scene ${text(command.id)}`;
     default:
       return `Unknown command${typeof command.op === "string" ? ` (${command.op})` : ""}`;
   }
@@ -514,6 +529,16 @@ function childBranches(command: Command, address: CommandAddress): ChildBranch[]
       const commands = value[property];
       if (Array.isArray(commands)) {
         children.push({ path: battleBranchPath(address, branch), label, commands: commands as Command[] });
+      }
+    }
+  } else if (value.op === "scene") {
+    for (const [branch, property, label] of [
+      ["done", "onDone", "Done"],
+      ["cancel", "onCancel", "Cancel"],
+    ] as const) {
+      const commands = value[property];
+      if (Array.isArray(commands)) {
+        children.push({ path: sceneBranchPath(address, branch), label, commands: commands as Command[] });
       }
     }
   }
@@ -582,6 +607,13 @@ function branchOf(command: Command, segment: CommandListPathSegment): BranchRef 
     if (!validIndex(segment.option) || segment.option >= command.options.length) return null;
     return { commands: command.options[segment.option]!.commands, present: true };
   }
+  if (segment.kind === "scene") {
+    if (command.op !== "scene") return null;
+    const commands = segment.branch === "done" ? command.onDone : command.onCancel;
+    return Array.isArray(commands)
+      ? { commands, present: true }
+      : { commands: EMPTY_COMMANDS, present: false };
+  }
   if (command.op !== "battle") return null;
   const property = segment.branch === "win"
     ? "onWin"
@@ -614,6 +646,12 @@ function replaceBranch(
     const options = command.options.slice();
     options[segment.option] = { ...options[segment.option]!, commands };
     return { ...command, options };
+  }
+  if (segment.kind === "scene") {
+    if (command.op !== "scene") return null;
+    return segment.branch === "done"
+      ? { ...command, onDone: commands }
+      : { ...command, onCancel: commands };
   }
   if (command.op !== "battle") return null;
   if (segment.branch === "win") return { ...command, onWin: commands };

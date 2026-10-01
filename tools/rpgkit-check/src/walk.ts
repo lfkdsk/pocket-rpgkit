@@ -1,15 +1,16 @@
 // tools/rpgkit-check/src/walk.ts — walk an rpgkit-project/v1 command tree.
 //
 // Every check (lint and dynamic) needs to descend through `if` / `choices`
-// / `battle` branches the same way, so the recursion lives here once. A
-// command path is a sequence of sequence indexes interleaved with branch
-// tags, so a nested command points back at ONE place in the document:
+// / `battle` / `scene` branches the same way, so the recursion lives here
+// once. A command path is a sequence of sequence indexes interleaved with
+// branch tags, so a nested command points back at ONE place in the document:
 //
 //   [2]                      command 2 at the page root
 //   [2, "then", 0]           command 2 is an `if`; its then-branch, cmd 0
 //   [2, "options", 1, 0]     command 2 is `choices`; option 1, cmd 0
 //   [2, "cancel", 0]         ... the cancel branch, cmd 0
 //   [2, "onWin", 0]          command 2 is `battle`; its onWin branch, cmd 0
+//   [2, "onDone", 0]         command 2 is `scene`; its onDone branch, cmd 0
 //   [3, "common", "heal", 0] command 3 calls common event "heal"; its cmd 0
 //
 // `extChoice` has no static branches (the option list comes from a live
@@ -44,6 +45,10 @@ export function walkCommands(
         if (command.onWin) walkCommands(command.onWin, visit, [...here, "onWin"]);
         if (command.onLose) walkCommands(command.onLose, visit, [...here, "onLose"]);
         if (command.onEscape) walkCommands(command.onEscape, visit, [...here, "onEscape"]);
+        break;
+      case "scene":
+        if (command.onDone) walkCommands(command.onDone, visit, [...here, "onDone"]);
+        if (command.onCancel) walkCommands(command.onCancel, visit, [...here, "onCancel"]);
         break;
       default:
         break;

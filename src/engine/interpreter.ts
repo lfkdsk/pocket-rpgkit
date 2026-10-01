@@ -381,6 +381,7 @@ export function evalCondition(
         variables: s.variables,
         items: s.items,
         gold: s.gold,
+        playerName: s.playerName,
       };
       const result = handler(context, deepClone(c.args));
       if (typeof result !== "boolean") {
@@ -632,6 +633,13 @@ export type Instr =
       onWin: Prog | null;
       onLose: Prog | null;
       onEscape: Prog | null;
+    }
+  | {
+      op: "scene";
+      id: string;
+      args: JsonValue;
+      onDone: Prog | null;
+      onCancel: Prog | null;
     };
 
 export type Prog = Instr[];
@@ -900,6 +908,15 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
             onEscape: c.onEscape ? compile(c.onEscape, hz) : null,
           });
           break;
+        case "scene":
+          emit({
+            op: "scene",
+            id: c.id,
+            args: deepClone(c.args ?? {}),
+            onDone: c.onDone ? compile(c.onDone, hz) : null,
+            onCancel: c.onCancel ? compile(c.onCancel, hz) : null,
+          });
+          break;
       }
     }
   };
@@ -1119,6 +1136,19 @@ export interface PendingBattle {
   fiber: string;
   setup: JsonValue;
 }
+
+/** Game scene request published on the tick that parks its fiber. */
+export interface PendingScene {
+  fiber: string;
+  id: string;
+  args: JsonValue;
+}
+
+/** Shared empty-array sentinel for the "no scene requests queued this tick"
+ *  branch of the fold's FIFO reorder. Never mutated: the reorder only pushes
+ *  when a splice actually returned requests. Lets a scene-free project fold
+ *  without allocating an empty array per reference tick. */
+const EMPTY_PENDING_SCENES: PendingScene[] = [];
 
 /** A `place` command published on THIS step. The session
  *  relocates the matching CharState after the fold; the durable position
@@ -1385,6 +1415,11 @@ export interface InterpState {
    *  order. Unlike the other pending fields this queue survives interpreter
    *  steps until the session consumes each request. */
   pendingBattles: PendingBattle[];
+  /** Game scene requests waiting for the scene host, in deterministic fiber
+   *  order. Same persistence and drain rules as pendingBattles. Runtime-only:
+   *  the queue must be empty at a save point, so the field is never
+   *  serialized (absent from fresh states and save snapshots alike). */
+  pendingScenes?: PendingScene[];
   /** `place` requests published on THIS step, in command order. */
   pendingPlacements: PendingPlacement[];
   /** Keys of PARALLEL fibers canceled on THIS step because their page
@@ -1451,6 +1486,7 @@ export function isWorldIdle(
     s.pendingTransfer === null &&
     !s.pendingMoveRoutes.some((request) => request.target === "player") &&
     s.pendingBattles.length === 0 &&
+    (s.pendingScenes?.length ?? 0) === 0 &&
     blockers.sceneActive !== true &&
     blockers.fadeActive !== true &&
     blockers.playerRouteActive !== true &&
@@ -1717,7 +1753,7 @@ export function ownRecord<K extends SwitchRecord>(sw: SwitchState, k: K): Switch
  *  list are shared (anims is copy-on-write: mapAnim/stopAnim take a private
  *  copy before mutating, so a shared list is never written). */
 export function cloneInterp(s0: InterpState): InterpState {
-  return copyInterp(s0, {
+  const sw: SwitchState = {
     switches: keyedRecord(s0.sw.switches),
     self: keyedRecord(s0.sw.self),
     items: keyedRecord(s0.sw.items),
@@ -1726,8 +1762,11 @@ export function cloneInterp(s0: InterpState): InterpState {
     gold: s0.sw.gold,
     playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
     rng: s0.sw.rng,
-    ...(s0.sw.playerAppearance ? { playerAppearance: { ...s0.sw.playerAppearance } } : {}),
-  }, false);
+  };
+  // Conditional assignment (not a conditional spread) so a project without
+  // playerAppearance allocates no empty-object literal on the clone path.
+  if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
+  return copyInterp(s0, sw, false);
 }
 
 /** cloneInterp for stepSession's private working copy: the switch-bank
@@ -1743,8 +1782,11 @@ export function shareInterp(s0: InterpState): InterpState {
     gold: s0.sw.gold,
     playerName: s0.sw.playerName ?? DEFAULT_PLAYER_NAME,
     rng: s0.sw.rng,
-    ...(s0.sw.playerAppearance ? { playerAppearance: { ...s0.sw.playerAppearance } } : {}),
   };
+  // Conditional assignment (not a conditional spread) so the per-frame
+  // working copy allocates no empty-object literal when playerAppearance
+  // is absent.
+  if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
   SHARED_RECORDS.set(sw, new Set<SwitchRecord>(["switches", "self", "items", "variables", "shopStock"]));
   return copyInterp(s0, sw, true);
 }
@@ -1811,6 +1853,15 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
     pendingPlacements: s0.pendingPlacements.map((p) => ({ ...p })),
     abortedRoutes: [...s0.abortedRoutes],
   };
+  // Conditional assignment (not a conditional spread) so a scene-free
+  // project allocates no empty-object literal on the per-frame clone path.
+  if (s0.pendingScenes && s0.pendingScenes.length > 0) {
+    s.pendingScenes = s0.pendingScenes.map((request) => ({
+      fiber: request.fiber,
+      id: request.id,
+      args: deepClone(request.args),
+    }));
+  }
   if (s0.moveControls) s.moveControls = cloneMoveControlState(s0.moveControls);
   if (s0.error) s.error = { ...s0.error };
   // Keep the dormant audio path allocation-free: a conditional object
@@ -2031,10 +2082,75 @@ function cancelStaleParallels(
     // Same page still active: keep running. A page change (index differs)
     // cancels; scanTriggers restarts a fiber for the new page on this step.
     if (active && active.index === f.pageIndex) continue;
-    if (f.mode === "external") s.abortedRoutes.push(f.key);
-    if (s.modal?.fiber === f.key) s.modal = null;
-    delete s.parallels[key];
+    cancelParallelFiber(s, key);
   }
+}
+
+/** Tear down a parked parallel fiber the way cancelStaleParallels does:
+ *  an external parker (a waited route or a scene/battle slot) lands on
+ *  abortedRoutes so a player route waited on it drops, a modal owned by the
+ *  fiber closes, and the fiber itself is deleted. */
+function cancelParallelFiber(s: InterpState, key: string): void {
+  const f = s.parallels[key];
+  if (!f) return;
+  if (f.mode === "external") s.abortedRoutes.push(f.key);
+  if (s.modal?.fiber === f.key) s.modal = null;
+  delete s.parallels[key];
+}
+
+/** A queued battle/scene request is only valid while its issuing fiber is
+ *  still parked on its event's active page. cancelStaleParallels enforces
+ *  this at the start of each fold, but a scene completion (or a command
+ *  earlier in the same tick) can invalidate a page between folds — and the
+ *  session consumes the queues before the next fold runs. Re-evaluate the
+ *  page condition against the current switch bank, drop requests whose
+ *  parallel fiber went stale, and cancel that fiber exactly as
+ *  cancelStaleParallels would. Main-fiber requests are never page-gated;
+ *  requests from fibers that already ended stay queued (they keep worldIdle
+ *  busy) and are discarded by the consumer's fiberIsExternal check. */
+export function pruneStaleQueuedRequests(
+  s: InterpState,
+  w: World,
+  facing: Facing,
+  extension: ExtensionScope,
+  context: ConditionContext | undefined,
+): void {
+  if (s.pendingBattles.length === 0 && (s.pendingScenes?.length ?? 0) === 0) return;
+  pruneStaleQueue(s, w, facing, extension, context, s.pendingBattles);
+  if (s.pendingScenes) pruneStaleQueue(s, w, facing, extension, context, s.pendingScenes);
+}
+
+function pruneStaleQueue<T extends { fiber: string }>(
+  s: InterpState,
+  w: World,
+  facing: Facing,
+  extension: ExtensionScope,
+  context: ConditionContext | undefined,
+  queue: T[],
+): void {
+  let kept = 0;
+  for (let i = 0; i < queue.length; i++) {
+    const req = queue[i]!;
+    if (s.main?.key === req.fiber) {
+      queue[kept++] = req; // the main fiber is not page-gated
+      continue;
+    }
+    const f = s.parallels[req.fiber];
+    if (!f) {
+      queue[kept++] = req; // fiber ended: fiberIsExternal discards it at consumption
+      continue;
+    }
+    const ev = worldEventById(w, req.fiber.slice(w.map.id.length + 1));
+    const active = ev && !s.erased[req.fiber]
+      ? activePage(ev, s.sw, w.map.id, facing, extension, context)
+      : null;
+    if (active && active.index === f.pageIndex) {
+      queue[kept++] = req;
+      continue;
+    }
+    cancelParallelFiber(s, req.fiber); // stale page: drop the request and the fiber
+  }
+  queue.length = kept;
 }
 
 function scanTriggers(s: InterpState, w: World, input: InterpInput, extension: ExtensionScope): void {
@@ -2525,6 +2641,7 @@ function extensionReadContext(
     variables: s.sw.variables,
     items: s.sw.items,
     gold: s.sw.gold,
+    playerName: s.sw.playerName,
   };
 }
 
@@ -3730,6 +3847,10 @@ function runFiber(
         f.mode = "external";
         s.pendingBattles.push({ fiber: f.key, setup: deepClone(ins.setup) });
         return;
+      case "scene":
+        f.mode = "external";
+        (s.pendingScenes ??= []).push({ fiber: f.key, id: ins.id, args: deepClone(ins.args) });
+        return;
     }
   }
 }
@@ -3790,10 +3911,11 @@ export function stepInterpWithExtensionsInPlace(
   scanTriggers(s, w, input, extension);
   const budget: StepBudget = { remaining: RUNAWAY_STEP_LIMIT };
   const queuedBattleCount = s.pendingBattles.length;
+  const queuedSceneCount = s.pendingScenes?.length ?? 0;
 
   // Parallels first (ascending key), then the blocking fiber, so a parallel
   // can never observe a value the main fiber sets later in the same frame.
-  // Battle requests are the one exception to the resulting publication
+  // Battle/scene requests are the one exception to the resulting publication
   // order: collect this tick's parallel requests, run main, then append the
   // new requests main-first behind every request already in the FIFO.
   for (const key of Object.keys(s.parallels).sort()) {
@@ -3801,9 +3923,22 @@ export function stepInterpWithExtensionsInPlace(
     if (s.error) break;
   }
   const parallelBattles = s.pendingBattles.splice(queuedBattleCount);
+  // The scene splice only allocates when a parallel actually queued one:
+  // a scene-free project must not pay for an empty-array splice per tick.
+  // The false branch shares a module-level constant (never mutated: the
+  // push below is guarded by length > 0), so no empty array is allocated.
+  const parallelScenes = (s.pendingScenes?.length ?? 0) > queuedSceneCount
+    ? s.pendingScenes!.splice(queuedSceneCount)
+    : EMPTY_PENDING_SCENES;
   if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension);
   const mainBattles = s.pendingBattles.splice(queuedBattleCount);
+  const mainScenes = (s.pendingScenes?.length ?? 0) > queuedSceneCount
+    ? s.pendingScenes!.splice(queuedSceneCount)
+    : EMPTY_PENDING_SCENES;
   s.pendingBattles.push(...mainBattles, ...parallelBattles);
+  if (mainScenes.length > 0 || parallelScenes.length > 0) {
+    (s.pendingScenes ??= []).push(...mainScenes, ...parallelScenes);
+  }
   // Refresh following instances' anchors from this tick's live-character
   // snapshot so a target that walks away and then leaves the map pins the
   // animation to its last live cell (see syncFollowAnchors). A fatalized
@@ -3859,6 +3994,49 @@ export function continueBattle(
       : result === "lose" ? ins.onLose
       : result === "escape" ? ins.onEscape
       : null;
+    const continuation: Prog = branch ? [...branch] : [];
+    if (transfer) {
+      continuation.push({
+        op: "transfer",
+        map: transfer.map,
+        x: transfer.x,
+        y: transfer.y,
+        dir: transfer.dir,
+        fadeFrames: transfer.fadeFrames,
+      });
+    }
+    top.pc++;
+    f.mode = "run";
+    if (continuation.length > 0) {
+      if (f.stack.length >= MAX_FIBER_STACK_DEPTH) {
+        s.error = { kind: "runaway", message: `interpreter: stack depth exceeded in ${f.key}` };
+        return;
+      }
+      f.stack.unshift({ prog: continuation, pc: 0 });
+    }
+  };
+  resume(s.main);
+  for (const f of Object.values(s.parallels)) resume(f);
+  return s;
+}
+
+/** Resume a `scene` instruction and push the done/cancel branch. A
+ *  completion transfer is appended to that branch, so authored result
+ *  commands run on the originating map before the map interpreter is
+ *  rebuilt at the transfer boundary. Mirrors continueBattle. */
+export function continueScene(
+  s0: InterpState,
+  fiberKey: string,
+  cancelled: boolean,
+  transfer: Omit<PendingTransfer, "fiber"> | null = null,
+): InterpState {
+  const s = cloneInterp(s0);
+  const resume = (f: Fiber | null): void => {
+    if (!f || f.key !== fiberKey || f.mode !== "external") return;
+    const top = f.stack[0];
+    const ins = top?.prog[top.pc];
+    if (!top || ins?.op !== "scene") return;
+    const branch = cancelled ? ins.onCancel : ins.onDone;
     const continuation: Prog = branch ? [...branch] : [];
     if (transfer) {
       continuation.push({

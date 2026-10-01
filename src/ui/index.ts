@@ -42,7 +42,9 @@ export {
   type GameEffectsComponent,
   type GameEffectsProps,
   type GameViewProps,
+  type SceneComponent,
 } from "./GameView.tsx";
+export { NameInputScene, type NameInputSceneProps } from "./name-input/NameInputScene.tsx";
 export type {
   AnimatedTile,
   CharacterFrames,

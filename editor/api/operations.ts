@@ -464,6 +464,9 @@ function parseCommandPath(value: unknown, path = "$.address.path"): CommandListP
     if (raw.kind === "battle" && (raw.branch === "win" || raw.branch === "lose" || raw.branch === "escape")) {
       return { kind: "battle", index: raw.index as number, branch: raw.branch };
     }
+    if (raw.kind === "scene" && (raw.branch === "done" || raw.branch === "cancel")) {
+      return { kind: "scene", index: raw.index as number, branch: raw.branch };
+    }
     if (raw.kind === "choices" && raw.branch === "cancel") {
       return { kind: "choices", index: raw.index as number, branch: "cancel" };
     }
@@ -472,9 +475,9 @@ function parseCommandPath(value: unknown, path = "$.address.path"): CommandListP
     }
     throw new EditApiError(
       "INVALID_ARGUMENT",
-      "invalid command path segment; expected an if, choices option/cancel, or battle result branch",
+      "invalid command path segment; expected an if, choices option/cancel, battle result, or scene result branch",
       at,
-      ["if:then|else", "choices:option|cancel", "battle:win|lose|escape"],
+      ["if:then|else", "choices:option|cancel", "battle:win|lose|escape", "scene:done|cancel"],
       raw,
     );
   });

@@ -92,6 +92,61 @@ describe("rpgkit-check lint: clean fixture", () => {
   });
 });
 
+describe("rpgkit-check lint: scene commands", () => {
+  function sceneProject(): Project {
+    const p = cleanProject();
+    p.maps[0]!.events!.push({
+      id: "scene-ev",
+      x: 1,
+      y: 1,
+      pages: [
+        {
+          trigger: "action",
+          commands: [
+            {
+              op: "scene",
+              id: "game.journal",
+              args: {},
+              onDone: [{ op: "switch", id: "scene.done", value: true }],
+              onCancel: [{ op: "switch", id: "scene.cancelled", value: true }],
+            },
+            {
+              op: "if",
+              if: { kind: "switch", id: "scene.done" },
+              then: [{ op: "text", lines: ["logged"] }],
+            },
+          ],
+        },
+      ],
+    });
+    return p;
+  }
+
+  test("lists each scene id once as an info finding with its location", () => {
+    const p = sceneProject();
+    // A second command opening the same scene must not duplicate the finding.
+    p.maps[0]!.events![1]!.pages[0]!.commands.push({ op: "scene", id: "game.journal", args: {} });
+    const found = findingsOf(lint(p), "lint/scene-id");
+    expect(found).toHaveLength(1);
+    expect(found[0]!.severity).toBe("info");
+    expect(found[0]!.message).toContain('"game.journal"');
+    expect(found[0]!.loc).toMatchObject({ map: "m1", event: "scene-ev", page: 0, commandPath: [0] });
+  });
+
+  test("recurses scene onDone/onCancel branches for switch/variable usage", () => {
+    const report = lint(sceneProject());
+    // scene.done is set inside onDone and read by the sibling if: no
+    // read-never-set finding (the walker descended into onDone).
+    expect(findingsOf(report, "lint/switch-read-never-set").map((f) => f.message)).not.toContain(
+      expect.stringContaining("scene.done"),
+    );
+    // scene.cancelled is set only inside onCancel: the set-never-read
+    // finding proves the walker descended into onCancel.
+    const dead = findingsOf(report, "lint/switch-set-never-read");
+    expect(dead.some((f) => f.message.includes("scene.cancelled"))).toBe(true);
+  });
+});
+
 describe("rpgkit-check lint: switch/variable usage", () => {
   test("switch read never set → warning", () => {
     const p = cleanProject();

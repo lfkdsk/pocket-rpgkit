@@ -30,13 +30,14 @@ a guard test.
   facing, appearance, tile-property overrides, `worldIdle`, `bgmPlaying`, and
   extension predicates.
 - **Commands**: the inspector shows the recursive command tree with indented
-  `if`/`else`, choices/cancel, and battle-result branches. It can add, delete,
-  copy and reorder commands, and edit every command kind in the current
-  project schema, including movement control, presentation, shops, map
-  animations, audio, extensions, and battle processing. In the add prompt,
-  type an op such as `text`; with a selected parent, `text@then`,
-  `text@else`, `text@option1`, `text@cancel`, or
-  `text@win`/`text@lose`/`text@escape` inserts directly into that branch.
+  `if`/`else`, choices/cancel, battle-result, and scene done/cancel branches.
+  It can add, delete, copy and reorder commands, and edit every command kind
+  in the current project schema, including movement control, presentation,
+  shops, map animations, audio, extensions, battle processing and game
+  scenes. In the add prompt, type an op such as `text`; with a selected
+  parent, `text@then`, `text@else`, `text@option1`, `text@cancel`,
+  `text@win`/`text@lose`/`text@escape` (battle), or `text@done`/`text@cancel`
+  (scene) inserts directly into that branch.
 - **Undo/redo**: every tile drag and every event/page/condition/command
   transaction is one history step, 64 steps deep.
   **UNDO**/**REDO** in the header, or Cmd+Z / Cmd+Shift+Z / Cmd+Y (Cmd is
@@ -59,8 +60,9 @@ a guard test.
 - **Preview fallbacks**: an amber in-play notice lists project capabilities
   for which the editor has no game registration. Unknown `ext` handlers are
   deterministic no-ops, battle commands open a visible preview scene
-  (CIRCLE = win, CROSS = escape), and named screen backdrops receive a
-  visible placeholder asset. These fallbacks affect only the editor bundle.
+  (CIRCLE = win, CROSS = escape), unregistered scenes open a visible
+  placeholder, and named screen backdrops receive a visible placeholder
+  asset. These fallbacks affect only the editor bundle.
 - **Maps**: **<** and **>** switch between the document's maps; the palette
   shows every cell of the sheets the current map declares. The **MAP** header
   button opens the map inspector:

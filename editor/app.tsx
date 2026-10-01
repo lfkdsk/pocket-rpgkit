@@ -128,6 +128,7 @@ import {
   ifBranchPath,
   insertCommand,
   moveCommand,
+  sceneBranchPath,
   updateCommand,
   type CommandAddress,
   type ConditionKind,
@@ -1378,6 +1379,9 @@ export function EditorApp(): JSX.Element {
         } else if (selectedRow.command.op === "battle"
           && (branchText === "win" || branchText === "lose" || branchText === "escape")) {
           path = battleBranchPath(selectedRow.address, branchText);
+        } else if (selectedRow.command.op === "scene"
+          && (branchText === "done" || branchText === "cancel")) {
+          path = sceneBranchPath(selectedRow.address, branchText);
         }
         const list = path ? getCommandList(page.commands, path) : null;
         if (!path || !list) {

@@ -15,6 +15,9 @@ export interface ExtensionReadContext {
   readonly variables: Readonly<Record<string, VariableValue>>;
   readonly items: Readonly<Record<string, number>>;
   readonly gold: number;
+  /** KG1: the live player name, so a scene (name input) can prefill its
+   *  edit buffer from the current value. */
+  readonly playerName: string;
 }
 
 export interface ExtensionCommandContext extends ExtensionReadContext {

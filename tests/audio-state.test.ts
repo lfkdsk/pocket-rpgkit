@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { audioTrackVolume } from "../src/engine/audio.ts";
+import { audioTrackVolume, type AudioState } from "../src/engine/audio.ts";
 import {
   evalCondition,
   createInterpState,
@@ -13,6 +13,11 @@ import { createSession, startSession, stepSession, type SessionState } from "../
 import { createSessionSnapshot, decodeEnvelopeText, encodeEnvelope } from "../src/engine/save.ts";
 import type { BattleRules, BattleStart, BattleTransfer } from "../src/engine/battle.ts";
 import type { Command, GameEvent, MapDef, Project } from "../src/engine/types.ts";
+
+/** Only battle scenes carry the suspended map audio snapshot. */
+function battleReturnAudio(s: SessionState): AudioState | null | undefined {
+  return s.scene?.kind === "battle" ? s.scene.returnAudio : undefined;
+}
 
 const SILENT_INPUT: InterpInput = {
   confirmEdge: false,
@@ -343,7 +348,7 @@ describe("battle audio lifecycle", () => {
       battle: audioBattleRules({ audio: { bgm: { id: "combat", volume: 88, pitch: 105 } } }),
     });
     const entered = sessionStep(session, startSession(p, session), true);
-    expect(entered.scene?.returnAudio).toEqual({
+    expect(battleReturnAudio(entered)).toEqual({
       bgm: {
         id: "map", volume: 73, pitch: 120, positionTicks: 0, paused: true,
         fade: { totalTicks: 60, leftTicks: 60 },
@@ -358,7 +363,7 @@ describe("battle audio lifecycle", () => {
       },
       savedBgm: { id: "map", volume: 73, pitch: 120, positionTicks: 0 },
     });
-    const suspended = structuredClone(entered.scene!.returnAudio!);
+    const suspended = structuredClone(battleReturnAudio(entered)!);
     expect(entered.interp.audio).toEqual({
       bgm: { id: "combat", volume: 88, pitch: 105, positionTicks: 0 },
     });
@@ -368,7 +373,7 @@ describe("battle audio lifecycle", () => {
     const completed = sessionStep(session, played, true);
     expect(completed.scene).toBeNull();
     expect(completed.interp.audio).toEqual(suspended);
-    expect(completed.interp.audio).not.toBe(played.scene?.returnAudio);
+    expect(completed.interp.audio).not.toBe(battleReturnAudio(played));
   });
 
   test("battle silence restores map audio while omitted audio keeps it live", () => {
@@ -378,7 +383,7 @@ describe("battle audio lifecycle", () => {
     });
     const silent = sessionStep(silentSession, startSession(p, silentSession), true);
     expect(silent.interp.audio).toBeUndefined();
-    expect(silent.scene?.returnAudio?.bgm?.id).toBe("map");
+    expect(battleReturnAudio(silent)?.bgm?.id).toBe("map");
     const restored = sessionStep(silentSession, silent, true);
     expect(restored.interp.audio?.bgm?.id).toBe("map");
 

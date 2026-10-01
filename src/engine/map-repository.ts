@@ -132,7 +132,7 @@ export const mapChecksum = (map: MapDef): string => sha256Text(canonicalMapJson(
  * cannot silently leave the runtime identity stale. Keeping the digest as a
  * literal prevents every inline-project bundle from embedding the 27 KB
  * authoring schema merely to start a session. */
-export const MAP_SCHEMA_HASH = "47cf3d8ffdb35044fb6b099d98455368123db4710bc8516875a0bc06902c6d59";
+export const MAP_SCHEMA_HASH = "0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5";
 
 export interface MapContentIdentity {
   manifest: string;

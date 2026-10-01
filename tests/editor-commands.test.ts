@@ -24,6 +24,7 @@ import {
   moveStepSummary,
   pageConditionClauses,
   pageConditionSummary,
+  sceneBranchPath,
   updateCommand,
   type CommandAddress,
 } from "../editor/engine/commands.ts";
@@ -125,6 +126,39 @@ describe("editor command tree", () => {
     expect((next[0] as Extract<Command, { op: "if" }>).else).toEqual([switchCommand("else")]);
     expect((next[1] as Extract<Command, { op: "choices" }>).cancel?.commands).toEqual([switchCommand("cancel")]);
     expect((next[2] as Extract<Command, { op: "battle" }>).onEscape).toEqual([switchCommand("escape")]);
+  });
+
+  test("treats scene onDone/onCancel as command containers like battle branches", () => {
+    // B6: a scene's result branches are command containers, addressable and
+    // editable exactly like battle win/lose/escape.
+    const commands: Command[] = [
+      {
+        op: "scene",
+        id: "game.pc",
+        onDone: [switchCommand("done")],
+        onCancel: [{ op: "text", lines: ["cancelled"] }],
+      },
+    ];
+    const rows = flattenCommands(commands);
+    expect(rows.map((row) => row.command.op)).toEqual(["scene", "switch", "text"]);
+    expect(rows.map((row) => row.branch ?? null)).toEqual([null, "Done", "Cancel"]);
+    expect(rows.map((row) => row.readOnly)).toEqual([false, false, false]);
+    expect(rows[1]!.key).toBe("s0:done#0");
+    expect(getCommandList(commands, rows[1]!.address.path)).toBe(
+      (commands[0] as Extract<Command, { op: "scene" }>).onDone ?? null,
+    );
+    // Insert into both branches without mutating the input.
+    const snapshot = JSON.stringify(commands);
+    let next = insertCommand(commands, commandAddress(sceneBranchPath(root(0), "done"), 1), switchCommand("done2"));
+    next = insertCommand(next, commandAddress(sceneBranchPath(root(0), "cancel"), 0), switchCommand("cancelled"));
+    expect(JSON.stringify(commands)).toBe(snapshot);
+    expect(flattenCommands(next).map((row) => row.command.op === "switch" ? row.command.id : row.command.op)).toEqual([
+      "scene", "done", "done2", "cancelled", "text",
+    ]);
+    expect((next[0] as Extract<Command, { op: "scene" }>).onCancel).toEqual([
+      switchCommand("cancelled"),
+      { op: "text", lines: ["cancelled"] },
+    ]);
   });
 
   test("updates, copies, deletes and moves nested commands with structural sharing", () => {

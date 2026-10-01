@@ -529,4 +529,16 @@ describe("event editor resource catalogs", () => {
     expect(noAnimations?.options).toEqual([]);
     expect(noAnimations?.hint).toContain("No project animations");
   });
+
+  test("edits a game scene's id and JSON args", () => {
+    const scene = defaultCommand("scene");
+    expect(commandFields(scene).map((field) => field.key)).toEqual(["id", "args"]);
+    const renamed = edit(scene, "id", "rpgkit.nameInput");
+    expect(renamed).toMatchObject({ op: "scene", id: "rpgkit.nameInput" });
+    const withArgs = edit(renamed, "args", '{"maxLength":8}');
+    expect(withArgs).toMatchObject({ op: "scene", id: "rpgkit.nameInput", args: { maxLength: 8 } });
+    expect(edit(withArgs, "args", "")).not.toHaveProperty("args");
+    expect(editCommandField(scene, "id", "  ").ok).toBe(false);
+    expect(editCommandField(scene, "args", "{bad").ok).toBe(false);
+  });
 });

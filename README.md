@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-nexus/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 46 commands), map-character motion,
+  event interpreter (pages, triggers, 47 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -264,9 +264,10 @@ What it does today:
   resize and name events;
 - add, delete, copy and reorder pages; edit triggers, sprites, facing,
   blocking, autonomous/basic route motion, and flat/compound conditions;
-- inspect recursive command trees with visible `if`, choices and battle
-  branches; structurally edit the built-in authoring commands while
-  preserving `shop`, `ext`, `battle`, and advanced route payloads read-only;
+- inspect recursive command trees with visible `if`, choices, battle and
+  scene branches; structurally edit the built-in authoring commands while
+  preserving `shop`, `ext`, `battle`, `scene`, and advanced route payloads
+  read-only;
 - pick a transfer command's destination on the canvas (PICK button, then
   click a cell on any map);
 - map inspector: rename (following `start.map` and every transfer),
@@ -295,8 +296,9 @@ What it does today:
   items, gold, active pages and fiber command addresses; FRESH/LAST chooses
   whether the next run inherits the previous run's switches and variables;
 - visibly degrade missing game registrations: unknown extensions are
-  disabled, battles use a deterministic win/escape preview, and screen
-  backdrops use placeholders instead of crashing the editor.
+  disabled, battles use a deterministic win/escape preview, unregistered
+  scenes use a visible placeholder, and screen backdrops use placeholders
+  instead of crashing the editor.
 
 Not yet: common-event lists, asset import, or sheet-level `dirBlock` /
 `defaultPassage` editing. The grow example's generated settlement is not
@@ -650,7 +652,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 46 commands
+### The 47 commands
 
 | op | purpose |
 | --- | --- |
@@ -695,6 +697,7 @@ earlier resident map within the same host frame.
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
+| `scene` | park the event in a game-registered scene by namespaced id (PC, journal, name input, …), then run its optional onDone/onCancel branch; the scene can write variables, switches, items, gold and the player name |
 
 Every timed screen command uses virtual seconds and has optional `wait`.
 Waiting parks only the issuing fiber while other event fibers and the map keep
@@ -1021,6 +1024,61 @@ queue, and scene by folding the retained input prefix from a clean session.
 Authored concurrent/nested battle requests do not throw from `stepSession`;
 invalid values returned by registered game callbacks remain programming
 contract errors.
+
+### Game scenes (the `scene` command)
+
+A `scene` command opens a game-registered full-screen scene by namespaced
+id — a PC storage box, a journal, a trading screen, a name input — using
+the same lifecycle as battles:
+
+```ts
+const session = createSession(project, simulationHz(), {
+  scenes: { "game.pc": pcRules, [NAME_INPUT_SCENE_ID]: nameInputRules },
+});
+```
+
+`SceneRules` has the same `start(ext, args, seed, context)` /
+`step(state, input, ticks)` / `done(state)` shape as `BattleRules`, with a
+`SceneCompletion` of `{ cancelled?, ext?, writes?, switches?, items?, gold?,
+playerName?, transfer? }`. The event fiber parks until the scene completes,
+then runs `onDone` (or `onCancel`); a `null` start resumes immediately.
+Scenes share the battle queue's ordering, freeze, save-point, rewind, and
+multi-hz semantics, and `worldIdle` is false while a scene is queued or
+active. `GameView` mounts the matching `sceneViews[id]` component, which
+receives the same read-only `{ state, width, height }` props. Like the
+battle view, a game scene view mounts on first use and stays mounted
+(hidden) between opens, and the map world stays mounted but hidden while
+any scene is on screen:
+
+```tsx
+mount(() => <GameView
+  project={project}
+  assets={GAME_ASSETS}
+  scenes={{ [NAME_INPUT_SCENE_ID]: nameInputRules }}
+  sceneViews={{ [NAME_INPUT_SCENE_ID]: NameInputScene }}
+/>);
+```
+
+The kit ships one built-in scene: **name input**, a generic MV-style name
+entry (not a byte-for-byte port of MV or Tuxemon — see the differences
+below). `{ op:"scene", id:"rpgkit.nameInput", args:{...} }` with args
+`{ variable?, maxLength?, default?, title?, charset?, columns?, allowEmpty?,
+swallowCancel? }`: without `variable` the committed name replaces the player
+name (the `{name}` text token); with one it writes that variable. The buffer
+prefills from the variable's current value, the current player name, or
+`default`; an empty buffer cannot be committed (unless `allowEmpty` with a
+variable target). `maxLength` clamps to 1..24 (default 8; Tuxemon uses 15).
+A custom `charset` keeps only printable single code units: every non-printable
+code point is dropped — C0/C1 controls and DEL, format characters (zero-width,
+BOM), line/paragraph separators, private-use, unassigned and surrogate code
+units — while space separators such as U+00A0 render a visible cell and stay. Cancel closes the scene and runs `onCancel`; `swallowCancel: true`
+instead swallows the cancel key, matching Tuxemon's `InputMenu` opened with
+`escape_key_exits=False` (`rename_player`/`rename_monster`). Held-key repeat
+is 0.50 s / 0.10 s on the reference clock (Tuxemon: 0.50 s / 0.08 s), so the
+cursor is identical at 60/30/20/4 Hz for the same virtual time. MV's
+back-key-deletes-char and empty-confirm-restores-default are not implemented;
+Tuxemon's empty player initial and species-name monster initial are reached
+by passing `default`.
 
 Variable-addressed transfers validate their live map, coordinate, and
 direction operands when the command executes. An unset/wrong-typed operand or

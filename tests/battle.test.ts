@@ -115,6 +115,7 @@ describe("KB2 battle processing", () => {
       variables: {},
       items: {},
       gold: 0,
+      playerName: "Player",
     });
     expect(started).not.toBeNull();
     const originalRandom = Math.random;

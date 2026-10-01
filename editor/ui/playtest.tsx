@@ -6,7 +6,7 @@ import { createMemo, createSignal, For, onCleanup } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import type { SessionState } from "../../src/engine/session.ts";
 import type { JsonValue, Project } from "../../src/engine/types.ts";
-import { GameView, type BattleSceneViewProps } from "../../src/ui/GameView.tsx";
+import { GameView, type BattleSceneViewProps, type SceneComponent } from "../../src/ui/GameView.tsx";
 import type { GameAssets } from "../../src/ui/game-assets.ts";
 import {
   applyPlaytestCarry,
@@ -27,7 +27,8 @@ import {
   playtestTabRects,
   type PlaytestTab,
 } from "../engine/playtest-layout.ts";
-import { PLAYTEST_BATTLE_RULES } from "../engine/playtest-view.ts";
+import { PLAYTEST_BATTLE_RULES, playtestSceneRules } from "../engine/playtest-view.ts";
+import { playtestSceneIds } from "../engine/playtest.ts";
 import { ACCENT, BUTTON, BUTTON_ON, DIM, INK, PANEL } from "./panels.tsx";
 
 interface RuntimeGlobal {
@@ -70,6 +71,37 @@ function EditorBattleScene(props: BattleSceneViewProps): JSX.Element {
       <Text class="text-xs" style={{ textColor: DIM, lineHeight: 14, height: 14 }}>CIRCLE: WIN   CROSS: ESCAPE</Text>
     </View>
   );
+}
+
+/** Builds the visible placeholder for one unregistered scene id. The id is
+ *  closed over (the SceneRules state carries only the opaque args), so the
+ *  preview says which scene it stands in for. */
+function makeEditorScenePlaceholder(id: string): SceneComponent {
+  return function EditorScenePlaceholder(props: BattleSceneViewProps): JSX.Element {
+    const args = () => {
+      const state = props.state as { args?: JsonValue };
+      const text = JSON.stringify(state.args ?? null);
+      return text.length > 64 ? `${text.slice(0, 61)}...` : text;
+    };
+    return (
+      <View
+        class="absolute flex-col items-center justify-center"
+        style={{ posType: 1, insetL: 0, insetT: 0, width: props.width, height: props.height, bgColor: "#171126" }}
+        debugName={`editor-playtest-scene-placeholder-${id}`}
+      >
+        <Text class="text-lg" style={{ textColor: ACCENT, lineHeight: 22, height: 22 }}>SCENE PREVIEW</Text>
+        <Text class="text-xs" style={{ textColor: INK, lineHeight: 14, height: 14 }}>{id}</Text>
+        <Text class="text-xs" style={{ textColor: INK, lineHeight: 14, height: 14 }}>{args()}</Text>
+        <Text class="text-xs" style={{ textColor: DIM, lineHeight: 14, height: 14 }}>CIRCLE: OK   CROSS: CANCEL</Text>
+      </View>
+    );
+  };
+}
+
+/** One placeholder view per scene id the document references, keyed the same
+ *  way GameView's sceneViews dispatch expects. */
+function playtestSceneViews(project: Project): Record<string, SceneComponent> {
+  return Object.fromEntries(playtestSceneIds(project).map((id) => [id, makeEditorScenePlaceholder(id)]));
 }
 
 function valueText(value: boolean | number | string | undefined): string {
@@ -148,6 +180,8 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
         extensions={{ allowUnknown: true }}
         battle={PLAYTEST_BATTLE_RULES}
         battleScene={EditorBattleScene}
+        scenes={playtestSceneRules(props.project)}
+        sceneViews={playtestSceneViews(props.project)}
       />
 
       <View

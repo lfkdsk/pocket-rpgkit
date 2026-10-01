@@ -7,8 +7,9 @@
 // makes no world progress for the whole window, or the interpreter errors.
 //
 // Generic port of the Tuxemon corpus "freeze scan" probe. Game-owned
-// extension calls and battles are isolated by CHECK_SESSION_OPTIONS, so the
-// scan measures event/lock/world liveness, not game logic.
+// extension calls, battles and scenes are isolated by the check session's
+// noop rules, so the scan measures event/lock/world liveness, not game
+// logic.
 
 import { BTN_BITS } from "../../../../src/engine/camera.ts";
 import type { Command, Project } from "../../../../src/engine/types.ts";

@@ -654,7 +654,7 @@ simDescribe("editor budget", () => {
     expect(pak).toBeLessThan(490_000);
     // Shared framework + tile editor + structured event inspector, the map
     // inspector/passage mode/transfer picking (E2), the two bundled documents,
-    // and KS1's embedded command schema/read-only summaries: 608,486 B.
+    // and KS1's embedded command schema/read-only summaries.
     // E3 intentionally adds the production GameView/session renderer to the
     // editor-only entry plus its debug adapter, and KAU1 adds the audio schema
     // plus read-only audio command/condition summaries. The PocketJS upstream
@@ -663,7 +663,8 @@ simDescribe("editor budget", () => {
     // portable validation/apply model, review panel, ghost overlays, the
     // exact-revision host SAVE handshake, and E5's editable fields for every
     // current command/condition with schema gates and resource hints (about
-    // 43,650 B), the merged editor is 1,170,206 B.
-    expect(js).toBeLessThan(1_180_000);
+    // 43,650 B), and KG1's scene branch ADD dispatch, scene fields and
+    // play-test scene placeholder, the merged editor is 1,195,808 B.
+    expect(js).toBeLessThan(1_210_000);
   });
 });

@@ -106,13 +106,15 @@ Command keys address the recursive command tree:
 | `c2:option:1#0` | command 0 in option 1 of the `choices` at index 2 |
 | `c2:cancel#0` | command 0 in the cancel branch of the `choices` at index 2 |
 | `b2:win#0` | command 0 in the win branch of the `battle` at index 2 (`b2:lose#…`, `b2:escape#…`) |
+| `s2:done#0` | command 0 in the `onDone` branch of the `scene` at index 2 (`s2:cancel#…` for `onCancel`) |
 
 The structured form used by the command-editing args is
 `{ "path": [ …segments ], "index": n }`, where each segment is one of
 `{ "kind": "if", "index": n, "branch": "then"|"else" }`,
 `{ "kind": "choices", "index": n, "branch": "option", "option": n }`,
-`{ "kind": "choices", "index": n, "branch": "cancel" }`, or
-`{ "kind": "battle", "index": n, "branch": "win"|"lose"|"escape" }`.
+`{ "kind": "choices", "index": n, "branch": "cancel" }`,
+`{ "kind": "battle", "index": n, "branch": "win"|"lose"|"escape" }`, or
+`{ "kind": "scene", "index": n, "branch": "done"|"cancel" }`.
 For inserts, `index` may equal the addressed list's length.
 
 ## Read commands

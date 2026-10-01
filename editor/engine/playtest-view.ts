@@ -3,6 +3,7 @@
 // map arrays select those cells directly, so unsaved edits are visible.
 
 import type { BattleRules } from "../../src/engine/battle.ts";
+import type { SceneRules } from "../../src/engine/scene.ts";
 import type { JsonValue, Project, TileId } from "../../src/engine/types.ts";
 import type { GameAssets, GameScreenLayerAssets } from "../../src/ui/game-assets.ts";
 import {
@@ -10,7 +11,7 @@ import {
   PLAYTEST_PLAYER,
   PLAYTEST_SHEET_REFS,
 } from "./playtest-assets.ts";
-import { diagnosePlaytestProject } from "./playtest.ts";
+import { diagnosePlaytestProject, playtestSceneIds } from "./playtest.ts";
 
 function tileRef(tile: TileId): string | null {
   if (tile === null) return null;
@@ -107,3 +108,46 @@ export const PLAYTEST_BATTLE_RULES: BattleRules = {
     return current.result === null ? null : { ext: current.ext, result: current.result };
   },
 };
+
+interface PreviewSceneState {
+  kind: "editor-preview-scene";
+  args: JsonValue;
+  ext: JsonValue;
+  result: "ok" | "cancel" | null;
+}
+
+function sceneState(value: JsonValue): PreviewSceneState {
+  return value as unknown as PreviewSceneState;
+}
+
+/** Deterministic editor fallback: confirm continues through the authored
+ * onDone branch, cancel through onCancel. It never interprets the opaque
+ * args. The placeholder view learns the scene id from its GameView
+ * sceneViews key, not from this state. */
+export const PLAYTEST_SCENE_RULES: SceneRules = {
+  start(ext, args) {
+    return {
+      state: { kind: "editor-preview-scene", args, ext, result: null },
+      ext,
+    };
+  },
+  step(state, input) {
+    const current = sceneState(state);
+    return {
+      ...current,
+      result: input.confirmEdge ? "ok" : input.cancelEdge ? "cancel" : current.result,
+    };
+  },
+  done(state) {
+    const current = sceneState(state);
+    if (current.result === null) return null;
+    return current.result === "cancel" ? { ext: current.ext, cancelled: true } : { ext: current.ext };
+  },
+};
+
+/** Placeholder SceneRules for every scene id the document references, so
+ *  the playtest session previews scenes instead of throwing the engine's
+ *  unregistered-scene startup error. */
+export function playtestSceneRules(project: Project): Record<string, SceneRules> {
+  return Object.fromEntries(playtestSceneIds(project).map((id) => [id, PLAYTEST_SCENE_RULES]));
+}

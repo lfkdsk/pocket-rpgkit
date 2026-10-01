@@ -9,7 +9,8 @@
 // event/lock/world liveness, not game logic.
 
 import type { BattleRules } from "../../../../src/engine/battle.ts";
-import type { Dir, MapDef, Project } from "../../../../src/engine/types.ts";
+import type { SceneRules } from "../../../../src/engine/scene.ts";
+import type { Command, Dir, MapDef, Project } from "../../../../src/engine/types.ts";
 import {
   createSession,
   isSessionWorldIdle,
@@ -25,6 +26,7 @@ import {
   type SwitchState,
 } from "../../../../src/engine/interpreter.ts";
 import { flattenPageCondition } from "../conditions.ts";
+import { walkCommands } from "../walk.ts";
 
 export const CHECK_HZ = 60;
 
@@ -36,13 +38,44 @@ export const NOOP_BATTLE_RULES: BattleRules = {
   done: () => null,
 };
 
-export const CHECK_SESSION_OPTIONS = {
-  extensions: { allowUnknown: true },
-  battle: NOOP_BATTLE_RULES,
-} as const;
+/** Scene completes on its first frame with a normal (non-cancelled)
+ *  completion: the parked fiber runs the scene's onDone branch, so the
+ *  story after the scene stays live under exploration. Unlike a null
+ *  start (which skips both branches), this exercises the normal
+ *  continuation; onCancel paths are not modelled, same as battle outcome
+ *  branches. */
+export const NOOP_SCENE_RULES: SceneRules = {
+  start: (ext) => ({ state: { kind: "rpgkit-check-noop-scene" }, ext }),
+  step: (state) => state,
+  done: () => ({}),
+};
+
+/** Every scene id referenced by the document (map events, common events,
+ *  nested branches) must have a registered SceneRules or createSession
+ *  throws. The checks measure event/lock/world liveness, not scene logic,
+ *  so every id gets the shared noop rules. */
+export function checkSceneRules(project: Project): Record<string, SceneRules> {
+  const ids = new Set<string>();
+  const collect = (commands: readonly Command[]): void => {
+    walkCommands(commands, (command) => {
+      if (command.op === "scene") ids.add(command.id);
+    });
+  };
+  for (const map of project.maps) {
+    for (const event of map.events ?? []) {
+      for (const page of event.pages) collect(page.commands);
+    }
+  }
+  for (const common of project.commonEvents ?? []) collect(common.commands);
+  return Object.fromEntries([...ids].map((id) => [id, NOOP_SCENE_RULES]));
+}
 
 export function makeCheckSession(project: Project, hz: number = CHECK_HZ): Session {
-  return createSession(project, hz, CHECK_SESSION_OPTIONS);
+  return createSession(project, hz, {
+    extensions: { allowUnknown: true },
+    battle: NOOP_BATTLE_RULES,
+    scenes: checkSceneRules(project),
+  });
 }
 
 export function startFresh(

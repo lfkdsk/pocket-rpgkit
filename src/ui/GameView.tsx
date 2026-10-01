@@ -37,7 +37,8 @@ import { getOps, hostViewport } from "@pocketjs/framework/host";
 import { clampCamera, followCamera } from "../engine/camera.ts";
 import { deepClone } from "../engine/clone.ts";
 import type { ExtensionOptions, ExtensionRuntime } from "../engine/extensions.ts";
-import { cloneScene, type BattleRules } from "../engine/battle.ts";
+import { cloneScene, type BattleRules, type SceneSlot } from "../engine/battle.ts";
+import type { SceneRules } from "../engine/scene.ts";
 import { centerOffset } from "../engine/viewport.ts";
 import {
   createSession,
@@ -657,6 +658,12 @@ export interface BattleSceneViewProps {
 
 export type BattleSceneComponent = Component<BattleSceneViewProps>;
 
+/** KG1: a game-registered scene renderer receives the same read-only props
+ *  as a battle scene: reducer state plus the live logical resolution. All
+ *  animation and selection must live in the JSON state so replay and rewind
+ *  reproduce the same pixels. */
+export type SceneComponent = Component<BattleSceneViewProps>;
+
 /** Optional host-side effects observe reducer state but cannot mutate it.
  * Keeping the component injected lets apps that do not opt in exclude an
  * effect implementation (and its host SDK imports) from their bundle. */
@@ -674,11 +681,18 @@ export interface GameViewProps {
   /** Pure game registrations forwarded to createSession(). */
   extensions?: ExtensionOptions;
   battle?: BattleRules;
+  /** KG1: SceneRules reducers keyed by scene id, forwarded to
+   *  createSession(). Register with a matching `sceneViews` entry. */
+  scenes?: Record<string, SceneRules>;
   /** Full-screen scenes freeze map simulation unless explicitly enabled. */
   scene?: SceneOptions;
   /** Full-screen renderer used while SessionState.scene is a battle. Its
    * only inputs are reducer state and the live logical resolution. */
   battleScene?: BattleSceneComponent;
+  /** KG1: full-screen renderers for game scenes, keyed by scene id. A
+   *  scene without a registered renderer mounts nothing (headless tests
+   *  register only the rules). */
+  sceneViews?: Record<string, SceneComponent>;
   /** Optional opt-in host effects, such as `pocket-rpgkit/ui/audio`. */
   effects?: GameEffectsComponent;
   assets: GameAssets;
@@ -709,6 +723,22 @@ export interface GameViewProps {
   /** Browser repositories can report their frame barrier without putting
    * network timing into SessionState. null means ticking has resumed. */
   onMapLoading?: (mapId: string | null) => void;
+}
+
+/** KG1: renders whichever scene component the active SceneSlot selects.
+ *  The component identity is stable while one scene stays open, so Solid
+ *  updates the props in place instead of recreating the node tree every
+ *  frame (the scene signal fires per frame with a fresh state clone). */
+function SceneRenderer(props: {
+  view: Component<BattleSceneViewProps>;
+  state: JsonValue;
+  width: number;
+  height: number;
+  /** False while the once-mounted scene is hidden (same contract as the
+   *  battle view's active prop). */
+  active: boolean;
+}) {
+  return <props.view state={props.state} width={props.width} height={props.height} active={props.active} />;
 }
 
 export function GameView(props: GameViewProps) {
@@ -773,6 +803,7 @@ export function GameView(props: GameViewProps) {
         maps: props.maps,
         extensions: props.extensions,
         battle: props.battle,
+        scenes: props.scenes,
         scene: props.scene,
       })
     : null;
@@ -782,6 +813,7 @@ export function GameView(props: GameViewProps) {
         maps: props.maps,
         extensions: props.extensions,
         battle: props.battle,
+        scenes: props.scenes,
         scene: props.scene,
       });
   startupProfileMark("game-view:session");
@@ -857,20 +889,34 @@ export function GameView(props: GameViewProps) {
   const [modal, setModal] = createSignal<Modal | null>(null);
   const [demo, setDemo] = createSignal<AttractStatus | null>(attract?.status() ?? null);
   const initialScene = cloneScene(state.scene);
-  const [sceneActive, setSceneActive] = createSignal(initialScene !== null);
+  const [scene, setScene] = createSignal<SceneSlot | null>(initialScene);
+  /** True while any full-screen scene (battle or game scene) owns the
+   *  foreground. The world and dialog subtrees stay mounted and hidden
+   *  while this is true, matching the battle keep-alive contract. */
+  const sceneActive = (): boolean => scene() !== null;
+  /** Id of the active game scene, or null when the active slot is a battle
+   *  or no scene is open. */
+  const activeSceneId = (): string | null => {
+    const slot = scene();
+    return slot?.kind === "scene" ? slot.id : null;
+  };
   // Visibility is deliberately separate from the renderer input. On exit the
   // hidden battle subtree retains its last state, so changing only the two
   // display gates cannot invalidate every accessor inside a large scene.
   const [battleViewState, setBattleViewState] = createSignal<JsonValue | undefined>(
-    initialScene?.state,
+    initialScene?.kind === "battle" ? initialScene.state : undefined,
   );
+  // Game scene views keep their last renderer state per id, same contract.
+  const [sceneViewStates, setSceneViewStates] = createSignal<
+    Readonly<Record<string, JsonValue>>
+  >(initialScene?.kind === "scene" ? { [initialScene.id]: initialScene.state } : {});
   const [worldAnimationTick, setWorldAnimationTick] = createSignal(
     attract?.worldAnimationTick() ?? 0,
   );
   // The battle scene mounts on first use and stays mounted (hidden) for the
   // rest of the session: re-entering a battle only swaps its state prop and
   // visibility, so entry/exit frames pay no scene mount/unmount cost.
-  const [battleMounted, setBattleMounted] = createSignal(initialScene !== null);
+  const [battleMounted, setBattleMounted] = createSignal(initialScene?.kind === "battle");
   const [fatalError, setFatalError] = createSignal<string | null>(state.interp.error?.message ?? null);
   // Live host viewport: console hosts omit ui.__viewport (spec screen),
   // desktop windows publish and resize it. Polled in onFrame like
@@ -1060,11 +1106,15 @@ export function GameView(props: GameViewProps) {
       const shownModal = attract ? attract.presentedModal() : state.interp.modal;
       setModal((m) => (modalChanged(m, shownModal) ? deepClone(shownModal) : m));
       const nextScene = state.scene ? cloneScene(state.scene) : null;
-      if (nextScene) {
+      if (nextScene?.kind === "battle") {
         setBattleViewState(nextScene.state);
         setBattleMounted(true);
+      } else if (nextScene?.kind === "scene") {
+        const id = nextScene.id;
+        const nextState = nextScene.state;
+        setSceneViewStates((m) => (m[id] === nextState ? m : { ...m, [id]: nextState }));
       }
-      setSceneActive(nextScene !== null);
+      setScene(nextScene);
       setFatalError(state.interp.error?.message ?? null);
       if (status) {
         const st = status;
@@ -1088,6 +1138,8 @@ export function GameView(props: GameViewProps) {
     const pressed = buttons & ~prevButtons;
     const upEdge = !!(pressed & BTN.UP);
     const downEdge = !!(pressed & BTN.DOWN);
+    const leftEdge = !!(pressed & BTN.LEFT);
+    const rightEdge = !!(pressed & BTN.RIGHT);
 
     // Pick up a desktop window resize before this frame's layout reads the
     // centering offset (hostViewport stays the one runtime fact).
@@ -1130,6 +1182,8 @@ export function GameView(props: GameViewProps) {
       cancelEdge: edge.cancel,
       upEdge,
       downEdge,
+      leftEdge,
+      rightEdge,
     };
     try {
       frameProfileMark("reducer:start");
@@ -1410,6 +1464,8 @@ export function GameView(props: GameViewProps) {
       </ProfileMount>
       <ScreenFadeLayer screen={presentedScreen} />
 
+      {/* The battle scene mounts on first use and stays mounted (hidden),
+          matching the world keep-alive above. */}
       <Show when={battleMounted()}>
         <View
           style={{
@@ -1418,7 +1474,7 @@ export function GameView(props: GameViewProps) {
             insetT: 0,
             width: viewport().w,
             height: viewport().h,
-            display: sceneActive() ? 0 : 1,
+            display: scene()?.kind === "battle" ? 0 : 1,
           }}
           debugName="rpgkit-battle-scene"
         >
@@ -1434,6 +1490,37 @@ export function GameView(props: GameViewProps) {
           ) : null}
         </View>
       </Show>
+
+      {/* Game scene views mount on first use and stay mounted (hidden),
+          same contract as the battle view above. A scene without a
+          registered renderer mounts nothing (headless tests register only
+          the rules). State is the scene's last retained JSON, so a hidden
+          view keeps its last props. */}
+      {Object.keys(props.sceneViews ?? {}).map((id) => (
+        <Show when={sceneViewStates()[id] !== undefined}>
+          <View
+            style={{
+              posType: 1,
+              insetL: 0,
+              insetT: 0,
+              width: viewport().w,
+              height: viewport().h,
+              display: activeSceneId() === id ? 0 : 1,
+            }}
+            debugName={`rpgkit-scene-${id}`}
+          >
+            <ProfileMount stage="scene">
+              <SceneRenderer
+                view={props.sceneViews![id]!}
+                state={sceneViewStates()[id]!}
+                width={viewport().w}
+                height={viewport().h}
+                active={activeSceneId() === id}
+              />
+            </ProfileMount>
+          </View>
+        </Show>
+      ))}
 
       {/* D1/D2 demo overlay. In attract a small DEMO plate with the tape
           frame number sits in the top-right corner, away from the action.

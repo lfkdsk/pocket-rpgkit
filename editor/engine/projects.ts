@@ -964,6 +964,19 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             "onEscape": { "type": "array", "items": { "$ref": "#/$defs/command" } }
           },
           "description": "Battle Processing: park the event fiber while the registered battle reducer owns the scene, then run the matching optional result branch."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id"],
+          "properties": {
+            "op": { "const": "scene" },
+            "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)+$", "description": "Namespaced id of the SceneRules registered when the session is created." },
+            "args": {},
+            "onDone": { "type": "array", "items": { "$ref": "#/$defs/command" } },
+            "onCancel": { "type": "array", "items": { "$ref": "#/$defs/command" } }
+          },
+          "description": "Open a game-registered full-screen scene by id (PC, journal, name input, ...). The event fiber parks until the registered SceneRules completes, then runs the optional onDone branch (or onCancel when the player cancelled). The scene can write variables, switches, items, gold and the player name."
         }
       ]
     },

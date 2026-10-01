@@ -336,6 +336,47 @@ describe("rpgkit edit command operations and patches", () => {
       .toMatchObject({ control: { kind: "wander", frequency: 5 } });
   });
 
+  test("lists and edits commands inside scene onDone/onCancel branches", () => {
+    // B6: scene result branches are command containers for the AI edit API,
+    // addressable exactly like battle result branches.
+    const project = fixture();
+    project.maps[0]!.events![0]!.pages[0]!.commands = [
+      { op: "scene", id: "game.pc", onDone: [{ op: "switch", id: "pc.done", value: true }] },
+    ];
+    const source = serializeProject(project);
+    const listed = readSuccess(executeEditOperation(source, "list-commands", { map: "map", event: "npc", page: 0 })).result as any[];
+    expect(listed.map((item) => item.key)).toEqual(["root#0", "s0:done#0"]);
+    expect(listed[1]).toMatchObject({
+      address: "map:map/event:npc/page:0/command:s0:done#0",
+      commandAddress: { path: [{ kind: "scene", index: 0, branch: "done" }], index: 0 },
+      branch: "Done",
+      readOnly: false,
+    });
+    // Insert into the onCancel branch via a scene-branch address.
+    const inserted = success(executeEditOperation(source, "insert-command", {
+      map: "map",
+      event: "npc",
+      page: 0,
+      address: { path: [{ kind: "scene", index: 0, branch: "cancel" }], index: 0 },
+      command: { op: "switch", id: "pc.cancelled", value: true },
+    }));
+    const scene = (JSON.parse(inserted.output) as Project).maps[0]!.events![0]!.pages[0]!.commands[0] as
+      Extract<Command, { op: "scene" }>;
+    expect(scene.onCancel).toEqual([{ op: "switch", id: "pc.cancelled", value: true }]);
+    // A malformed scene-branch path segment is rejected by the path parser
+    // itself (insert-command consumes address.path, unlike list-commands,
+    // which would fail earlier at the argument whitelist).
+    const bad = executeEditOperation(source, "insert-command", {
+      map: "map",
+      event: "npc",
+      page: 0,
+      address: { path: [{ kind: "scene", index: 0, branch: "win" }], index: 0 },
+      command: { op: "switch", id: "pc.bad", value: true },
+    });
+    expect(bad.response.ok).toBe(false);
+    expect(bad.response).toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
+  });
+
   test("AI read and validation operations expose every screen command for field editing", () => {
     const project = fixture();
     const screen: Command[] = [

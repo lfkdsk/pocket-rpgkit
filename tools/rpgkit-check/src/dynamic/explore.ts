@@ -39,7 +39,7 @@ import {
 import type { Command, Dir, GameEvent, Project } from "../../../../src/engine/types.ts";
 import { makeFinding, type CheckReport, type Finding, type FindingLocation } from "../finding.ts";
 import { anyProjectCommand, collectProjectOp } from "../walk.ts";
-import { CHECK_HZ, CHECK_SESSION_OPTIONS, checkConditionContext } from "./sim.ts";
+import { CHECK_HZ, NOOP_BATTLE_RULES, checkConditionContext, checkSceneRules } from "./sim.ts";
 
 // Dir4/Facing order: 0 down, 1 left, 2 up, 3 right.
 const DIRS: readonly Dir[] = ["down", "left", "up", "right"];
@@ -242,7 +242,9 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
   };
 
   const session: Session = createSession(project, options.hz ?? CHECK_HZ, {
-    ...CHECK_SESSION_OPTIONS,
+    extensions: { allowUnknown: true },
+    battle: NOOP_BATTLE_RULES,
+    scenes: checkSceneRules(project),
     onFiberStart,
   });
   let state: SessionState = startSession(project, session);

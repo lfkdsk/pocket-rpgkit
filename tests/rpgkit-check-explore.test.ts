@@ -666,3 +666,40 @@ describe("rpgkit-check explore: recursive common events", () => {
     expect(report.findings.some((f) => f.check === "explore/error" && f.message.includes("stack depth"))).toBe(true);
   });
 });
+
+describe("rpgkit-check explore: scene commands", () => {
+  test("a scene command previews through noop rules and its onDone branch runs", () => {
+    const project = grassProject([
+      {
+        id: "scene-ev",
+        x: 1,
+        y: 1,
+        pages: [
+          {
+            trigger: "autorun",
+            commands: [
+              {
+                op: "scene",
+                id: "game.journal",
+                args: {},
+                onDone: [{ op: "switch", id: "scene-done", value: true }],
+              },
+            ],
+          },
+          {
+            condition: { switch: "scene-done" },
+            trigger: "parallel",
+            commands: [{ op: "text", lines: ["after scene"] }],
+          },
+        ],
+      },
+    ]);
+    const report = checkExplore(project, { frames: 600 });
+    // The noop scene rules keep the session alive (no unregistered-scene
+    // crash) and the onDone switch flip activates the second page.
+    expect(report.summary.errors).toBe(0);
+    const stat = report.events.find((e) => e.event === "scene-ev");
+    expect(stat).toBeDefined();
+    expect(stat!.pages[1] ?? 0).toBeGreaterThan(0);
+  });
+});
