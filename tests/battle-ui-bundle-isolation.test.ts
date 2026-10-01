@@ -79,7 +79,10 @@ const maybeTest = preflight.ok ? test : test.skip;
 // and balloon layers) adds 2,301 shared GameView bytes.
 // SLIM-K adds 108 shared bytes (compact-map detection on the map read path);
 // the lazy CLUT8 image cache stays in the opt-in pocket-rpgkit/ui/image entry.
-const EXPECTED_BYTES = 712_836;
+// The PSP work ported from lfkdsk/pocketjs-tuxemon#1 adds 5,196 shared
+// PocketJS framework bytes (bounded host image residency, deferred frame
+// queue release, externally indexed pak support).
+const EXPECTED_BYTES = 718_032;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
