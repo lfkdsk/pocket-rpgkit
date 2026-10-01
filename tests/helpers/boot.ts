@@ -1,21 +1,18 @@
 // tests/helpers/boot.ts — boot the built example bundles (dist/<name>.js)
 // on PocketJS's deterministic wasm sim host from the vendored submodule.
 //
-// This mirrors vendor/pocketjs/hosts/sim/sim.ts bootWorld for an external
-// project: the bundle and pak live in THIS repo's dist/, and the wasm core
-// lives in vendor/pocketjs/hosts/web. Every frame is one transaction; two
-// runs of the same button tape produce byte-identical framebuffers.
+// The legacy meadow helper delegates to vendor/pocketjs/hosts/sim/sim.ts so
+// every external-project bundle uses the same boot lifecycle. The bundle and
+// pak live in THIS repo's dist/, and the wasm core lives in vendor/pocketjs.
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { createWasmUi } from "../../vendor/pocketjs/hosts/web/wasm-ops.js";
+import { bootWorld } from "../../vendor/pocketjs/hosts/sim/sim.ts";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const DIST = join(ROOT, "dist");
 const WASM_PATH = join(ROOT, "vendor", "pocketjs", "hosts", "web", "pocketjs.wasm");
-
-let wasmBytes: ArrayBuffer | undefined;
 
 /** Whether the example sim tests can run: they need the built bundle
  *  (`bun run build:example`) and the vendored wasm core
@@ -60,43 +57,7 @@ export async function bootExample(
   ] as const) {
     if (!existsSync(path)) throw new Error(`missing ${path} — ${hint}`);
   }
-  wasmBytes ??= await Bun.file(WASM_PATH).arrayBuffer();
-  const wasm = await createWasmUi(wasmBytes, viewport);
-  const g = globalThis as Record<string, unknown>;
-  g.ui = wasm.ops;
-  g.__pak = existsSync(join(DIST, "meadow.pak"))
-    ? await Bun.file(join(DIST, "meadow.pak")).arrayBuffer()
-    : undefined;
-  g.frame = undefined;
-  g.offload = undefined;
-  g.audio = undefined;
-  g.db = undefined;
-  g.fs = undefined;
-  g.__pocketApp = "meadow";
-  g.__simHz = hz;
-  const inbox: unknown[] = [];
-  const outbox: unknown[] = [];
-  g.__pocketEffectTrace = (): void => {};
-  g.__pocketEffectDriver = undefined;
-  g.__pocketDevtoolsTransport = {
-    send: (line: unknown) => outbox.push(line),
-    recv: () => (inbox.length ? (inbox.shift() as unknown) : null),
-  };
-  if (extraGlobals) Object.assign(g, extraGlobals);
-  (0, eval)(await Bun.file(join(DIST, "meadow.js")).text());
-  const appFrame = g.frame as ((buttons: number, analog?: number) => void) | undefined;
-  if (typeof appFrame !== "function") {
-    throw new Error("sim: example bundle did not install globalThis.frame");
-  }
-  return {
-    frame: (buttons, analog) => appFrame(buttons, analog),
-    tick: wasm.tick,
-    render: () => wasm.renderScaled(1),
-    resizeViewport: (w, h) => {
-      wasm.resizeViewport(w, h);
-      (g.__pocketResizeViewport as ((w: number, h: number) => void) | undefined)?.(w, h);
-    },
-  };
+  return bootWorld(appBundle("meadow"), hz, extraGlobals, undefined, viewport);
 }
 
 export interface ExampleState {

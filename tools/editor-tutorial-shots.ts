@@ -3,17 +3,8 @@
 // docs/editor-tutorial.md by driving the built editor bundle (dist/editor.js)
 // on the wasm sim host through the same steps the tutorial describes.
 //
-// Each figure is captured in its OWN child process. The wasm sim host swaps
-// consecutive `world.render()` results across boots in the same process (the
-// eval'd bundle leaves global render state behind that the next boot reads),
-// so a script that boots and renders eight times in one process writes figure
-// N with the pixels of figure N+1. Spawning one `bun --shot <name>` child per
-// figure gives every capture a fresh process: each child boots, replays the
-// tutorial steps up to that figure, and renders exactly once.
-//
 // Prereqs: bun run build:editor && bun run build:wasm
-// Usage:    bun tools/editor-tutorial-shots.ts            (all figures)
-//           bun tools/editor-tutorial-shots.ts --shot 01-overview   (one figure)
+// Usage:    bun tools/editor-tutorial-shots.ts
 
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -514,31 +505,7 @@ const SHOTS: Record<string, ((ctx: Ctx) => void)[]> = {
   ],
 };
 
-// The wasm sim host swaps consecutive renders across boots in the SAME
-// process (the eval'd bundle leaves global render state behind that the next
-// boot reads), so each figure is captured in its own child process. One boot,
-// one render per process keeps every figure byte-exact.
-//
-// Spawn with an explicit `env` object: without it Bun's sync spawn takes a
-// fork-style path that shares the parent's evaluated module state with the
-// child, and the child's first render comes back swapped with a later boot's
-// state. A fresh environ forces the exec path and full process isolation.
-const shotArg = process.argv[2];
-if (shotArg === "--shot") {
-  const name = process.argv[3]!;
-  const steps = SHOTS[name];
-  if (!steps) throw new Error(`unknown shot: ${name}`);
+for (const [name, steps] of Object.entries(SHOTS)) {
   await capture(name, steps);
-} else {
-  for (const name of Object.keys(SHOTS)) {
-    const r = Bun.spawnSync({
-      cmd: ["bun", fileURLToPath(import.meta.url), "--shot", name],
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-      env: { ...process.env, EDITOR_TUTORIAL_SHOT: name },
-    });
-    if (r.exitCode !== 0) throw new Error(`shot ${name} exited ${r.exitCode}`);
-  }
-  console.log("editor tutorial shots complete");
 }
+console.log("editor tutorial shots complete");
