@@ -533,16 +533,21 @@ choices). `locks` proves every `lockInput` is released on the real engine,
 `explore` walks the game headlessly and reports which event pages never ran.
 `shot` renders schematic PNGs of a map's passability and events.
 
-`reach` is **experimental**: it builds the multi-map walk graph from a real
-session state and reports which maps the player can reach, but its model
-freezes story state, dry-runs entry pages for a fixed window, and does not
-re-expand recursive common events. Both directions of a verdict can be wrong
-— a "reachable" map may only be reachable through an unmodelled recursive
-common event or battle branch, and an "unreachable" map may be gated on
-state the frozen model cannot produce — so treat every verdict as a **lead,
-not a proof**. Every report carries `experimental: true` and an `assumptions`
-list naming the known imprecisions. The check is being reworked into a real
-engine search with a replayable witness for each verdict.
+`reach` proves map reachability with a **replayable witness**: it searches
+over real engine states (walk to triggerable events, ride out dialogs, choices,
+battles and transfers, branch per choice option, restore snapshots at
+branches), and every map it reports as reached carries a button-mask tape the
+tool itself replays in a fresh session to verify the arrival. A map reported
+as `notFound` means the search spent its budgets (`--max-frames` /
+`--max-states` / `--max-seconds`) without finding a witness — a **lead, not a
+proof** — and the report lists the frontier (which inbound transfers' source
+pages never ran). The same run also performs deterministic structural checks:
+transfers to missing maps, landings on non-standable tiles, orphan maps, and
+dynamic (variable-target) transfers. Witnesses are 60 Hz tapes recorded in
+constant 6-tick blocks (edges on block boundaries); each witness is replayed
+and verified at 60 Hz in a fresh session — the tool makes no claim about
+other host frame rates. The frame budget is an execution limit: the search
+may run at most one 6-tick block past `--max-frames`.
 
 ## The format in one screen
 

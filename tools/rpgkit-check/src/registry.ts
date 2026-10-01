@@ -82,6 +82,22 @@ function numArg(args: Record<string, unknown>, key: string): number | undefined 
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
+/** A reach budget arg: a non-negative number, and an integer when the unit
+ *  is countable (ticks, states). maxSeconds is a wall-clock valve and may be
+ *  fractional. Throws CheckArgsError so every entry point (CLI flags, CLI
+ *  --json, MCP) enforces the same value domain. */
+function budgetArg(args: Record<string, unknown>, key: string, integer: boolean): number | undefined {
+  const v = numArg(args, key);
+  if (v === undefined) return undefined;
+  if (v < 0 || (integer && !Number.isInteger(v))) {
+    throw new CheckArgsError(
+      `$.${key}: must be a non-negative${integer ? " integer" : ""} number`,
+      [],
+    );
+  }
+  return v;
+}
+
 const FILE_PROP = {
   type: "string",
   description: "Path to the rpgkit-project/v1 JSON document to check.",
@@ -149,15 +165,14 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
   {
     name: "rpgkit-reach",
     description:
-      "EXPERIMENTAL state-based reachability: builds the multi-map walk graph from a real session state " +
-      "(dry-run entry per map, live character bodies, engine-selected active pages, transfer edges) and BFSes " +
-      "from the start. Returns reachable tile counts per map and the list of unreachable maps. A 'reachable' " +
-      "verdict is reliable; an 'unreachable' verdict is a LEAD, NOT A PROOF — the report always carries " +
-      "experimental:true and an assumptions list. Known imprecisions: story state is frozen except through " +
-      "forced entry transfers; entry pages are dry-run for a fixed 10-tick window (delayed forced transfers " +
-      "lose pre-transfer state set after the window); non-zero item/gold baselines can disagree with arrivals " +
-      "into unknown; recursive common events are not re-expanded (the real interpreter runaways on them); " +
-      "battle outcomes are not modelled.",
+      "Map reachability by real-engine search with replayable witnesses: breadth-first search over real " +
+      "engine states (walk to triggerable events, ride out dialogs/choices/battles/transfers, branch per " +
+      "choice option, restore snapshots at branches). Every map reported as reached carries a button-mask " +
+      "witness tape the tool replays in a fresh session to verify the arrival; a map reported as notFound " +
+      "means the search spent its budgets without finding a witness (a lead, not a proof) and the report " +
+      "lists the frontier (which inbound transfers' source pages never ran). Also runs deterministic " +
+      "structural checks: transfer target missing, landing on a non-standable tile, orphan maps, and " +
+      "dynamic (variable-target) transfers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -176,6 +191,9 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
             gold: { type: "number" },
           },
         },
+        maxFrames: { type: "number", description: "Total engine tick budget for the search (default 120000). Non-negative integer; the search may run at most one 6-tick block past it." },
+        maxStates: { type: "number", description: "Max states expanded (default 3000). Non-negative integer." },
+        maxSeconds: { type: "number", description: "Wall-clock budget in seconds (default 60; a safety valve, not deterministic). Non-negative number." },
       },
       required: ["file"],
       additionalProperties: false,
@@ -183,7 +201,12 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
     run: async (args) => {
       const { project } = loadProject(args.file);
       const start = args.start as Parameters<typeof checkReach>[1] extends { start?: infer S } ? S : never;
-      return checkReach(project, { start }) satisfies ReachReport;
+      return checkReach(project, {
+        start,
+        maxFrames: budgetArg(args, "maxFrames", true),
+        maxStates: budgetArg(args, "maxStates", true),
+        maxSeconds: budgetArg(args, "maxSeconds", false),
+      }) satisfies ReachReport;
     },
   },
   {

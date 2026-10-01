@@ -33,6 +33,7 @@ import {
   saveToStore,
   SAVE_FORMAT,
   SAVE_VERSION,
+  sessionStateFingerprint,
   SaveError,
   type SaveErrorCode,
   type SaveSnapshot,
@@ -52,7 +53,8 @@ import {
 import { initialMovement, stepMovement, type MovementState } from "../src/engine/movement.ts";
 import { buildPassage } from "../src/engine/passability.ts";
 import { buildMiniProject } from "../examples/meadow/mini-project.ts";
-import type { MapDef } from "../src/engine/types.ts";
+import type { MapDef, Project } from "../src/engine/types.ts";
+import { createSession, startSession, stepSession, type Session, type SessionState } from "../src/engine/session.ts";
 
 // --- harness: fold the real reducers into a rich saveable state -----------
 
@@ -790,6 +792,207 @@ describe("P1⑤ save — strict UTF-8 save codes (F6/1173)", () => {
       expect(thrownCode(() => decodeSaveCode(codeFor(bytes)))).toBe("bad-json");
     });
   }
+});
+
+// --- session state fingerprint (search dedup key) -------------------------------
+//
+// sessionStateFingerprint is the engine's own state-identity hash for the
+// reach search's dedup key: the save-snapshot payload (map, player, the full
+// interpreter state, ext) with between-fold transients dropped and pure
+// playback clocks zeroed. It must (a) distinguish states that fold a
+// different future — persistent audio intent most of all, since a
+// bgmPlaying condition reads it — and (b) never mutate the state it hashes.
+
+function fingerprintState(): SessionState {
+  const project: Project = {
+    format: "rpgkit-project/v1",
+    title: "fp",
+    tileSize: 16,
+    start: { map: "A", x: 0, y: 0, dir: "down" },
+    sheets: [{ id: "g", cols: 1, rows: 1 }],
+    items: [],
+    sprites: {},
+    maps: [{
+      id: "A", name: "A", width: 2, height: 2, sheets: ["g"],
+      ground: ["g.0", "g.0", "g.0", "g.0"],
+    }],
+  };
+  return startSession(project, createSession(project, 60, { extensions: { allowUnknown: true } }));
+}
+
+function withBgm(state: SessionState, id: string, positionTicks: number): SessionState {
+  state.interp.audio = { bgm: { id, volume: 100, pitch: 100, positionTicks } };
+  return state;
+}
+
+/** A state whose sole event is a parallel fiber parked in a long wait. */
+function parallelWaitHarness(seconds: number): { session: Session; state: SessionState } {
+  const project: Project = {
+    format: "rpgkit-project/v1",
+    title: "fp-wait",
+    tileSize: 16,
+    start: { map: "A", x: 0, y: 0, dir: "down" },
+    sheets: [{ id: "g", cols: 1, rows: 1 }],
+    items: [],
+    sprites: {},
+    maps: [{
+      id: "A", name: "A", width: 2, height: 2, sheets: ["g"],
+      ground: ["g.0", "g.0", "g.0", "g.0"],
+      events: [{
+        id: "timer", x: 0, y: 0,
+        pages: [{ trigger: "parallel", commands: [{ op: "wait", seconds }] }],
+      }],
+    }],
+  };
+  const session = createSession(project, 60, { extensions: { allowUnknown: true } });
+  return { session, state: startSession(project, session) };
+}
+
+const ZERO_INPUT = { buttons: 0, confirmEdge: false, cancelEdge: false, upEdge: false, downEdge: false };
+
+/** The `since` anchor of the (single) parked parallel wait fiber. */
+function parkedParallelSince(state: SessionState): number {
+  const fibers = Object.values(state.interp.parallels);
+  if (fibers.length !== 1 || fibers[0]!.mode !== "wait") {
+    throw new Error("expected exactly one parked parallel wait fiber");
+  }
+  return fibers[0]!.since;
+}
+
+describe("session state fingerprint", () => {
+  test("silence and a playing BGM hash differently", () => {
+    const quiet = fingerprintState();
+    const music = withBgm(fingerprintState(), "field", 0);
+    expect(sessionStateFingerprint(music)).not.toBe(sessionStateFingerprint(quiet));
+  });
+
+  test("two different BGM tracks hash differently", () => {
+    const a = withBgm(fingerprintState(), "field", 0);
+    const b = withBgm(fingerprintState(), "battle", 0);
+    expect(sessionStateFingerprint(a)).not.toBe(sessionStateFingerprint(b));
+  });
+
+  test("a paused BGM is distinct from a playing one", () => {
+    const playing = withBgm(fingerprintState(), "field", 0);
+    const paused = withBgm(fingerprintState(), "field", 0);
+    paused.interp.audio!.bgm!.paused = true;
+    expect(sessionStateFingerprint(paused)).not.toBe(sessionStateFingerprint(playing));
+  });
+
+  test("states differing only in playback position hash equal", () => {
+    // BGM/BGS loop and no condition reads the position; the position is a
+    // pure clock that advances every tick and must not split the dedup key.
+    const a = withBgm(fingerprintState(), "field", 0);
+    const b = withBgm(fingerprintState(), "field", 1234);
+    expect(sessionStateFingerprint(a)).toBe(sessionStateFingerprint(b));
+  });
+
+  test("states differing only in the frame clock hash equal", () => {
+    // The absolute frame counter advances every tick; with no fiber parked
+    // on a time anchor, zeroing it loses no future. Parked fibers and
+    // animation starts are rebased onto the zeroed clock by the same
+    // normalization (see the tests below), so they keep their elapsed time.
+    const a = fingerprintState();
+    const b = fingerprintState();
+    b.frame = 999;
+    b.interp.frame = 999;
+    expect(sessionStateFingerprint(a)).toBe(sessionStateFingerprint(b));
+  });
+
+  test("parallel waits at the same absolute anchor but different elapsed hash differently", () => {
+    // A fiber's `since` is an absolute stamp on the same clock the key
+    // zeroes: a wait completes when frame - since reaches its duration. Two
+    // states parked at the same `since` but different frames have different
+    // elapsed time and therefore different futures, so they must not share
+    // a key. Zeroing the frame without rebasing `since` merged them and the
+    // reach search dropped a real map.
+    const { session, state } = parallelWaitHarness(60);
+    let s = state;
+    let at2: SessionState | undefined;
+    let at32: SessionState | undefined;
+    for (let f = 1; f <= 32; f++) {
+      s = stepSession(session, s, ZERO_INPUT);
+      if (f === 2) at2 = structuredClone(s);
+      if (f === 32) at32 = structuredClone(s);
+    }
+    expect(parkedParallelSince(at2!)).toBe(parkedParallelSince(at32!));
+    expect(sessionStateFingerprint(at2!)).not.toBe(sessionStateFingerprint(at32!));
+  });
+
+  test("parallel waits at the same elapsed time hash equal", () => {
+    // Same elapsed wait (frame - since) means the same future: a state
+    // reached at frame 2/since 1 and one at frame 102/since 101 must merge,
+    // or the search explores every path twice and burns its frame budget.
+    const { session, state } = parallelWaitHarness(60);
+    let s = state;
+    for (let f = 1; f <= 2; f++) s = stepSession(session, s, ZERO_INPUT);
+    const at2 = structuredClone(s);
+    const later = structuredClone(s) as SessionState;
+    const fiber = Object.values(later.interp.parallels)[0]!;
+    later.frame = 102;
+    later.interp.frame = 102;
+    fiber.since = 101;
+    expect(sessionStateFingerprint(at2)).toBe(sessionStateFingerprint(later));
+  });
+
+  test("map animation starts are rebased with the frame clock", () => {
+    // pruneMapAnims ends a one-shot animation when frame - start reaches its
+    // length, so `start` is an absolute anchor on the zeroed clock too: it
+    // must be rebased like Fiber.since.
+    const anim = (start: number) => ({
+      id: "x", anim: "y", start, x: 0, y: 0, target: null, layer: "above" as const, loop: false,
+    });
+    const a = fingerprintState();
+    a.interp.anims = [anim(0)];
+    const b = fingerprintState();
+    b.frame = 100;
+    b.interp.frame = 100;
+    b.interp.anims = [anim(100)];
+    // Same elapsed (frame - start = 0): equal.
+    expect(sessionStateFingerprint(a)).toBe(sessionStateFingerprint(b));
+    // Different elapsed: distinct.
+    const c = fingerprintState();
+    c.frame = 50;
+    c.interp.frame = 50;
+    c.interp.anims = [anim(0)];
+    expect(sessionStateFingerprint(a)).not.toBe(sessionStateFingerprint(c));
+  });
+
+  test("a story switch change changes the hash", () => {
+    const a = fingerprintState();
+    const b = fingerprintState();
+    b.sw.switches["gate"] = true;
+    expect(sessionStateFingerprint(a)).not.toBe(sessionStateFingerprint(b));
+  });
+
+  test("hashing does not mutate the input state", () => {
+    // Regression: the audio normalization used to reassign a shared audio
+    // object's track, zeroing the live state's playback position as a side
+    // effect of computing the key. The frame/anchor rebasing must be just
+    // as clean: the live fiber's `since` and the animation's `start` are
+    // shared references the key normalizes on copies.
+    const state = withBgm(fingerprintState(), "field", 42);
+    state.frame = 7;
+    state.interp.frame = 7;
+    state.interp.anims = [{
+      id: "x", anim: "y", start: 4, x: 0, y: 0, target: null, layer: "above", loop: false,
+    }];
+    sessionStateFingerprint(state);
+    expect(state.interp.audio?.bgm?.positionTicks).toBe(42);
+    expect(state.frame).toBe(7);
+    expect(state.interp.frame).toBe(7);
+    expect(state.interp.audio?.bgm?.id).toBe("field");
+    expect(state.interp.anims?.[0]?.start).toBe(4);
+  });
+
+  test("hashing a parked parallel fiber does not mutate its anchor", () => {
+    const { session, state } = parallelWaitHarness(60);
+    const s = stepSession(session, state, ZERO_INPUT);
+    const since = parkedParallelSince(s);
+    sessionStateFingerprint(s);
+    expect(parkedParallelSince(s)).toBe(since);
+    expect(s.interp.frame).toBeGreaterThan(0);
+  });
 });
 
 function memoryStore(): SaveStore {

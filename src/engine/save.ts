@@ -126,21 +126,127 @@ export function createSessionSnapshot(
 /** Drop between-frame transient fields. The battle queue is persistent at
  * runtime, but can only be empty at the safe point checked above. */
 function normalizeInterp(snap: SaveSnapshot): SaveSnapshot {
+  normalizeInterpInPlace(snap.interp);
+  return snap;
+}
+
+/** The between-fold normalization every resumable snapshot applies: the
+ *  switch bank is re-created through the same constructor a fresh session
+ *  and a restored save use (so the encoded shape is canonical and every
+ *  numeric bank passes the same clamp a runtime write does), per-fold cues
+ *  are drained, and between-fold request queues are dropped. Mutates the
+ *  passed-in interpreter state (callers pass a copy when they need the
+ *  original preserved). */
+function normalizeInterpInPlace(interp: InterpState): void {
   // The per-frame cloneInterp copies the numeric banks verbatim (so an
   // ill-typed content value still reaches its fatal check). The save
   // boundary re-normalizes them through createSwitchState, so a state that
   // passes canSave always encodes into an envelope the decoder accepts.
-  snap.interp.sw = createSwitchState(snap.interp.sw);
-  snap.interp.cues = [];
-  snap.interp.pendingTransfer = null;
-  snap.interp.pendingMoveRoutes = [];
-  snap.interp.pendingBattles = [];
+  interp.sw = createSwitchState(interp.sw);
+  interp.cues = [];
+  interp.pendingTransfer = null;
+  interp.pendingMoveRoutes = [];
+  interp.pendingBattles = [];
   // The scene queue is runtime-only: it must be empty at a save point, so
   // the field is dropped from the snapshot rather than serialized.
-  delete (snap.interp as Partial<InterpState>).pendingScenes;
-  snap.interp.pendingPlacements = [];
-  snap.interp.abortedRoutes = [];
-  return snap;
+  delete (interp as Partial<InterpState>).pendingScenes;
+  interp.pendingPlacements = [];
+  interp.abortedRoutes = [];
+}
+
+/** Zero the pure playback clocks for state identity hashing: the absolute
+ *  frame counter and every audio playback position advance every tick, and
+ *  two states differing only in them fold the same future — BGM/BGS loop,
+ *  and no condition reads a playback position (bgmPlaying reads the track
+ *  id and paused flag). The persistent audio INTENT — which track plays, its
+ *  volume/pitch, the paused flag, fade counters, the saved BGM, the ME
+ *  countdown — is kept, so a state with music playing never hashes equal to
+ *  silence. Mutates the passed-in interpreter state, which MUST be a copy
+ *  the caller owns: the audio object is rebuilt (never mutated in place), so
+ *  a live state sharing the interpreter's audio reference is untouched.
+ *
+ *  Every absolute time anchor is rebased onto the zeroed clock in the same
+ *  pass: a fiber's `since` and a map animation's `start` are frame stamps,
+ *  and the reducer judges waits, text reveals and one-shot animations as
+ *  `frame - anchor`. Zeroing the frame without rebasing would merge two
+ *  states parked at the same anchor but different elapsed time — same key,
+ *  different future — so the reach search would drop a real map. Fibers
+ *  and animations are rebuilt (never mutated in place), so a live state
+ *  sharing those references is untouched. */
+export function stripPlaybackClocksInPlace(interp: InterpState): void {
+  const frame = interp.frame;
+  interp.frame = 0;
+  // Rebase every absolute time anchor onto the zeroed clock: a fiber's
+  // `since` and a map animation's `start` are frame stamps, and the reducer
+  // judges waits, text reveals and one-shot animations as `frame - anchor`.
+  // Zeroing the frame without rebasing would merge two states parked at the
+  // same anchor but different elapsed time — same key, different future — so
+  // the reach search would drop a real map. Rebuilt, never mutated in
+  // place, so a live state sharing these references is untouched.
+  if (interp.main) interp.main = { ...interp.main, since: interp.main.since - frame };
+  // The parallels record is shared with the live state (the caller's copy
+  // is shallow), so rebuild it rather than reassigning its entries. Empty
+  // in most projects, so skip the allocation entirely then.
+  if (Object.keys(interp.parallels).length > 0) {
+    interp.parallels = Object.fromEntries(
+      Object.keys(interp.parallels).map((key) => {
+        const fiber = interp.parallels[key]!;
+        return [key, { ...fiber, since: fiber.since - frame }];
+      }),
+    );
+  }
+  if (interp.anims) interp.anims = interp.anims.map((a) => ({ ...a, start: a.start - frame }));
+  const audio = interp.audio;
+  if (!audio) return;
+  interp.audio = {
+    ...(audio.bgm ? { bgm: { ...audio.bgm, positionTicks: 0 } } : {}),
+    ...(audio.bgs ? { bgs: { ...audio.bgs, positionTicks: 0 } } : {}),
+    ...(audio.me ? { me: { ...audio.me, positionTicks: 0 } } : {}),
+    ...(audio.savedBgm ? { savedBgm: { ...audio.savedBgm, positionTicks: 0 } } : {}),
+  };
+}
+
+/** The tile-level identity of a movement state: which tile the player
+ *  stands on and which way they face. The interpolation fields (pixel
+ *  position, step phase, moving/walking/stepDir) are pure sub-tile progress
+ *  — a step completes in a few ticks, no condition reads them, and the
+ *  search plans at tile granularity (the passage table and trigger tiles
+ *  are tile-based), so two movers on the same tile facing the same way
+ *  fold the same future. */
+function tileLevelMovement(move: MovementState): { tx: number; ty: number; facing: MovementState["facing"] } {
+  return { tx: move.tx, ty: move.ty, facing: move.facing };
+}
+
+/** The canonical hash of a session state's resumable identity — the same
+ *  payload as a save snapshot (map, player, the FULL interpreter state,
+ *  ext), normalized so two states that fold the same reducer future hash
+ *  equal:
+ *
+ *  - between-fold transients are dropped exactly as a save snapshot drops
+ *    them (cues, pending transfer/route/battle/placement queues);
+ *  - pure progress is zeroed: the absolute frame counter, audio playback
+ *    positions, and the mover's sub-tile interpolation (kept at tile level:
+ *    tile + facing). None of these is read by a condition or a command's
+ *    future — each recovers within a few ticks, and the save snapshot keeps
+ *    the full values for pixel-exact restore;
+ *  - every absolute time anchor is rebased onto the zeroed frame clock in
+ *    the same pass (a fiber's `since`, a map animation's `start`), so two
+ *    states parked at the same anchor but different elapsed time — same
+ *    elapsed wait, different future — never share a key;
+ *  - the held button mask is excluded: it is input state, not reducer state
+ *    (callers that need edge continuity track it separately).
+ *
+ *  Unlike createSessionSnapshot this does not require a safe point: a
+ *  world-idle state may sit mid-step, and the payload reads the live state
+ *  read-only (shallow copies with fresh overridden fields), so hashing a
+ *  state never mutates it. Everything the engine adds to InterpState later
+ *  is included automatically — this is the engine's own snapshot shape, not
+ *  a hand-picked field list. */
+export function sessionStateFingerprint(state: SessionState): string {
+  const interp: InterpState = { ...state.interp };
+  normalizeInterpInPlace(interp);
+  stripPlaybackClocksInPlace(interp);
+  return fnv1aText(canonicalJson({ map: state.mapId, player: tileLevelMovement(state.move), interp, ext: state.ext }));
 }
 
 // --- envelope ---------------------------------------------------------------

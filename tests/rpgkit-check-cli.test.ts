@@ -148,6 +148,98 @@ describe("rpgkit-check CLI", () => {
   });
 });
 
+describe("rpgkit-check CLI reach budget flags", () => {
+  test("--max-frames 1 ends on the frame budget", async () => {
+    const { code, stdout } = await runCli(["reach", "--file", MEADOW, "--max-frames", "1"]);
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.endedReason).toBe("frame-budget");
+    // One block (6 ticks) is the minimum unit of work.
+    expect(report.summary.framesRun).toBeGreaterThan(0);
+    expect(report.summary.framesRun).toBeLessThanOrEqual(12);
+  });
+
+  test("--max-seconds 0.001 ends on the time budget", async () => {
+    const { code, stdout } = await runCli(["reach", "--file", MEADOW, "--max-seconds", "0.001"]);
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.endedReason).toBe("time-budget");
+  });
+
+  test("--max-states 1 ends on the state budget", async () => {
+    const { code, stdout } = await runCli(["reach", "--file", MEADOW, "--max-states", "1"]);
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.endedReason).toBe("state-budget");
+  });
+
+  test("--max-frames=1 (= form) is parsed", async () => {
+    const { code, stdout } = await runCli(["reach", "--file", MEADOW, "--max-frames=1"]);
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.endedReason).toBe("frame-budget");
+  });
+
+  test("a non-numeric --max-frames exits 2", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", MEADOW, "--max-frames", "abc"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("--max-frames must be a non-negative integer number");
+  });
+
+  test("--max-frames without a value exits 2", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", MEADOW, "--max-frames"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("--max-frames requires a value");
+  });
+
+  test("a CLI budget flag wins over the same key in --json", async () => {
+    const { code, stdout } = await runCli([
+      "reach", "--file", MEADOW,
+      "--json", JSON.stringify({ maxFrames: 100000 }),
+      "--max-frames", "1",
+    ]);
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.endedReason).toBe("frame-budget");
+    // One 6-tick block is the minimum unit of work, and the search never
+    // runs more than one block past the budget.
+    expect(report.summary.framesRun).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("rpgkit-check CLI reach --json value domains", () => {
+  test("--json hz is rejected (witnesses verify at 60 Hz only)", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", MEADOW, "--json", JSON.stringify({ hz: 20 })]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("hz");
+  });
+
+  test("--json maxFrames negative exits 2", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", MEADOW, "--json", JSON.stringify({ maxFrames: -1 })]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("maxFrames");
+  });
+
+  test("--json maxStates fractional exits 2", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", MEADOW, "--json", JSON.stringify({ maxStates: 1.5 })]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("maxStates");
+  });
+
+  test("--json maxSeconds fractional is accepted", async () => {
+    const { code, stdout } = await runCli(["reach", "--file", MEADOW, "--json", JSON.stringify({ maxSeconds: 0.001 })]);
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.endedReason).toBe("time-budget");
+  });
+
+  test("--json battle is rejected (rules are code, not JSON)", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", MEADOW, "--json", JSON.stringify({ battle: {} })]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("battle");
+  });
+});
+
 describe("rpgkit-check MCP registry", () => {
   test("every tool has name, description, inputSchema, run", () => {
     expect(CHECK_TOOLS.length).toBeGreaterThanOrEqual(6);

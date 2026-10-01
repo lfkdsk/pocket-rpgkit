@@ -207,7 +207,7 @@ describe("rpgkit-check tools over MCP", () => {
     const body = JSON.parse(response.result.content[0].text);
     expect(body.check).toBe("reach");
     expect(body.reachableMaps).toContain("village");
-  });
+  }, 30_000);
 
   test("args failing the inputSchema are a tool error, not a server crash", async () => {
     const file = copy();

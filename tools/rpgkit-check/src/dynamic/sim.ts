@@ -17,6 +17,7 @@ import {
   startSession,
   stepSession,
   type Session,
+  type SessionOptions,
   type SessionState,
 } from "../../../../src/engine/session.ts";
 import {
@@ -70,12 +71,19 @@ export function checkSceneRules(project: Project): Record<string, SceneRules> {
   return Object.fromEntries([...ids].map((id) => [id, NOOP_SCENE_RULES]));
 }
 
-export function makeCheckSession(project: Project, hz: number = CHECK_HZ): Session {
-  return createSession(project, hz, {
+/** The session options every dynamic check shares: unknown extensions are
+ *  tolerated, battles end at once, and every scene id the document uses gets
+ *  the noop scene rules. Callers may override `battle` or add hooks. */
+export function checkSessionOptions(project: Project): SessionOptions {
+  return {
     extensions: { allowUnknown: true },
     battle: NOOP_BATTLE_RULES,
     scenes: checkSceneRules(project),
-  });
+  };
+}
+
+export function makeCheckSession(project: Project, hz: number = CHECK_HZ): Session {
+  return createSession(project, hz, checkSessionOptions(project));
 }
 
 export function startFresh(

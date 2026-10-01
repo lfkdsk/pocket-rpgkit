@@ -101,53 +101,85 @@ $ bun run rpgkit-check freeze --file examples/sunstone/data/sunstone.json --json
 { "check": "freeze", "findings": [], "summary": { "maps": 3, "windowFrames": 600, "scannedFramesPerMap": 1200, "permanentLocks": 0, "permanentBlockingFibers": 0, "errors": 0, "flagged": 0 }, "rows": [] }
 ```
 
-## `reach` — experimental state-based reachability
+## `reach` — real-engine reachability with replayable witnesses
 
-`reach` is **experimental**: it builds the multi-map walk graph from a real
-session state and reports which maps the player can reach. Its model
-freezes story state, dry-runs entry pages for a fixed 10-tick window, does
-not re-expand recursive common events, does not model battle outcomes or
-extension commands, and does not follow transfers with a variable target.
+`reach` searches the real engine (no second interpreter): a breadth-first
+search over world-idle session states, where each edge is a macro that walks
+the engine's own passage table to a triggerable event, triggers it, and rides
+the result out to world idle — through text, shops, choices (one branch per
+option), battles, and transfers. Every map it calls **reached** carries a
+button-mask tape the tool itself replays in a fresh session to verify the
+arrival; a map it calls **notFound** is one no witness was found for within
+budget — a **lead, not a proof**, with frontier stats naming the inbound
+transfers whose source pages never ran.
 
-**Both directions of a verdict can be wrong.** A "reachable" map may only
-be reachable through an unmodelled recursive common event or a battle
-branch, and an "unreachable" map may be gated on state the frozen model
-cannot produce (for example a non-zero item or gold baseline carried
-through a forced entry transfer). Treat every verdict as a **lead, not a
-proof**; each report carries `experimental: true` and an `assumptions` list
-naming thirteen modelling assumptions and known imprecisions, including audio
-state not propagated between map-entry branches. The check is being reworked into a
-real engine search with a replayable witness for each verdict.
+**A "reached" verdict is only as good as the replay.** The witness is a
+60 Hz tape (one PSP button mask per reference tick) recorded in constant
+6-tick blocks with every pressed edge on a block boundary. Each witness is
+replayed and verified at 60 Hz in a fresh session (one `stepSession` call
+per tick): the replay must land on the target map with the recorded state
+hash, or the map is **not** called reached — a witness that fails its own
+fresh-session replay is a `reach/witness-replay-failed` error. The tool
+makes no claim about other host frame rates: a witness is verified at
+60 Hz only.
 
 Args: `file`, `start` (optional object: `{ map?, x?, y?, dir?, switches?,
 variables?, items?, gold? }`; defaults to the project start with a fresh
-bank).
+bank), and the budgets `maxFrames` / `maxStates` / `maxSeconds`.
+`battle` (registered `BattleRules`) is available on the TypeScript API
+only — battle rules are functions and cannot be passed through the CLI or
+MCP JSON; those entry points always run the default `encounters-declined`
+policy, so a map gated on a battle outcome is notFound there.
 
-`summary`: `maps`, `totalStandable`, `reachableTiles`, `reachableMaps`,
-`unreachableMaps`, `buildMs`. The report also carries `start`
-(`"map@x,y"`), `reachableTilesByMap`, `reachableMaps`, `unreachableMaps`,
-and `assumptions`. A missing or unstandable start is a
-`reach/start-unreachable` error; a map with no reachable tiles is a
-`reach/map-unreachable` **warning** and does not fail the check.
+**Budgets are execution limits, not hints.** The frame budget counts the
+ticks the search really executes: a choices fan-out's shared walk/dialog
+prefix is charged once, not once per branch. The frame and wall-clock
+budgets are checked inside each macro's ride-out / battle / wait loop
+(before and after every 6-tick block, and between a held edge's release
+block and its edge block — the release block's ticks count as already
+spent at that check), so the whole search runs at most one block past the
+limit: `framesRun <= maxFrames + 6`. The block-constant tape makes one
+block (6 ticks) the minimum unit of work, so `maxFrames=1` runs one
+block. `endedReason` is one of
+`exhausted`, `frame-budget`, `state-budget`, `time-budget`.
+`maxFrames` and `maxStates` are non-negative integers; `maxSeconds` is a
+non-negative number (fractional allowed). The CLI exposes the budgets as
+`--max-frames <n>`, `--max-states <n>`, `--max-seconds <n>` (space and
+`=` forms); CLI flags win over the same keys in `--json`.
+
+`summary`: `maps`, `reached`, `notFound`, `statesExplored`, `statesQueued`,
+`framesRun`, `endedReason`. The report also carries `start` (`"map@x,y"`),
+`battlePolicy`, `budgets`, `maps` (per-map `status`, `frames`,
+`witness`, `stateHash`, or `frontier`), `reachableMaps`, `notFoundMaps`, and
+`assumptions`. A missing or unstandable start is a `reach/start-unreachable`
+error. Structural checks run alongside the search: a transfer to a map the
+project does not define is a `reach/transfer-target-missing` **error**; a
+transfer landing on a blocked tile is a `reach/transfer-landing-blocked`
+**warning**; maps no literal transfer points at and dynamic-target transfers
+are listed as `reach/map-orphan` / `reach/dynamic-transfer` **info**.
 
 ```sh
 $ bun run rpgkit-check reach --file examples/sunstone/data/sunstone.json
 {
   "check": "reach",
-  "experimental": true,
-  "findings": [ { "severity": "warning", "message": "under the frozen-story-state assumptions, no path to map \"cave\" was found (start map \"village\" has 213 reachable tiles); this is a lead, not a proof — see the report's assumptions for the known imprecisions" } ],
-  "summary": { "maps": 3, "totalStandable": 219, "reachableTiles": 213, "reachableMaps": 2, "unreachableMaps": 1, "buildMs": 8 },
+  "findings": [],
+  "summary": { "maps": 3, "reached": 3, "notFound": 0, "statesExplored": 112, "framesRun": 120000, "endedReason": "frame-budget" },
   "start": "village@9,9",
-  "reachableMaps": [ "village", "forest" ],
-  "unreachableMaps": [ "cave" ],
-  "assumptions": [ "story variables are frozen except for state propagated through forced entry transfers", "… 12 more" ]
+  "battlePolicy": "encounters-declined",
+  "budgets": { "maxFrames": 120000, "maxStates": 3000, "maxSeconds": 60 },
+  "reachableMaps": [ "village", "forest", "cave" ],
+  "notFoundMaps": [],
+  "maps": [
+    { "map": "village", "status": "reached", "frames": 0, "witness": { "hz": 60, "masks": [] }, "stateHash": "…" },
+    { "map": "forest", "status": "reached", "frames": 162, "witness": { "hz": 60, "masks": ["… 162 masks …"] }, "stateHash": "…" },
+    { "map": "cave", "status": "reached", "frames": 696, "witness": { "hz": 60, "masks": ["… 696 masks …"] }, "stateHash": "…" }
+  ],
+  "assumptions": ["… the search's known imprecisions …"]
 }
 ```
 
-(The cave is gated behind the thorn-gate event's story state, so the frozen
-model cannot reach it — the expected warning for this project.)
-
-The `"map@x,y"` node keys and reachable sets feed `shot`'s `reach` overlay.
+The per-map witnesses and `stateHash` feed `shot`'s `reach` overlay and the
+editor's play-test debugger.
 
 ## `explore` — headless exploration coverage
 
@@ -265,7 +297,12 @@ prerequisite is a thrown error (exit 2).
 | code | severity | meaning | typical fix |
 | --- | --- | --- | --- |
 | `reach/start-unreachable` | error | the start map is missing, or the start tile is not standable | fix `start.map` or move the start to a standable tile |
-| `reach/map-unreachable` | warning | no path to the map was found under the frozen-story-state assumptions | a lead, not a proof; dynamic transfers, extensions, recursive common events, and battle branches may still reach it |
+| `reach/map-not-found` | warning | no replayable witness to the map was found within budget | a lead, not a proof; puzzles, shops, extensions, dynamic transfers, and battle outcomes under non-default rules may still reach it — the frontier names the inbound pages that never ran |
+| `reach/witness-replay-failed` | error | a recorded witness did not replay to its map and state in a fresh session | a check-tool bug; report it with the project |
+| `reach/transfer-target-missing` | error | a literal transfer targets a map the project does not define | fix the transfer's `map` |
+| `reach/transfer-landing-blocked` | warning | a transfer lands on a non-standable tile | move the landing or make the tile standable |
+| `reach/map-orphan` | info | no literal transfer points at the map | expected for a map only reached by a dynamic transfer or extension; remove it otherwise |
+| `reach/dynamic-transfer` | info | a transfer's target is a variable/expression, not a literal map id | the search does not follow it; ensure the target is reachable another way |
 
 ### `explore`
 
