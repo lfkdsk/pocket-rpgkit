@@ -11,6 +11,7 @@
     "./ui": "./src/ui/index.ts",
     "./ui/battle": "./src/ui/battle/index.ts",
     "./host": "./src/host/index.ts",
+    "./editor-api": "./editor/api/index.ts",
     "./schema": "./src/data/schema.json"
   },
   "workspaces": [
@@ -28,6 +29,8 @@
     "desktop": "bun tools/desktop.ts",
     "package:macos": "bun tools/package-macos.ts",
     "editor": "bun tools/editor.ts",
+    "rpgkit-edit": "bun tools/rpgkit-edit/cli.ts",
+    "rpgkit-edit:mcp": "bun tools/rpgkit-edit/mcp.ts",
     "web": "bun tools/web.ts"
   },
   "devDependencies": {

@@ -238,6 +238,75 @@ event inspector/runtime round trip in `tests/editor-event-sim.test.ts`. More in
 [`editor/README.md`](editor/README.md); the tile art's licenses are in the
 examples' `ATTRIBUTION.md` files.
 
+## Scripting and agents
+
+`rpgkit-edit` exposes the editor's pure model as a stable JSON-in/JSON-out
+interface. It is meant for scripts and coding agents that should edit project
+documents without joining the running game or editor process. Every request
+parses and validates the input document first. Every effective mutation is
+validated again, returns JSON Pointer changes with before/after values and an
+`rpgkit-edit/patch-v1` reversible patch, and atomically replaces the file.
+`--dry-run` follows the same path but never writes.
+
+```sh
+# Discover stable map/event/page/command addresses.
+bun run rpgkit-edit list-maps --file game/data/project.json
+bun run rpgkit-edit list-events --file game/data/project.json \
+  --json '{"map":"village"}'
+bun run rpgkit-edit list-commands --file game/data/project.json \
+  --json '{"map":"village","event":"elder","page":0}'
+
+# Preview one edit. stdout is exactly one JSON result.
+bun run rpgkit-edit paint-rect --file game/data/project.json --dry-run \
+  --json '{"map":"village","layer":"ground","x":4,"y":6,"width":3,"height":2,"tile":"town.43"}' \
+  > preview.json
+
+# Apply that exact patch later (use direction:"reverse" to undo it).
+jq '{patch:.patch}' preview.json > apply.json
+bun run rpgkit-edit save --file game/data/project.json --json @apply.json
+```
+
+The command set is `open`, `list-maps`, `list-events`, `list-pages`,
+`list-commands`, `paint-tile`, `paint-rect`, `fill-region`, `add-event`,
+`update-event`, `delete-event`, `add-page`, `update-page`, `delete-page`,
+`insert-command`, `delete-command`, `update-command`, `validate`, and `save`.
+Mutations use the same tile strokes, event/page transactions, recursive
+command addresses and field parsers as the visual editor. A schema-valid
+sharded `ProjectShell` can be opened and its `mapIndex` listed; map payload
+editing is deliberately refused until shard writes are supported. Run the
+complete CLI-to-interpreter example with:
+
+```sh
+bun tools/rpgkit-edit/example-sunstone.ts \
+  --output dist/rpgkit-edit/sunstone-agent-task.json
+```
+
+It copies Sunstone, adds a village greeter through seven CLI operations, and
+then loads the saved JSON in the runtime interpreter to prove that three
+dialogues appear, ten gold is awarded, and self switch A makes the reward
+one-shot.
+
+The same operations are available as MCP tools over stdio, without an SDK
+dependency. Use an absolute script path because MCP clients may launch from a
+different working directory; pass absolute project paths to tools for the same
+reason.
+
+```sh
+# TraeCLI / TraeX. Inspect it with `traecli mcp list` or `/mcp` in the TUI.
+traecli mcp add rpgkit-edit -- bun /absolute/path/to/pocket-rpgkit/tools/rpgkit-edit/mcp.ts \
+  --root /absolute/path/to/game-project
+
+# Claude Code (project-local registration).
+claude mcp add --scope project rpgkit-edit -- \
+  bun /absolute/path/to/pocket-rpgkit/tools/rpgkit-edit/mcp.ts \
+  --root /absolute/path/to/game-project
+```
+
+The server implements MCP initialization, ping, `tools/list`, and
+`tools/call`. stdout is reserved for newline-delimited JSON-RPC; domain errors
+are returned as structured tool errors, while malformed requests use standard
+JSON-RPC error codes.
+
 ## The format in one screen
 
 A project document (`"format": "rpgkit-project/v1"`) names a `start` tile,

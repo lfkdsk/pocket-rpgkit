@@ -95,16 +95,17 @@ export function validateSchema(
     }
     if (v !== null && typeof v === "object" && !Array.isArray(v)) {
       const object = v as Record<string, unknown>;
+      const properties = sch.properties ?? {};
       if (sch.minProperties && Object.keys(object).length < sch.minProperties) {
         fail(`minProperties ${sch.minProperties}`);
       }
       for (const required of sch.required ?? []) {
-        if (!(required in object)) fail(`missing required '${required}'`);
+        if (!Object.hasOwn(object, required)) fail(`missing required '${required}'`);
       }
       if (sch.additionalProperties === false) {
         let allowed = allowedKeys.get(sch);
         if (!allowed) {
-          allowed = new Set([...Object.keys(sch.properties ?? {}), ...(sch.required ?? [])]);
+          allowed = new Set([...Object.keys(properties), ...(sch.required ?? [])]);
           allowedKeys.set(sch, allowed);
         }
         for (const key of Object.keys(object)) if (!allowed.has(key)) {
@@ -113,10 +114,18 @@ export function validateSchema(
           path.pop();
         }
       }
-      for (const [key, propertySchema] of Object.entries(sch.properties ?? {})) {
-        if (key in object) {
+      for (const [key, propertySchema] of Object.entries(properties)) {
+        if (Object.hasOwn(object, key)) {
           path.push(key);
           if (!walk(propertySchema as Schema, object[key])) valid = false;
+          path.pop();
+        }
+      }
+      if (sch.additionalProperties !== null && typeof sch.additionalProperties === "object") {
+        for (const key of Object.keys(object)) {
+          if (Object.hasOwn(properties, key)) continue;
+          path.push(key);
+          if (!walk(sch.additionalProperties as Schema, object[key])) valid = false;
           path.pop();
         }
       }

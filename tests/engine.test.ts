@@ -224,6 +224,22 @@ describe("the example project conforms to data/schema.json", () => {
     };
     expect(validateSchema(schema, legacy)).toEqual([]);
   });
+
+  test("validates values governed by schema-valued additionalProperties", async () => {
+    const schema = await Bun.file(new URL("../src/data/schema.json", import.meta.url)).json();
+    const invalidDirections = structuredClone(buildMiniProject()) as Project;
+    invalidDirections.sheets[0]!.dirBlock = { "0": {} as never };
+    expect(validateSchema(schema, invalidDirections)).toContainEqual({
+      path: "$.sheets[0].dirBlock.0",
+      msg: 'expected "array"',
+    });
+
+    const invalidSprite = structuredClone(buildMiniProject()) as Project;
+    invalidSprite.sprites = { hero: { kind: "walker" } as never };
+    expect(validateSchema(schema, invalidSprite).some((error) =>
+      error.path === "$.sprites.hero" && error.msg.startsWith("oneOf:"),
+    )).toBe(true);
+  });
 });
 
 // --- host-portable snapshot clone (desktop QuickJS has no structuredClone) -
