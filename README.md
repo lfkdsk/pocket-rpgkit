@@ -1,11 +1,11 @@
 # pocket-rpgkit
 
 A reusable 2D tile-RPG runtime and the **`rpgkit-project/v1`** data format,
-built on [PocketJS](https://github.com/pocket-stack/pocketjs). It contains
+built on [PocketJS](https://github.com/pocket-nexus/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 28 commands), map-character motion,
+  event interpreter (pages, triggers, 35 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -37,6 +37,9 @@ the parts an RPG-Maker-style game needs without any specific game:
 - **a map/event editor, in preview** (`editor/`): paints tiles and edits
   event footprints, pages, conditions and command trees on the desktop host
   ([below](#editor-preview)).
+
+What is done, partial or still planned is tracked area by area in
+[docs/status.md](docs/status.md).
 
 ## Examples
 
@@ -164,7 +167,7 @@ bun install
 bun test                 # reducer/format/controller suites; sim cases skip
 bun run build:wasm       # one-time: compile the vendored sim core
 bun run build:example    # build meadow, sunstone, grow, wander, the editor and test fixtures into dist/
-bun test                 # 548 tests incl. sim journeys and pixel goldens
+bun test                 # 1486 tests incl. sim journeys and pixel goldens
 bunx tsc --noEmit        # typecheck, exit 0
 bun run desktop sunstone # build for the desktop host and open a window
                          # (also: grow, wander, meadow; needs a Rust toolchain)
@@ -256,7 +259,9 @@ documents without joining the running game or editor process. Every request
 parses and validates the input document first. Every effective mutation is
 validated again, returns JSON Pointer changes with before/after values and an
 `rpgkit-edit/patch-v1` reversible patch, and atomically replaces the file.
-`--dry-run` follows the same path but never writes.
+`--dry-run` follows the same path but never writes. The full parameter,
+output, error-code and MCP reference for every subcommand is
+[`docs/edit-api.md`](docs/edit-api.md).
 
 ```sh
 # Discover stable map/event/page/command addresses.
@@ -321,7 +326,9 @@ JSON-RPC error codes.
 ## QA checks
 
 `rpgkit-check` runs the same QA tools over any `rpgkit-project/v1` document,
-from the CLI or as MCP tools mounted on the editing server:
+from the CLI or as MCP tools mounted on the editing server. Each check's
+parameters, output fields, finding codes and exit codes are documented in
+[`docs/qa-checks.md`](docs/qa-checks.md):
 
 ```sh
 bun run rpgkit-check lint    --file game/data/project.json
@@ -341,9 +348,13 @@ choices). `locks` proves every `lockInput` is released on the real engine,
 `reach` is **experimental**: it builds the multi-map walk graph from a real
 session state and reports which maps the player can reach, but its model
 freezes story state, dry-runs entry pages for a fixed window, and does not
-re-expand recursive common events. A "reachable" verdict is reliable; an
-"unreachable" verdict is a **lead, not a proof** — every report carries
-`experimental: true` and an `assumptions` list naming the known imprecisions.
+re-expand recursive common events. Both directions of a verdict can be wrong
+— a "reachable" map may only be reachable through an unmodelled recursive
+common event or battle branch, and an "unreachable" map may be gated on
+state the frozen model cannot produce — so treat every verdict as a **lead,
+not a proof**. Every report carries `experimental: true` and an `assumptions`
+list naming the known imprecisions. The check is being reworked into a real
+engine search with a replayable witness for each verdict.
 
 ## The format in one screen
 
@@ -467,7 +478,7 @@ earlier resident map within the same host frame.
 | `appearance` | change a player's/event's walking sprite, opacity, or visibility; optionally save a new player reset baseline |
 | `layer` | show/hide a named visual layer or select one of its prepackaged variants for this map visit |
 | `tileProperty` | replace one cell's passage and/or one-sided entry/exit edge masks for this map visit |
-| `screenFade` | fade the complete presentation out to a colour or back in, independently of transfer |
+| `screenFade` | fade the complete presentation out to a colour (default opaque black) or back in, independently of transfer |
 | `screenTint` | tween a named composable RGBA screen-tint layer (a zero-alpha target removes it) |
 | `screenFlash` | flash an RGBA colour at 0..255 intensity, then decay to transparent |
 | `screenShake` | deterministic horizontal shake with pixel strength, cycles/second speed, and duration |
@@ -484,7 +495,7 @@ earlier resident map within the same host frame.
 | `lockInput` / `unlockInput` | cross-event input lock; freezes the mover and action but not autorun/parallel |
 | `place` | relocate the player, `"this"`, or a named event to a tile, optionally facing a direction |
 | `shop` | MV-style buy/sell over gold and item counts, from an `id`-namespaced goods list with per-good price/sellPrice/stock/condition overrides |
-| `mapAnim` | play a project frame animation on a tile or following the player/a named event, above or below characters, looping or once; `wait` parks the fiber until one playthrough completes (one-shot) or until `stopAnim` stops the instance (looping) |
+| `mapAnim` | play a project frame animation on a tile or following the player/a named event (`follow:false` pins it to the execution tile), above or below characters, looping or once; `wait` parks the fiber until one playthrough completes (one-shot) or until `stopAnim` stops the instance (looping) |
 | `stopAnim` | stop one map animation instance by id, every instance of an animation name, or all live map animations |
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
@@ -496,7 +507,8 @@ running. `screenFade` holds a completed fade-out until a later fade-in;
 `screenTint.layer` lets daylight, weather, and game-specific effects coexist
 without sharing state. A `balloon.icon` names a `project.animations` entry;
 omitting the icon clears that target, while omitting duration makes the icon
-persistent. `screenBackdrop` resolves a `GameAssets.layers` entry whose
+persistent. A waited balloon requires an icon and a positive finite duration;
+`duration: 0` clears the target's balloon. `screenBackdrop` resolves a `GameAssets.layers` entry whose
 placement is `screen` and sits above the map but below dialogs. Tint and flash
 also sit below dialogs; the independent fade sits above them.
 
@@ -539,10 +551,12 @@ still do; `"followMovement"` turns with movement.
 `appearance` uses the same targets as `moveRoute`: `"player"`, `"this"`, or
 `{ "event": "id" }`. A string `sprite` resolves through the project's
 `sprites` and `GameAssets.npcSrc`; `null` restores the authored page sprite
-or the player's reset baseline. `opacity` is an integer from 0 through 255,
-and `visible` is independent of collision. Player changes cross map transfers
-and enter saves; `saveDefault:true` remembers the supplied player sprite as
-the baseline that a later `sprite:null` restores. An event change belongs to
+or the player's reset baseline. `opacity` is an integer from 0 through 255
+(255 is equivalent to `null`), and `visible` is independent of collision.
+Player changes cross map transfers and enter saves; `saveDefault:true`
+remembers the supplied player sprite as the baseline that a later
+`sprite:null` restores; `saveDefault:true` with `sprite:null` clears the
+saved baseline. An event change belongs to
 the issuing active page and is discarded on its next page change. The
 `appearance` condition compares the resulting sprite key, not opacity or
 visibility.
@@ -665,7 +679,9 @@ condition in the same tick sees the committed values. Call names must contain
 a namespace (`game.action`).
 
 An `extChoice` command has the shape
-`{ op:"extChoice", call, args, prompt, cancel?, write? }`. Its registered
+`{ op:"extChoice", call, args, prompt, cancel?, write? }`. `prompt` is at
+most 52 characters; the `write` variable ids match `^[A-Za-z0-9_.-]+$`. Its
+registered
 `choices[call].options(readContext, args)` provider returns rows shaped
 `{ key, label, enabled?, data? }`. The provider receives no random function
 and is evaluated from live state on every reference tick while the box is
@@ -822,7 +838,8 @@ palette):
 - `effects.ts` — pure tick math with no UI-framework import: `tweenAt`
   (a `{ from, to, startTick, duration }` window), `shakeOffsetX`,
   `flashOpacity`, `faintPose` (sink + fade), `frameIndexAt` (a baked frame
-  strip's current frame) and `barFillWidth`. A rules module (or its own
+  strip's current frame) and `barFillWidth`, plus `progress`, `windowDone`
+  and the `NO_EFFECT` zero-descriptor. A rules module (or its own
   small core library) computes a `Tween`/`SpriteEffect` once when a beat
   starts and stores it in `SessionState.scene`; these functions re-derive
   the same pixels from it at any `nowTick`.
@@ -1102,8 +1119,11 @@ reference ticks with the world's hz, so the same virtual instant shows the
 same frame at 60/30/20/4 Hz. A missing sheet is a build error.
 
 `mapAnim` plays an instance on a tile (`x`/`y`) or following the player or a
-named event (`target` — the instance keeps painting on the character's live
-tile). `layer` is `"above"` (default, over characters) or `"below"`; `loop`
+named event (`target`). `follow` (default `true`) keeps a targeted instance
+pinned to the character's live pixel position; `follow:false` snapshots the
+character's tile at execution and pins the instance there. An event target
+with no live character is a content error. `layer` is `"above"` (default,
+over characters) or `"below"`; `loop`
 overrides the definition's default; `wait` parks the fiber until one
 playthrough completes when the animation is one-shot, or until `stopAnim`
 stops the instance when it loops (stopping the instance releases the wait
@@ -1134,6 +1154,7 @@ const PARCHMENT: Partial<UiTheme> = {
   ink: "#302820",    // body text
   dim: "#8a6040",    // prompts, legends, hints
   accent: "#c03020", // titles, the selected row
+  backdrop: "#00000a", // full-screen backdrop behind the save menu
 };
 const FACES = {
   KEEPER: "assets/face/keeper.png", // 64x64 PNGs

@@ -1,7 +1,7 @@
 // src/engine/types.ts — data types for rpgkit-project/v1 (the schema
 // in data/schema.json is normative). P1① carried the map/sheet subset; P1③
 // widens to the event vocabulary the interpreter consumes (R2 report §2–3):
-// pages, triggers, the 23-command list, page conditions. The interpreter
+// pages, triggers, the command list, page conditions. The interpreter
 // (interpreter.ts) is a pure fold over these types: no host imports. P1②
 // adds the sheet dirBlock directional masks consumed by passability.ts.
 

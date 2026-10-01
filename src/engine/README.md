@@ -285,16 +285,66 @@ Transfer semantics:
   an `Image` src change and a container `display` toggle — O(maps), not the
   1998-op sliding-chunk burst the R1 review measured.
 
+## Host map source (on-demand maps)
+
+Large projects keep map payloads out of the inline document and hand
+`createSession` a `MapRepository` through `options.maps`. The default
+repository, `createJsonMapRepository(entries, source, options?)`, loads map
+entries through a host-provided `MapEntrySource`:
+
+```ts
+interface MapEntrySource {
+  read(entry: string): string | Uint8Array | undefined;
+  readText?(entry: string): string | undefined;
+  prepare?(entry: string): Promise<void>;
+}
+```
+
+`read` returns the entry's text or bytes, or `undefined` when the entry is
+missing or not ready yet. `readText` is an optional fast path for text hosts;
+when present it is authoritative — its `undefined` means missing or not
+ready exactly like `read`. A source that exposes `prepare` is asynchronous:
+a cache miss calls `prepare` and the acquire fails with `MapNotReadyError`,
+which the session catches to pause and retry the same logical input frame on
+a later reference tick (the session drives this during a non-zero transfer
+fade). Repository options: `verify` recomputes each entry's build-time
+SHA-256 before parsing and defaults to true only for sources that expose
+`prepare`; `validate` defaults to `"structure"` (the splitter already ran the
+full schema) and `"full"` revalidates every acquired map. The repository
+caches parsed maps; `releaseExcept(ids)` evicts every other entry.
+
 ## Extensions and battle scenes
 
-`createSession(project, hz, options)` accepts `options.maps`,
-`options.extensions`, `options.battle`, and `options.verifyMapManifest`. The
-last option recomputes a sharded shell's declared content hash for untrusted
-inputs; packaged splitter output uses its build-time hash directly. The former
-bare-repository third argument remains accepted for v1 callers.
+`createSession(project, hz, options)` accepts these options:
+
+| option | type | default | purpose |
+| --- | --- | --- | --- |
+| `maps` | `MapRepository` | — | required when the project is a sharded `ProjectShell` (see "Host map source" below); ignored for inline documents |
+| `extensions` | `ExtensionOptions` | none | registered `ext` commands, conditions, and `extChoice` providers |
+| `battle` | `BattleRules` | `null` | the game-owned scene reducer; a project that uses battle commands without one fails at `createSession` |
+| `scene` | `{ worldContinues?: boolean }` | `{ worldContinues: false }` | let map fibers keep folding while a scene owns the screen |
+| `verifyMapManifest` | `boolean` | `false` | recompute a sharded shell's declared content hash for untrusted inputs |
+| `onFiberStart` | `(key: string, pageIndex: number, parallel: boolean) => void` | none | page-fiber start trace; see below |
+
+The former bare-repository third argument remains accepted for v1 callers.
+Packaged splitter output uses its build-time content hash directly, and
+startup never recomputes it; `verifyMapManifest` opts into the recompute for
+untrusted inputs. A shell that declares `mapSchemaHash` must match the kit's
+baked `MAP_SCHEMA_HASH` or `createSession` throws.
 `assertShellManifestFresh(shell)` exports the matching build/test-time check:
 an application that packages a shell calls it after writing the shell to disk,
 so a stale or hand-edited declared hash fails the build instead of shipping.
+
+`onFiberStart` fires once when a page fiber starts, for every trigger:
+`parallel` fibers report `parallel: true`; `autorun`, `action`, and
+`playerTouch` fibers report `false`. The arguments are the event key, the
+selected page's index, and that flag. It fires in the same tick the fiber
+starts — including fibers that begin and end inside one tick — so a coverage
+tool can observe instant pages that leave no residual fiber. Pages with zero
+commands never create a fiber and do not fire the trace. The callback costs
+nothing when omitted. `AttractController` does not currently accept or forward
+it, so attract/rewind sessions cannot install the trace through the
+controller.
 
 An `ext` command handler receives cloned JSON arguments, read-only built-in
 banks and `random()`, the only permitted entropy source. It returns a new
@@ -402,8 +452,8 @@ registered game-code contract failures and intentionally still throw.
 An active scene or a non-empty battle queue is not a save point. Scene and
 queue state still live in the ordinary reducer snapshot used by attract
 rewind, so a refold may cross map/queue/battle boundaries byte-for-byte. The
-controller takes a full `SessionState` keyframe after each such boundary and
-every 3,600 reducer/source frames by default. A keyframe also carries the held
+controller takes a full `SessionState` keyframe after each map or
+battle-scene boundary and every 3,600 reducer/source frames by default. A keyframe also carries the held
 mask, tape/divergence cursors, display stage and type/read-hold clocks needed to
 restore the controller exactly; display-only ticks do not move the periodic
 counter. Consequently capture positions depend on the source stream, not the
@@ -411,7 +461,9 @@ host's 60/30/20/4 Hz paint rate.
 
 Rewind chooses the newest retained keyframe at or before its target and folds
 only subsequent reducer inputs. `keyframeIntervalFrames` changes the interval;
-`keyframeMaxBytes` defaults to 8 MiB and evicts oldest snapshots first. A zero
+`0` disables the periodic captures while boundary captures still occur.
+`keyframeMaxBytes` defaults to 8 MiB and evicts oldest snapshots first; a
+single keyframe whose serialized payload exceeds the budget is skipped. A zero
 budget disables snapshots, and a target older than the retained window falls
 back to the clean frame-zero replay. `keyframeStats()`,
 `keyframeEstimatedBytes`, and `rewindHistoryEstimatedBytes` expose the bounded
