@@ -161,6 +161,36 @@ preview rendered from its own bundle. Every URL is relative, so the site
 works under any path. `.github/workflows/pages.yml` publishes `dist/web` to
 GitHub Pages on every push to `main`.
 
+Web builds use a 2× raster density by default so fonts and vector assets are
+baked and drawn at two physical samples per logical pixel. Set
+`rasterDensity` on a game's `web.json` entry to choose an integer from 1
+through 4:
+
+```json
+{
+  "games": {
+    "meadow": {
+      "rasterDensity": 2
+    }
+  }
+}
+```
+
+Density changes the browser build only. Desktop, PSP and other targets keep
+the density from their own target contract. A 1× PNG without an `@2x` variant
+is still sampled with nearest-neighbour filtering, so pixel-art tiles and
+walkers stay hard-edged; fonts and available density-specific assets gain the
+extra detail. The backing framebuffer uses `density²` as many pixels, and
+font/vector entries make the pak larger, so 2× is the recommended balance.
+Use 1× for lower-powered browsers, and reserve 3× or 4× for projects that have
+measured the extra memory and raster cost.
+
+The player also snaps its presentation scale to a multiple of the raster
+density. Consequently each backing-store sample occupies a whole number of
+device pixels whenever the viewport can fit at native density, including on
+fractional-DPR displays. A window too small to fit one native-density frame
+falls back to a fitted presentation instead of overflowing.
+
 A game that vendors this kit builds its own site the same way, for example
 Alpine Post:
 

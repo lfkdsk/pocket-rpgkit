@@ -49,7 +49,11 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpat
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { validateAndResolveBuildPlan } from "../vendor/pocketjs/framework/src/manifest/resolve.ts";
 import type { ResolvedBuildPlan } from "../vendor/pocketjs/framework/src/manifest/plan.ts";
-import { POCKET_TARGETS } from "../vendor/pocketjs/contracts/spec/platforms.ts";
+import {
+  POCKET_PLATFORM_CONTRACTS,
+  POCKET_TARGETS,
+  type PlatformContractRegistry,
+} from "../vendor/pocketjs/contracts/spec/platforms.ts";
 import { EXAMPLES } from "./build-example.ts";
 import type { Size, ViewportConfig } from "./web/fit.ts";
 import {
@@ -70,6 +74,11 @@ const POCKETJS = join(KIT_ROOT, "vendor", "pocketjs");
 export const WASM_PATH = join(POCKETJS, "hosts", "web", "pocketjs.wasm");
 const TARGET = "web-app";
 const PREVIEW_FRAMES = 60;
+/** Two raster samples per logical pixel gives browser text a crisp native
+ *  strike on ordinary HiDPI displays while keeping the wasm framebuffer and
+ *  font-pak cost well below 3x. A web.json game may opt down to 1 or up to 4. */
+export const DEFAULT_WEB_RASTER_DENSITY = 2;
+export const MAX_WEB_RASTER_DENSITY = 4;
 
 export interface WebControl {
   /** One button, or "DPAD" for all four directions. */
@@ -96,6 +105,8 @@ export interface WebGameEntry {
   featured?: boolean;
   /** Pin the viewport policy when the manifest declares both. */
   viewport?: "fixed" | "dynamic";
+  /** Raster samples per logical pixel for this web build (1..4). */
+  rasterDensity?: number;
   /** Key changes over tools/web/keys.ts KEYMAP: {"KeyA": "SQUARE"} binds,
    *  {"KeyY": null} unbinds. */
   keys?: Record<string, string | null>;
@@ -223,6 +234,12 @@ function validateEntry(id: string, entry: WebGameEntry, source: string): void {
   if (entry.featured !== undefined && typeof entry.featured !== "boolean") {
     throw new Error(`web: ${source}: games.${id}.featured is a boolean`);
   }
+  if (
+    entry.rasterDensity !== undefined &&
+    (!Number.isInteger(entry.rasterDensity) || entry.rasterDensity < 1 || entry.rasterDensity > MAX_WEB_RASTER_DENSITY)
+  ) {
+    throw new Error(`web: ${source}: games.${id}.rasterDensity is an integer from 1 through ${MAX_WEB_RASTER_DENSITY}`);
+  }
   try {
     withKeys(entry.keys);
   } catch (error) {
@@ -336,7 +353,17 @@ export function resolveGame(projectRoot: string, config: WebSiteConfig, id: stri
     );
   }
   const manifest = readJson(manifestPath);
-  const resolution = validateAndResolveBuildPlan(manifest, { target: TARGET });
+  const rasterDensity = entry.rasterDensity ?? DEFAULT_WEB_RASTER_DENSITY;
+  const target = POCKET_PLATFORM_CONTRACTS.targets[TARGET];
+  const physicalViewport = target.display.physicalViewport.map((n) => n * rasterDensity) as [number, number];
+  const registry: PlatformContractRegistry = {
+    capabilities: POCKET_PLATFORM_CONTRACTS.capabilities,
+    targets: {
+      ...POCKET_PLATFORM_CONTRACTS.targets,
+      [TARGET]: { ...target, display: { ...target.display, physicalViewport, rasterDensity } },
+    },
+  };
+  const resolution = validateAndResolveBuildPlan(manifest, { target: TARGET }, registry);
   if (!resolution.ok) {
     throw new Error(
       `web: ${relative(projectRoot, manifestPath)} did not resolve against ${TARGET}: ` +
@@ -634,7 +661,7 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
     await Bun.write(planPath, JSON.stringify(game.plan, null, 2) + "\n");
     console.log(
       `web: ${game.id}: ${relative(projectRoot, game.manifestPath)} -> ${TARGET} ` +
-        `plan ${game.plan.planHash.slice(0, 16)}…, ${game.viewport.policy} viewport`,
+        `plan ${game.plan.planHash.slice(0, 16)}…, ${game.viewport.policy} viewport, ${game.plan.viewport.rasterDensity}x raster`,
     );
     const built = await run(
       [process.execPath, join(POCKETJS, "tools", "build.ts"), `--plan=${planPath}`, `--project-root=${projectRoot}`, `--outdir=${dir}`],
@@ -653,7 +680,7 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
       const rendered = await run(
         [
           process.execPath, join(KIT_ROOT, "tools", "web", "preview.ts"), WASM_PATH, bundle,
-          hasPak ? pak : "-", preview, String(w), String(h), String(PREVIEW_FRAMES),
+          hasPak ? pak : "-", preview, String(w), String(h), String(PREVIEW_FRAMES), String(game.plan.viewport.rasterDensity),
         ],
         projectRoot,
       );
@@ -707,6 +734,7 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
         title: game.title,
         app: game.plan.app.output,
         viewport: game.viewport,
+        rasterDensity: game.plan.viewport.rasterDensity,
         planHash: game.plan.planHash,
       })),
       null,

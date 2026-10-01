@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { EXAMPLES } from "../tools/build-example.ts";
 import {
   cardOrder,
+  DEFAULT_WEB_RASTER_DENSITY,
   defaultGameIds,
   KIT_ROOT,
   loadSiteConfig,
@@ -20,6 +21,7 @@ import {
   type WebGame,
 } from "../tools/web.ts";
 import { fitViewport, type ViewportConfig } from "../tools/web/fit.ts";
+import { verifyPlanHash } from "../vendor/pocketjs/framework/src/manifest/plan.ts";
 import { BTN, KEYMAP, keyMasks, keysFor, withKeys } from "../tools/web/keys.ts";
 
 const config = loadSiteConfig(KIT_ROOT);
@@ -60,6 +62,7 @@ describe("games", () => {
     for (const id of EXAMPLES) {
       const game = resolveGame(KIT_ROOT, config, id);
       expect(game.plan.target.id).toBe("web-app");
+      expect(game.plan.viewport.rasterDensity).toBe(DEFAULT_WEB_RASTER_DENSITY);
       expect(game.title.length).toBeGreaterThan(0);
       expect(game.controls.length).toBeGreaterThan(0);
     }
@@ -102,7 +105,20 @@ describe("games", () => {
     expect(parse({ games: { meadow: { features: ["one room"], featured: true } } })()).toEqual({
       games: { meadow: { features: ["one room"], featured: true } },
     });
+    expect(parse({ games: { meadow: { rasterDensity: 0 } } })).toThrow(/integer from 1 through 4/);
+    expect(parse({ games: { meadow: { rasterDensity: 1.5 } } })).toThrow(/integer from 1 through 4/);
+    expect(parse({ games: { meadow: { rasterDensity: 5 } } })).toThrow(/integer from 1 through 4/);
+    expect(parse({ games: { meadow: { rasterDensity: "2" } } })).toThrow(/integer from 1 through 4/);
+    expect(parse({ games: { meadow: { rasterDensity: Number.NaN } } })).toThrow(/integer from 1 through 4/);
+    expect(parse({ games: { meadow: { rasterDensity: Number.POSITIVE_INFINITY } } })).toThrow(/integer from 1 through 4/);
     expect(parse({ games: { meadow: {} } })()).toEqual({ games: { meadow: {} } });
+  });
+
+  test("a web.json game can override the default raster density", () => {
+    const game = resolveGame(KIT_ROOT, { games: { meadow: { rasterDensity: 3 } } }, "meadow");
+    expect(game.plan.viewport.rasterDensity).toBe(3);
+    expect(game.plan.viewport.physical).toEqual([1440, 816]);
+    expect(verifyPlanHash(game.plan)).toBe(true);
   });
 
   test("viewportFor: dynamic-only manifests, and pins the manifest cannot honor", () => {
@@ -192,6 +208,7 @@ describe("pages", () => {
       expect(parsed.wasm).toBe("../pocketjs.wasm");
       expect(parsed.bundle).toBe(`${game.plan.app.output}.js`);
       expect(parsed.viewport).toEqual(game.viewport);
+      expect(parsed.rasterDensity).toBe(DEFAULT_WEB_RASTER_DENSITY);
       expect(parsed.keys.KeyA).toBe(BTN.CIRCLE);
       expect(html).toContain(`data-viewport="${game.viewport.policy}"`);
     }
@@ -255,6 +272,12 @@ describe("screen sizing", () => {
     expect(fitViewport(fixed, 1408, 894, 1.25)).toEqual({ size: [480, 272], k: 3 });
     expect(fitViewport(fixed, 358, 600, 3)).toEqual({ size: [480, 272], k: 2 });
     expect(fitViewport(fixed, 300, 600, 1).k).toBe(0);
+    expect(fitViewport(fixed, 1408, 894, 1, 2)).toEqual({ size: [480, 272], k: 2 });
+    expect(fitViewport(fixed, 1408, 894, 2, 2)).toEqual({ size: [480, 272], k: 4 });
+    expect(fitViewport(fixed, 1408, 894, 1.25, 2)).toEqual({ size: [480, 272], k: 2 });
+    expect(fitViewport(fixed, 358, 600, 3, 2)).toEqual({ size: [480, 272], k: 2 });
+    expect(fitViewport(fixed, 1408, 894, 1, 3).k).toBe(0);
+    expect(() => fitViewport(fixed, 1408, 894, 1, 1.5)).toThrow(/positive integer/);
   });
 
   test("dynamic: the viewport follows the area at the largest scale above the minimum", () => {
@@ -275,5 +298,23 @@ describe("screen sizing", () => {
     expect(fitViewport(dynamic, 1408, 894, 1)).toEqual({ size: [704, 398], k: 2 });
     expect(fitViewport(dynamic, 300, 200, 1)).toEqual({ size: [480, 272], k: 0 });
     expect(fitViewport({ ...dynamic, max: [600, 300] }, 1408, 894, 1)).toEqual({ size: [600, 300], k: 2 });
+  });
+
+  test("dynamic: every raster sample covers a whole number of device pixels", () => {
+    for (const density of [2, 3]) {
+      for (const [w, h, dpr] of [[1408, 894, 2], [968, 600, 2], [358, 700, 3], [2528, 794, 2]] as const) {
+        const { size, k } = fitViewport(dynamic, w, h, dpr, density);
+        expect(k === 0 || k % density === 0).toBe(true);
+        if (k > 0) {
+          const deviceW = Math.floor(w * dpr);
+          const deviceH = Math.floor(Math.min(h, (w * 544) / 960) * dpr);
+          expect(size[0] * k).toBeLessThanOrEqual(deviceW);
+          expect(size[1] * k).toBeLessThanOrEqual(deviceH);
+          expect(
+            Math.floor(deviceW / (k + density)) < 480 || Math.floor(deviceH / (k + density)) < 272,
+          ).toBe(true);
+        }
+      }
+    }
   });
 });

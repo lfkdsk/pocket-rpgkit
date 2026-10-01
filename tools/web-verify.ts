@@ -9,8 +9,8 @@
 // outside the prefix is a 404, so an absolute URL shows up as a failed
 // request. Chrome runs over the DevTools protocol; nothing is installed.
 //
-// Checks, with screenshots in --out (the page, and the canvas at its
-// logical size). Games other than the three examples get the generic ones.
+// Checks, with screenshots in --out (the page, and the canvas at its native
+// raster size). Games other than the three examples get the generic ones.
 //   landing   every card, and its preview image, loads
 //   showcase  enters two feature halls, triggers both demonstrations, and
 //             returns to the lobby after each one
@@ -22,8 +22,9 @@
 //   meadow    held arrows walk the player
 //   focus     the game has keyboard focus after load; clicking elsewhere
 //             shows the hint and keys stop; a click on the game restores
-//   sizing    every game pixel is k x k whole device pixels, at 1x, 2x and
-//             1.25x, fixed and dynamic; touch buttons appear on a phone
+//   sizing    every raster sample occupies whole device pixels, the backing
+//             canvas matches logical size × configured density, at 1x, 2x
+//             and 1.25x, fixed and dynamic; touch buttons appear on a phone
 //   subpath   the landing page and every game run under /pocket-rpgkit/
 // Any console error, uncaught exception or failed request fails the run.
 
@@ -254,15 +255,43 @@ async function main(): Promise<void> {
       }
       return { nonBlack: nonBlack / (d.length / 4), colors: colors.size, hash: (h >>> 0).toString(16) };
     })()`);
-  /** Whether the canvas shows each game pixel as k x k whole device pixels. */
+  /** Whether the physical backing canvas and CSS presentation agree on one
+   * whole number of device pixels per native-density raster sample. */
   const wholePixels = async (dpr: number) => {
-    const fit = await evaluate<{ k: number; cssW: number; cssH: number; w: number; h: number }>(`(() => {
-      const r = document.getElementById("screen").getBoundingClientRect();
-      return { k: __pocketPlayer.scale.device, cssW: r.width, cssH: r.height, w: __pocketPlayer.width, h: __pocketPlayer.height };
+    const fit = await evaluate<{
+      k: number; raster: number; cssW: number; cssH: number;
+      logicalW: number; logicalH: number; backingW: number; backingH: number; density: number;
+    }>(`(() => {
+      const c = document.getElementById("screen");
+      const r = c.getBoundingClientRect();
+      return {
+        k: __pocketPlayer.scale.device,
+        raster: __pocketPlayer.scale.raster,
+        cssW: r.width,
+        cssH: r.height,
+        logicalW: __pocketPlayer.width,
+        logicalH: __pocketPlayer.height,
+        backingW: c.width,
+        backingH: c.height,
+        density: __pocketPlayer.config.rasterDensity,
+      };
     })()`);
     // Layout snaps to 1/64 CSS px, so allow a few hundredths of a device pixel.
-    const ok = fit.k >= 1 && Math.abs(fit.cssW * dpr - fit.w * fit.k) < 0.05 && Math.abs(fit.cssH * dpr - fit.h * fit.k) < 0.05;
-    return { ok, text: `${fit.w}x${fit.h} game px at ${fit.k} device px each (${fit.cssW.toFixed(2)}x${fit.cssH.toFixed(2)} CSS px at ${dpr}x)` };
+    const ok =
+      fit.density >= 1 &&
+      fit.k >= fit.density &&
+      fit.k % fit.density === 0 &&
+      fit.raster === fit.k / fit.density &&
+      fit.backingW === fit.logicalW * fit.density &&
+      fit.backingH === fit.logicalH * fit.density &&
+      Math.abs(fit.cssW * dpr - fit.backingW * fit.raster) < 0.05 &&
+      Math.abs(fit.cssH * dpr - fit.backingH * fit.raster) < 0.05;
+    return {
+      ok,
+      text:
+        `${fit.logicalW}x${fit.logicalH} logical, ${fit.backingW}x${fit.backingH} backing at ${fit.density}x; ` +
+        `${fit.raster} device px/raster sample (${fit.cssW.toFixed(2)}x${fit.cssH.toFixed(2)} CSS px at ${dpr}x)`,
+    };
   };
   const frames = () => evaluate<number>("__pocketPlayer.frames");
   const waitFrames = async (count: number) => {
@@ -315,7 +344,14 @@ async function main(): Promise<void> {
       previews: [...document.querySelectorAll(".game-card:not(.showcase-card) img")].map((i) => i.naturalWidth),
       links: [...document.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")),
     })`);
-    const games = (await Bun.file(join(SITE, "games.json")).json()) as { id: string; title: string; viewport: { policy: string } }[];
+    const games = (await Bun.file(join(SITE, "games.json")).json()) as {
+      id: string; title: string; viewport: { policy: string }; rasterDensity: number;
+    }[];
+    expect(
+      "landing: every game records a valid raster density",
+      games.every((game) => Number.isInteger(game.rasterDensity) && game.rasterDensity >= 1 && game.rasterDensity <= 4),
+      games.map((game) => `${game.id}=${game.rasterDensity}x`).join(", "),
+    );
     expect("landing: one card per game", landing.cards.length === games.length, landing.cards.join(" | "));
     expect("landing: previews load", landing.previews.every((w) => w > 0), `widths ${landing.previews.join(", ")}`);
     const absolute = landing.links.filter((h) => h.startsWith("/"));

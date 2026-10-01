@@ -25,6 +25,10 @@ export const EXAMPLES = ["showcase", "meadow", "sunstone", "grow", "wander"] as 
 export const APPS = [...EXAMPLES, "editor"] as const;
 /** Small apps that exist only for the sim suites. */
 export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kau1-audio"] as const;
+/** UI theme and Meadow are also built at web densities 2 and 3. The density
+ *  regression test uses these variants to compare the same dialog and real
+ *  tile art without rebuilding artifacts inside `bun test`. */
+export const WEB_DENSITY_FIXTURES = [2, 3] as const;
 
 const root = resolve(import.meta.dir, "..");
 
@@ -68,5 +72,17 @@ async function buildExamples(wanted: string[]): Promise<void> {
     const gen = join(appDir(name), "gen-assets.ts");
     if (isFixture(name) && existsSync(gen)) await run([process.execPath, gen]);
     await run([process.execPath, buildTs, entry, `--project-root=${root}`, `--outdir=${join(root, "dist")}`]);
+    if (name === "ui-theme" || name === "meadow") {
+      for (const density of WEB_DENSITY_FIXTURES) {
+        await run([
+          process.execPath,
+          buildTs,
+          entry,
+          `--project-root=${root}`,
+          `--outdir=${join(root, "dist", `density-${density}`)}`,
+          `--density=${density}`,
+        ]);
+      }
+    }
   }
 }

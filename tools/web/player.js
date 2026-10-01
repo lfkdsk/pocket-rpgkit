@@ -18,9 +18,12 @@
 //   step     frame(buttons, analog, touches, hits), then one core tick. The
 //            canvas is repainted once per animation frame that stepped.
 // Sizing: fit.ts picks the logical viewport and a whole number of device
-// pixels per game pixel. A fixed viewport keeps its size; a dynamic one
-// follows the page. A new size goes to the core first, then to the app's
-// resize hook, as the desktop host and hosts/sim do.
+// pixels per game pixel that is divisible by rasterDensity. The canvas owns
+// density physical samples per logical pixel, so neither high-density text
+// nor nearest-neighbour pixel art lands between device pixels. A fixed
+// viewport keeps its size; a dynamic one follows the page. A new logical
+// size goes to the core first, then to the app's resize hook, as the desktop
+// host and hosts/sim do.
 // Input:
 //   keys     the page's key table (keys.ts KEYMAP plus the game's changes)
 //            -> the held button mask, while the game screen has focus. It
@@ -300,7 +303,7 @@ class Player {
   }
 
   paint() {
-    this.image.data.set(this.wasm.renderIncremental());
+    this.image.data.set(this.wasm.renderScaledIncremental(this.config.rasterDensity ?? 1));
     this.context.putImageData(this.image, 0, 0);
   }
 
@@ -477,14 +480,16 @@ class Player {
     const areaWidth = area.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     const top = this.stage.getBoundingClientRect().top + window.scrollY;
     const areaHeight = Math.max(window.innerHeight - top - RESERVE_PX, window.innerHeight * 0.5);
-    const { size, k } = fitViewport(this.config.viewport, areaWidth, areaHeight, dpr);
+    const density = this.config.rasterDensity ?? 1;
+    const { size, k } = fitViewport(this.config.viewport, areaWidth, areaHeight, dpr, density);
     const [w, h] = size;
     const cssWidth = k >= 1 ? (w * k) / dpr : Math.min(areaWidth, (areaHeight * w) / h);
     this.stage.style.width = `${cssWidth}px`;
     this.stage.style.height = `${(cssWidth * h) / w}px`;
     this.stage.style.aspectRatio = `${w} / ${h}`;
-    this.scale = { device: k, css: cssWidth / w };
+    this.scale = { device: k, raster: k > 0 ? k / density : 0, css: cssWidth / w };
     this.stage.dataset.scale = String(k);
+    this.stage.dataset.density = String(density);
     if (w !== this.width || h !== this.height) this.resize(w, h);
   }
 
@@ -492,10 +497,11 @@ class Player {
   resize(width, height) {
     this.width = width;
     this.height = height;
-    this.canvas.width = width;
-    this.canvas.height = height;
+    const density = this.config.rasterDensity ?? 1;
+    this.canvas.width = width * density;
+    this.canvas.height = height * density;
     this.context.imageSmoothingEnabled = false;
-    this.image = this.context.createImageData(width, height);
+    this.image = this.context.createImageData(width * density, height * density);
     this.pool.resize(width, height);
     this.pool.clear();
     this.stage.dataset.logical = `${width}x${height}`;

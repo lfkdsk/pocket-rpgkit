@@ -43,7 +43,8 @@
           "button": "SELECT",
           "action": "Return to the automatic tour"
         }
-      ]
+      ],
+      "rasterDensity": 2
     },
     "wander": {
       "title": "Wander: an Endless Grown World",
@@ -95,7 +96,8 @@
           "button": "SELECT",
           "action": "Hand the game back to the demo"
         }
-      ]
+      ],
+      "rasterDensity": 2
     },
     "grow": {
       "title": "Rule-Grown Settlement",
@@ -148,7 +150,8 @@
           "button": "CIRCLE",
           "action": "Talk, confirm"
         }
-      ]
+      ],
+      "rasterDensity": 2
     }
   },
   "showcase": [

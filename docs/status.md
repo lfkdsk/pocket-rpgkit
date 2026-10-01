@@ -109,6 +109,6 @@ The links point to where each feature is described in detail.
 | Host | Status | Notes |
 | --- | --- | --- |
 | Desktop (Linux, macOS) | Done | [Target matrix](../README.md#target-matrix) |
-| Web (wasm) | Done | [Play in the browser](../README.md#play-in-the-browser) |
+| Web (wasm) | Done | Per-game 1×–4× raster density with a 2× default, native-density text and integer device-pixel presentation; [Play in the browser](../README.md#play-in-the-browser) |
 | Headless simulator for tests | Done | |
 | PSP | Partial | This repository does not gate it; a consuming app is admitted through PocketJS's `pocket check --target psp` |
