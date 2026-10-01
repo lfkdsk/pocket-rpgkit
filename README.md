@@ -159,7 +159,10 @@ preview images and controls come from `web.json`. An example without an
 entry still gets a card: its `pocket.json` title, default controls, and a
 preview rendered from its own bundle. Every URL is relative, so the site
 works under any path. `.github/workflows/pages.yml` publishes `dist/web` to
-GitHub Pages on every push to `main`.
+GitHub Pages on every push to `main`. Player pages mount the PocketJS audio
+host before the game starts, load their AudioWorklet relative to the page,
+and expose mute and master-volume controls. Browsers start the audio clock on
+the first key or pointer gesture, as required by their autoplay policies.
 
 Web builds use a 2× raster density by default so fonts and vector assets are
 baked and drawn at two physical samples per logical pixel. Set
@@ -1049,7 +1052,7 @@ pixel checks, and the Hz/determinism proofs).
 ## Using it in your own project
 
 The published package exports the engine surface (`pocket-rpgkit`), the
-Solid components (`pocket-rpgkit/ui`), the opt-in WAV bridge
+Solid components (`pocket-rpgkit/ui`), the opt-in WAV/QOA bridge
 (`pocket-rpgkit/ui/audio`), the battle UI kit (`pocket-rpgkit/ui/battle`),
 the demo controls (`pocket-rpgkit/ui/demo`),
 the host adapters (`pocket-rpgkit/host`), and the schema
@@ -1074,35 +1077,70 @@ and `examples/sunstone/sunstone.tsx` mounts the whole screen:
 
 ```tsx
 import { GameView } from "pocket-rpgkit/ui";
+import { createAudioEffects } from "pocket-rpgkit/ui/audio";
 import { loadAttractTape } from "pocket-rpgkit/host";
 
+const AudioEffects = createAudioEffects(project.audio!);
 mount(() => (
   <GameView project={project} assets={GAME_ASSETS}
-            attractTape={loadAttractTape(DEMO_TAPE_RUNS).masks} />
+            attractTape={loadAttractTape(DEMO_TAPE_RUNS).masks}
+            effects={AudioEffects} />
 ));
 ```
 
 ### Opt-in host audio
 
-An audio-enabled project maps logical ids to complete `audio:wav.*` pak keys
-and explicitly injects the host effect:
+An audio-enabled project maps logical ids to complete `audio:wav.*` or
+`audio:qoa.*` pak keys and explicitly injects the host effect:
 
 ```tsx
 import { GameView } from "pocket-rpgkit/ui";
 import { createAudioEffects } from "pocket-rpgkit/ui/audio";
 
-const project = { /* ... */, audio: { field: "audio:wav.music/field" } };
+const project = {
+  /* ... */
+  audio: {
+    click: "audio:wav.sfx/click",
+    field: "audio:qoa.music/field",
+  },
+};
 const AudioEffects = createAudioEffects(project.audio);
 
 mount(() => <GameView project={project} assets={GAME_ASSETS} effects={AudioEffects} />);
 ```
 
+WAV entries contain PCM accepted by the PocketJS audio contract. Playable QOA
+uses one or two channels at 11,025, 22,050 or 44,100 Hz. QOA entries are
+indexed once and decoded in 20-frame slices only as host ring credit asks for
+them; loops, fades, pause/resume and ME interruption use the same reducer
+behavior for both formats. Every voice has private QOA decode state.
+
+The build-time encoder accepts interleaved signed 16-bit PCM and produces
+deterministic QOA bytes:
+
+```ts
+import { encodeQoa } from "./vendor/pocket-rpgkit/tools/lib/qoa.ts";
+
+const pcm = new Int16Array(await Bun.file("field.s16le").arrayBuffer());
+await Bun.write("field.qoa", encodeQoa(pcm, 1, 22_050));
+```
+
+Decode compressed source formats before calling it; for example,
+`ffmpeg -i field.ogg -ac 1 -ar 22050 -f s16le field.s16le`. The kit does not
+bundle an Ogg or MP3 decoder. The encoder rejects channel counts and sample
+rates that the PocketJS audio host cannot play. Add the resulting file as a raw pak entry, as in
+`examples/sunstone/pak.json`; Sunstone's `gen-assets.ts` also shows a fully
+programmatic four-second QOA loop. `tools/qoa-quickjs-bench.sh` measures one
+368-frame streaming refill in PocketJS's desktop QuickJS guest.
+
 If a project does not need host playback, omit both the audio import and
-`effects` prop; the WAV decoder and PocketJS audio SDK then stay out of its
+`effects` prop; both decoders and the PocketJS audio SDK then stay out of its
 bundle. A project may still declare `project.audio` for reducer and QA use
 without pulling in that adapter. A host without the audio module, or a
 missing/malformed resource, is silent while reducer state, conditions, saves,
-and rewind continue deterministically.
+and rewind continue deterministically. Static pages made by `bun run web`
+mount the web host automatically; their mute control changes output gain
+without pausing the deterministic stream clock.
 
 A game supplies its own project document, its own baked art (the
 `tools/lib/chunks.ts` pipeline turns its sheet PNGs into map chunks and
@@ -1489,19 +1527,21 @@ src/data/        schema.json (normative) + CHANGELOG
 src/ui/          GameView, ChunkLayer, StreamedChunkLayer, AnimatedTiles,
                  DialogBox, PlayerSprite, SaveMenu, Panel, theme
                  (UiTheme, speaker prefixes)
+src/ui/audio/    opt-in WAV/QOA host bridge and streaming QOA decoder
 src/ui/battle/   state-driven battle UI kit (StatBar, CommandGrid, ListMenu,
                  MessageBand, SpriteSlot, FrameStrip, effects.ts tick math);
                  its own "pocket-rpgkit/ui/battle" export, pulled in only by
                  games that register battle/battleScene
 src/host/        data.fs save adapter, attract-tape loader
 tools/lib/       game-agnostic baking pipelines (bake.ts, chunks.ts,
-                 stream.ts, animated.ts) and the desktop-host build/launch
-                 helper (desktop.ts)
+                 stream.ts, animated.ts), deterministic QOA encoding, and
+                 the desktop-host build/launch helper (desktop.ts)
 tools/           example/editor build driver, desktop and editor launchers,
                  macOS packager (package-macos.ts), web site builder
                  (web.ts, web/, web-verify.ts)
-examples/        meadow (minimal), sunstone (game + attract), grow (demo),
-                 wander (endless streamed world);
+examples/        meadow (minimal), sunstone (game + attract + QOA), grow
+                 (demo), wander (endless streamed world), showcase (feature
+                 gallery);
                  each has its entry, data, assets/src, gen-assets.ts,
                  images.json, pocket.json and ATTRIBUTION.md
 editor/          map/event editor (preview): app, engine/, ui/, its cooker

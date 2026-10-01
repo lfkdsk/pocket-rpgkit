@@ -335,19 +335,20 @@ simDescribe("sunstone — fixed transfer tape: pixels and op burst", () => {
     const burst = recs[swap]!.ops;
     const total = COUNTED.reduce((n, o) => n + burst[o], 0);
     // The 14-row destination fits one 512px upper chunk column, so the
-    // row-sliced plane needs 14 source swaps. One ground slot plus eight
-    // persistent actor slots make the measured ceiling 14 * 1 + 1 + 8 = 23.
+    // row-sliced plane needs 14 source swaps. One ground slot plus nine
+    // persistent event slots (including the hidden ambient-music event) make
+    // the measured ceiling 14 * 1 + 1 + 9 = 24.
     expect(burst.setImage).toBeGreaterThanOrEqual(14);
-    expect(burst.setImage).toBeLessThanOrEqual(23);
+    expect(burst.setImage).toBeLessThanOrEqual(24);
     // Rows, slices, and actor slots stay mounted through the transfer.
     expect(burst.createNode + burst.destroyNode).toBe(0);
     expect(burst.insertBefore + burst.removeChild).toBe(0);
     // Besides image swaps: one combined camera/actor position batch, five
     // changed depths, four geometry writes for one height-changing slot, and
-    // four image/identity operations for two stable hidden event slots now
+    // six image/identity operations for three stable hidden event slots now
     // reserved for runtime appearance changes. The plane still does no
     // allocation or rebaking.
-    expect(total).toBeLessThanOrEqual(37);
+    expect(total).toBeLessThanOrEqual(40);
   });
 });
 
@@ -429,10 +430,10 @@ simDescribe("sunstone — render budget", () => {
     // AI2's optional trace, KB6 kept-alive scenes, battle audio restoration,
     // DEMO1's explicitly opted-in menu, save validation, chapter codes, tape
     // suffixes and live page hook, and 10,219 B of shared PocketJS code from
-    // the upstream rebase: 688,716 B measured. The ui/demo and ui/audio
+    // the upstream rebase: 712,686 B measured. The ui/demo and ui/audio
     // input-graph tests separately prove non-opted-in code stays out; the
     // bound keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(696_000);
+    expect(jsBytes).toBeLessThan(720_000);
   });
 });
 

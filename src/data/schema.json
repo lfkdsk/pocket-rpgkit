@@ -53,9 +53,9 @@
       "type": "object",
       "additionalProperties": {
         "type": "string",
-        "pattern": "^audio:wav\\..+$"
+        "pattern": "^audio:(wav|qoa)\\..+$"
       },
-      "description": "Logical audio id to raw WAV pak entry. Every value uses the audio:wav.* namespace; host playback remains optional."
+      "description": "Logical audio id to a raw WAV or QOA pak entry. Values use the audio:wav.* or audio:qoa.* namespace; host playback remains optional."
     },
     "items": {
       "type": "array",

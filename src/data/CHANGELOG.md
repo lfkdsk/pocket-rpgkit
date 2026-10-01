@@ -484,5 +484,20 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   advancing in the hidden background. Existing documents and saves omit the
   new commands/state and retain their prior behavior.
 
+## v1 amendment — 2026-10-01 (deterministic audio intent and host assets)
+
+- Projects may map logical audio ids to complete `audio:wav.*` or
+  `audio:qoa.*` pak keys through the optional `audio` record. Playback is an
+  opt-in presentation adapter; projects without it keep the same reducer and
+  bundle behavior, and unsupported hosts degrade to silence.
+- `playBgm`, `fadeoutBgm`, `stopBgm`, `pauseBgm`, `resumeBgm`, `playBgs`,
+  `fadeoutBgs`, `playMe`, `playSe`, `saveBgm`, and `replayBgm` add persistent
+  BGM/BGS/ME state and ordered sound cues. Audio positions, fades, authored ME
+  durations, save/restore, and rewind use the fixed 60 Hz reference clock.
+- WAV and QOA use the same playback semantics. QOA is decoded incrementally
+  as host ring credit becomes available; the build helper deterministically
+  encodes interleaved signed 16-bit PCM using the mono/stereo sample formats
+  accepted by PocketJS.
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

@@ -16,6 +16,9 @@
 //             returns to the lobby after each one
 //   sunstone  idles into attract mode (the player moves on its own), a key
 //             takes over, and held arrows then walk the player
+//   audio     globalThis.audio exposes the host contract; a real pointer
+//             gesture starts a WebAudio context/worklet; mute and volume UI
+//             update without console errors
 //   grow      the settlement grows on its own; a mouse drag and a touch
 //             drag on the timeline strip seek it; ← steps one tick back; a
 //             smaller window shrinks the live viewport
@@ -170,6 +173,8 @@ interface Failure { check: string; message: string }
 const failures: Failure[] = [];
 const results: Record<string, unknown> = {};
 const consoleErrors: string[] = [];
+const audioContexts = new Map<string, Record<string, any>>();
+const audioNodes = new Map<string, Record<string, any>>();
 
 function expect(check: string, ok: boolean, message: string): void {
   if (!ok) failures.push({ check, message });
@@ -206,10 +211,27 @@ async function main(): Promise<void> {
   cdp.on("Network.loadingFailed", (p) => {
     if (!p.canceled) consoleErrors.push(`[${phase}] request failed: ${p.errorText} ${p.requestId}`);
   });
+  cdp.on("WebAudio.contextCreated", (p) => {
+    audioContexts.set(p.context.contextId, p.context);
+  });
+  cdp.on("WebAudio.contextChanged", (p) => {
+    const previous = audioContexts.get(p.context.contextId) ?? {};
+    audioContexts.set(p.context.contextId, { ...previous, ...p.context });
+  });
+  cdp.on("WebAudio.contextWillBeDestroyed", (p) => {
+    audioContexts.delete(p.contextId);
+  });
+  cdp.on("WebAudio.audioNodeCreated", (p) => {
+    audioNodes.set(p.node.nodeId, p.node);
+  });
+  cdp.on("WebAudio.audioNodeWillBeDestroyed", (p) => {
+    audioNodes.delete(p.nodeId);
+  });
   await cdp.send("Runtime.enable");
   await cdp.send("Log.enable");
   await cdp.send("Network.enable");
   await cdp.send("Page.enable");
+  await cdp.send("WebAudio.enable");
 
   const evaluate = async <T = any>(expression: string): Promise<T> => {
     const result = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
@@ -222,6 +244,15 @@ async function main(): Promise<void> {
       const value = await evaluate<T>(expression).catch(() => undefined);
       if (value) return value;
       await sleep(100);
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  };
+  const waitForObserved = async <T>(label: string, read: () => T | undefined, timeout = 10_000): Promise<T> => {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const value = read();
+      if (value !== undefined) return value;
+      await sleep(50);
     }
     throw new Error(`timed out waiting for ${label}`);
   };
@@ -567,6 +598,68 @@ async function main(): Promise<void> {
 
       // Start the original attract/takeover checks from a fresh default URL.
       await openGame(rootBase, "sunstone");
+      const audioNamespace = await evaluate<{ exists: boolean; methods: string[] }>(`(() => {
+        const host = globalThis.audio;
+        const names = ["createStream", "destroyStream", "writePcm", "play", "pause", "stop", "setVolume", "endStream", "poll"];
+        return { exists: !!host, methods: names.filter((name) => typeof host?.[name] === "function") };
+      })()`);
+      expect(
+        "audio: host namespace is mounted before the game runs",
+        audioNamespace.exists && audioNamespace.methods.length === 9,
+        audioNamespace.exists ? `${audioNamespace.methods.length}/9 methods` : "globalThis.audio is absent",
+      );
+      const context = await waitForObserved(
+        "Sunstone realtime AudioContext",
+        () => [...audioContexts.values()].find((candidate) => candidate.contextType === "realtime"),
+      );
+      const mute = await toClientOf("#audio-mute");
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: mute.x, y: mute.y, button: "left", buttons: 1, clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: mute.x, y: mute.y, button: "left", buttons: 0, clickCount: 1 });
+      const runningContext = await waitForObserved(
+        "running AudioContext after pointer gesture",
+        () => [...audioContexts.values()].find((candidate) => candidate.contextState === "running"),
+      );
+      const workletNode = await waitForObserved(
+        "Pocket AudioWorkletNode",
+        () => [...audioNodes.values()].find(
+          (candidate) => candidate.contextId === context.contextId && /worklet/i.test(String(candidate.nodeType)),
+        ),
+      );
+      const muted = await evaluate<{ pressed: string | null; text: string; value: string }>(`({
+        pressed: document.getElementById("audio-mute").getAttribute("aria-pressed"),
+        text: document.getElementById("audio-mute").textContent,
+        value: document.getElementById("audio-volume-value").textContent,
+      })`);
+      expect(
+        "audio: pointer gesture starts the WebAudio worklet",
+        runningContext.contextId === context.contextId && workletNode.contextId === context.contextId,
+        `${context.contextState} -> ${runningContext.contextState}; ${workletNode.nodeType}`,
+      );
+      expect(
+        "audio: mute control reflects its state",
+        muted.pressed === "true" && muted.text === "Unmute" && muted.value === "100%",
+        `${muted.text}, aria-pressed=${muted.pressed}, volume=${muted.value}`,
+      );
+      const volume = await evaluate<{ slider: string; text: string; master: number }>(`(() => {
+        const slider = document.getElementById("audio-volume");
+        slider.value = "35";
+        slider.dispatchEvent(new Event("input", { bubbles: true }));
+        return {
+          slider: slider.value,
+          text: document.getElementById("audio-volume-value").textContent,
+          master: __pocketPlayer.audio.masterVolume,
+        };
+      })()`);
+      expect(
+        "audio: master volume control updates the host",
+        volume.slider === "35" && volume.text === "35%" && volume.master === 0.35,
+        `slider=${volume.slider}, output=${volume.text}, host=${volume.master}`,
+      );
+      // Restore audible output and keyboard focus for the interaction checks.
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: mute.x, y: mute.y, button: "left", buttons: 1, clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: mute.x, y: mute.y, button: "left", buttons: 0, clickCount: 1 });
+      await evaluate(`document.getElementById("stage").focus()`);
+      await screenshot("sunstone-audio");
       await canvasShot("sunstone-start");
       const pos = () =>
         evaluate<{ px: number; py: number; mapId: string; modal: boolean }>(
@@ -624,7 +717,15 @@ async function main(): Promise<void> {
       expect("sunstone: arrows walk the player", right >= 2 && wrong === 0, moves.join("; "));
       await canvasShot("sunstone-walk");
       await screenshot("sunstone-walk");
-      results.sunstone = { moves };
+      results.sunstone = {
+        moves,
+        audio: {
+          namespace: audioNamespace.methods,
+          context: { state: runningContext.contextState, sampleRate: runningContext.sampleRate },
+          node: workletNode.nodeType,
+          volume,
+        },
+      };
 
       // ---- focus ----
       phase = "focus";

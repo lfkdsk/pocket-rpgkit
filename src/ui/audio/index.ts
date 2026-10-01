@@ -4,11 +4,13 @@
 
 import { onCleanup } from "solid-js";
 import { audioHost } from "@pocketjs/framework/audio";
+import { simulationHz } from "@pocketjs/framework/clock";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import type { GameEffectsComponent } from "../GameView.tsx";
 import { createAudioDriver } from "./driver.ts";
 
 export * from "./driver.ts";
+export * from "./qoa.ts";
 
 /** Build an invisible GameView child that owns the audio-only frame hook. */
 export function createAudioEffects(
@@ -19,7 +21,7 @@ export function createAudioEffects(
     // Unsupported hosts remain completely silent and do not acquire a frame
     // callback. The reducer and presentation continue unchanged.
     if (!host) return null;
-    const driver = createAudioDriver(host, resources);
+    const driver = createAudioDriver(host, resources, undefined, 60 / simulationHz());
     onFrame(() => driver.sync(props.state()));
     onCleanup(() => driver.dispose());
     return null;

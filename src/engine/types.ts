@@ -633,8 +633,9 @@ export interface Project {
   sprites?: Record<string, SpriteDef>;
   /** Frame animations playable with the `mapAnim` command, by id. */
   animations?: AnimationDef[];
-  /** Logical audio id -> raw WAV pak key (`audio:wav.*`). Host playback is
-   *  opt-in; the reducer remains fully functional when this is absent. */
+  /** Logical audio id -> WAV or QOA pak key (`audio:wav.*` / `audio:qoa.*`).
+   *  Host playback is opt-in; the reducer remains fully functional when this
+   *  is absent. */
   audio?: Record<string, string>;
   commonEvents?: CommonEvent[];
   maps: MapDef[];

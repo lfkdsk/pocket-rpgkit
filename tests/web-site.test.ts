@@ -24,6 +24,7 @@ import { fitViewport, type ViewportConfig } from "../tools/web/fit.ts";
 import { rpgkitBootFromSearch } from "../tools/web/boot.ts";
 import { verifyPlanHash } from "../vendor/pocketjs/framework/src/manifest/plan.ts";
 import { BTN, KEYMAP, keyMasks, keysFor, withKeys } from "../tools/web/keys.ts";
+import { createMasterAudioHost } from "../tools/web/audio-control.ts";
 
 const config = loadSiteConfig(KIT_ROOT);
 const site = { title: config.title!, intro: config.intro!, source: config.source! };
@@ -237,6 +238,9 @@ describe("pages", () => {
       expect(parsed.rasterDensity).toBe(DEFAULT_WEB_RASTER_DENSITY);
       expect(parsed.keys.KeyA).toBe(BTN.CIRCLE);
       expect(html).toContain(`data-viewport="${game.viewport.policy}"`);
+      expect(html).toContain('<button type="button" id="audio-mute" aria-label="Mute audio" aria-pressed="false">Mute</button>');
+      expect(html).toContain('<label for="audio-volume">Volume</label>');
+      expect(html).toContain('<input type="range" id="audio-volume" min="0" max="100" step="5" value="100">');
     }
   });
 
@@ -317,6 +321,85 @@ describe("boot query", () => {
   test("ignores unknown keys and treats decoded text only as data", () => {
     expect(rpgkitBootFromSearch("?unknown=x&__proto__=bad")).toEqual({});
     expect(rpgkitBootFromSearch("?chapter=%3C%2Fscript%3E&chapter=second")).toEqual({ chapter: "</script>" });
+  });
+});
+
+describe("player master audio", () => {
+  test("primes and resumes the lazy browser host inside a user gesture", () => {
+    const calls: string[] = [];
+    const raw = {
+      ns: {
+        createStream: (rate: number, channels: number) => {
+          calls.push(`create ${rate} ${channels}`);
+          return 7;
+        },
+        destroyStream: (handle: number) => calls.push(`destroy ${handle}`),
+        writePcm: () => 0,
+        play: (handle: number) => calls.push(`play ${handle}`),
+        pause: () => {},
+        stop: () => {},
+        setVolume: () => {},
+        endStream: () => {},
+        poll: () => undefined,
+      },
+      beginFrame: () => {},
+      reset: () => {},
+    };
+
+    createMasterAudioHost(raw).activate();
+    expect(calls).toEqual(["create 11025 1", "play 7", "destroy 7"]);
+  });
+
+  test("mutes without pausing and restores each stream's latest guest volume", () => {
+    let nextHandle = 1;
+    let begins = 0;
+    let resets = 0;
+    const volumes: Array<[number, number]> = [];
+    const destroyed: number[] = [];
+    const raw = {
+      ns: {
+        createStream: () => nextHandle++,
+        destroyStream: (handle: number) => destroyed.push(handle),
+        writePcm: () => 0,
+        play: () => {},
+        pause: () => { throw new Error("master mute must not pause streams"); },
+        stop: () => {},
+        setVolume: (handle: number, volume: number) => volumes.push([handle, volume]),
+        endStream: () => {},
+        poll: () => undefined,
+      },
+      beginFrame: () => { begins++; },
+      reset: () => { resets++; },
+    };
+    const host = createMasterAudioHost(raw);
+    const bgm = host.ns.createStream(11_025, 1);
+    const effect = host.ns.createStream(22_050, 2);
+    host.ns.setVolume(bgm, 0.35);
+    host.ns.setVolume(effect, 0.8);
+    expect(volumes.splice(0)).toEqual([[bgm, 0.35], [effect, 0.8]]);
+
+    host.setMasterVolume(0.5);
+    expect(volumes.splice(0)).toEqual([[bgm, 0.175], [effect, 0.4]]);
+    host.setMuted(true);
+    expect(host.muted).toBe(true);
+    expect(volumes.splice(0)).toEqual([[bgm, 0], [effect, 0]]);
+
+    // A guest fade while muted stays silent, but becomes the restored volume.
+    host.ns.setVolume(bgm, 0.2);
+    host.setMasterVolume(0.25);
+    expect(volumes.splice(0)).toEqual([[bgm, 0], [bgm, 0], [effect, 0]]);
+    host.setMuted(false);
+    expect(volumes.splice(0)).toEqual([[bgm, 0.05], [effect, 0.2]]);
+
+    host.ns.destroyStream(effect);
+    host.setMasterVolume(1);
+    expect(destroyed).toEqual([effect]);
+    expect(volumes.splice(0)).toEqual([[bgm, 0.2]]);
+    host.beginFrame();
+    host.reset();
+    expect({ begins, resets }).toEqual({ begins: 1, resets: 1 });
+    host.setMuted(true);
+    expect(volumes).toEqual([]);
   });
 });
 

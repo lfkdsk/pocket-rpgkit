@@ -3,6 +3,8 @@ import { AUDIO_RING_FRAMES, type AudioOps } from "@pocketjs/framework/audio";
 import { audioFramesForTick } from "../vendor/pocketjs/contracts/spec/audio.ts";
 import { createSimAudioSink } from "../vendor/pocketjs/hosts/sim/audio.ts";
 import { AudioDriver, createAudioEffects, type AudioDriverState } from "../src/ui/audio/index.ts";
+import { QoaFile, type QoaStream } from "../src/ui/audio/qoa.ts";
+import { encodeQoa } from "../tools/lib/qoa.ts";
 
 interface MockStream {
   readonly rate: number;
@@ -91,6 +93,22 @@ function wav(samples: readonly number[], sampleRate = 11_025, channels = 1): Uin
   view.setUint32(40, dataBytes, true);
   samples.forEach((sample, index) => view.setInt16(44 + index * 2, sample, true));
   return bytes;
+}
+
+function qoaSamples(frames: number): Int16Array {
+  const samples = new Int16Array(frames);
+  for (let index = 0; index < frames; index++) {
+    samples[index] = ((index * 977 + 313) % 20_001) - 10_000;
+  }
+  return samples;
+}
+
+function decodedQoa(bytes: Uint8Array): number[] {
+  const file = new QoaFile(bytes);
+  const stream = file.stream();
+  const samples: number[] = [];
+  for (let index = 0; index < file.frames; index++) samples.push(stream.sample(index, 0));
+  return samples;
 }
 
 function frame(
@@ -259,5 +277,334 @@ describe("opt-in audio host", () => {
       .map((line) => Number(line.split(" ")[3]));
     expect(volumes).toHaveLength(ticks);
     expect(volumes.every((value, index) => index === 0 || value < volumes[index - 1]!)).toBe(true);
+  });
+
+  test("streams QOA through the virtual-clock host with an exact per-tick budget and monotonic fade", () => {
+    const sink = createSimAudioSink();
+    const samples = qoaSamples(257);
+    const driver = new AudioDriver(
+      sink.ns as unknown as AudioOps,
+      { tone: "audio:qoa.tone" },
+      () => encodeQoa(samples, 1, 11_025),
+    );
+    const ticks = 60;
+
+    for (let tick = 0; tick < ticks; tick++) {
+      driver.sync(frame(tick + 1, {
+        bgm: {
+          id: "tone",
+          volume: 80,
+          pitch: 100,
+          positionTicks: tick,
+          fade: { totalTicks: ticks, leftTicks: ticks - tick },
+        },
+      }));
+      const before = sink.consumedFrames();
+      sink.tick();
+      expect(sink.consumedFrames() - before).toBe(audioFramesForTick(11_025, tick));
+    }
+
+    expect(sink.consumedFrames()).toBe(11_025);
+    expect(sink.log.some((line) => line.includes('"underrun"'))).toBe(false);
+    const volumes = sink.log
+      .filter((line) => line.startsWith("op setVolume "))
+      .map((line) => Number(line.split(" ")[3]));
+    expect(volumes).toHaveLength(ticks);
+    expect(volumes.every((value, index) => index === 0 || value < volumes[index - 1]!)).toBe(true);
+  });
+
+  test("keeps one QOA voice while real-time host credit arrives in coarse batches", () => {
+    const ops = new MockAudioOps();
+    const bytes = encodeQoa(qoaSamples(AUDIO_RING_FRAMES + 2_000), 1, 11_025);
+    const driver = new AudioDriver(ops, { field: "audio:qoa.field" }, () => bytes, 15);
+    const bgm = (positionTicks: number) => ({
+      id: "field",
+      volume: 100,
+      pitch: 100,
+      positionTicks,
+    });
+
+    driver.sync(frame(1, { bgm: bgm(0) }));
+    // At 4 Hz the reducer advances 15 reference ticks per host frame. The web
+    // worklet may report no credit for several such calls; that is clock
+    // batching, not a seek.
+    driver.sync(frame(2, { bgm: bgm(15) }));
+    driver.sync(frame(3, { bgm: bgm(30) }));
+    driver.sync(frame(4, { bgm: bgm(45) }));
+    expect(ops.created).toHaveLength(1);
+    expect(ops.destroyed).toEqual([]);
+
+    ops.credit(1, 512);
+    driver.sync(frame(5, { bgm: bgm(60) }));
+    expect(ops.created).toHaveLength(1);
+    expect(ops.destroyed).toEqual([]);
+    expect(ops.writes.map(({ frames }) => frames)).toEqual([AUDIO_RING_FRAMES, 512]);
+  });
+
+  test("rebuilds once on a partial fatal batch, then lets its music continue", () => {
+    const ops = new MockAudioOps();
+    const driver = new AudioDriver(
+      ops,
+      { field: "audio:qoa.field" },
+      () => encodeQoa(qoaSamples(5_000), 1, 11_025),
+      15,
+    );
+    const bgm = (positionTicks: number) => ({
+      id: "field",
+      volume: 100,
+      pitch: 100,
+      positionTicks,
+    });
+
+    driver.sync(frame(1, { bgm: bgm(0) }));
+    driver.sync({
+      frame: 2,
+      interp: {
+        audio: { bgm: bgm(5) },
+        cues: [],
+        error: { kind: "content", message: "fixture" },
+      },
+    });
+    driver.sync({
+      frame: 3,
+      interp: {
+        audio: { bgm: bgm(6) },
+        cues: [],
+        error: { kind: "content", message: "fixture" },
+      },
+    });
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2]);
+    expect(ops.destroyed).toEqual([1]);
+    expect([...ops.streams.keys()]).toEqual([2]);
+  });
+
+  test("rejects an invalid reducer-to-host clock ratio", () => {
+    const ops = new MockAudioOps();
+    expect(() => new AudioDriver(ops, {}, undefined, 0)).toThrow("positive integer");
+    expect(() => new AudioDriver(ops, {}, undefined, Number.NaN)).toThrow("positive integer");
+  });
+
+  test("rebuilds a persistent voice for a discontinuous reducer seek", () => {
+    const ops = new MockAudioOps();
+    const driver = new AudioDriver(
+      ops,
+      { field: "audio:qoa.field" },
+      () => encodeQoa(qoaSamples(257), 1, 11_025),
+    );
+
+    driver.sync(frame(1, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 0 },
+    }));
+    driver.sync(frame(2, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 100 },
+    }));
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2]);
+    expect(ops.destroyed).toEqual([1]);
+    expect([...ops.streams.keys()]).toEqual([2]);
+  });
+
+  test("restarts the same active track when its reducer position resets", () => {
+    const ops = new MockAudioOps();
+    const driver = new AudioDriver(
+      ops,
+      { field: "audio:qoa.field" },
+      () => encodeQoa(qoaSamples(257), 1, 11_025),
+    );
+    const start = {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 0 },
+    };
+
+    driver.sync(frame(1, start));
+    // A second playBgm for the same id at the next reducer tick resets the
+    // position to zero instead of naturally advancing to one.
+    driver.sync(frame(2, start));
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2]);
+    expect(ops.destroyed).toEqual([1]);
+  });
+
+  test("seeks to low-Hz pause, resume, and ME transition positions", () => {
+    const ops = new MockAudioOps();
+    const bytes = encodeQoa(qoaSamples(5_000), 1, 11_025);
+    const driver = new AudioDriver(
+      ops,
+      { field: "audio:qoa.field", fanfare: "audio:qoa.fanfare" },
+      () => bytes,
+      15,
+    );
+
+    driver.sync(frame(1, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 0 },
+    }));
+    // Each host frame spans 15 reducer ticks at 4 Hz. A pause five ticks into
+    // the batch leaves the reducer at 5 while the host was still playing the
+    // old gate for the batch, so the presentation voice must seek/rebuild.
+    driver.sync(frame(2, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 5, paused: true },
+    }));
+    driver.sync(frame(3, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 9 },
+    }));
+    driver.sync(frame(4, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 11 },
+      me: {
+        id: "fanfare", volume: 100, pitch: 100, positionTicks: 12,
+        durationTicks: 30, leftTicks: 18,
+      },
+    }));
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2, 3, 4, 5]);
+    expect(ops.destroyed).toEqual([1, 2, 3]);
+    expect([...ops.streams.keys()]).toEqual([4, 5]);
+    expect(ops.plays).toEqual([1, 3, 5]);
+  });
+
+  test("replays a same-id ME after its earlier media ended", () => {
+    const ops = new MockAudioOps();
+    const driver = new AudioDriver(
+      ops,
+      { fanfare: "audio:qoa.fanfare" },
+      () => encodeQoa(qoaSamples(41), 1, 11_025),
+    );
+    const me = (positionTicks: number) => ({
+      id: "fanfare",
+      volume: 100,
+      pitch: 100,
+      positionTicks,
+      durationTicks: 120,
+      leftTicks: 120 - positionTicks,
+    });
+
+    driver.sync(frame(1, { me: me(0) }));
+    ops.events.push(JSON.stringify({ t: "ended", h: 1 }));
+    driver.sync(frame(2, { me: me(1) }));
+    expect(ops.created).toHaveLength(1); // authored duration keeps it silent.
+    driver.sync(frame(3, { me: me(0) }));
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2]);
+    expect(ops.destroyed).toEqual([1]);
+    expect(ops.plays).toEqual([1, 2]);
+  });
+
+  test("treats a forward frame jump as a load and suppresses historical cues", () => {
+    const ops = new MockAudioOps();
+    const bytes = encodeQoa(qoaSamples(257), 1, 11_025);
+    const driver = new AudioDriver(
+      ops,
+      { field: "audio:qoa.field", click: "audio:qoa.click" },
+      () => bytes,
+    );
+
+    driver.sync(frame(1, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 0 },
+    }));
+    driver.sync(frame(10, {
+      bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 9 },
+    }, [{ name: "click", volume: 100, pitch: 100 }]));
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2]);
+    expect(ops.destroyed).toEqual([1]);
+    expect([...ops.streams.keys()]).toEqual([2]);
+  });
+
+  test("loops decoded QOA samples without a gap at the source boundary", () => {
+    const ops = new MockAudioOps();
+    const sourceFrames = 41;
+    const bytes = encodeQoa(qoaSamples(sourceFrames), 1, 11_025);
+    const decoded = decodedQoa(bytes);
+    const driver = new AudioDriver(ops, { tone: "audio:qoa.tone" }, () => bytes);
+
+    driver.sync(frame(1, {
+      bgm: { id: "tone", volume: 100, pitch: 100, positionTicks: 0 },
+    }));
+
+    expect(ops.writes).toHaveLength(1);
+    expect(ops.writes[0]!.frames).toBe(AUDIO_RING_FRAMES);
+    expect(ops.writes[0]!.samples.slice(sourceFrames - 2, sourceFrames + 3)).toEqual([
+      decoded[sourceFrames - 2],
+      decoded[sourceFrames - 1],
+      decoded[0],
+      decoded[1],
+      decoded[2],
+    ]);
+  });
+
+  test("pauses and resumes a running QOA BGM around both pause state and ME priority", () => {
+    const ops = new MockAudioOps();
+    const bytes = encodeQoa(qoaSamples(257), 1, 11_025);
+    const driver = new AudioDriver(
+      ops,
+      { field: "audio:qoa.field", fanfare: "audio:qoa.fanfare" },
+      () => bytes,
+    );
+    const positionFrames = (ticks: number): number => Math.floor(ticks * 11_025 / 60);
+    const bgm = (positionTicks: number, paused = false) => ({
+      id: "field",
+      volume: 100,
+      pitch: 100,
+      positionTicks,
+      ...(paused ? { paused: true as const } : {}),
+    });
+
+    driver.sync(frame(1, { bgm: bgm(0) }));
+    ops.credit(1, positionFrames(1));
+    driver.sync(frame(2, { bgm: bgm(1, true) }));
+    driver.sync(frame(3, { bgm: bgm(1) }));
+
+    ops.credit(1, positionFrames(2) - positionFrames(1));
+    driver.sync(frame(4, {
+      bgm: bgm(2),
+      me: {
+        id: "fanfare",
+        volume: 70,
+        pitch: 100,
+        positionTicks: 0,
+        durationTicks: 30,
+        leftTicks: 30,
+      },
+    }));
+    driver.sync(frame(5, { bgm: bgm(2) }));
+
+    expect(ops.created.map(({ handle }) => handle)).toEqual([1, 2]);
+    expect(ops.pauses).toEqual([1, 1]);
+    expect(ops.plays).toEqual([1, 1, 2, 1]);
+    expect(ops.destroyed).toEqual([2]);
+    expect([...ops.streams.keys()]).toEqual([1]);
+  });
+
+  test("decodes only the QOA slices needed to fill credited ring space", () => {
+    const sourceFrames = AUDIO_RING_FRAMES + 1_000;
+    const bytes = encodeQoa(qoaSamples(sourceFrames), 1, 11_025);
+    const ops = new MockAudioOps();
+    const opened: QoaStream[] = [];
+    const originalStream = QoaFile.prototype.stream;
+    QoaFile.prototype.stream = function streamWithProbe(): QoaStream {
+      const stream = originalStream.call(this);
+      opened.push(stream);
+      return stream;
+    };
+
+    try {
+      const driver = new AudioDriver(ops, { field: "audio:qoa.field" }, () => bytes);
+      driver.sync(frame(1, {
+        bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 0 },
+      }));
+
+      expect(opened).toHaveLength(1);
+      expect(opened[0]!.decodedFrames).toBe(Math.ceil(AUDIO_RING_FRAMES / 20) * 20);
+      expect(opened[0]!.decodedFrames).toBeLessThan(sourceFrames);
+
+      const credited = audioFramesForTick(11_025, 0);
+      ops.credit(1, credited);
+      driver.sync(frame(2, {
+        bgm: { id: "field", volume: 100, pitch: 100, positionTicks: 1 },
+      }));
+      expect(opened[0]!.decodedFrames).toBe(Math.ceil((AUDIO_RING_FRAMES + credited) / 20) * 20);
+      expect(opened[0]!.decodedFrames).toBeLessThan(sourceFrames);
+    } finally {
+      QoaFile.prototype.stream = originalStream;
+    }
   });
 });

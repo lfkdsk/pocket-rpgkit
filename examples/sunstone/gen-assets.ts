@@ -15,6 +15,7 @@
 //   images.json                        PSM_4444 marks for the map canvases
 //   data/sunstone.json                 the project as an rpgkit-project/v1
 //                                      document
+//   assets/sunstone-theme.qoa          four-second generated chiptune loop
 
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,12 +31,46 @@ import {
   upperChunkAsset,
 } from "../../tools/lib/chunks.ts";
 import { buildGame } from "./game-data.ts";
+import { encodeQoa } from "../../tools/lib/qoa.ts";
 
 const HERE = new URL(".", import.meta.url).pathname; // examples/sunstone/
 const ASSETS = join(HERE, "assets");
 const SRC = join(ASSETS, "src");
 mkdirSync(join(ASSETS, "npc"), { recursive: true });
 mkdirSync(join(HERE, "data"), { recursive: true });
+
+// Four bars of integer-only triangle synthesis. Short fades at every half-
+// second note boundary make the four-second QOA repeat click-free; no source
+// recording or platform decoder participates in these bytes.
+const MUSIC_RATE = 22_050;
+const MUSIC_FRAMES = MUSIC_RATE * 4;
+const NOTE_FRAMES = MUSIC_RATE / 2;
+const melodyHz = [330, 392, 494, 392, 294, 370, 440, 370] as const;
+const bassHz = [110, 110, 123, 123, 98, 98, 110, 110] as const;
+const music = new Int16Array(MUSIC_FRAMES);
+let melodyPhase = 0;
+let bassPhase = 0;
+const triangle = (phase: number): number =>
+  phase < 32_768 ? phase - 16_384 : 49_151 - phase;
+for (let frame = 0; frame < MUSIC_FRAMES; frame++) {
+  const note = Math.floor(frame / NOTE_FRAMES);
+  const within = frame % NOTE_FRAMES;
+  if (within === 0) {
+    melodyPhase = 16_384;
+    bassPhase = 16_384;
+  }
+  melodyPhase = (melodyPhase + Math.round(melodyHz[note]! * 65_536 / MUSIC_RATE)) & 0xffff;
+  bassPhase = (bassPhase + Math.round(bassHz[note]! * 65_536 / MUSIC_RATE)) & 0xffff;
+  const edge = Math.min(within, NOTE_FRAMES - 1 - within, 256);
+  const mixed = triangle(melodyPhase) * 3 + triangle(bassPhase) * 2;
+  music[frame] = Math.round(mixed * edge / (5 * 256));
+}
+const musicBytes = encodeQoa(music, 1, MUSIC_RATE);
+writeFileSync(join(ASSETS, "sunstone-theme.qoa"), musicBytes);
+writeFileSync(
+  join(HERE, "pak.json"),
+  JSON.stringify([{ key: "audio:qoa.music/sunstone-theme", file: "assets/sunstone-theme.qoa" }], null, 2) + "\n",
+);
 
 const png = async (path: string) => decodePng(new Uint8Array(await Bun.file(path).arrayBuffer()));
 
@@ -149,5 +184,6 @@ writeFileSync(
 
 console.log(
   `sunstone gen-assets: ${maps.length} maps (${maps.map((m) => `${m.id} ${m.width}x${m.height}`).join(", ")}), ` +
-    `ground/upper ${MAP_CANVAS}px PSM_4444, ${Object.keys(NPC_FILE).length} NPC sprites, 12 walker frames`,
+    `ground/upper ${MAP_CANVAS}px PSM_4444, ${Object.keys(NPC_FILE).length} NPC sprites, 12 walker frames, ` +
+    `${MUSIC_FRAMES} PCM frames -> ${musicBytes.length} B QOA`,
 );

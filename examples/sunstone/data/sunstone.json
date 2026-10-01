@@ -105,6 +105,9 @@
       "src": "assets/npc/runestone-lit.png"
     }
   },
+  "audio": {
+    "sunstone-theme": "audio:qoa.music/sunstone-theme"
+  },
   "maps": [
     {
       "id": "village",
@@ -377,6 +380,36 @@
         "town.0"
       ],
       "events": [
+        {
+          "id": "ambient-music",
+          "name": "Bramble Hollow Theme",
+          "x": 0,
+          "y": 0,
+          "pages": [
+            {
+              "trigger": "parallel",
+              "commands": [
+                {
+                  "op": "playBgm",
+                  "id": "sunstone-theme",
+                  "volume": 28
+                },
+                {
+                  "op": "selfSwitch",
+                  "key": "A",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "condition": {
+                "selfSwitch": "A"
+              },
+              "trigger": "parallel",
+              "commands": []
+            }
+          ]
+        },
         {
           "id": "elder",
           "name": "Village Elder",

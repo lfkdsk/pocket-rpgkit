@@ -40,6 +40,7 @@
 //   pad      the on-screen buttons, for devices without a keyboard.
 
 import { createWasmUi } from "../../vendor/pocketjs/hosts/web/wasm-ops.js";
+import { createAudioHost } from "../../vendor/pocketjs/hosts/web/audio.js";
 import {
   __packTouch,
   __packTouchWide,
@@ -48,6 +49,7 @@ import {
 import { rpgkitBootFromSearch } from "./boot.ts";
 import { fitViewport } from "./fit.ts";
 import { BTN } from "./keys.ts";
+import { createMasterAudioHost } from "./audio-control.ts";
 
 const STEP_MS = 1000 / 60;
 const MAX_ELAPSED_MS = 250;
@@ -156,7 +158,11 @@ class Player {
     this.overlay = $("overlay");
     this.message = $("overlay-message");
     this.hint = $("focus-hint");
+    this.muteButton = $("audio-mute");
+    this.volumeControl = $("audio-volume");
+    this.volumeValue = $("audio-volume-value");
     this.context = this.canvas.getContext("2d");
+    this.audio = createMasterAudioHost(createAudioHost());
     this.pool = new ContactPool();
     this.width = 0;
     this.height = 0;
@@ -192,10 +198,12 @@ class Player {
   // ---- boot ---------------------------------------------------------------
 
   bindInput() {
+    this.bindAudioActivation();
     this.bindKeys();
     this.bindPointer();
     this.bindPad();
     this.bindDemoControls();
+    this.bindAudioControls();
   }
 
   async boot() {
@@ -219,6 +227,8 @@ class Player {
     // The host contract (engine.js load()): every global before the eval.
     globalThis.ui = ops;
     globalThis.__pak = pak;
+    this.audio.reset();
+    globalThis.audio = this.audio.ns;
     globalThis.__simHz = config.simHz ?? 60;
     globalThis.__pocketApp = config.app;
     globalThis.__rpgkitBoot = rpgkitBootFromSearch(location.search);
@@ -301,6 +311,7 @@ class Player {
   step() {
     const packed = this.pool.pack();
     const hits = this.hitFacts(packed);
+    this.audio.beginFrame();
     this.frameFn(this.buttons(), ANALOG_CENTER, packed, hits);
     this.wasm.tick();
     this.frames++;
@@ -564,6 +575,42 @@ class Player {
       });
     }
     this.syncDemoControls();
+  }
+
+  // ---- audio controls ------------------------------------------------------
+
+  bindAudioActivation() {
+    const activate = () => {
+      // WebAudio resume must happen synchronously in a trusted gesture. Prime
+      // the lazy host before target handlers let the guest react to that same
+      // key/pointer event (including interaction-only sound effects).
+      this.audio.activate();
+      window.removeEventListener("keydown", activate, true);
+      window.removeEventListener("pointerdown", activate, true);
+    };
+    window.addEventListener("keydown", activate, true);
+    window.addEventListener("pointerdown", activate, true);
+  }
+
+  bindAudioControls() {
+    const update = () => {
+      const percent = Math.round(this.audio.masterVolume * 100);
+      this.muteButton.textContent = this.audio.muted ? "Unmute" : "Mute";
+      this.muteButton.setAttribute("aria-label", this.audio.muted ? "Unmute audio" : "Mute audio");
+      this.muteButton.setAttribute("aria-pressed", String(this.audio.muted));
+      this.volumeControl.value = String(percent);
+      this.volumeControl.setAttribute("aria-valuetext", `${percent}%`);
+      this.volumeValue.textContent = `${percent}%`;
+    };
+    this.muteButton.addEventListener("click", () => {
+      this.audio.setMuted(!this.audio.muted);
+      update();
+    });
+    this.volumeControl.addEventListener("input", () => {
+      this.audio.setMasterVolume(Number(this.volumeControl.value) / 100);
+      update();
+    });
+    update();
   }
 
   // ---- sizing -------------------------------------------------------------

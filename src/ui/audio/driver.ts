@@ -11,6 +11,7 @@ import {
 import { get as pakGet } from "@pocketjs/framework/pak";
 import { audioTrackVolume, type AudioMeState, type AudioState, type AudioTrackState } from "../../engine/audio.ts";
 import type { SoundCue } from "../../engine/interpreter.ts";
+import { QoaFile } from "./qoa.ts";
 
 const MAX_STREAMS = 4;
 const TICKS_PER_SECOND = 60;
@@ -23,25 +24,43 @@ export interface AudioDriverState {
   readonly interp: {
     readonly audio?: Readonly<AudioState>;
     readonly cues: readonly Readonly<SoundCue>[];
+    readonly error?: unknown;
   };
 }
 
 export type AudioResourceReader = (pakKey: string) => Uint8Array;
+
+interface AudioSource {
+  readonly sampleRate: number;
+  readonly channels: number;
+  readonly frames: number;
+  sample(frame: number, channel: number): number;
+  readInto?(output: Int16Array, outputFrame: number, sourceFrame: number, frames: number): void;
+}
+
+interface AudioAsset {
+  open(): AudioSource;
+}
 
 interface Voice {
   readonly handle: number;
   readonly kind: VoiceKind;
   readonly id: string;
   readonly pakKey: string;
-  readonly pcm: WavPcm;
+  readonly source: AudioSource;
   readonly pitch: number;
   readonly looping: boolean;
   readonly serial: number;
   /** Absolute output-frame cursor. Pitch is applied only when selecting source samples. */
   cursor: number;
+  /** Last game-frame/position pair observed for discontinuity detection. */
+  gameFrame: number;
+  positionTicks: number;
   /** Guest-side mirror of the host ring's free source-frame capacity. */
   free: number;
   volume: number;
+  /** Reducer playback gate observed on the previous sync. */
+  reducerPlaying: boolean;
   desiredPlaying: boolean;
   hostPlaying: boolean;
   endSent: boolean;
@@ -63,8 +82,19 @@ function outputFrameAtTick(ticks: number, sampleRate: number): number {
   return Math.floor(ticks * sampleRate / TICKS_PER_SECOND);
 }
 
-function oneShotOutputFrames(pcm: WavPcm, pitch: number): number {
-  return Math.ceil(pcm.frames * 100 / pitch);
+function oneShotOutputFrames(source: AudioSource, pitch: number): number {
+  return Math.ceil(source.frames * 100 / pitch);
+}
+
+function wavAsset(pcm: WavPcm): AudioAsset {
+  return {
+    open: () => ({
+      sampleRate: pcm.sampleRate,
+      channels: pcm.channels,
+      frames: pcm.frames,
+      sample: (frame, channel) => pcm.data[frame * pcm.channels + channel] ?? 0,
+    }),
+  };
 }
 
 /**
@@ -74,7 +104,8 @@ function oneShotOutputFrames(pcm: WavPcm, pitch: number): number {
 export class AudioDriver {
   private readonly voices = new Map<number, Voice>();
   private readonly persistent: Partial<Record<PersistentKind, Voice>> = {};
-  private readonly pcmCache = new Map<string, WavPcm | null>();
+  private readonly assetCache = new Map<string, AudioAsset | null>();
+  private lastState: AudioDriverState | undefined;
   private lastFrame: number | undefined;
   private nextSerial = 1;
 
@@ -82,23 +113,40 @@ export class AudioDriver {
     private readonly ops: AudioOps,
     private readonly resources: Readonly<Record<string, string>>,
     private readonly readResource: AudioResourceReader = pakGet,
-  ) {}
+    private readonly referenceTicksPerFrame = 1,
+  ) {
+    if (!Number.isInteger(referenceTicksPerFrame) || referenceTicksPerFrame <= 0) {
+      throw new Error("audio: referenceTicksPerFrame must be a positive integer");
+    }
+  }
 
   /** Reconcile one reducer frame, then fill every credited ring. */
   sync(state: AudioDriverState): void {
     this.drainEvents();
 
-    const repeated = this.lastFrame === state.frame;
-    const rewound = this.lastFrame !== undefined && state.frame < this.lastFrame;
-    if (rewound) this.destroyAll();
+    // Solid returns the same immutable state object until the game advances.
+    // A different object at the same (or an older) frame is a refold/load and
+    // must rebuild durable voices without replaying historical one-shot cues.
+    const repeated = this.lastState === state;
+    const refolded = !repeated && this.lastFrame !== undefined && state.frame !== this.lastFrame + 1;
+    // A fatal reducer can stop partway through a low-Hz batch. Rebuild once at
+    // its canonical position; on later fatal frames the reducer advances one
+    // tick while the presentation is deliberately allowed to keep playing.
+    const enteredFatal = !repeated && state.interp.error !== undefined &&
+      this.lastState !== undefined && this.lastState.interp.error === undefined;
+    if (refolded || enteredFatal) this.destroyAll();
 
     if (!repeated) {
-      this.reconcilePersistent(state.interp.audio);
+      const elapsedTicksPerFrame = state.interp.error === undefined
+        ? this.referenceTicksPerFrame
+        : 1;
+      this.reconcilePersistent(state.interp.audio, state.frame, elapsedTicksPerFrame);
       // A refold ends on historical cues. Rebuild persistent tracks at their
       // restored positions, but never replay those one-shot side effects.
-      if (!rewound) {
+      if (!refolded) {
         for (const cue of state.interp.cues) this.startSe(cue);
       }
+      this.lastState = state;
       this.lastFrame = state.frame;
     }
 
@@ -107,6 +155,7 @@ export class AudioDriver {
 
   dispose(): void {
     this.destroyAll();
+    this.lastState = undefined;
     this.lastFrame = undefined;
   }
 
@@ -131,10 +180,14 @@ export class AudioDriver {
     }
   }
 
-  private reconcilePersistent(audio: Readonly<AudioState> | undefined): void {
-    this.reconcileTrack("bgm", audio?.bgm, !audio?.bgm?.paused && !audio?.me, true);
-    this.reconcileTrack("bgs", audio?.bgs, audio?.bgs !== undefined, true);
-    this.reconcileTrack("me", audio?.me, audio?.me !== undefined, false);
+  private reconcilePersistent(
+    audio: Readonly<AudioState> | undefined,
+    gameFrame: number,
+    elapsedTicksPerFrame: number,
+  ): void {
+    this.reconcileTrack("bgm", audio?.bgm, !audio?.bgm?.paused && !audio?.me, true, gameFrame, elapsedTicksPerFrame);
+    this.reconcileTrack("bgs", audio?.bgs, audio?.bgs !== undefined, true, gameFrame, elapsedTicksPerFrame);
+    this.reconcileTrack("me", audio?.me, audio?.me !== undefined, false, gameFrame, elapsedTicksPerFrame);
   }
 
   private reconcileTrack(
@@ -142,6 +195,8 @@ export class AudioDriver {
     track: Readonly<AudioTrackState | AudioMeState> | undefined,
     playing: boolean,
     looping: boolean,
+    gameFrame: number,
+    elapsedTicksPerFrame: number,
   ): void {
     let voice = this.persistent[kind];
     if (!track) {
@@ -161,27 +216,53 @@ export class AudioDriver {
       voice = undefined;
     }
 
-    if (voice && !voice.finished) {
-      const desired = outputFrameAtTick(track.positionTicks, voice.pcm.sampleRate);
-      // Credits make the consumed position observable without querying the
-      // host. A mismatch is a save/load seek or another discontinuous fold.
-      if (this.playedOutputFrame(voice) !== desired) {
+    if (voice) {
+      const elapsed = (gameFrame - voice.gameFrame) * elapsedTicksPerFrame;
+      const advanced = track.positionTicks - voice.positionTicks;
+      // Host credit follows its independent audio clock and may arrive in
+      // coarse batches (the web worklet reports about every 512 source
+      // frames), so it cannot be compared with the reducer on every game
+      // frame. Reducer position itself is exact: a live track advances for
+      // every elapsed reference tick, or remains still while paused or
+      // interrupted by ME. Anything else is a seek/load discontinuity.
+      // Between two presentation syncs the host keeps the PREVIOUS reducer
+      // gate. If a low-Hz reducer batch starts/stops ME, pauses, resumes or
+      // restarts a same-id track mid-batch, its final position differs from
+      // that old gate. Rebuild at the canonical final position in that case.
+      // Equal positions are PCM-equivalent and need no generation token.
+      const expectedAdvance = voice.reducerPlaying ? elapsed : 0;
+      if (
+        elapsed < 0 || advanced !== expectedAdvance ||
+        (voice.finished && looping)
+      ) {
         this.destroyVoice(voice);
         voice = undefined;
       }
-    } else if (voice?.finished && looping) {
-      this.destroyVoice(voice);
-      voice = undefined;
     }
 
     if (!voice) {
-      const pcm = this.loadPcm(pakKey);
-      if (!pcm) return;
-      const cursor = outputFrameAtTick(track.positionTicks, pcm.sampleRate);
-      voice = this.createVoice(kind, track.id, pakKey, pcm, pitch, looping, cursor);
+      const asset = this.loadAsset(pakKey);
+      if (!asset) return;
+      const source = asset.open();
+      const cursor = outputFrameAtTick(track.positionTicks, source.sampleRate);
+      voice = this.createVoice(
+        kind,
+        track.id,
+        pakKey,
+        source,
+        pitch,
+        looping,
+        cursor,
+        gameFrame,
+        track.positionTicks,
+      );
       if (!voice) return;
       this.persistent[kind] = voice;
     }
+
+    voice.gameFrame = gameFrame;
+    voice.positionTicks = track.positionTicks;
+    voice.reducerPlaying = playing;
 
     const volume = clampVolume(audioTrackVolume(track));
     if (voice.volume !== volume) {
@@ -198,13 +279,13 @@ export class AudioDriver {
   private startSe(cue: Readonly<SoundCue>): void {
     const pakKey = this.resources[cue.name];
     if (!pakKey) return;
-    const pcm = this.loadPcm(pakKey);
-    if (!pcm) return;
+    const asset = this.loadAsset(pakKey);
+    if (!asset) return;
     const voice = this.createVoice(
       "se",
       cue.name,
       pakKey,
-      pcm,
+      asset.open(),
       normalizedPitch(cue.pitch),
       false,
       0,
@@ -216,33 +297,41 @@ export class AudioDriver {
     voice.desiredPlaying = true;
   }
 
-  private loadPcm(pakKey: string): WavPcm | null {
-    if (this.pcmCache.has(pakKey)) return this.pcmCache.get(pakKey)!;
-    let pcm: WavPcm | null = null;
+  private loadAsset(pakKey: string): AudioAsset | null {
+    if (this.assetCache.has(pakKey)) return this.assetCache.get(pakKey)!;
+    let asset: AudioAsset | null = null;
     try {
-      const decoded = decodeWav(this.readResource(pakKey));
-      if (decoded.frames > 0) pcm = decoded;
+      const bytes = this.readResource(pakKey);
+      if (pakKey.startsWith("audio:wav.")) {
+        const decoded = decodeWav(bytes);
+        if (decoded.frames > 0) asset = wavAsset(decoded);
+      } else if (pakKey.startsWith("audio:qoa.")) {
+        const file = new QoaFile(bytes);
+        asset = { open: () => file.stream() };
+      }
     } catch {
       // Optional audio must not turn a missing or malformed resource into a
       // gameplay failure. Cache the miss so it stays off the frame path.
     }
-    this.pcmCache.set(pakKey, pcm);
-    return pcm;
+    this.assetCache.set(pakKey, asset);
+    return asset;
   }
 
   private createVoice(
     kind: VoiceKind,
     id: string,
     pakKey: string,
-    pcm: WavPcm,
+    source: AudioSource,
     pitch: number,
     looping: boolean,
     cursor: number,
+    gameFrame = 0,
+    positionTicks = 0,
   ): Voice | undefined {
     if (!this.makeRoom()) return undefined;
     let handle: number;
     try {
-      handle = this.ops.createStream(pcm.sampleRate, pcm.channels);
+      handle = this.ops.createStream(source.sampleRate, source.channels);
     } catch {
       return undefined;
     }
@@ -252,13 +341,16 @@ export class AudioDriver {
       kind,
       id,
       pakKey,
-      pcm,
+      source,
       pitch,
       looping,
       serial: this.nextSerial++,
       cursor,
+      gameFrame,
+      positionTicks,
       free: AUDIO_RING_FRAMES,
       volume: -1,
+      reducerPlaying: false,
       desiredPlaying: false,
       hostPlaying: false,
       endSent: false,
@@ -280,10 +372,6 @@ export class AudioDriver {
     return true;
   }
 
-  private playedOutputFrame(voice: Voice): number {
-    return voice.cursor - (AUDIO_RING_FRAMES - voice.free);
-  }
-
   private pumpAll(): void {
     // Map insertion order makes write/play/end ordering deterministic.
     for (const voice of [...this.voices.values()]) this.pumpVoice(voice);
@@ -291,7 +379,7 @@ export class AudioDriver {
 
   private pumpVoice(voice: Voice): void {
     if (voice.finished) return;
-    const total = voice.looping ? Number.POSITIVE_INFINITY : oneShotOutputFrames(voice.pcm, voice.pitch);
+    const total = voice.looping ? Number.POSITIVE_INFINITY : oneShotOutputFrames(voice.source, voice.pitch);
     while (voice.free > 0 && voice.cursor < total) {
       const wanted = Math.min(voice.free, total - voice.cursor);
       const frames = Math.floor(wanted);
@@ -318,13 +406,25 @@ export class AudioDriver {
   }
 
   private renderFrames(voice: Voice, frames: number): Int16Array {
-    const channels = voice.pcm.channels;
+    const channels = voice.source.channels;
     const out = new Int16Array(frames * channels);
+    if (voice.pitch === 100 && voice.source.readInto) {
+      let outputFrame = 0;
+      let sourceFrame = voice.looping ? voice.cursor % voice.source.frames : voice.cursor;
+      while (outputFrame < frames) {
+        const take = Math.min(frames - outputFrame, voice.source.frames - sourceFrame);
+        voice.source.readInto(out, outputFrame, sourceFrame, take);
+        outputFrame += take;
+        sourceFrame += take;
+        if (sourceFrame === voice.source.frames && voice.looping) sourceFrame = 0;
+      }
+      return out;
+    }
     for (let output = 0; output < frames; output++) {
       let source = Math.floor((voice.cursor + output) * voice.pitch / 100);
-      if (voice.looping) source %= voice.pcm.frames;
+      if (voice.looping) source %= voice.source.frames;
       for (let channel = 0; channel < channels; channel++) {
-        out[output * channels + channel] = voice.pcm.data[source * channels + channel]!;
+        out[output * channels + channel] = voice.source.sample(source, channel);
       }
     }
     return out;
@@ -347,6 +447,7 @@ export function createAudioDriver(
   ops: AudioOps,
   resources: Readonly<Record<string, string>>,
   readResource: AudioResourceReader = pakGet,
+  referenceTicksPerFrame = 1,
 ): AudioDriver {
-  return new AudioDriver(ops, resources, readResource);
+  return new AudioDriver(ops, resources, readResource, referenceTicksPerFrame);
 }

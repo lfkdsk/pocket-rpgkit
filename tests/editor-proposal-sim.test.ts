@@ -180,7 +180,7 @@ simDescribe("editor proposal review", () => {
       await Bun.write(goldenUrl, encodePNG(previewFrame, W, H));
       console.log(`editor proposal golden 480x272: ${hash}`);
     }
-    if (!process.env.EDITOR_PROPOSAL_UPDATE_GOLDEN) expect(hash).toBe("6d0397d4");
+    if (!process.env.EDITOR_PROPOSAL_UPDATE_GOLDEN) expect(hash).toBe("8d56df99");
     const png = new Uint8Array(await Bun.file(goldenUrl).arrayBuffer());
     const decoded = decodePng(png);
     expect({ width: decoded.width, height: decoded.height }).toEqual({ width: W, height: H });
@@ -191,7 +191,7 @@ simDescribe("editor proposal review", () => {
     click(inbox, world, accept.x + 4, HEADER_H + accept.y + 4);
     const accepted = probes().state();
     expect(accepted.editor.project.maps[0]!.ground[5 * 20 + 8]).toBe("town.1");
-    expect(accepted.editor.project.maps[0]!.events![0]!.x).toBe(9);
+    expect(accepted.editor.project.maps[0]!.events!.find((event: { id: string }) => event.id === "elder")!.x).toBe(9);
     expect(accepted.editor.past).toHaveLength(1);
     expect(accepted.proposals[0]!.hunks.map((hunk: { decision?: { status: string } }) => hunk.decision?.status))
       .toEqual(["accepted", undefined]);

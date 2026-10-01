@@ -118,6 +118,26 @@ function village(): MapDef {
 
   m.events = [
     {
+      id: "ambient-music",
+      name: "Bramble Hollow Theme",
+      x: 0,
+      y: 0,
+      pages: [
+        {
+          trigger: "parallel",
+          commands: [
+            { op: "playBgm", id: "sunstone-theme", volume: 28 },
+            { op: "selfSwitch", key: "A", value: true },
+          ],
+        },
+        {
+          condition: { selfSwitch: "A" },
+          trigger: "parallel",
+          commands: [],
+        },
+      ],
+    },
+    {
       id: "elder",
       name: "Village Elder",
       x: 9,
@@ -752,6 +772,7 @@ export function buildGame(): { project: Project; maps: MapDef[] } {
       { id: "sunstone", name: "Sunstone", sprite: "town.110" },
     ],
     sprites,
+    audio: { "sunstone-theme": "audio:qoa.music/sunstone-theme" },
     maps,
   };
   return { project, maps };

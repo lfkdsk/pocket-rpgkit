@@ -146,6 +146,25 @@ function plainProject(title: string, maps: any[], start: any, items: any[] = [])
   };
 }
 
+/** Compare Sunstone's gameplay state while excluding its deliberately added
+ * presentation-only theme. Audio semantics have dedicated reducer/host tests;
+ * this older main-equivalence gate still needs to catch every other change. */
+function sunstoneGameplayState(state: any): any {
+  const withoutThemeLatch = (sw: any): any => {
+    const self = { ...sw.self };
+    delete self["village/ambient-music"];
+    return { ...sw, self };
+  };
+  const sw = withoutThemeLatch(state.sw);
+  const interp = { ...state.interp, sw: withoutThemeLatch(state.interp.sw) };
+  delete interp.audio;
+  delete interp.cues;
+  const liveChars = { ...state.chars.chars };
+  delete liveChars["ambient-music"];
+  const chars = { ...state.chars, chars: liveChars };
+  return { ...state, sw, chars, interp };
+}
+
 async function sunstoneTraces(root: string): Promise<Trace[]> {
   const [{ buildGame }, { playWinningRun }, { DEMO_TAPE_RUNS }, sessionMod, attractMod] = await Promise.all([
     load(root, "examples/sunstone/game-data.ts"),
@@ -164,7 +183,7 @@ async function sunstoneTraces(root: string): Promise<Trace[]> {
     const session = createSession(project, hz);
     let state = startSession(project, session);
     let previous = 0;
-    const recorder = new Recorder<any>(`sunstone-journey-${hz}hz`);
+    const recorder = new Recorder<any>(`sunstone-journey-${hz}hz`, sunstoneGameplayState);
     recorder.capture(state);
     for (const mask of planned.masks) {
       state = stepSession(session, state, input(mask, previous));
@@ -177,7 +196,7 @@ async function sunstoneTraces(root: string): Promise<Trace[]> {
       masks: planned.masks.length,
       masksHash: valueHash(planned.masks),
       milestones: planned.milestones,
-      final: valueHash(state),
+      final: valueHash(sunstoneGameplayState(state)),
     }));
   }
 
@@ -186,14 +205,18 @@ async function sunstoneTraces(root: string): Promise<Trace[]> {
     const session = createSession(project, 60);
     let state = startSession(project, session);
     let previous = 0;
-    const recorder = new Recorder<any>("sunstone-tape-input-60hz");
+    const recorder = new Recorder<any>("sunstone-tape-input-60hz", sunstoneGameplayState);
     recorder.capture(state);
     for (const mask of tape) {
       state = stepSession(session, state, input(mask, previous));
       previous = mask;
       recorder.capture(state);
     }
-    traces.push(recorder.finish({ masks: tape.length, masksHash: valueHash(tape), final: valueHash(state) }));
+    traces.push(recorder.finish({
+      masks: tape.length,
+      masksHash: valueHash(tape),
+      final: valueHash(sunstoneGameplayState(state)),
+    }));
   }
 
   for (const hz of [60, 30, 20, 4]) {
@@ -204,7 +227,10 @@ async function sunstoneTraces(root: string): Promise<Trace[]> {
       endHoldFrames: 120,
     });
     controller.startAttract();
-    const recorder = new Recorder<any>(`sunstone-attract-${hz}hz`);
+    const recorder = new Recorder<any>(`sunstone-attract-${hz}hz`, (value) => ({
+      ...value,
+      state: sunstoneGameplayState(value.state),
+    }));
     recorder.capture({ state: controller.state, status: controller.status(), modal: controller.presentedModal() });
     let loopFrame = -1;
     for (let frame = 0; frame < hz * 120; frame++) {

@@ -201,8 +201,9 @@ simDescribe("editor boot", () => {
     const frame = fittedView(W, H, true).frame;
     const village = JSON.parse(SUNSTONE.json).maps[0] as Project["maps"][number];
     const events = new Map((village.events ?? []).map((e) => [e.y * village.width + e.x, e.id]));
-    // the 12-row window (banner up) shows rows 0..11, which hold all nine
-    // village events — the sign under its star-layer board included
+    // the 12-row window (banner up) shows rows 0..11, which hold all ten
+    // village events — the hidden ambient-music event at (0, 0) and the
+    // sign under its star-layer board included
     // (markers draw on top); no other cell is marked
     const seen: string[] = [];
     for (let ty = 0; ty < 12; ty++) {
@@ -217,9 +218,10 @@ simDescribe("editor boot", () => {
         }
       }
     }
+    expect(seen).toContain("ambient-music");
     expect(seen).toContain("elder");
     expect(seen).toContain("sign");
-    expect(seen).toHaveLength(9);
+    expect(seen).toHaveLength(10);
     // a plain grass cell carries no marker tint at all
     expect(markerPixels(fb, frame.x + 1 * TILE, frame.y + 1 * TILE)).toBe(0);
   });

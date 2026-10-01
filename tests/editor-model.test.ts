@@ -158,7 +158,7 @@ describe("editor document gate", () => {
     const project = bundled("meadow");
     project.audio = {
       field: "audio:wav.field",
-      rain: "audio:wav.weather.rain",
+      rain: "audio:qoa.weather.rain",
     };
     const commands: Command[] = [
       { op: "playBgm", id: "field", volume: 0, pitch: 50 },

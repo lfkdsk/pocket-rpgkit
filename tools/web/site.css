@@ -161,6 +161,30 @@ table.controls td { padding: 4px 0; color: var(--muted); }
 .bar h1 { margin: 0; font-size: 18px; }
 .back { font-size: 14px; }
 
+.audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+.audio-controls button {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.audio-controls button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.audio-controls input { width: 112px; accent-color: var(--accent); }
+.audio-controls output { min-width: 3.2em; color: var(--text); text-align: right; }
+
 .screen-area {
   display: flex;
   justify-content: center;

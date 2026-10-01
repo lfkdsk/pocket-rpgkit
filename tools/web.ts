@@ -22,10 +22,11 @@
 // Per game, this resolves the game's pocket.json against the web-app target
 // with the vendored manifest resolver, as tools/desktop.ts does for the
 // desktop targets, and builds the bundle from that plan into
-// <outdir>/<id>/. It then writes the player page next to the bundle. Shared
-// by all games: pocketjs.wasm (the core `bun run build:wasm` builds into
-// vendor/pocketjs/hosts/web), player.js (tools/web/player.js bundled for
-// the browser), site.css, the landing page and games.json.
+// <outdir>/<id>/. It then writes the player page and the AudioWorklet module
+// next to the bundle. Shared by all games: pocketjs.wasm (the core
+// `bun run build:wasm` builds into vendor/pocketjs/hosts/web), player.js
+// (tools/web/player.js bundled for the browser), site.css, the landing page
+// and games.json.
 //
 // Card text comes from the metadata table in <project-root>/web.json, keyed
 // by game id: title, one-line description, preview image, controls, chapter
@@ -73,6 +74,7 @@ import {
 export const KIT_ROOT = resolve(import.meta.dir, "..");
 const POCKETJS = join(KIT_ROOT, "vendor", "pocketjs");
 export const WASM_PATH = join(POCKETJS, "hosts", "web", "pocketjs.wasm");
+export const AUDIO_WORKLET_PATH = join(POCKETJS, "hosts", "web", "audio-worklet.js");
 const TARGET = "web-app";
 const PREVIEW_FRAMES = 60;
 /** Two raster samples per logical pixel gives browser text a crisp native
@@ -642,6 +644,12 @@ export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig
     '<header class="bar">',
     `<a class="back" href="../">← ${escapeHtml(site.title)}</a>`,
     `<h1>${escapeHtml(game.title)}</h1>`,
+    '<div class="audio-controls" role="group" aria-label="Audio">',
+    '<button type="button" id="audio-mute" aria-label="Mute audio" aria-pressed="false">Mute</button>',
+    '<label for="audio-volume">Volume</label>',
+    '<input type="range" id="audio-volume" min="0" max="100" step="5" value="100">',
+    '<output id="audio-volume-value" for="audio-volume">100%</output>',
+    "</div>",
     "</header>",
     "<main>",
     '<div class="screen-area">',
@@ -714,6 +722,9 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
   if (!existsSync(WASM_PATH)) {
     throw new Error(`web: missing ${WASM_PATH}; build the core first (bun run build:wasm)`);
   }
+  if (!existsSync(AUDIO_WORKLET_PATH)) {
+    throw new Error(`web: missing ${AUDIO_WORKLET_PATH}; initialize the PocketJS vendor checkout`);
+  }
   const config = loadSiteConfig(projectRoot, options.config);
   const ids = options.games.length > 0 ? [...new Set(options.games)] : defaultGameIds(projectRoot);
   if (ids.length === 0) throw new Error(`web: no games found under ${projectRoot}`);
@@ -756,6 +767,9 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
     if (built !== 0 || !existsSync(bundle)) throw new Error(`web: building ${game.id} failed (exit ${built})`);
     const pak = join(dir, `${output}.pak`);
     const hasPak = existsSync(pak);
+    // hosts/web/audio.js loads this document-relative URL in a separate
+    // AudioWorklet realm, so every game page needs the standalone module.
+    copyFileSync(AUDIO_WORKLET_PATH, join(dir, "audio-worklet.js"));
 
     const preview = join(dir, "preview.png");
     if (game.preview) {

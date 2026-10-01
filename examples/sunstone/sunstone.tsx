@@ -11,17 +11,22 @@ import { mount } from "@pocketjs/framework";
 // the sources relatively so the PocketJS pass-1 transform walks them.
 import { GameView } from "../../src/ui/GameView.tsx";
 import { createDemo } from "../../src/ui/demo/index.ts";
+import { createAudioEffects } from "../../src/ui/audio/index.ts";
 import { loadAttractTape } from "../../src/host/attract-tape.ts";
 import { buildGame } from "./game-data.ts";
 import { GAME_ASSETS } from "./assets-game.ts";
 import { DEMO_TAPE_RUNS } from "./demo-tape.ts";
 import { SUNSTONE_DEMO } from "./demo-chapters.ts";
 
+const game = buildGame();
+const AudioEffects = createAudioEffects(game.project.audio!);
+
 mount(() => (
   <GameView
-    project={buildGame().project}
+    project={game.project}
     assets={GAME_ASSETS}
     attractTape={loadAttractTape(DEMO_TAPE_RUNS).masks}
     demo={createDemo(SUNSTONE_DEMO)}
+    effects={AudioEffects}
   />
 ));

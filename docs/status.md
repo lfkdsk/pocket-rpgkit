@@ -55,8 +55,9 @@ The links point to where each feature is described in detail.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Sound effects (`playSe`; legacy `se`) | Done | Ordered deterministic cues and the opt-in PocketJS WAV bridge work; missing hosts or resources degrade to silence. See [Opt-in host audio](../README.md#opt-in-host-audio) |
-| Background music, ambience and music effects (BGM / BGS / ME) | Partial | Playback, fades, pause/resume, saves/rewind, `bgmPlaying`, and battle BGM swap/restore work. The host bridge is WAV-only and ME duration is authored rather than read from media. See [Opt-in host audio](../README.md#opt-in-host-audio) |
+| Sound effects (`playSe`; legacy `se`) | Done | Ordered deterministic cues and the opt-in PocketJS WAV/streaming-QOA bridge work; missing hosts or resources degrade to silence. See [Opt-in host audio](../README.md#opt-in-host-audio) |
+| Background music, ambience and music effects (BGM / BGS / ME) | Partial | Playback, fades, pause/resume, saves/rewind, `bgmPlaying`, battle BGM swap/restore, WAV and credit-driven QOA playback work. ME duration is still authored rather than read from media. See [Opt-in host audio](../README.md#opt-in-host-audio) |
+| Build-time QOA encoding | Done | Deterministic interleaved s16 PCM to host-playable mono/stereo QOA at 11.025, 22.05 or 44.1 kHz; callers decode Ogg/MP3 first. See [Opt-in host audio](../README.md#opt-in-host-audio) |
 
 ## Scenes and menus
 
@@ -112,6 +113,6 @@ The links point to where each feature is described in detail.
 | Host | Status | Notes |
 | --- | --- | --- |
 | Desktop (Linux, macOS) | Done | [Target matrix](../README.md#target-matrix) |
-| Web (wasm) | Done | Per-game 1×–4× raster density with a 2× default, native-density text and integer device-pixel presentation; [Play in the browser](../README.md#play-in-the-browser) |
+| Web (wasm) | Done | Per-game 1×–4× raster density with a 2× default, native-density text and integer device-pixel presentation. Static player pages mount host audio after a user gesture and provide mute/master-volume controls. [Play in the browser](../README.md#play-in-the-browser) |
 | Headless simulator for tests | Done | |
 | PSP | Partial | This repository does not gate it; a consuming app is admitted through PocketJS's `pocket check --target psp` |

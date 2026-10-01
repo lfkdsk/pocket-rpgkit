@@ -12,6 +12,7 @@
         "input.buttons"
       ],
       "enhances": [
+        "audio.pcm",
         "data.fs",
         "display.viewport.live"
       ]

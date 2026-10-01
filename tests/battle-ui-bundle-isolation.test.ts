@@ -1,7 +1,7 @@
 // tests/battle-ui-bundle-isolation.test.ts — KB4 (src/ui/battle) is an
 // independent module: a game that never registers battle/battleScene must
 // not pay for it. examples/sunstone never imports src/ui/battle (it only
-// imports GameView.tsx directly, never the game passes a `battle` prop),
+// imports GameView.tsx directly, and never passes a `battle` prop),
 // so tools/build.ts's pass-1 reachability walk (every RELATIVE import from
 // the entry) excludes the whole module by construction. This test pins
 // that: dist/sunstone.js's byte size is unchanged from a build with
@@ -76,10 +76,10 @@ const maybeTest = preflight.ok ? test : test.skip;
 // prove that the Sunstone bundle does not pull in battle UI.
 // KV2's per-map actor pool (grow-only slots, battle-gated map animation
 // and balloon layers) adds 2,301 shared GameView bytes.
-const EXPECTED_BYTES = 688_716;
+const EXPECTED_BYTES = 712_686;
 
 describe("KB4 does not reach games that never opt into battle", () => {
-  maybeTest("sunstone's built bundle size is unchanged", () => {
+  maybeTest("sunstone's built bundle size is pinned", () => {
     expect(statSync(SUNSTONE_JS).size).toBe(EXPECTED_BYTES);
   });
 
