@@ -112,9 +112,9 @@
   "showcase": [
     {
       "title": "Pocket Tuxemon",
-      "url": "https://lfkdsk.github.io/pocketjs-Tuxemon/pocket-tuxemon/",
+      "url": "https://lfkdsk.github.io/pocketjs-tuxemon/pocket-tuxemon/",
       "description": "Tuxemon's world imported automatically into Pocket RPG Kit: maps, NPCs, dialogue, shops and real battles, from Spyder's bedroom through Paper Town to Route 1. It lives on its own site; Tuxemon's art and story are GPL-3.0 / CC BY-SA.",
-      "preview": "https://lfkdsk.github.io/pocketjs-Tuxemon/pocket-tuxemon/preview.png",
+      "preview": "https://lfkdsk.github.io/pocketjs-tuxemon/pocket-tuxemon/preview.png",
       "controls": [
         {
           "button": "DPAD",
