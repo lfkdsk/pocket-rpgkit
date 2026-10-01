@@ -397,4 +397,3 @@ describe("editor local-agent companion", () => {
     }
   });
 });
-

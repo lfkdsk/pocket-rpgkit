@@ -711,4 +711,3 @@ export async function startEditorAgentCompanion(options: EditorAgentCompanionOpt
     },
   };
 }
-

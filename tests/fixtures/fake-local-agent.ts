@@ -125,4 +125,3 @@ if (!result || result.isError || result.structuredContent?.written !== true) {
   throw new Error(`fake agent proposal failed: ${JSON.stringify(result)}`);
 }
 process.stdout.write("fake agent created a proposal through MCP\n");
-

@@ -131,4 +131,3 @@ export function parseLocalAgentHostMessage(value: unknown): LocalAgentHostMessag
       (!Array.isArray(input.proposalIds) || input.proposalIds.some((id) => typeof id !== "string" || id.length === 0))) return null;
   return input as unknown as LocalAgentState;
 }
-
