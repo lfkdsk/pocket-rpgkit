@@ -21,6 +21,9 @@
 //   {t:"proposals",proposals}   optional external proposal queue snapshot
 //
 // guest → host lines:
+//   {t:"loaded",request,ok,...} acknowledge a browser-correlated load
+//   {t:"save",text,request?}    persist the exported document; request is
+//                               echoed for a browser Download round-trip
 //   {t:"save",text}             legacy save when no managed data.fs bridge exists
 //   {t:"proposal-review",proposal} persist one proposal's hunk decisions
 
@@ -45,6 +48,8 @@ export interface ScrollEvent {
 export interface LoadEvent {
   t: "load";
   text: string;
+  /** Optional browser-host correlation token. Desktop hosts omit it. */
+  request?: number;
 }
 export interface ResizeEvent {
   t: "resize";
@@ -86,6 +91,7 @@ export type HostLine = {
   dy?: number;
   s?: string;
   text?: string;
+  request?: number;
   proposals?: unknown;
   proposal?: unknown;
 };
@@ -94,9 +100,13 @@ export interface Svc {
   /** Drain this frame's host lines (one poll per frame, per the HostOps
    *  contract). */
   poll(): HostLine[];
-  /** Persist through a generic host channel. The managed editor launcher uses
-   *  the data.fs compare-and-swap bridge instead. */
-  save(text: string): void;
+  /** Persist the exported document through a generic host channel. The
+   * managed editor launcher uses the data.fs compare-and-swap bridge instead. */
+  save(text: string, request?: number): void;
+  /** Report whether a correlated host load passed full project validation. */
+  loaded(request: number | undefined, ok: boolean, error?: string): void;
+  /** Complete a correlated export request when schema validation failed. */
+  saveError(request: number, error: string): void;
   /** Notify an enhanced companion that review metadata changed. The stock
    * desktop launcher also mirrors this through data.fs. */
   reviewProposal(proposal: unknown): void;
@@ -152,6 +162,7 @@ export function connectSvc(): Svc | null {
               sh: parsed.sh === true,
               alt: parsed.alt === true,
               ctl: parsed.ctl === true,
+              ...(typeof parsed.request === "number" ? { request: parsed.request } : {}),
             });
             continue;
           }
@@ -162,8 +173,19 @@ export function connectSvc(): Svc | null {
       }
       return events;
     },
-    save(text) {
-      send(JSON.stringify({ t: "save", text }));
+    save(text, request) {
+      send(JSON.stringify({ t: "save", text, ...(request === undefined ? {} : { request }) }));
+    },
+    loaded(request, ok, error) {
+      send(JSON.stringify({
+        t: "loaded",
+        ok,
+        ...(request === undefined ? {} : { request }),
+        ...(error === undefined ? {} : { error }),
+      }));
+    },
+    saveError(request, error) {
+      send(JSON.stringify({ t: "save", request, error }));
     },
     reviewProposal(proposal) {
       send(JSON.stringify({ t: "proposal-review", proposal }));

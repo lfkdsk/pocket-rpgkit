@@ -180,7 +180,7 @@ simDescribe("editor proposal review", () => {
       await Bun.write(goldenUrl, encodePNG(previewFrame, W, H));
       console.log(`editor proposal golden 480x272: ${hash}`);
     }
-    if (!process.env.EDITOR_PROPOSAL_UPDATE_GOLDEN) expect(hash).toBe("8d56df99");
+    if (!process.env.EDITOR_PROPOSAL_UPDATE_GOLDEN) expect(hash).toBe("6cbf4813");
     const png = new Uint8Array(await Bun.file(goldenUrl).arrayBuffer());
     const decoded = decodePng(png);
     expect({ width: decoded.width, height: decoded.height }).toEqual({ width: W, height: H });

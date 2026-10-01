@@ -1,9 +1,9 @@
 # Pocket RPG Kit — Editor (preview)
 
-A tile-map editor for `rpgkit-project/v1` documents, running as a
-PocketJS app on the portable desktop host. It opens the kit's example
-projects (`examples/sunstone`, `examples/meadow`) and paints them with
-those examples' own tile art.
+A tile-map editor for `rpgkit-project/v1` documents, running as a PocketJS
+app on the portable desktop host and in the browser. It opens the kit's
+example projects (`examples/sunstone`, `examples/meadow`) and paints them
+with those examples' own tile art.
 
 New to the editor? [`docs/editor-tutorial.md`](../docs/editor-tutorial.md)
 follows one small scenario — a villager NPC with branching dialog and a
@@ -152,7 +152,38 @@ editing (the PASS tools paint map `passage` overrides and sheet `dirEdges`
 only), or structured controls for advanced object-shaped movement steps (the
 existing payloads remain preserved).
 
-## Running
+## In the browser
+
+Open the hosted editor at
+<https://lfkdsk.github.io/pocketjs-rpgkit/editor/>. To run the same site
+locally:
+
+```sh
+bun run build:wasm                      # once: build the WebAssembly core
+bun run web                             # build the site in dist/web
+python3 -m http.server -d dist/web 8000 # open http://localhost:8000/editor/
+```
+
+**Open…** reads a local `rpgkit-project/v1` JSON file. The **Sunstone** and
+**Meadow** buttons open fresh copies of the two bundled examples. These
+operations affect only the working document in the page; they do not change
+the repository file or upload it anywhere.
+
+**Save** validates the document and stores it in `localStorage` for the
+current site. Reloading the editor on the same browser profile and site
+origin restores that saved document. **Download** exports the current
+document as a JSON file; use it for backups and to move work to another
+browser or machine. Browser storage is local to the profile and origin, may
+be cleared by the user or browser, and is not a replacement for a downloaded
+copy. If storage is disabled, full, or otherwise unavailable, the page shows
+the failure instead of claiming that the document was saved; editing and
+Download remain available.
+
+The browser editor uses the tile and character art bundled from Sunstone and
+Meadow. It does not import new assets, and large projects split into a shell
+and separately loaded map files are not editable yet.
+
+## Running on the desktop
 
 ```sh
 bun run editor              # dist/editor/sunstone.json, a working copy
@@ -220,14 +251,15 @@ the view on maps larger than the 20×14-cell window.
 
 ### Without the companion
 
-On a host without the `rpgkit-editor` channel (the wasm sim, a browser),
-the editor shows an amber banner and runs entirely from buttons: the d-pad
-moves a cursor across canvas, palette/event tools and header, **CIRCLE**
-paints, selects or activates, **CROSS** erases/deletes, **SQUARE**/**TRIANGLE**
-undo/redo, **L**/**R** switch maps, **SELECT** cycles the editing mode, and
-**START** saves. **DOC** cycles the bundled documents. Detailed inspector
-field entry uses the desktop companion's pointer and keyboard; button-only
-mode can close the inspector with CROSS. In proposal review, CIRCLE accepts,
+The website provides its own `rpgkit-editor` channel. On a different host
+without that channel, such as a bare wasm sim, the editor shows an amber
+banner and runs entirely from buttons: the d-pad moves a cursor across
+canvas, palette/event tools and header, **CIRCLE** paints, selects or
+activates, **CROSS** erases/deletes, **SQUARE**/**TRIANGLE** undo/redo,
+**L**/**R** switch maps, **SELECT** cycles the editing mode, and **START**
+saves. **DOC** cycles the bundled documents. Detailed inspector field entry
+uses a companion's pointer and keyboard; button-only mode can close the
+inspector with CROSS. In proposal review, CIRCLE accepts,
 CROSS rejects, START accepts all clean hunks, and SELECT returns to the queue.
 On a host with `data.fs` a save goes to
 `projects/<id>.json` under the app's data root and wins over the bundled

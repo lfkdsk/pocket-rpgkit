@@ -512,6 +512,8 @@ describe("editor layout geometry", () => {
     }
     // every button has positive area (never an invisible hot zone)
     for (const b of bs) expect(b.w * b.h).toBeGreaterThan(40);
+    expect(bs.find((b) => b.id === "layer")).toMatchObject({ x: 4, w: 52 });
+    expect(bs.find((b) => b.id === "doc")).toMatchObject({ x: 60, w: 28 });
     // PLAY and STATE occupy the gap between MAP and the right-aligned edit
     // buttons, including the editor's 400px minimum viewport.
     const map = bs.find((b) => b.id === "map")!;

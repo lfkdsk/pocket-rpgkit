@@ -6218,19 +6218,19 @@
               "blocks": true,
               "commands": [
                 {
-                  "op": "text",
-                  "lines": [
-                    "CURATOR: This arena is a pure battle reducer.",
-                    "The map loop freezes while the scene owns input."
-                  ]
-                },
-                {
                   "op": "mapAnim",
                   "id": "arena-loop",
                   "anim": "showcase-ring",
                   "target": "player",
                   "layer": "below",
                   "loop": true
+                },
+                {
+                  "op": "text",
+                  "lines": [
+                    "CURATOR: This arena is a pure battle reducer.",
+                    "The map loop freezes while the scene owns input."
+                  ]
                 },
                 {
                   "op": "battle",

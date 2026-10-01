@@ -4,7 +4,7 @@
 // (GitHub Pages serves this repository at /pocket-rpgkit/), and nothing is
 // loaded from a CDN or a dev server.
 //
-//   bun tools/web.ts                  # every example in EXAMPLES
+//   bun tools/web.ts                  # every app in APPS (examples + editor)
 //   bun tools/web.ts grow meadow      # just these
 //   bun tools/web.ts --outdir /srv/x  # somewhere other than dist/web
 //
@@ -13,7 +13,7 @@
 //
 //   bun vendor/pocket-rpgkit/tools/web.ts --project-root . alpine-post
 //
-// Without names, this repository builds EXAMPLES from
+// Without names, this repository builds APPS from
 // tools/build-example.ts. Another project builds every
 // examples/<name>/pocket.json it has, or else its own pocket.json. A name
 // resolves to examples/<name>/pocket.json, <name>/pocket.json, or the
@@ -56,7 +56,7 @@ import {
   POCKET_TARGETS,
   type PlatformContractRegistry,
 } from "../vendor/pocketjs/contracts/spec/platforms.ts";
-import { EXAMPLES } from "./build-example.ts";
+import { APPS } from "./build-example.ts";
 import type { Size, ViewportConfig } from "./web/fit.ts";
 import {
   BUTTON_GLYPHS,
@@ -88,7 +88,18 @@ export interface WebControl {
   button?: ControlButton;
   /** Several buttons that share one line ("← →"). */
   buttons?: ControlButton[];
+  /** Literal browser/UI keys for tools that are not Pocket buttons. */
+  keys?: string[];
   action: string;
+}
+
+export interface WebDocumentExample {
+  /** Stable URL/file stem. */
+  id: string;
+  /** Label shown beside Open and Download. */
+  title: string;
+  /** rpgkit-project/v1 JSON, relative to the project root. */
+  document: string;
 }
 
 export interface WebChapter {
@@ -127,6 +138,8 @@ export interface WebGameEntry {
   /** Key changes over tools/web/keys.ts KEYMAP: {"KeyA": "SQUARE"} binds,
    *  {"KeyY": null} unbinds. */
   keys?: Record<string, string | null>;
+  /** Enable the browser document host and copy these built-in projects. */
+  documents?: WebDocumentExample[];
 }
 
 export interface WebSiteConfig {
@@ -174,6 +187,7 @@ export interface WebGame {
   plan: ResolvedBuildPlan;
   viewport: ViewportConfig;
   keymap: Keymap;
+  documents?: Array<WebDocumentExample & { path: string }>;
 }
 
 /** The settings a player page hands tools/web/player.js. */
@@ -189,6 +203,11 @@ export interface PlayerConfig {
   simHz: number;
   /** KeyboardEvent.code -> button mask. */
   keys: Record<string, number>;
+  /** Browser implementation of the rpgkit-editor companion. */
+  editor?: {
+    storageKey: string;
+    examples: Array<{ id: string; title: string; url: string }>;
+  };
 }
 
 // ---- configuration ---------------------------------------------------------
@@ -305,11 +324,34 @@ function validateEntry(id: string, entry: WebGameEntry, source: string): void {
   }
   for (const control of entry.controls ?? []) {
     const buttons = control.buttons ?? (control.button ? [control.button] : []);
-    if (buttons.length === 0 || !buttons.every(isControlButton) || typeof control.action !== "string") {
+    const literalKeys = control.keys ?? [];
+    if (
+      (buttons.length === 0 && literalKeys.length === 0) ||
+      (buttons.length > 0 && literalKeys.length > 0) ||
+      !buttons.every(isControlButton) ||
+      !literalKeys.every((key) => typeof key === "string" && key.length > 0) ||
+      typeof control.action !== "string"
+    ) {
       throw new Error(
-        `web: ${source}: games.${id} has a control without a known button ` +
-          `(${["DPAD", ...BUTTON_NAMES].join(", ")}) or an action`,
+        `web: ${source}: games.${id} has a control without either literal keys or a known button ` +
+          `(${["DPAD", ...BUTTON_NAMES].join(", ")}) and an action`,
       );
+    }
+  }
+  if (entry.documents !== undefined) {
+    if (!Array.isArray(entry.documents) || entry.documents.length === 0) {
+      throw new Error(`web: ${source}: games.${id}.documents is a non-empty list`);
+    }
+    const ids = new Set<string>();
+    for (const [index, document] of entry.documents.entries()) {
+      if (!document || typeof document !== "object" || !ID.test(document.id)) {
+        throw new Error(`web: ${source}: games.${id}.documents[${index}] needs a usable id`);
+      }
+      if (ids.has(document.id)) throw new Error(`web: ${source}: games.${id}.documents repeats "${document.id}"`);
+      ids.add(document.id);
+      if (typeof document.title !== "string" || document.title.length === 0 || typeof document.document !== "string" || document.document.length === 0) {
+        throw new Error(`web: ${source}: games.${id}.documents[${index}] needs a title and document path`);
+      }
     }
   }
 }
@@ -340,7 +382,7 @@ export function findManifest(projectRoot: string, id: string): string | undefine
 
 /** The games to build when none are named. */
 export function defaultGameIds(projectRoot: string): string[] {
-  if (sameDir(projectRoot, KIT_ROOT)) return [...EXAMPLES];
+  if (sameDir(projectRoot, KIT_ROOT)) return [...APPS];
   const examples = join(projectRoot, "examples");
   if (existsSync(examples)) {
     const ids = readdirSync(examples)
@@ -447,6 +489,19 @@ export function resolveGame(projectRoot: string, config: WebSiteConfig, id: stri
       ...(autoplay !== undefined ? { autoplay } : {}),
     };
   });
+  const documents = entry.documents?.map((document) => {
+    const path = resolve(projectRoot, document.document);
+    if (!isInside(projectRoot, path)) throw new Error(`web: document "${document.id}" for "${id}" leaves the project root`);
+    if (!existsSync(path)) throw new Error(`web: document "${document.id}" for "${id}" not found: ${path}`);
+    if (extname(path).toLowerCase() !== ".json") throw new Error(`web: document "${document.id}" for "${id}" must be JSON`);
+    return { ...document, path };
+  });
+  if (documents && !plan.companions.includes("rpgkit-editor")) {
+    throw new Error(`web: documents for "${id}" require the rpgkit-editor companion`);
+  }
+  if (plan.companions.includes("rpgkit-editor") && !documents) {
+    throw new Error(`web: the rpgkit-editor companion for "${id}" requires browser documents`);
+  }
   return {
     id,
     manifestPath,
@@ -461,6 +516,7 @@ export function resolveGame(projectRoot: string, config: WebSiteConfig, id: stri
     plan,
     viewport: viewportFor(manifest, plan, entry.viewport),
     keymap: withKeys(entry.keys),
+    ...(documents ? { documents } : {}),
   };
 }
 
@@ -505,7 +561,7 @@ function controlButtons(control: WebControl): ControlButton[] {
 
 export function controlsTable(controls: readonly WebControl[], pointer?: string, keymap?: Keymap): string {
   const rows = controls.map((control) => {
-    const keys: string[] = [];
+    const keys: string[] = [...(control.keys ?? [])];
     for (const button of controlButtons(control)) for (const key of keysFor(button, keymap)) if (!keys.includes(key)) keys.push(key);
     return `<tr><th scope="row">${keys.map((key) => `<kbd>${escapeHtml(key)}</kbd>`).join(" ")}</th><td>${escapeHtml(control.action)}</td></tr>`;
   });
@@ -517,6 +573,25 @@ export function controlsTable(controls: readonly WebControl[], pointer?: string,
 function padButtons(controls: readonly WebControl[]): ButtonName[] {
   const named = new Set(controls.flatMap(controlButtons));
   return BUTTON_NAMES.filter((b) => !["UP", "DOWN", "LEFT", "RIGHT"].includes(b) && named.has(b));
+}
+
+function editorTools(config: PlayerConfig): string[] {
+  if (!config.editor) return [];
+  const examples = config.editor.examples.map(
+    (example) => `<button type="button" data-editor-example="${escapeHtml(example.id)}" disabled>${escapeHtml(example.title)}</button>`,
+  );
+  return [
+    '<section class="editor-tools" aria-label="Project files">',
+    '<div class="editor-actions">',
+    '<button type="button" id="editor-open" disabled>Open…</button>',
+    '<input type="file" id="editor-open-input" accept="application/json,.json" hidden disabled>',
+    ...examples,
+    '<button type="button" id="editor-download" disabled>Download</button>',
+    '</div>',
+    '<p class="editor-status" id="editor-status" role="status" aria-live="polite">Preparing the browser editor…</p>',
+    '<p class="editor-privacy">Your project data stays in this browser; nothing is uploaded.</p>',
+    '</section>',
+  ];
 }
 
 /** A touch button's label: the letter key that presses it, so the pad, the
@@ -699,6 +774,7 @@ export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig
     "</div>",
     "</header>",
     "<main>",
+    ...editorTools(config),
     '<div class="screen-area">',
     `<div class="stage" id="stage" tabindex="0" role="application" aria-label="${escapeHtml(game.title)}: game screen" ` +
       `aria-describedby="controls-heading" data-state="loading" data-viewport="${config.viewport.policy}" style="aspect-ratio: ${shape[0]} / ${shape[1]}">`,
@@ -870,7 +946,24 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
       companions: [...game.plan.companions],
       simHz: 60,
       keys: keyMasks(game.keymap),
+      ...(game.documents
+        ? {
+            editor: {
+              storageKey: `pocket-rpgkit:${game.plan.app.id}:document:v1`,
+              examples: game.documents.map((document) => ({
+                id: document.id,
+                title: document.title,
+                url: `documents/${document.id}.json`,
+              })),
+            },
+          }
+        : {}),
     };
+    if (game.documents) {
+      const documentsDir = join(dir, "documents");
+      mkdirSync(documentsDir, { recursive: true });
+      for (const document of game.documents) copyFileSync(document.path, join(documentsDir, `${document.id}.json`));
+    }
     await Bun.write(join(dir, "index.html"), renderPlayer(site, game, playerConfig, credits));
   }
 

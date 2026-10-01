@@ -23,8 +23,12 @@
 //             drag on the timeline strip seek it; ← steps one tick back; a
 //             smaller window shrinks the live viewport
 //   meadow    held arrows walk the player
+//   editor    selects a tile, drag-paints and undoes it with Ctrl+Z; creates
+//             a text event, play-tests it, downloads it, reloads it from
+//             browser storage, and opens a live AI proposal preview
 //   focus     the game has keyboard focus after load; clicking elsewhere
-//             shows the hint and keys stop; a click on the game restores
+//             shows the hint and keys stop; a click on the game restores;
+//             editor Tab traversal and browser reload keys stay native
 //   sizing    every raster sample occupies whole device pixels, the backing
 //             canvas matches logical size × configured density, at 1x, 2x
 //             and 1.25x, fixed and dynamic; touch buttons appear on a phone
@@ -35,6 +39,20 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hallDoorPosition } from "../examples/showcase/hall-kit.ts";
 import { SHOWCASE_HALLS } from "../examples/showcase/showcase-data.ts";
+import { createProposalFromOperations } from "../editor/api/proposals.ts";
+import { loadProject } from "../editor/engine/document.ts";
+import { commandInspectorRows } from "../editor/engine/event-fields.ts";
+import { createEventInspectorLayout, type InspectorControl } from "../editor/engine/event-layout.ts";
+import {
+  eventToolButtons,
+  fittedView,
+  headerButtons,
+  mapOffset,
+  paletteSlotOrigin,
+  HEADER_H,
+  TILE,
+} from "../editor/engine/layout.ts";
+import { playtestStopRect } from "../editor/engine/playtest-layout.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PREFIX = "/pocket-rpgkit/";
@@ -365,6 +383,90 @@ async function main(): Promise<void> {
       const w = __pocketPlayer.width, h = __pocketPlayer.height;
       return { x: r.left + (${x} + 0.5) * r.width / w, y: r.top + (${y} + 0.5) * r.height / h };
     })()`);
+  type Point = { x: number; y: number };
+  const center = (rect: { x: number; y: number; w: number; h: number }): Point => ({
+    x: rect.x + rect.w / 2,
+    y: rect.y + rect.h / 2,
+  });
+  const clickClient = async (point: Point) => {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+  };
+  const clickLogical = async (point: Point) => {
+    await clickClient(await toClient(point.x, point.y));
+    await waitFrames(2);
+  };
+  const clickLogicalControl = (control: InspectorControl<unknown>, yOffset = 0) => {
+    const point = center(control.rect);
+    return clickLogical({ x: point.x, y: point.y + yOffset });
+  };
+  const dragLogical = async (from: Point, to: Point) => {
+    const a = await toClient(from.x, from.y);
+    const b = await toClient(to.x, to.y);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x, y: a.y, button: "none", buttons: 0 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: a.x, y: a.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 4; i++) {
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: a.x + ((b.x - a.x) * i) / 4,
+        y: a.y + ((b.y - a.y) * i) / 4,
+        button: "left",
+        buttons: 1,
+      });
+      await waitFrames(1);
+    }
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: b.x, y: b.y, button: "left", buttons: 0, clickCount: 1 });
+    await waitFrames(2);
+  };
+  const dispatchKey = (type: "keyDown" | "keyUp", code: string, keyName: string, modifiers = 0, text?: string) =>
+    cdp.send("Input.dispatchKeyEvent", {
+      type,
+      code,
+      key: keyName,
+      modifiers,
+      windowsVirtualKeyCode: code === "Enter" ? 13
+        : code === "Backspace" ? 8
+          : code === "Tab" ? 9
+            : code === "ControlLeft" ? 17
+              : code === "F5" ? 116
+                : keyName.toUpperCase().charCodeAt(0),
+      ...(text === undefined ? {} : { text, unmodifiedText: text }),
+    });
+  const pressNamedKey = async (code: "Enter" | "Backspace" | "Escape") => {
+    await dispatchKey("keyDown", code, code);
+    await dispatchKey("keyUp", code, code);
+    await waitFrames(1);
+  };
+  const typeText = async (text: string) => {
+    for (const character of text) {
+      const upper = /^[A-Z]$/.test(character);
+      const code = /^[A-Za-z]$/.test(character)
+        ? `Key${character.toUpperCase()}`
+        : character === " "
+          ? "Space"
+          : character === "."
+            ? "Period"
+            : "Unidentified";
+      await dispatchKey("keyDown", code, character, upper ? 8 : 0, character);
+      await dispatchKey("keyUp", code, character, upper ? 8 : 0);
+    }
+    await waitFrames(2);
+  };
+  const pressCommandZ = async () => {
+    await dispatchKey("keyDown", "ControlLeft", "Control", 2);
+    await dispatchKey("keyDown", "KeyZ", "z", 2);
+    await dispatchKey("keyUp", "KeyZ", "z", 2);
+    await dispatchKey("keyUp", "ControlLeft", "Control");
+    await waitFrames(2);
+  };
+  const pressCommandS = async () => {
+    await dispatchKey("keyDown", "ControlLeft", "Control", 2);
+    await dispatchKey("keyDown", "KeyS", "s", 2);
+    await dispatchKey("keyUp", "KeyS", "s", 2);
+    await dispatchKey("keyUp", "ControlLeft", "Control");
+    await waitFrames(2);
+  };
   const openGame = async (base: string, id: string) => {
     phase = id;
     await navigate(`${base}${id}/`);
@@ -419,6 +521,439 @@ async function main(): Promise<void> {
     expect("landing: relative links", absolute.length === 0, absolute.length ? absolute.join(", ") : `${landing.links.length} links`);
     await screenshot("landing", true);
     results.landing = landing;
+
+    // ---- editor: paint/undo, event text, play, download, persistence ----
+    if (games.some((g) => g.id === "editor")) {
+      phase = "editor";
+      await openGame(rootBase, "editor");
+      await waitFor(
+        "editor browser document",
+        `globalThis.__rpgkitEditorState?.().hasSvc === true
+          && __rpgkitEditorState().hostFile === true
+          && __pocketPlayer.editorHost?.ready === true
+          && !document.querySelector("#editor-open")?.disabled`,
+      );
+      await checkRuns("editor");
+
+      // The canvas is one stop after the file toolbar. Native backward Tab
+      // must reach Download, and forward Tab must return to the canvas.
+      await dispatchKey("keyDown", "Tab", "Tab", 8);
+      await dispatchKey("keyUp", "Tab", "Tab");
+      const backwardTabFocus = await evaluate<string>("document.activeElement?.id || ''");
+      await dispatchKey("keyDown", "Tab", "Tab");
+      await dispatchKey("keyUp", "Tab", "Tab");
+      const forwardTabFocus = await evaluate<string>("document.activeElement?.id || ''");
+      expect(
+        "editor: native Tab traversal reaches the file toolbar and returns",
+        backwardTabFocus === "editor-download" && forwardTabFocus === "stage",
+        `Shift+Tab -> ${backwardTabFocus || "none"}; Tab -> ${forwardTabFocus || "none"}`,
+      );
+
+      const nativeReloadKeys = await evaluate<Array<{ key: string; prevented: boolean; queued: number }>>(`(() => {
+        const stage = document.getElementById("stage");
+        const cases = [
+          { key: "F5", code: "F5" },
+          { key: "r", code: "KeyR", ctrlKey: true },
+          { key: "r", code: "KeyR", metaKey: true },
+        ];
+        return cases.map((init) => {
+          const before = __pocketPlayer.svc.length;
+          const event = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+          stage.dispatchEvent(event);
+          return { key: init.key + (init.ctrlKey ? "+ctrl" : init.metaKey ? "+meta" : ""), prevented: event.defaultPrevented, queued: __pocketPlayer.svc.length - before };
+        });
+      })()`);
+      expect(
+        "editor: F5 and Ctrl/Cmd+R remain native browser shortcuts",
+        nativeReloadKeys.every((entry) => !entry.prevented && entry.queued === 0),
+        nativeReloadKeys.map((entry) => `${entry.key}: prevented=${entry.prevented}, queued=${entry.queued}`).join("; "),
+      );
+
+      const editorState = () => evaluate<any>("__rpgkitEditorState()");
+      const initial = await editorState();
+      const vp = await evaluate<{ w: number; h: number }>("({ w: __pocketPlayer.width, h: __pocketPlayer.height })");
+      const fit = fittedView(vp.w, vp.h, false);
+      const activeMap = initial.editor.project.maps[initial.editor.mapIndex];
+      const cellPoint = (tx: number, ty: number): Point => ({
+        x: fit.frame.x + (mapOffset(activeMap.width, fit.cols) + tx - initial.cam.x) * TILE + TILE / 2,
+        y: fit.frame.y + (mapOffset(activeMap.height, fit.rows) + ty - initial.cam.y) * TILE + TILE / 2,
+      });
+
+      // Slot 0 is the eraser and slot 1 the sheet's first tile, so slot 2 is
+      // a visible, non-null brush in both bundled editor documents.
+      const palette = paletteSlotOrigin(2);
+      await clickLogical({ x: palette.x + 6, y: HEADER_H + palette.y + 6 });
+      const selected = await editorState();
+      const brush = selected.editor.tile as string | null;
+      expect("editor: real pointer selects a tile", typeof brush === "string", `selected ${brush ?? "eraser"}`);
+
+      const minX = initial.cam.x;
+      const maxX = Math.min(activeMap.width, initial.cam.x + fit.cols);
+      const minY = initial.cam.y;
+      const maxY = Math.min(activeMap.height, initial.cam.y + fit.rows);
+      let paintCells: [{ x: number; y: number }, { x: number; y: number }] | null = null;
+      for (let y = minY; y < maxY && paintCells === null; y++) {
+        for (let x = minX; x + 1 < maxX; x++) {
+          const index = y * activeMap.width + x;
+          if (activeMap.ground[index] !== brush && activeMap.ground[index + 1] !== brush) {
+            paintCells = [{ x, y }, { x: x + 1, y }];
+            break;
+          }
+        }
+      }
+      if (!paintCells || brush === null) throw new Error("editor has no visible two-cell target for the selected tile");
+      const [paintA, paintB] = paintCells;
+      const paintBefore = [
+        activeMap.ground[paintA.y * activeMap.width + paintA.x],
+        activeMap.ground[paintB.y * activeMap.width + paintB.x],
+      ];
+      const historyBefore = initial.editor.past.length;
+      await dragLogical(cellPoint(paintA.x, paintA.y), cellPoint(paintB.x, paintB.y));
+      const painted = await editorState();
+      const paintedMap = painted.editor.project.maps[painted.editor.mapIndex];
+      const paintedValues = [
+        paintedMap.ground[paintA.y * paintedMap.width + paintA.x],
+        paintedMap.ground[paintB.y * paintedMap.width + paintB.x],
+      ];
+      expect(
+        "editor: real pointer drag paints at least two cells",
+        paintedValues.every((tile) => tile === brush) && painted.editor.past.length === historyBefore + 1,
+        `${paintA.x},${paintA.y} and ${paintB.x},${paintB.y} -> ${paintedValues.join(", ")}; history ${historyBefore} -> ${painted.editor.past.length}`,
+      );
+      await canvasShot("editor-painted");
+
+      await pressCommandZ();
+      const undone = await editorState();
+      const undoneMap = undone.editor.project.maps[undone.editor.mapIndex];
+      const undoneValues = [
+        undoneMap.ground[paintA.y * undoneMap.width + paintA.x],
+        undoneMap.ground[paintB.y * undoneMap.width + paintB.x],
+      ];
+      expect(
+        "editor: real Ctrl+Z undoes the drag stroke",
+        undoneValues[0] === paintBefore[0] && undoneValues[1] === paintBefore[1] && undone.editor.past.length === historyBefore,
+        `${paintedValues.join(", ")} -> ${undoneValues.join(", ")}; history ${painted.editor.past.length} -> ${undone.editor.past.length}`,
+      );
+
+      const layer = headerButtons(vp.w).find((button) => button.id === "layer")!;
+      for (let i = 0; i < 3; i++) await clickLogical(center(layer));
+      const eventsMode = await editorState();
+      expect("editor: EVENT mode is reached by real clicks", eventsMode.eventMode === true, eventsMode.notice.text);
+
+      const occupied = (activeMap.events ?? []).flatMap((event: any) => {
+        const cells: string[] = [];
+        for (let y = event.y; y < event.y + (event.h ?? 1); y++) {
+          for (let x = event.x; x < event.x + (event.w ?? 1); x++) cells.push(`${x},${y}`);
+        }
+        return cells;
+      });
+      const occupiedCells = new Set(occupied);
+      let eventCell: { x: number; y: number } | null = null;
+      for (let y = minY; y < maxY && eventCell === null; y++) {
+        for (let x = minX; x < maxX; x++) {
+          if (!occupiedCells.has(`${x},${y}`)) {
+            eventCell = { x, y };
+            break;
+          }
+        }
+      }
+      if (!eventCell) throw new Error("editor has no visible empty cell for a new event");
+      await clickLogical(cellPoint(eventCell.x, eventCell.y));
+      const newTool = eventToolButtons().find((button) => button.id === "new")!;
+      await clickLogical({ x: newTool.x + newTool.w / 2, y: HEADER_H + newTool.y + newTool.h / 2 });
+      const created = await editorState();
+      const eventId = created.editor.selectedEventId as string;
+      expect(
+        "editor: EVENT New creates and opens an event",
+        created.inspectorOpen === true && typeof eventId === "string",
+        `event ${eventId ?? "none"} at ${eventCell.x},${eventCell.y}`,
+      );
+
+      const inspectorFor = (state: any) => {
+        const map = state.editor.project.maps[state.editor.mapIndex];
+        const event = map.events.find((candidate: any) => candidate.id === state.editor.selectedEventId);
+        const page = event.pages[state.editor.selectedPageIndex];
+        const commands = commandInspectorRows(page.commands);
+        return {
+          commands,
+          layout: createEventInspectorLayout({
+            width: vp.w,
+            height: vp.h - HEADER_H,
+            pageCount: event.pages.length,
+            activePage: state.editor.selectedPageIndex,
+            conditions: [],
+            commands,
+            scroll: { pagesX: 0, conditionsY: 0, commandsY: 0 },
+          }),
+        };
+      };
+      let inspector = inspectorFor(created);
+      const addCommand = inspector.layout.commandActions.find(
+        (control) => control.action.kind === "command-action" && control.action.action === "add",
+      )!;
+      await clickLogicalControl(addCommand, HEADER_H);
+      await typeText("text");
+      await pressNamedKey("Enter");
+      const commandAdded = await editorState();
+      inspector = inspectorFor(commandAdded);
+      const textRow = inspector.commands.findIndex((row) => row.command.op === "text");
+      const lines = inspector.layout.commandRows[textRow]?.fields.find(
+        (control) => control.action.kind === "command-field" && control.action.field === "lines",
+      );
+      if (!lines) throw new Error("new text command has no editable LINES field");
+      await clickLogicalControl(lines, HEADER_H);
+      const dialogue = "Hello from web editor.";
+      await typeText(dialogue);
+      await pressNamedKey("Enter");
+      const authored = await editorState();
+      const authoredMap = authored.editor.project.maps[authored.editor.mapIndex];
+      const authoredEvent = authoredMap.events.find((event: any) => event.id === eventId);
+      expect(
+        "editor: command prompt and dialogue accept real keyboard input",
+        authoredEvent?.pages[0]?.commands.some((command: any) => command.op === "text" && command.lines?.[0] === dialogue) === true,
+        `${eventId}: ${authoredEvent?.pages[0]?.commands.map((command: any) => `${command.op}:${command.lines?.join("|") ?? ""}`).join(", ")}`,
+      );
+      await canvasShot("editor-event");
+      await screenshot("editor-event");
+
+      await pressNamedKey("Escape");
+      expect(
+        "editor: real Escape closes the event inspector",
+        (await editorState()).inspectorOpen === false,
+        "event inspector closed",
+      );
+
+      await pressCommandS();
+      const recoveryText = await waitFor<string>(
+        "editor browser Save",
+        `localStorage.getItem(__pocketPlayer.editorHost.config.storageKey)?.includes(${JSON.stringify(dialogue)})
+          ? localStorage.getItem(__pocketPlayer.editorHost.config.storageKey)
+          : ""`,
+      );
+      expect(
+        "editor: real Ctrl+S writes the browser recovery copy",
+        recoveryText.includes(dialogue),
+        `${recoveryText.length} saved bytes`,
+      );
+
+      const play = headerButtons(vp.w).find((button) => button.id === "play")!;
+      await clickLogical(center(play));
+      await waitFor("editor playtest", "__rpgkitEditorState().playtest === true && globalThis.__rpgSessionState");
+      expect("editor: PLAY starts the edited project", (await editorState()).playtest === true, "playtest is running");
+      await canvasShot("editor-playtest");
+      await screenshot("editor-playtest");
+
+      // The page toolbar remains useful during PLAY. This correlated export
+      // used to be consumed and lost by the playtest service pump.
+      await clickClient(await toClientOf("#editor-download"));
+      const downloadFocus = await evaluate<string>("document.activeElement?.id || ''");
+      expect(
+        "editor: Download restores keyboard focus to the canvas",
+        downloadFocus === "stage",
+        `active element is #${downloadFocus || "none"}`,
+      );
+      const downloadText = await waitFor<string>(
+        "editor download during playtest",
+        `globalThis.__pocketPlayer?.editorHost?.lastDownload || ""`,
+      );
+      expect(
+        "editor: Download remains live during PLAY",
+        (await editorState()).playtest === true,
+        `${downloadText.length} bytes while playtest keeps running`,
+      );
+
+      await clickLogical(center(playtestStopRect()));
+      await waitFor("editor stop", "__rpgkitEditorState().playtest === false");
+      const stopped = await editorState();
+      const stoppedMap = stopped.editor.project.maps[stopped.editor.mapIndex];
+      const stoppedEvent = stoppedMap.events.find((event: any) => event.id === eventId);
+      expect("editor: STOP returns to the editor", stopped.playtest === false, "playtest stopped");
+      expect(
+        "editor: STOP preserves authored content and undo history",
+        stoppedEvent?.pages[0]?.commands.some(
+          (command: any) => command.op === "text" && command.lines?.[0] === dialogue,
+        ) === true && stopped.editor.past.length === authored.editor.past.length,
+        `event ${stoppedEvent?.id ?? "missing"}; history ${authored.editor.past.length} -> ${stopped.editor.past.length}`,
+      );
+
+      const downloaded = loadProject(downloadText);
+      const downloadedEvent = downloaded.errors.length === 0
+        ? downloaded.project.maps.flatMap((map) => map.events ?? []).find((event) => event.id === eventId)
+        : undefined;
+      const downloadedTextCommand = downloadedEvent?.pages.flatMap((page) => page.commands)
+        .find((command) => command.op === "text");
+      expect(
+        "editor: real Download click returns valid edited JSON",
+        downloaded.errors.length === 0 && downloadedEvent?.x === eventCell.x && downloadedEvent.y === eventCell.y
+          && downloadedTextCommand?.op === "text" && downloadedTextCommand.lines[0] === dialogue,
+        downloaded.errors.length > 0
+          ? downloaded.errors.map((error) => `${error.path} ${error.msg}`).join("; ")
+          : `${downloadText.length} bytes; ${downloadedEvent?.id ?? "event missing"}`,
+      );
+      const storedText = await evaluate<string | null>(
+        "localStorage.getItem(__pocketPlayer.editorHost.config.storageKey)",
+      );
+      expect("editor: Download also saves to localStorage", storedText === downloadText, `${storedText?.length ?? 0} stored bytes`);
+      await screenshot("editor-downloaded");
+
+      await clickClient(await toClientOf('[data-editor-example="meadow"]'));
+      await waitFor(
+        "editor example switch",
+        `__pocketPlayer.editorHost?.currentText?.includes("Pocket RPG Kit — Mini Meadow")
+          && __rpgkitEditorState().editor.project.title === "Pocket RPG Kit — Mini Meadow"`,
+      );
+      const storageAfterOpen = await evaluate<string | null>(
+        "localStorage.getItem(__pocketPlayer.editorHost.config.storageKey)",
+      );
+      expect(
+        "editor: opening an example does not overwrite the saved recovery copy",
+        storageAfterOpen === downloadText,
+        `${storageAfterOpen?.length ?? 0} bytes remain saved while Meadow is open`,
+      );
+      await screenshot("editor-example-opened");
+
+      // Exercise the browser's actual file-input path, not a probe injection.
+      await clickClient(await toClientOf("#editor-open"));
+      const dom = await cdp.send("DOM.getDocument", { depth: 1, pierce: true });
+      const fileInput = await cdp.send("DOM.querySelector", {
+        nodeId: dom.root.nodeId,
+        selector: "#editor-open-input",
+      });
+      await cdp.send("DOM.setFileInputFiles", {
+        nodeId: fileInput.nodeId,
+        files: [join(ROOT, "examples/sunstone/data/sunstone.json")],
+      });
+      await waitFor(
+        "editor local file import",
+        `__pocketPlayer.editorHost?.currentName === "sunstone.json"
+          && __rpgkitEditorState().editor.project.title === "The Sunstone of Bramble Hollow"
+          && !__pocketPlayer.editorHost.currentText.includes(${JSON.stringify(dialogue)})`,
+      );
+      const storageAfterFile = await evaluate<string | null>(
+        "localStorage.getItem(__pocketPlayer.editorHost.config.storageKey)",
+      );
+      expect(
+        "editor: Open… imports a local JSON file without overwriting recovery",
+        storageAfterFile === downloadText,
+        `sunstone.json open; ${storageAfterFile?.length ?? 0} recovery bytes retained`,
+      );
+      await screenshot("editor-file-opened");
+
+      phase = "editor-refresh";
+      const reloaded = new Promise((resolve) => cdp.on("Page.loadEventFired", resolve));
+      await cdp.send("Page.reload", { ignoreCache: false });
+      await reloaded;
+      await waitFor(
+        "editor localStorage restore",
+        `globalThis.__pocketPlayer?.state === "running"
+          && __pocketPlayer.frames > 30
+          && globalThis.__rpgkitEditorState?.().hostFile === true
+          && __pocketPlayer.editorHost?.currentText?.includes(${JSON.stringify(dialogue)})`,
+      );
+      const restoredHostText = await evaluate<string>("__pocketPlayer.editorHost.currentText");
+      const restoredExport = await evaluate<{ ok: boolean; text: string }>("__rpgkitEditorExport()");
+      const restored = loadProject(restoredExport.text);
+      const restoredEvent = restored.errors.length === 0
+        ? restored.project.maps.flatMap((map) => map.events ?? []).find((event) => event.id === eventId)
+        : undefined;
+      expect(
+        "editor: refresh restores the localStorage project",
+        restoredHostText === downloadText && restoredExport.ok === true
+          && restoredEvent?.pages.some((page) => page.commands.some(
+            (command) => command.op === "text" && command.lines[0] === dialogue,
+          )) === true,
+        `${restoredHostText.length} restored bytes; event ${restoredEvent?.id ?? "missing"}`,
+      );
+      await canvasShot("editor-restored");
+      await screenshot("editor-restored");
+
+      const proposalPast = (await editorState()).editor.past.length;
+      const proposal = createProposalFromOperations(restoredExport.text, {
+        id: "browser-preview",
+        title: "Preview the village path",
+        rationale: "Verify that browser-hosted proposals can be inspected without changing the project.",
+        author: "web-verifier",
+        createdAt: "2026-10-01T12:00:00.000Z",
+        hunks: [{
+          id: "path-tile",
+          summary: "Brighten one path tile",
+          operations: [{
+            command: "paint-tile",
+            args: { map: "village", layer: "ground", x: 8, y: 5, tile: "town.1" },
+          }],
+        }],
+      });
+      await evaluate(`__pocketPlayer.sendService(${JSON.stringify({ t: "proposals", proposals: [proposal] })})`);
+      await waitFor("editor proposal queue", `__rpgkitEditorState().proposals?.some((proposal) => proposal.id === "browser-preview")`);
+      const proposalsButton = headerButtons(vp.w).find((button) => button.id === "proposals")!;
+      await clickLogical(center(proposalsButton));
+      await waitFor("editor proposal panel", "__rpgkitEditorState().proposalOpen === true");
+      await clickLogical({ x: 12, y: HEADER_H + 34 });
+      const proposalState = await editorState();
+      const proposalExport = await evaluate<{ ok: boolean; text: string }>("__rpgkitEditorExport()");
+      const proposalPreviewVisible = proposalState.proposalPreview.tiles?.some(
+        (tile: any) => tile.mapId === "village" && tile.x === 8 && tile.y === 5 && tile.tile === "town.1",
+      ) === true;
+      expect(
+        "editor: PROPOSALS opens a non-mutating browser preview",
+        proposalState.proposalOpen === true && proposalState.selectedProposal === 0
+          && proposalPreviewVisible && proposalState.editor.past.length === proposalPast
+          && proposalExport.ok === true && proposalExport.text === restoredExport.text,
+        `open=${proposalState.proposalOpen}, selected=${proposalState.selectedProposal}, preview=${proposalPreviewVisible}, ` +
+          `history ${proposalPast} -> ${proposalState.editor.past.length}, unchanged=${proposalExport.text === restoredExport.text}`,
+      );
+      await canvasShot("editor-proposal");
+      await screenshot("editor-proposal");
+      await clickLogical(center(proposalsButton));
+      await waitFor("editor proposal panel close", "__rpgkitEditorState().proposalOpen === false");
+
+      await evaluate(`(() => {
+        globalThis.__originalStorageSetItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function () { throw new DOMException("blocked write", "SecurityError"); };
+      })()`);
+      await pressCommandS();
+      const writeFailure = await waitFor<string>(
+        "editor localStorage write failure",
+        `document.querySelector("#editor-status.error")?.textContent?.includes("Save failed")
+          ? document.querySelector("#editor-status").textContent
+          : ""`,
+      );
+      expect(
+        "editor: localStorage write failure is visible",
+        writeFailure.includes("blocked write"),
+        writeFailure,
+      );
+      await evaluate("Storage.prototype.setItem = globalThis.__originalStorageSetItem");
+
+      const readFailureScript = await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `Storage.prototype.getItem = function () {
+          throw new DOMException("blocked read", "SecurityError");
+        };`,
+      });
+      phase = "editor-storage-read-error";
+      const errorReload = new Promise((resolve) => cdp.on("Page.loadEventFired", resolve));
+      await cdp.send("Page.reload", { ignoreCache: false });
+      await errorReload;
+      const readFailure = await waitFor<string>(
+        "editor localStorage read failure",
+        `globalThis.__pocketPlayer?.editorHost?.ready === true
+          && document.querySelector("#editor-status.error")?.textContent?.includes("blocked read")
+          ? document.querySelector("#editor-status").textContent
+          : ""`,
+      );
+      expect("editor: localStorage read failure is visible", readFailure.includes("unavailable"), readFailure);
+      await cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: readFailureScript.identifier });
+      await screenshot("editor-storage-error");
+      results.editor = {
+        brush,
+        painted: [paintA, paintB],
+        event: { id: eventId, ...eventCell, dialogue },
+        downloadBytes: downloadText.length,
+        openPreservedStorage: storageAfterOpen === downloadText && storageAfterFile === downloadText,
+        restored: restoredHostText === downloadText,
+        proposalPreview: proposalPreviewVisible,
+      };
+    }
 
     // ---- showcase: lobby -> two live halls -> lobby -----------------------
     if (games.some((g) => g.id === "showcase")) {

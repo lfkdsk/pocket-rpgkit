@@ -137,31 +137,40 @@ The runtime pins PocketJS with a git submodule at
 
 ## Play in the browser
 
-The examples play in the browser at
-**<https://lfkdsk.github.io/pocketjs-rpgkit/>**. Each page runs the example's
-bundle on the PocketJS core compiled to WebAssembly: the same bundle and
-core the sim tests use. Click the game (it also takes the keyboard when the
+The examples and the editor run in the browser at
+**<https://lfkdsk.github.io/pocketjs-rpgkit/>**. Each page runs its bundle on
+the PocketJS core compiled to WebAssembly: the same bundle and core the sim
+tests use. On a game page, click the game (it also takes the keyboard when the
 page loads), then use the arrow keys and **A**/**Enter**/**Z** to confirm.
 Each page lists the rest of its controls. Grow's timeline also takes a mouse
 or touch drag, and phones get on-screen buttons.
+
+The [browser editor](https://lfkdsk.github.io/pocketjs-rpgkit/editor/) can
+open a local `rpgkit-project/v1` JSON file or start from the bundled Sunstone
+and Meadow projects. **Save** keeps the current document in this browser's
+local storage, **Download** writes a JSON file, and a refresh restores the
+locally saved document. Project data is not uploaded. Storage errors are
+shown on the page; use Download for a durable copy. The browser editor uses
+the bundled example art and inline project documents: it does not import
+assets or edit large sharded projects.
 
 To build the site locally (no dev server; any static file server works):
 
 ```sh
 bun run build:wasm                      # once: the wasm core
-bun run web                             # dist/web: landing page + one page per example
+bun run web                             # dist/web: landing page, examples and editor
 python3 -m http.server -d dist/web 8000 # then open http://localhost:8000/
 bun tools/web-verify.ts                 # optional: play every page in headless Chrome
 ```
 
-`bun run web` builds every example in `EXAMPLES`
-(`tools/build-example.ts`), and `bun run web grow` builds one. Each example
-is resolved against the `web-app` target from its `pocket.json`. Card text,
-preview images and controls come from `web.json`. An example without an
-entry still gets a card: its `pocket.json` title, default controls, and a
-preview rendered from its own bundle. Every URL is relative, so the site
-works under any path. `.github/workflows/pages.yml` publishes `dist/web` to
-GitHub Pages on every push to `main`. Player pages mount the PocketJS audio
+`bun run web` builds every app in `APPS` (`tools/build-example.ts`), including
+the editor, and `bun run web grow` builds one named app. Each app is resolved
+against the `web-app` target from its `pocket.json`. Card text, preview images
+and controls come from `web.json`. An example without an entry still gets a
+card: its `pocket.json` title, default controls, and a preview rendered from
+its own bundle. Every URL is relative, so the site works under any path.
+`.github/workflows/pages.yml` publishes `dist/web` to GitHub Pages on every
+push to `main`. Player pages mount the PocketJS audio
 host before the game starts, load their AudioWorklet relative to the page,
 and expose mute and master-volume controls. Browsers start the audio clock on
 the first key or pointer gesture, as required by their autoplay policies.
@@ -236,10 +245,13 @@ reproduce the committed PNGs byte for byte.
 
 ## Editor (preview)
 
-`editor/` is a map/event editor for `rpgkit-project/v1` documents, a
-PocketJS app on the desktop host. It opens the Sunstone and Meadow
-documents (`examples/*/data/*.json`) and paints them with those examples'
-own Kenney tile sheets.
+`editor/` is a map/event editor for `rpgkit-project/v1` documents and a
+PocketJS app on both the desktop host and the
+[browser site](https://lfkdsk.github.io/pocketjs-rpgkit/editor/). It opens the
+Sunstone and Meadow documents (`examples/*/data/*.json`) and paints them with
+those examples' own Kenney tile sheets. The browser can also **Open** a local
+inline project; **Save** keeps it in that browser, **Download** exports JSON,
+and a refresh restores the locally saved copy. Nothing is uploaded.
 
 What it does today:
 
@@ -298,13 +310,15 @@ bun run editor sunstone --file my-map.json   # another file (seeded if missing)
 bun run editor --build-only       # bundle + release host, no window
 ```
 
-The launcher builds `dist/<target>/editor.{js,pak}` and the Rust host,
+The desktop launcher builds `dist/<target>/editor.{js,pak}` and the Rust host,
 then opens the window with the `rpgkit-editor` companion and `--file`: the
 host forwards the real mouse and keyboard and writes each save to that
 file, by default a working copy in `dist/editor/` seeded from the
 example (the example games build their documents from code, and
 `bun run gen-assets` rewrites `data/*.json`). Without the companion (the wasm sim,
-a browser) the editor runs from buttons behind a visible banner.
+a browser other than the website) the editor runs from buttons behind a visible
+banner. The website supplies its own browser companion for pointer and keyboard
+input, local storage, Open and Download.
 The launcher also bridges `<project.json>.proposals/` into the editor's
 sandboxed `data.fs` and writes review decisions back while the window is
 open. Fully reviewed proposals move to the sidecar's `archive/` directory.

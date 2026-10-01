@@ -9,7 +9,7 @@ import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
-import { fittedView, HEADER_H, TILE } from "../editor/engine/layout.ts";
+import { fittedView, headerButtons, HEADER_H, TILE } from "../editor/engine/layout.ts";
 import {
   playtestDebugRows,
 } from "../editor/engine/playtest.ts";
@@ -35,6 +35,12 @@ const W = 480;
 const H = 272;
 const SLOT2: [number, number] = [3 + 2 * 13 + 6, HEADER_H + 33 + 6];
 const SUNSTONE = BUNDLED_PROJECTS.find((document) => document.id === "sunstone")!;
+const MEADOW = BUNDLED_PROJECTS.find((document) => document.id === "meadow")!;
+const PLAY_BUTTON = headerButtons(W).find((button) => button.id === "play")!;
+const PLAY_POINT: [number, number] = [
+  PLAY_BUTTON.x + Math.floor(PLAY_BUTTON.w / 2),
+  PLAY_BUTTON.y + Math.floor(PLAY_BUTTON.h / 2),
+];
 
 function frame(world: BoundEditorWorld, mask = 0): void {
   world.frame(mask);
@@ -178,7 +184,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(before.editor.project.maps[0].ground[8 * 20 + 5]).toBe("town.1");
     expect(before.playStartCell).toEqual({ mapId: "village", x: 4, y: 8 });
 
-    click(inbox, world, 270, 10); // PLAY
+    click(inbox, world, ...PLAY_POINT); // PLAY
     for (let i = 0; i < 3; i++) frame(world);
 
     const playing = probes.state();
@@ -235,7 +241,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(debugProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, 270, 10); // PLAY
+    click(inbox, world, ...PLAY_POINT); // PLAY
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(0);
 
@@ -258,7 +264,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.state().hasLastPlayState).toBe(true);
     click(inbox, world, 310, 10); // STATE -> LAST
     expect(probes.state().carryPrevious).toBe(true);
-    click(inbox, world, 270, 10);
+    click(inbox, world, ...PLAY_POINT);
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.sw.switches["debug-page-active"]).toBe(true);
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(1);
@@ -266,13 +272,31 @@ simDescribe("editor in-memory playtest", () => {
     click(inbox, world, 28, 11);
     click(inbox, world, 310, 10); // STATE -> FRESH
     expect(probes.state().carryPrevious).toBe(false);
-    click(inbox, world, 270, 10);
+    click(inbox, world, ...PLAY_POINT);
     for (let i = 0; i < 3; i++) frame(world);
     expect(probes.state().playState.sw.switches["debug-page-active"]).toBeUndefined();
     expect(probes.state().playState.chars.chars["debug-page"].pageIndex).toBe(0);
     svcLine(inbox, world, { t: "key", k: "Escape" });
     expect(probes.state().playtest).toBe(false);
     expect(probes.state().editor.project.maps[0].events.at(-1)?.id).toBe("debug-page");
+  });
+
+  test("browser file save and load requests remain live during PLAY", async () => {
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    const world = await bootSvc(inbox, outbox);
+    const probes = world.probes();
+
+    click(inbox, world, ...PLAY_POINT); // PLAY
+    expect(probes.state().playtest).toBe(true);
+    svcLine(inbox, world, { t: "key", k: "s", cmd: true, sh: false, alt: false, ctl: true, request: 71 });
+    expect(outbox.map((line) => JSON.parse(line)).at(-1)).toMatchObject({ t: "save", request: 71 });
+    expect(probes.state().playtest).toBe(true);
+
+    svcLine(inbox, world, { t: "load", text: MEADOW.json, request: 72 });
+    expect(probes.state().playtest).toBe(false);
+    expect(probes.state().editor.project.title).toBe("Pocket RPG Kit — Mini Meadow");
+    expect(outbox.map((line) => JSON.parse(line)).at(-1)).toEqual({ t: "loaded", ok: true, request: 72 });
   });
 
   test("unregistered extensions, screen backdrops and battles show fallbacks without crashing", async () => {
@@ -283,7 +307,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(fallbackProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, 270, 10);
+    click(inbox, world, ...PLAY_POINT);
     for (let i = 0; i < 5; i++) frame(world);
     const playing = probes.state();
     expect(playing.playIssues.map((issue: { kind: string }) => issue.kind)).toEqual([
@@ -315,7 +339,7 @@ simDescribe("editor in-memory playtest", () => {
     expect(probes.inject(JSON.stringify(debugProject()))).toEqual({ ok: true });
     frame(world);
 
-    click(inbox, world, 270, 10);
+    click(inbox, world, ...PLAY_POINT);
     for (let i = 0; i < 3; i++) frame(world);
     const game = world.render().slice();
     expect(treeHas(world.getTree(), "editor-playtest-root")).toBe(true);

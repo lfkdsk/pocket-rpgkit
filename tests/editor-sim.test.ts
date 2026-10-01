@@ -112,6 +112,18 @@ const regionHasAmber = (fb: Uint8Array, x0: number, y0: number, w: number, h: nu
   }
   return false;
 };
+/** Count bright label pixels in a fixed glyph cell. Unlike a screenshot hash,
+ * this states which visible content matters: both ends of GROUND must paint. */
+const labelPixels = (fb: Uint8Array, x0: number, y0: number, w: number, h: number): number => {
+  let count = 0;
+  for (let y = y0; y < y0 + h; y++) {
+    for (let x = x0; x < x0 + w; x++) {
+      const [r, g, b] = px(fb, x, y);
+      if (r > 150 && g > 150 && b > 150) count++;
+    }
+  }
+  return count;
+};
 /** Pixels inside one 16px cell tinted by the translucent event-marker fill
  *  (#d82f6a at 70% over any tile art: strong red, weak green, some blue).
  *  Marker cells measure 180+ of 256 on the village; unmarked cells stay
@@ -160,11 +172,15 @@ simDescribe("editor boot", () => {
     // starts at the palette edge, never over it)
     expect(px(fb, 10, HEADER_H + 4).join(",")).toBe(darkPanel.join(","));
     // every header button's center is filled (not the header background):
-    // LAYER 26, DOC 70, < 102, > 126, MAP 162, PLAY 210,
-    // STATE 280, UNDO 350, REDO 398, SAVE 450.
-    for (const cx of [26, 70, 102, 126, 162, 210, 280, 350, 398, 450]) {
+    // LAYER 30, DOC 74, < 102, > 126, MAP 162, PROPOSALS 216,
+    // PLAY 270, STATE 310, UNDO 350, REDO 398, SAVE 450.
+    for (const cx of [30, 74, 102, 126, 162, 210, 280, 350, 398, 450]) {
       expect(px(fb, cx, 10).join(",")).not.toBe(darkPanel.join(","));
     }
+    // Pin the first G and final D separately. The former 44px layer box
+    // clipped away the G while still leaving a plausible-looking ROUND.
+    expect(labelPixels(fb, 4, 6, 8, 9)).toBe(22);
+    expect(labelPixels(fb, 45, 6, 9, 9)).toBe(29);
     // palette eraser slot (0): the thumbnail row starts below the label at
     // absolute y HEADER_H + PAL_GRID_TOP; the swatch has its dark-red fill
     // and the red "X" glyph somewhere in the 12x12 thumbnail box
@@ -445,13 +461,19 @@ simDescribe("editor pointer mode (svc companion)", () => {
     click(inbox, world, ...SLOT2);
     click(inbox, world, frameRect.x + 6 * TILE + 3, frameRect.y + 3 * TILE + 3);
     expect(g().state().editor.past).toHaveLength(1);
-    const key = (k: string, sh = false) => svcLine(inbox, world, { t: "key", k, cmd: true, sh, alt: false, ctl: false });
+    const key = (k: string, sh = false, request?: number) => svcLine(inbox, world, {
+      t: "key", k, cmd: true, sh, alt: false, ctl: false, ...(request === undefined ? {} : { request }),
+    });
     key("z");
     expect(g().state().editor.past).toHaveLength(0);
     key("z", true);
     expect(g().state().editor.past).toHaveLength(1);
     key("s");
-    expect(outbox.map((l) => JSON.parse(l) as { t: string }).filter((m) => m.t === "save")).toHaveLength(1);
+    key("s", false, 17);
+    const saves = outbox.map((l) => JSON.parse(l) as { t: string; request?: number }).filter((m) => m.t === "save");
+    expect(saves).toHaveLength(2);
+    expect(saves[0]!.request).toBeUndefined();
+    expect(saves[1]!.request).toBe(17);
   });
 
   test("a {t:load} line opens the host document, pins DOC to it, and a bad one is rejected visibly", async () => {
@@ -459,13 +481,14 @@ simDescribe("editor pointer mode (svc companion)", () => {
     const outbox: string[] = [];
     const world = await bootSvc(inbox, outbox);
     // what the desktop host sends for `bun run editor meadow`
-    svcLine(inbox, world, { t: "load", text: MEADOW.json });
+    svcLine(inbox, world, { t: "load", text: MEADOW.json, request: 41 });
     const s = g().state();
     expect(s.docId).toBe("meadow");
     expect(s.hostFile).toBe(true);
     expect(s.editor.project.title).toBe("Pocket RPG Kit — Mini Meadow");
     expect(s.editor.project.maps[0]!.name).toBe("Kit Meadow");
     expect(s.editor.project.maps[0]!.width).toBe(20);
+    expect(outbox.map((line) => JSON.parse(line)).at(-1)).toEqual({ t: "loaded", ok: true, request: 41 });
     // DOC would swap another project in under the host file: refused
     click(inbox, world, 70, 10);
     expect(g().state().notice.kind).toBe("bad");
@@ -479,10 +502,11 @@ simDescribe("editor pointer mode (svc companion)", () => {
       expect({ at: [x, y], n: markerPixels(fb, f.x + x * TILE, f.y + TILE + y * TILE) > 150 }).toEqual({ at: [x, y], n: true });
     }
     // malformed document
-    svcLine(inbox, world, { t: "load", text: "{not json" });
+    svcLine(inbox, world, { t: "load", text: "{not json", request: 42 });
     expect(g().state().notice.kind).toBe("bad");
     expect(g().state().notice.text).toContain("HOST FILE REJECTED");
     expect(g().state().editor.project.title).toBe("Pocket RPG Kit — Mini Meadow");
+    expect(outbox.map((line) => JSON.parse(line)).at(-1)).toMatchObject({ t: "loaded", ok: false, request: 42 });
   });
 
   test("clicks on a letterboxed map land on the cell under the pointer", async () => {

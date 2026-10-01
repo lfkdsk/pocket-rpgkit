@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { EXAMPLES } from "../tools/build-example.ts";
+import { APPS, EXAMPLES } from "../tools/build-example.ts";
 import {
   cardOrder,
   copyChapterPreviews,
@@ -55,6 +55,14 @@ function playerConfig(game: WebGame): PlayerConfig {
     companions: [...game.plan.companions],
     simHz: 60,
     keys: keyMasks(game.keymap),
+    ...(game.documents
+      ? {
+          editor: {
+            storageKey: "test:editor",
+            examples: game.documents.map((document) => ({ id: document.id, title: document.title, url: `documents/${document.id}.json` })),
+          },
+        }
+      : {}),
   };
 }
 
@@ -64,8 +72,8 @@ function urls(html: string): string[] {
 }
 
 describe("games", () => {
-  test("with no names, this repository builds every example in EXAMPLES", () => {
-    expect(defaultGameIds(KIT_ROOT)).toEqual([...EXAMPLES]);
+  test("with no names, this repository builds every example and the editor", () => {
+    expect(defaultGameIds(KIT_ROOT)).toEqual([...APPS]);
   });
 
   test("cards follow the metadata table, then the rest in build order", () => {
@@ -74,8 +82,8 @@ describe("games", () => {
     expect(cardOrder(["later", "meadow"], config)).toEqual(["meadow", "later"]);
   });
 
-  test("every example resolves against web-app", () => {
-    for (const id of EXAMPLES) {
+  test("every app resolves against web-app", () => {
+    for (const id of APPS) {
       const game = resolveGame(KIT_ROOT, config, id);
       expect(game.plan.target.id).toBe("web-app");
       expect(game.plan.viewport.rasterDensity).toBe(DEFAULT_WEB_RASTER_DENSITY);
@@ -85,6 +93,12 @@ describe("games", () => {
     const showcase = resolveGame(KIT_ROOT, config, "showcase");
     expect(showcase.featured).toBe(true);
     expect(showcase.features).toHaveLength(13);
+  });
+
+  test("the browser editor companion cannot be configured without its file host", () => {
+    const games = { ...config.games, editor: { ...config.games!.editor } };
+    delete games.editor!.documents;
+    expect(() => resolveGame(KIT_ROOT, { ...config, games }, "editor")).toThrow(/requires browser documents/);
   });
 
   test("viewports: sunstone pinned fixed, grow dynamic from its plan, meadow fixed", () => {
@@ -116,6 +130,10 @@ describe("games", () => {
     expect(parse({ games: { meadow: { controls: [{ button: "TURBO", action: "x" }] } } })).toThrow(/known button/);
     expect(parse({ games: { meadow: { keys: { KeyA: "TURBO" } } } })).toThrow(/not a button/);
     expect(parse({ games: { meadow: { viewport: "stretch" } } })).toThrow(/"fixed" or "dynamic"/);
+    expect(parse({ games: { meadow: { controls: [{ keys: ["Mouse"], action: "Paint" }] } } })).not.toThrow();
+    expect(parse({ games: { meadow: { controls: [{ button: "CIRCLE", keys: ["Enter"], action: "x" }] } } })).toThrow(/either literal keys/);
+    expect(parse({ games: { meadow: { documents: [] } } })).toThrow(/non-empty list/);
+    expect(parse({ games: { meadow: { documents: [{ id: "../bad", title: "Bad", document: "bad.json" }] } } })).toThrow(/usable id/);
     expect(parse({ games: { meadow: { chapters: {} } } })).toThrow(/chapters is a list/);
     expect(parse({ games: { meadow: { chapters: [null] } } })).toThrow(/chapters\[0\] is an object/);
     expect(parse({ games: { meadow: { chapters: [{ id: "bad/id", title: "Bad" }] } } })).toThrow(/usable chapter id/);
@@ -177,7 +195,7 @@ describe("games", () => {
 });
 
 describe("pages", () => {
-  const games = cardOrder([...EXAMPLES], config).map((id) => resolveGame(KIT_ROOT, config, id));
+  const games = cardOrder([...APPS], config).map((id) => resolveGame(KIT_ROOT, config, id));
 
   test("the landing page links every game with relative URLs", () => {
     const html = renderLanding(site, games.map((game) => ({ game, preview: [480, 272] as [number, number] })));
@@ -232,16 +250,17 @@ describe("pages", () => {
     expect(parse({ showcase: [{ title: "x", url: entry.url, controls: [{ button: "NOPE", action: "x" }] }] })).toThrow(/known button/);
   });
 
-  test("the site lists the featured game first, then the external showcase and regular games", () => {
+  test("the site lists the featured game first, then the external showcase, regular games, and editor", () => {
     const html = renderLanding(
       { ...site, showcase: config.showcase },
-      cardOrder([...EXAMPLES], config).map((id) => ({ game: resolveGame(KIT_ROOT, config, id) })),
+      cardOrder([...APPS], config).map((id) => ({ game: resolveGame(KIT_ROOT, config, id) })),
     );
     const order = [...html.matchAll(/<h2><a href="[^"]*">([^<]+)<\/a><\/h2>/g)].map((m) => m[1]);
     expect(order[0]).toBe(games.find((game) => game.featured)!.title);
     expect(order[1]).toBe("Pocket Tuxemon");
     expect(order[2]).toBe("Wander: an Endless Grown World");
-    expect(order.length).toBe(1 + EXAMPLES.length);
+    expect(order.at(-1)).toBe("Pocket RPG Kit Editor");
+    expect(order.length).toBe(1 + APPS.length);
   });
 
   test("a card without a preview gets a placeholder, not a broken image", () => {
@@ -274,6 +293,21 @@ describe("pages", () => {
       expect(html).toContain('<label for="audio-volume">Volume</label>');
       expect(html).toContain('<input type="range" id="audio-volume" min="0" max="100" step="5" value="100">');
     }
+  });
+
+  test("the editor page exposes local files, built-in projects and browser-only privacy copy", () => {
+    const editor = games.find((game) => game.id === "editor")!;
+    const html = renderPlayer(site, editor, playerConfig(editor), false);
+    expect(editor.documents?.map((document) => document.id)).toEqual(["sunstone", "meadow"]);
+    expect(html).toContain('id="editor-open"');
+    expect(html).toContain('id="editor-download"');
+    expect(html).toContain('data-editor-example="sunstone"');
+    expect(html).toContain('data-editor-example="meadow"');
+    expect(html).toContain('id="editor-open" disabled');
+    expect(html).toContain('id="editor-download" disabled');
+    expect(html).toContain('data-editor-example="sunstone" disabled');
+    expect(html).toContain("Your project data stays in this browser; nothing is uploaded.");
+    expect(html).toContain('"storageKey":"test:editor"');
   });
 
   test("player pages expose progressive chapter and autoplay controls", () => {

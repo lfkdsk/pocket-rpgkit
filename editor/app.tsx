@@ -544,7 +544,11 @@ export function EditorApp(): JSX.Element {
     return null;
   };
 
-  const performSave = (provided?: EditorState, successPrefix = "SAVED"): void => {
+  const performSave = (
+    provided?: EditorState,
+    successPrefix = "SAVED",
+    browserRequest?: number,
+  ): void => {
     if (pendingHostSave()) {
       setNotice({ kind: "bad", text: "SAVE WAITING FOR HOST COMMIT" });
       return;
@@ -561,6 +565,9 @@ export function EditorApp(): JSX.Element {
     const candidate = exportProject(e);
     const errors = validateProject(candidate);
     if (errors.length > 0) {
+      if (svc && browserRequest !== undefined) {
+        svc.saveError(browserRequest, `${errors[0]!.path} ${errors[0]!.msg}`);
+      }
       setNotice({
         kind: "bad",
         text: `EXPORT REFUSED: ${errors.length} schema error(s), first: ${errors[0]!.path} ${errors[0]!.msg}`,
@@ -615,8 +622,11 @@ export function EditorApp(): JSX.Element {
         setNotice({ kind: "info", text: `SAVE QUEUED ${text.length} bytes FOR HOST CAS` });
         return;
       }
-      svc.save(text);
-      finish(`${successPrefix} ${text.length} bytes TO HOST FILE`);
+      svc.save(text, browserRequest);
+      // Receipt only means the generic host accepted the message. The
+      // browser companion reports localStorage or Download failures in its
+      // page chrome, so do not claim durable persistence here.
+      finish(`SENT ${text.length} bytes TO HOST`);
       return;
     }
     if (fsOk) {
@@ -959,6 +969,33 @@ export function EditorApp(): JSX.Element {
       kind: "info",
       text: carryPrevious() ? "PLAY STATE: LAST RUN SWITCHES / VARIABLES" : "PLAY STATE: FRESH",
     });
+  };
+
+  /** Apply one host document and acknowledge browser-correlated loads. The
+   * desktop host omits request, so the extra reply is harmless there. */
+  const loadHostDocument = (line: HostLine): void => {
+    const text = line.text!;
+    const loaded = loadProject(text);
+    if (loaded.errors.length === 0) {
+      // Name the slot after the bundled example the file came from (the
+      // launcher points --file at an example document).
+      const match = BUNDLED_PROJECTS.findIndex((b) => b.title === loaded.project.title);
+      if (match >= 0) setDocIndex(match);
+      setDoc({
+        id: match >= 0 ? BUNDLED_PROJECTS[match]!.id : "file",
+        project: loaded.project,
+        sourceText: text,
+      });
+      setHostFile(true);
+      setSavedText(text);
+      setLoadNotice(`HOST FILE ${text.length} bytes`);
+      resetForProject(loaded.project, { kind: "info", text: `LOADED ${text.length} bytes FROM HOST FILE` });
+      svc?.loaded(line.request, true);
+      return;
+    }
+    const error = `${loaded.errors[0]!.path} ${loaded.errors[0]!.msg}`;
+    setNotice({ kind: "bad", text: `HOST FILE REJECTED: ${error}` });
+    svc?.loaded(line.request, false, error);
   };
 
   const activatePlaytestHit = (hit: NonNullable<ReturnType<typeof hitTestPlaytest>>): void => {
@@ -2156,6 +2193,11 @@ export function EditorApp(): JSX.Element {
             handlePlaytestMouseLine(line);
           } else if (line.t === "key" && (line.k === "Escape" || line.k === "Esc")) {
             stopPlaytest();
+          } else if (line.t === "key" && line.cmd && (line.k === "s" || line.k === "S")) {
+            performSave(undefined, "SAVED", line.request);
+          } else if (line.t === "load" && typeof line.text === "string") {
+            stopPlaytest();
+            loadHostDocument(line);
           }
         }
       }
@@ -2167,28 +2209,7 @@ export function EditorApp(): JSX.Element {
         if (line.t === "resize" && line.w !== undefined && line.h !== undefined) {
           setVp({ w: line.w, h: line.h });
         } else if (line.t === "load" && typeof line.text === "string") {
-          const text = line.text;
-          const loaded = loadProject(text);
-          if (loaded.errors.length === 0) {
-            // Name the slot after the bundled example the file came from
-            // (the launcher points --file at an example document).
-            const match = BUNDLED_PROJECTS.findIndex((b) => b.title === loaded.project.title);
-            if (match >= 0) setDocIndex(match);
-            setDoc({
-              id: match >= 0 ? BUNDLED_PROJECTS[match]!.id : "file",
-              project: loaded.project,
-              sourceText: text,
-            });
-            setHostFile(true);
-            setSavedText(text);
-            setLoadNotice(`HOST FILE ${text.length} bytes`);
-            resetForProject(loaded.project, { kind: "info", text: `LOADED ${text.length} bytes FROM HOST FILE` });
-          } else {
-            setNotice({
-              kind: "bad",
-              text: `HOST FILE REJECTED: ${loaded.errors[0]!.path} ${loaded.errors[0]!.msg}`,
-            });
-          }
+          loadHostDocument(line);
         } else if (line.t === "proposals" && Array.isArray(line.proposals)) {
           try {
             const incoming = line.proposals.map(parseProposal);
@@ -2271,7 +2292,7 @@ export function EditorApp(): JSX.Element {
           } else if (line.cmd && (name === "y" || name === "Y")) {
             activateHeader(HEADER_ORDER.indexOf("redo"));
           } else if (line.cmd && (name === "s" || name === "S")) {
-            performSave();
+            performSave(undefined, "SAVED", line.request);
           } else if (name === "Undo") activateHeader(HEADER_ORDER.indexOf("undo"));
           else if (name === "Redo") activateHeader(HEADER_ORDER.indexOf("redo"));
         }

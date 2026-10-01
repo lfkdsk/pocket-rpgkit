@@ -160,8 +160,10 @@ export function headerButtons(vpW: number): ButtonGeom[] {
   const playX = toolsX + proposalWidth + 4;
   const stateX = playX + playWidth + 4;
   return [
-    mk("layer", 4, 44),
-    mk("doc", 52, 36),
+    // GROUND is the longest layer label. Give it enough room for every
+    // glyph at the baked 12px font size; the former 44px box clipped its G.
+    mk("layer", 4, 52),
+    mk("doc", 60, 28),
     mk("mapprev", 92, 20),
     mk("mapnext", 116, 20),
     mk("map", 140, 44),

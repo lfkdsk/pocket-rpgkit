@@ -96,8 +96,9 @@ The links point to where each feature is described in detail.
 | Editing events, pages, conditions and command trees | Done | Every command and condition kind in the current project schema is editable; see [event command and condition editing](../editor/README.md#event-command-and-condition-editing) |
 | Map properties; new, duplicate and delete maps | Done | |
 | Play-test from the selected tile with a live debug panel | Done | Runs the unsaved document in the real `GameView`; the debug panel edits switches, variables, self switches, items and gold of the preview only and lists running pages and fibers. Unregistered extensions, battles and backdrops get visible stand-ins; see [Editor](../editor/README.md) |
+| Editor in the browser (inline projects) | Done | Opens local JSON or the bundled Sunstone and Meadow documents; Save uses browser-local storage, Download exports JSON, and storage failures are visible. No project data is uploaded |
 | Follow-along tutorial | Done | [Editor tutorial](editor-tutorial.md) builds an NPC, a second map and a play-test from launch to save, with regenerable screenshots and a guard test |
-| Large (sharded) projects and an editor in the browser | Planned | |
+| Large (sharded) projects in the editor | Planned | The editor does not yet edit a project shell whose maps are loaded as separate files |
 | Editing UI for the newer commands | Done | Movement control, presentation, map animations, shops, audio, extensions, battle setup and battle-result branches; see [Editor](../editor/README.md#event-command-and-condition-editing) and [`update-command`](edit-api.md#update-command) |
 
 ## Scripting and agent tools

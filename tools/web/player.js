@@ -27,7 +27,8 @@
 // Input:
 //   keys     the page's key table (keys.ts KEYMAP plus the game's changes)
 //            -> the held button mask, while the game screen has focus. It
-//            takes focus on load and when clicked.
+//            takes focus on load and when clicked. The editor companion also
+//            receives key/ch/paste lines matching the desktop host.
 //   mouse    service lines {t:"mouse",x,y,d[,b],sh} read through
 //            ui.svcPoll, the form the desktop host and
 //            hosts/web/system-engine.js send. ui.svcOpen(name) is true for
@@ -38,6 +39,9 @@
 //            compatibility mouse events from it, so an app that only reads
 //            the mouse (Alpine Post's click-to-walk) answers a tap.
 //   pad      the on-screen buttons, for devices without a keyboard.
+//   files    an editor page handles load/save over the companion: Open and
+//            bundled projects send load lines; SAVE persists to localStorage;
+//            Download asks the guest for a fresh schema-checked export.
 
 import { createWasmUi } from "../../vendor/pocketjs/hosts/web/wasm-ops.js";
 import { createAudioHost } from "../../vendor/pocketjs/hosts/web/audio.js";
@@ -62,8 +66,41 @@ const MAX_CONTACTS = 8;
 const TOUCH_LIMIT = 1024;
 /** Mouse lines kept for an app that does not poll every frame. */
 const SVC_LIMIT = 256;
+/** Companion requests normally answer in the next frame; recover the toolbar
+ * after five seconds if a broken guest consumes one without replying. */
+const EDITOR_REQUEST_TIMEOUT = 300;
 /** Room under the screen for the caption line. */
 const RESERVE_PX = 56;
+const EDITOR_COMPANION = "rpgkit-editor";
+
+/** Browser KeyboardEvent.key -> the desktop companion's named-key dialect. */
+const NAMED_KEYS = {
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Enter: "Enter",
+  Tab: "Tab",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  Escape: "Escape",
+  F1: "F1",
+  F2: "F2",
+  F3: "F3",
+  F4: "F4",
+  F5: "F5",
+  F6: "F6",
+  F7: "F7",
+  F8: "F8",
+  F9: "F9",
+  F10: "F10",
+  F11: "F11",
+  F12: "F12",
+};
 
 const $ = (id) => {
   const element = document.getElementById(id);
@@ -150,6 +187,295 @@ async function fetchOk(url, what) {
   return response;
 }
 
+/** The file half of the browser rpgkit-editor companion. Input stays in the
+ * Player so every host uses the same logical-coordinate conversion; this
+ * object owns Open, built-ins, localStorage, SAVE and Download. */
+class BrowserEditorHost {
+  constructor(player, config) {
+    this.player = player;
+    this.config = config;
+    this.statusElement = $("editor-status");
+    this.input = $("editor-open-input");
+    this.controls = [$("editor-open"), $("editor-download"), ...document.querySelectorAll("[data-editor-example]")];
+    this.ready = false;
+    this.fetching = false;
+    this.nextRequest = 1;
+    this.pendingLoad = null;
+    this.pendingDownload = null;
+    this.currentName = "rpgkit-project.json";
+    this.currentText = null;
+    this.lastDownload = null;
+    this.storageReadError = null;
+  }
+
+  bind() {
+    $("editor-open").addEventListener("click", () => {
+      if (this.canStartRequest()) this.input.click();
+    });
+    this.input.addEventListener("change", async () => {
+      const file = this.input.files?.[0];
+      this.input.value = "";
+      if (!file || !this.canStartRequest()) return;
+      this.fetching = true;
+      this.updateControls();
+      this.setStatus(`Reading ${file.name}…`);
+      try {
+        const text = await file.text();
+        this.fetching = false;
+        this.updateControls();
+        this.loadDocument(text, file.name, file.name);
+      } catch (error) {
+        this.fetching = false;
+        this.updateControls();
+        this.setStatus(`Open failed: ${error instanceof Error ? error.message : error}`, true);
+      }
+    });
+    for (const button of document.querySelectorAll("[data-editor-example]")) {
+      button.addEventListener("click", () => {
+        const example = this.config.examples.find((item) => item.id === button.dataset.editorExample);
+        if (example && this.canStartRequest()) void this.loadExample(example);
+      });
+    }
+    $("editor-download").addEventListener("click", () => {
+      if (!this.canStartRequest()) return;
+      const request = this.nextRequest++;
+      this.pendingDownload = { request, deadline: this.player.frames + EDITOR_REQUEST_TIMEOUT };
+      this.updateControls();
+      this.setStatus("Validating the project for Download…");
+      this.requestSave(request);
+      this.player.focus();
+    });
+    this.updateControls();
+  }
+
+  async start() {
+    this.player.sendService({ t: "hello", w: this.player.width, h: this.player.height, epoch: Date.now() });
+    let stored = null;
+    try {
+      stored = localStorage.getItem(this.config.storageKey);
+    } catch (error) {
+      this.storageReadError = error instanceof Error ? error.message : String(error);
+      this.setStatus(`Browser storage is unavailable: ${this.storageReadError}`, true);
+    }
+    if (stored && this.loadDocument(stored, this.fileName(stored), "the saved browser project", {
+      startup: true,
+      restore: true,
+    })) return;
+    const first = this.config.examples[0];
+    if (first) await this.loadExample(first, true);
+    else this.finishStartup();
+  }
+
+  async loadExample(example, startup = false) {
+    this.fetching = true;
+    this.updateControls();
+    this.setStatus(`Opening ${example.title}…`);
+    try {
+      const response = await fetchOk(new URL(example.url, document.baseURI), example.title);
+      const text = await response.text();
+      this.fetching = false;
+      this.updateControls();
+      if (!this.loadDocument(text, `${example.id}.json`, example.title, { startup })) {
+        if (startup) this.finishStartup();
+      }
+    } catch (error) {
+      this.fetching = false;
+      if (startup) this.finishStartup();
+      else this.updateControls();
+      this.setStatus(`${example.title} could not be opened: ${error instanceof Error ? error.message : error}`, true);
+    }
+  }
+
+  /** Queue a correlated load. The guest validates the complete schema and
+   * answers with {t:"loaded"}; opening a document never overwrites the last
+   * explicitly saved recovery copy. */
+  loadDocument(text, name, label, options = {}) {
+    try {
+      const value = JSON.parse(text);
+      if (!value || value.format !== "rpgkit-project/v1") throw new Error("not an rpgkit-project/v1 document");
+    } catch (error) {
+      this.setStatus(`${label} was not opened: ${error instanceof Error ? error.message : error}`, true);
+      return false;
+    }
+    const request = this.nextRequest++;
+    this.pendingLoad = {
+      request,
+      text,
+      name: this.safeName(name),
+      label,
+      startup: options.startup === true,
+      restore: options.restore === true,
+      deadline: this.player.frames + EDITOR_REQUEST_TIMEOUT,
+    };
+    this.player.sendService({ t: "load", text, request });
+    this.setStatus(`Opening ${label}…`);
+    this.player.focus();
+    this.updateControls();
+    return true;
+  }
+
+  afterStep() {
+    if (this.pendingLoad && this.player.frames >= this.pendingLoad.deadline) {
+      const pending = this.pendingLoad;
+      this.pendingLoad = null;
+      if (pending.startup) this.finishStartup();
+      else this.updateControls();
+      this.setStatus(`${pending.label} did not receive a response from the editor.`, true);
+    }
+    if (this.pendingDownload && this.player.frames >= this.pendingDownload.deadline) {
+      this.pendingDownload = null;
+      this.updateControls();
+      this.setStatus("Download timed out; the editor did not return a valid project.", true);
+    }
+  }
+
+  requestSave(request) {
+    if (this.player.state === "error") return;
+    this.player.sendService({
+      t: "key",
+      k: "s",
+      cmd: true,
+      sh: false,
+      alt: false,
+      ctl: true,
+      ...(request === undefined ? {} : { request }),
+    });
+  }
+
+  receive(message) {
+    if (!message) return;
+    if (message.t === "loaded") {
+      this.receiveLoaded(message);
+      return;
+    }
+    if (message.t !== "save") return;
+    const download = this.pendingDownload;
+    if (download && message.request === download.request) {
+      this.pendingDownload = null;
+      this.updateControls();
+      if (typeof message.text !== "string") {
+        this.setStatus(`Download was refused: ${message.error || "the editor returned no document"}.`, true);
+        return;
+      }
+      this.currentText = message.text;
+      const stored = this.persist(message.text);
+      const downloaded = this.download(message.text);
+      if (!downloaded.ok) {
+        this.setStatus(`Download failed: ${downloaded.error}`, true);
+      } else if (!stored.ok) {
+        this.setStatus(`Downloaded ${this.currentName}, but its browser recovery copy was not saved: ${stored.error}`, true);
+      } else {
+        this.setStatus(`Downloaded ${this.currentName}; the same project is saved in this browser.`);
+      }
+      return;
+    }
+    // A stale correlated reply belongs to an expired Download request. It
+    // must not turn into an unrelated browser Save.
+    if (message.request !== undefined) return;
+    if (typeof message.text !== "string") {
+      this.setStatus("The editor returned an invalid save message.", true);
+      return;
+    }
+    this.currentText = message.text;
+    const stored = this.persist(message.text);
+    if (stored.ok) this.setStatus("Saved in this browser.");
+    else this.setStatus(`Save failed because browser storage is unavailable: ${stored.error}`, true);
+  }
+
+  receiveLoaded(message) {
+    const pending = this.pendingLoad;
+    if (!pending || message.request !== pending.request) return;
+    this.pendingLoad = null;
+    if (message.ok === true) {
+      this.currentName = pending.name;
+      this.currentText = pending.text;
+      if (pending.startup) this.finishStartup();
+      else this.updateControls();
+      const status = pending.restore
+        ? `Restored ${pending.label}.`
+        : `Opened ${pending.label}; press Ctrl/Cmd+S to save a browser recovery copy.`;
+      if (this.storageReadError) {
+        this.setStatus(`${status} Browser recovery is unavailable: ${this.storageReadError}`, true);
+      } else {
+        this.setStatus(status);
+      }
+      return;
+    }
+    this.setStatus(`${pending.label} was rejected by the editor: ${message.error || "invalid project"}.`, true);
+    if (pending.restore && this.config.examples[0]) {
+      void this.loadExample(this.config.examples[0], true);
+    } else if (pending.startup) {
+      this.finishStartup();
+    } else {
+      this.updateControls();
+    }
+  }
+
+  persist(text) {
+    try {
+      localStorage.setItem(this.config.storageKey, text);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  download(text) {
+    let url = null;
+    try {
+      const blob = new Blob([text], { type: "application/json" });
+      url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = this.currentName;
+      anchor.hidden = true;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      this.lastDownload = text;
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      if (url !== null) setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+  }
+
+  canStartRequest() {
+    return this.ready && !this.fetching && !this.pendingLoad && !this.pendingDownload && this.player.state === "running";
+  }
+
+  finishStartup() {
+    this.ready = true;
+    this.updateControls();
+  }
+
+  updateControls() {
+    const disabled = !this.canStartRequest();
+    for (const control of this.controls) control.disabled = disabled;
+    this.input.disabled = disabled;
+  }
+
+  fileName(text) {
+    try {
+      const title = String(JSON.parse(text)?.title ?? "rpgkit-project");
+      return this.safeName(`${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "rpgkit-project"}.json`);
+    } catch {
+      return "rpgkit-project.json";
+    }
+  }
+
+  safeName(name) {
+    const stem = String(name || "rpgkit-project.json").split(/[\\/]/).pop().replace(/[^a-zA-Z0-9._-]+/g, "-");
+    return stem.toLowerCase().endsWith(".json") ? stem : `${stem || "rpgkit-project"}.json`;
+  }
+
+  setStatus(text, error = false) {
+    this.statusElement.textContent = text;
+    this.statusElement.classList.toggle("error", error);
+  }
+}
+
 class Player {
   constructor(config) {
     this.config = config;
@@ -169,10 +495,12 @@ class Player {
     this.image = null;
     this.companions = new Set(config.companions ?? []);
     this.svc = [];
+    this.serviceOut = [];
     this.keyMasks = config.keys;
     this.keys = new Map();
     this.pad = new Map();
     this.mouseDown = false;
+    this.touchMouseDown = false;
     this.lastMouse = null;
     this.frameFn = null;
     this.wasm = null;
@@ -184,6 +512,9 @@ class Player {
     this.acc = 0;
     this.frames = 0;
     this.scale = { device: 1, css: 1 };
+    this.editorHost = config.editor && this.companions.has(EDITOR_COMPANION)
+      ? new BrowserEditorHost(this, config.editor)
+      : null;
     this.tick = this.tick.bind(this);
   }
 
@@ -193,6 +524,7 @@ class Player {
     this.message.textContent = message;
     this.overlay.hidden = state === "running";
     this.updateHint();
+    this.editorHost?.updateControls();
   }
 
   // ---- boot ---------------------------------------------------------------
@@ -202,6 +534,7 @@ class Player {
     this.bindKeys();
     this.bindPointer();
     this.bindPad();
+    this.editorHost?.bind();
     this.bindDemoControls();
     this.bindAudioControls();
   }
@@ -243,6 +576,7 @@ class Player {
       const query = ops.hitTestBounds ?? ops.hitTest;
       return query ? query(x, y) : 0;
     });
+    if (this.editorHost) await this.editorHost.start();
     this.step();
     this.paint();
     this.setState("running");
@@ -315,6 +649,7 @@ class Player {
     this.frameFn(this.buttons(), ANALOG_CENTER, packed, hits);
     this.wasm.tick();
     this.frames++;
+    this.editorHost?.afterStep();
     this.syncDemoControls();
   }
 
@@ -324,8 +659,8 @@ class Player {
   }
 
   onServiceLine(line) {
-    // Apps talk to their host over the same mailbox. The only line a page
-    // can act on is the cursor shape (hosts/web/system-engine.js).
+    this.serviceOut.push(line);
+    if (this.serviceOut.length > SVC_LIMIT) this.serviceOut.splice(0, this.serviceOut.length - SVC_LIMIT);
     let message;
     try {
       message = JSON.parse(line);
@@ -335,6 +670,7 @@ class Player {
     if (message && message.t === "cursor" && typeof message.k === "string") {
       this.canvas.style.cursor = message.k;
     }
+    this.editorHost?.receive(message);
   }
 
   // ---- focus and keyboard -------------------------------------------------
@@ -354,9 +690,11 @@ class Player {
     this.keys.clear();
     this.pad.clear();
     for (const button of document.querySelectorAll("[data-button].held")) button.classList.remove("held");
-    if (this.mouseDown) {
+    if (this.mouseDown || this.touchMouseDown || this.lastMouse) {
       this.mouseDown = false;
-      this.pushMouse({ t: "mouse", x: null, y: null, d: false });
+      this.touchMouseDown = false;
+      this.sendService({ t: "mouse", d: false });
+      this.lastMouse = null;
     }
     this.pool.clear();
   }
@@ -364,11 +702,41 @@ class Player {
   bindKeys() {
     const stage = this.stage;
     stage.addEventListener("keydown", (event) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-      const bit = Object.hasOwn(this.keyMasks, event.code) ? this.keyMasks[event.code] : undefined;
-      if (bit === undefined) return;
-      event.preventDefault();
-      this.keys.set(event.code, bit);
+      const command = event.ctrlKey || event.metaKey;
+      // Keep browser navigation reachable while the editor owns the stage.
+      // Tab must leave the canvas, and reload shortcuts must retain their
+      // native meaning instead of becoming editor companion key messages.
+      if (this.editorHost && (
+        event.key === "Tab" ||
+        event.key === "F5" ||
+        (command && event.key.toLowerCase() === "r")
+      )) return;
+      const bit = !command && !event.altKey && Object.hasOwn(this.keyMasks, event.code) ? this.keyMasks[event.code] : undefined;
+      if (bit !== undefined) this.keys.set(event.code, bit);
+      let sent = false;
+      if (this.editorHost && !event.isComposing) {
+        const key = command ? event.key.toLowerCase() : NAMED_KEYS[event.key];
+        if (command && event.key.toLowerCase() === "v") {
+          // Let the native paste event carry clipboardData. Preventing this
+          // keydown would suppress that reliable fallback when Clipboard API
+          // permission is absent.
+          sent = false;
+        } else if (command || key) {
+          this.sendService({
+            t: "key",
+            k: key ?? event.key,
+            cmd: command,
+            sh: event.shiftKey,
+            alt: event.altKey,
+            ctl: event.ctrlKey,
+          });
+          sent = true;
+        } else if (!event.ctrlKey && !event.altKey && event.key.length === 1) {
+          this.sendService({ t: "ch", s: event.key });
+          sent = true;
+        }
+      }
+      if (bit !== undefined || sent) event.preventDefault();
     });
     stage.addEventListener("keyup", (event) => {
       if (!this.keys.has(event.code)) return;
@@ -376,6 +744,16 @@ class Player {
       this.keys.delete(event.code);
     });
     stage.addEventListener("focus", () => this.updateHint());
+    stage.addEventListener("compositionend", (event) => {
+      if (this.editorHost && event.data) this.sendService({ t: "ch", s: event.data });
+    });
+    stage.addEventListener("paste", (event) => {
+      if (!this.editorHost) return;
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) return;
+      event.preventDefault();
+      this.sendService({ t: "paste", text });
+    });
     stage.addEventListener("blur", () => {
       this.keys.clear();
       this.updateHint();
@@ -396,9 +774,14 @@ class Player {
     };
   }
 
-  pushMouse(message) {
-    this.svc.push(JSON.stringify(message));
+  sendService(message) {
+    this.svc.push(typeof message === "string" ? message : JSON.stringify(message));
     if (this.svc.length > SVC_LIMIT) this.svc.splice(0, this.svc.length - SVC_LIMIT);
+  }
+
+  /** Same-origin parents use the same narrow bridge as PocketAppInstance. */
+  drainService() {
+    return this.serviceOut.splice(0);
   }
 
   bindPointer() {
@@ -412,10 +795,13 @@ class Player {
         if (event.button !== 0 && event.button !== 2) return;
         if (event.button === 0) this.mouseDown = true;
         this.lastMouse = point;
-        this.pushMouse({ t: "mouse", x: point.x, y: point.y, d: true, b: event.button, sh: event.shiftKey });
+        this.sendService({ t: "mouse", x: point.x, y: point.y, d: true, b: event.button, sh: event.shiftKey });
       } else {
         if (!this.pool.down(event.pointerId, point.x, point.y)) return;
-        if (event.isPrimary) this.pushMouse({ t: "mouse", x: point.x, y: point.y, d: true, b: 0, sh: false });
+        if (event.isPrimary) {
+          this.touchMouseDown = true;
+          this.sendService({ t: "mouse", x: point.x, y: point.y, d: true, b: 0, sh: false });
+        }
       }
       event.preventDefault();
       try {
@@ -431,10 +817,10 @@ class Player {
         const last = this.lastMouse;
         if (last && last.x === point.x && last.y === point.y) return;
         this.lastMouse = point;
-        this.pushMouse({ t: "mouse", x: point.x, y: point.y, d: this.mouseDown, sh: event.shiftKey });
+        this.sendService({ t: "mouse", x: point.x, y: point.y, d: this.mouseDown, sh: event.shiftKey });
       } else if (this.pool.move(event.pointerId, point.x, point.y)) {
         event.preventDefault();
-        if (event.isPrimary) this.pushMouse({ t: "mouse", x: point.x, y: point.y, d: true, sh: false });
+        if (event.isPrimary) this.sendService({ t: "mouse", x: point.x, y: point.y, d: true, sh: false });
       }
     });
     const up = (event) => {
@@ -447,16 +833,25 @@ class Player {
           this.mouseDown = false;
         }
         this.lastMouse = point;
-        this.pushMouse({ t: "mouse", x: point.x, y: point.y, d: false, b: event.button, sh: event.shiftKey });
+        this.sendService({ t: "mouse", x: point.x, y: point.y, d: false, b: event.button, sh: event.shiftKey });
       } else if (this.pool.up(event.pointerId, point.x, point.y) && event.isPrimary) {
-        this.pushMouse({ t: "mouse", x: point.x, y: point.y, d: false, b: 0, sh: false });
+        this.touchMouseDown = false;
+        this.sendService({ t: "mouse", x: point.x, y: point.y, d: false, b: 0, sh: false });
       }
     };
     canvas.addEventListener("pointerup", up);
     canvas.addEventListener("pointercancel", (event) => {
       if (event.pointerType === "mouse") up(event);
-      else if (this.pool.up(event.pointerId) && event.isPrimary) this.pushMouse({ t: "mouse", x: null, y: null, d: false });
+      else if (this.pool.up(event.pointerId) && event.isPrimary) {
+        this.touchMouseDown = false;
+        this.sendService({ t: "mouse", d: false });
+      }
     });
+    canvas.addEventListener("wheel", (event) => {
+      if (!this.editorHost || this.state !== "running") return;
+      event.preventDefault();
+      this.sendService({ t: "scroll", dy: event.deltaY });
+    }, { passive: false });
   }
 
   // ---- on-screen buttons --------------------------------------------------
@@ -653,6 +1048,7 @@ class Player {
     // size when the app reacts (hosts/desktop, hosts/sim).
     this.wasm.resizeViewport(width, height);
     if (typeof globalThis.__pocketResizeViewport === "function") globalThis.__pocketResizeViewport(width, height);
+    if (this.editorHost) this.sendService({ t: "resize", w: width, h: height });
     if (this.state === "running") this.paint();
   }
 

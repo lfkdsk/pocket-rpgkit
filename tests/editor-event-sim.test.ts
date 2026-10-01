@@ -40,7 +40,7 @@ const simDescribe = preflight.ok ? describe : describe.skip;
 installEditorSimIsolation();
 
 const SUNSTONE = BUNDLED_PROJECTS.find((document) => document.id === "sunstone")!;
-const MODERN_COMMAND_SCREENSHOT_PIN = "1c65b40a";
+const MODERN_COMMAND_SCREENSHOT_PIN = "0a9304ca";
 type World = BoundEditorWorld;
 let live: World | null = null;
 const probes = () => live!.probes();
@@ -397,12 +397,13 @@ function pixel(framebuffer: Uint8Array, width: number, x: number, y: number): [n
 }
 
 const screenshotPins: Record<string, string> = {
-  "480x272": "8a0a2d23",
-  "720x480": "e8a2f9c3",
+  "480x272": "d0bd4ba3",
+  "720x480": "e091b303",
 };
 
 simDescribe("event inspector responsive rendering", () => {
-  for (const [width, height] of [[480, 272], [720, 480]] as const) {    test(`${width}x${height} renders semantic inspector regions and matches its PNG`, async () => {
+  for (const [width, height] of [[480, 272], [720, 480]] as const) {
+    test(`${width}x${height} renders semantic inspector regions and matches its PNG`, async () => {
       const inbox: string[] = [];
       const outbox: string[] = [];
       const world = await bootSvc(inbox, outbox, width, height);
