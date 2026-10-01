@@ -28,8 +28,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // (10,219 shared bytes from motion/MicroTS contracts, devtools, frame
 // dispatch and clock glue), bring the exact builds to the values below
 // without pulling the WAV driver into Sunstone.
-const EXPECTED_SUNSTONE_BYTES = 686_415;
-const EXPECTED_AUDIO_FIXTURE_BYTES = 566_875;
+const EXPECTED_SUNSTONE_BYTES = 688_716;
+const EXPECTED_AUDIO_FIXTURE_BYTES = 569_176;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

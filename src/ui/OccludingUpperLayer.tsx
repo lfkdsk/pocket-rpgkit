@@ -104,6 +104,10 @@ export interface OccludingUpperLayerProps {
   visible?: () => boolean;
   onStreamStats?: (stats: StreamedChunkLayerStats) => void;
   onAnimatedStats?: (stats: AnimatedTilesStats) => void;
+  /** Receives the layer's root view once, at mount. Children that grow their
+   *  node pool at runtime insert into this root so their nodes stay siblings
+   *  of the upper rows (zIndex paint order is per parent). */
+  nodeRef?: (node: NodeMirror) => void;
   children?: SolidJSX.Element;
 }
 
@@ -113,6 +117,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   startupProfileMark("ui-upper:start");
   const root = createElement("view");
   setProp(root, "style", { posType: ENUMS.PosType.Absolute, insetL: 0, insetT: 0, width: 0, height: 0 });
+  props.nodeRef?.(root);
   insert(root, () => props.children);
 
   // A modulo-addressed ring keeps every viewport row and slice attached.

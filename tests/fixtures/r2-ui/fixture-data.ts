@@ -173,6 +173,17 @@ export const R2_UI_PROJECT: Project = {
   maps: [R2_MAP, R2_SECOND_MAP],
 };
 
+/** KV2 attract tape: hold RIGHT from the start tile onto the playerTouch
+ *  transfer at (PLAYER_START + 2, same row), so the demo crosses from the
+ *  4-event map to the 21-event map and the rewind test scrubs back across
+ *  the transfer. 90 held frames covers the turn plus two tiles at speed 2
+ *  (8 motion ticks per tile); the rest is idle settle. */
+export const KV2_TAPE: readonly number[] = (() => {
+  const tape = new Array<number>(180).fill(0);
+  for (let frame = 0; frame < 90; frame++) tape[frame] = 0x0020; // BTN.RIGHT
+  return tape;
+})();
+
 /** Opt-in visual fixture used by kv1-ui-sim. Four action presses expose
  * appearance, built-in layer replacement/hiding, an extra map band, then a
  * viewport overlay without changing the default r2-ui fixture frames. */

@@ -44,6 +44,7 @@ The links point to where each feature is described in detail.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Large maps | Done | Streamed rendering, animated tiles, 16×16 and 16×32 walkers; see [Large-map streamed rendering](../README.md#large-map-streamed-rendering) and [Animated map tiles](../README.md#animated-map-tiles-and-1632-walkers) |
+| Actor node pool sized to the current map | Done | NPC/event image nodes are allocated per current map and grow (never shrink) when a transfer lands on a busier map, so small maps no longer pre-build the project's global event maximum; growth rebinds existing nodes instead of rebuilding them |
 | Map animations on a tile or following a character (`mapAnim` / `stopAnim`) | Done | [Map animations](../README.md#map-animations-mapanim--stopanim) |
 | Run-time appearance, named visual layers, tile passage overrides | Done | Appearance covers sprite, opacity and visibility (`appearance`). Visual layers can be bands below or above characters, or screen overlays (`layer`). Tile passage overrides use `tileProperty`. Layer and tile-property overrides reset on every transfer |
 | Screen effects | Done | Fade, composable named tints, flash, deterministic shake, camera scroll, character balloons, full-screen backdrops. All are saved and rewound with the session |

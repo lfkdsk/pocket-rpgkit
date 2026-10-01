@@ -3,7 +3,7 @@
 // live actor pixels. Nodes are pooled so changing/clearing a balloon never
 // churns the native scene graph.
 
-import { onCleanup, type JSX as SolidJSX } from "solid-js";
+import { onCleanup, type Accessor, type JSX as SolidJSX } from "solid-js";
 import { jump } from "@pocketjs/framework/animation";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import {
@@ -31,6 +31,12 @@ export interface BalloonLayerProps {
   anims: () => ReadonlyMap<string, CompiledAnim>;
   assets: GameAssets;
   anchor: (balloon: Readonly<BalloonEffectState>) => BalloonAnchor;
+  /** While false, the per-frame sync pauses (the layer stays mounted and
+   *  hidden with the world). Omit for always active. */
+  active?: Accessor<boolean>;
+  /** Fired once per synced frame, after the active gate — a heartbeat tests
+   *  use to prove the hook paused. Omit in production. */
+  onSync?: () => void;
   debugName?: string;
 }
 
@@ -100,6 +106,8 @@ export function BalloonLayer(props: BalloonLayerProps): SolidJSX.Element {
   };
 
   onFrame(() => {
+    if (props.active && !props.active()) return;
+    props.onSync?.();
     const state = props.state();
     const balloons = state.interp.screen?.balloons;
     if (!balloons) {

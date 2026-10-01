@@ -56,10 +56,6 @@ export const INTERACTIVE_HALLS: HallDefinition[] = [
     commands: ["battle"],
     palette: ["#39243f", "#513052"],
     demo: [
-      text(
-        "CURATOR: This arena is a pure battle reducer.",
-        "The map loop freezes while the scene owns input.",
-      ),
       {
         op: "mapAnim",
         id: "arena-loop",
@@ -68,6 +64,10 @@ export const INTERACTIVE_HALLS: HallDefinition[] = [
         layer: "below",
         loop: true,
       },
+      text(
+        "CURATOR: This arena is a pure battle reducer.",
+        "The map loop freezes while the scene owns input.",
+      ),
       {
         op: "battle",
         setup: { playerHp: 12, enemyHp: 8 },

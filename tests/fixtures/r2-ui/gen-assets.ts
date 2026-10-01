@@ -205,6 +205,9 @@ writeFileSync(
     `  player: WALKER,\n` +
     `  playerHeight: 32,\n` +
     `  animated: ${animated},\n` +
+    // One minimal art entry so GameView mounts the map-animation and balloon
+    // layers; the fixture project spawns no instances, so the layers idle.
+    `  anims: { "probe-anim": { frames: ["assets/anim/anim-0.png"], w: 16, h: 16 } },\n` +
     `  layers: {\n` +
     `    ground: { placement: "ground", mode: "eager", variants: { void: { chunks: { ${q(R2_MAP_ID)}: ${names(secondUpperNames)} }, columns: { ${q(R2_MAP_ID)}: ${baked.columns} } } } },\n` +
     `    upper: { placement: "upper", mode: "eager", variants: {} },\n` +

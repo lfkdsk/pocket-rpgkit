@@ -16,7 +16,7 @@
 // Tuxemon's map view applies to tall map animations (view._position_surfaces:
 // rect.y -= surface.get_height() // 2 while height > tile_size).
 
-import { onCleanup, type JSX as SolidJSX } from "solid-js";
+import { onCleanup, type Accessor, type JSX as SolidJSX } from "solid-js";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { jump } from "@pocketjs/framework/animation";
 import {
@@ -52,6 +52,12 @@ export interface MapAnimLayerProps {
   /** Compiled animation timing for the resident map (World.anims). */
   anims: () => ReadonlyMap<string, CompiledAnim>;
   assets: GameAssets;
+  /** While false, the per-frame sync pauses (the layer stays mounted and
+   *  hidden with the world). Omit for always active. */
+  active?: Accessor<boolean>;
+  /** Fired once per synced frame, after the active gate — a heartbeat tests
+   *  use to prove the hook paused. Omit in production. */
+  onSync?: () => void;
   debugName?: string;
   onStats?: (stats: MapAnimStats) => void;
 }
@@ -142,6 +148,8 @@ export function MapAnimLayer(props: MapAnimLayerProps): SolidJSX.Element {
   };
 
   onFrame(() => {
+    if (props.active && !props.active()) return;
+    props.onSync?.();
     const state = props.state();
     const interp = state.interp;
     const compiled = props.anims();

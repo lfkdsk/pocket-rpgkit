@@ -36,6 +36,7 @@ export {
 } from "./ScreenEffectsLayer.tsx";
 export {
   GameView,
+  type ActorPoolStats,
   type BattleSceneComponent,
   type BattleSceneViewProps,
   type GameEffectsComponent,

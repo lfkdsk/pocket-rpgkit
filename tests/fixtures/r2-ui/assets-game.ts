@@ -2583,6 +2583,7 @@ export const GAME_ASSETS: GameAssets = {
     { x: 17, y: 11, above: true, sprite: "assets/anim/anim-0.png" },
   ],
 },
+  anims: { "probe-anim": { frames: ["assets/anim/anim-0.png"], w: 16, h: 16 } },
   layers: {
     ground: { placement: "ground", mode: "eager", variants: { void: { chunks: { "r2-ui-field": ["assets/map-r2-ui-second-upper-0.png", "assets/map-r2-ui-second-upper-1.png", "assets/map-r2-ui-second-upper-2.png", "assets/map-r2-ui-second-upper-3.png"] }, columns: { "r2-ui-field": 2 } } } },
     upper: { placement: "upper", mode: "eager", variants: {} },

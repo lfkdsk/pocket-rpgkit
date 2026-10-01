@@ -172,6 +172,49 @@ simDescribe("GameView battle scene host", () => {
     expect(animationStats().below!.created).toBeGreaterThan(before.below!.created);
   }, 30_000);
 
+  test("pauses every world layer's per-frame sync while a battle is open, then resumes it", async () => {
+    // A per-layer heartbeat fires on each world layer's synced frame. It is
+    // emitted inside the active gate, so a frozen reducer state cannot hide
+    // an ungated hook: removing any layer's gate makes its counter advance
+    // while the battle is open and fails this test. The delayed autorun
+    // battle leaves a short steady-world window so every layer is proven to
+    // sync before the scene opens (an immediate battle opens on frame 1,
+    // before any layer hook runs).
+    const ticks: Record<string, number> = {};
+    const world = await bootGameWorld(appBundle("r2-ui"), 60, {
+      __r2Battle: true,
+      __r2BattleDelay: 0.1,
+      __r2UiSyncTick: (layer: string) => {
+        ticks[layer] = (ticks[layer] ?? 0) + 1;
+      },
+    });
+    const LAYERS = ["actors", "mapAnimBelow", "mapAnimAbove", "balloons"] as const;
+    const snapshot = (): Record<string, number> =>
+      Object.fromEntries(LAYERS.map((layer) => [layer, ticks[layer] ?? 0]));
+    const step = (buttons = 0): void => {
+      world.frame(buttons, 0x8080);
+      world.tick();
+    };
+
+    for (let guard = 0; world.probes().state.scene === null && guard < 30; guard++) step();
+    expect(world.probes().state.scene?.kind).toBe("battle");
+    const before = snapshot();
+    for (const layer of LAYERS) expect(before[layer]).toBeGreaterThan(0);
+
+    for (let i = 0; i < 12; i++) step();
+    expect(world.probes().state.scene?.kind).toBe("battle");
+    expect(snapshot()).toEqual(before);
+
+    step(BTN.CIRCLE);
+    step();
+    for (let guard = 0; world.probes().state.scene && guard < 30; guard++) step();
+    expect(world.probes().state.scene).toBeNull();
+    step();
+    step();
+    const after = snapshot();
+    for (const layer of LAYERS) expect(after[layer]).toBeGreaterThan(before[layer]);
+  }, 30_000);
+
   test("shows a fatal content error and keeps the reducer frozen", async () => {
     const world = await bootGameWorld(appBundle("r2-ui"), 60, { __r2FatalTransfer: true });
     const step = (): void => {

@@ -5,10 +5,10 @@ import {
   type AnimatedTilesStats,
   type BattleSceneViewProps,
 } from "../../../src/ui/index.ts";
-import type { Project } from "../../../src/engine/types.ts";
+import type { MapRepository, Project, ProjectShell, ProjectSource } from "../../../src/engine/types.ts";
 import { toyBattleRules, toyState } from "../toy-battle.ts";
 import { GAME_ASSETS } from "./assets-game.ts";
-import { KV1_UI_PROJECT, R2_UI_PROJECT } from "./fixture-data.ts";
+import { KV1_UI_PROJECT, KV2_TAPE, R2_SECOND_MAP_ID, R2_UI_PROJECT } from "./fixture-data.ts";
 
 export interface R2UiStats {
   below?: AnimatedTilesStats;
@@ -33,7 +33,18 @@ declare global {
   // eslint-disable-next-line no-var
   var __r2Kv1: boolean | undefined;
   // eslint-disable-next-line no-var
+  var __r2Kv2: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __r2CapRepro: boolean | undefined;
+  // eslint-disable-next-line no-var
   var __r2Rewind: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __r2Kv2BattleGrow: boolean | undefined;
+  // Test probe: fired with the layer name on every world-layer sync frame
+  // (actors / mapAnimBelow / mapAnimAbove / balloons). Silent while a scene
+  // gates the world, so a test can prove the per-frame hooks paused.
+  // eslint-disable-next-line no-var
+  var __r2UiSyncTick: ((layer: string) => void) | undefined;
 }
 
 const stats: R2UiStats = {};
@@ -47,7 +58,15 @@ const fatalTransferFixture = globalThis.__r2FatalTransfer === true;
 const battleDelay = Math.max(0, globalThis.__r2BattleDelay ?? 0);
 const staticBattleFixture = globalThis.__r2StaticBattle === true;
 const kv1Fixture = globalThis.__r2Kv1 === true;
+const kv2Fixture = globalThis.__r2Kv2 === true;
+const capRepro = globalThis.__r2CapRepro === true;
 const rewindFixture = globalThis.__r2Rewind === true;
+// KV2+KB6 merge: an autorun battle whose win branch transfers to the denser
+// second map, so a test can prove the actor pool grows (not rebuilds) when a
+// battle closes onto a bigger map.
+const battleGrowFixture = globalThis.__r2Kv2BattleGrow === true;
+const syncTick = globalThis.__r2UiSyncTick;
+globalThis.__r2UiSyncTick = undefined;
 globalThis.__r2Battle = undefined;
 globalThis.__r2BattleModal = undefined;
 globalThis.__r2TransparentBattle = undefined;
@@ -55,7 +74,10 @@ globalThis.__r2BattleDelay = undefined;
 globalThis.__r2StaticBattle = undefined;
 globalThis.__r2FatalTransfer = undefined;
 globalThis.__r2Kv1 = undefined;
+globalThis.__r2Kv2 = undefined;
+globalThis.__r2CapRepro = undefined;
 globalThis.__r2Rewind = undefined;
+globalThis.__r2Kv2BattleGrow = undefined;
 
 const project: Project = kv1Fixture
   ? KV1_UI_PROJECT
@@ -132,7 +154,53 @@ const project: Project = kv1Fixture
             }
           : map),
       }
+  : battleGrowFixture
+    ? {
+        ...R2_UI_PROJECT,
+        maps: R2_UI_PROJECT.maps.map((map, index) => index === 0
+          ? {
+              ...map,
+              events: [
+                {
+                  id: "battle-grow-fixture",
+                  x: 1,
+                  y: 1,
+                  pages: [{
+                    trigger: "autorun" as const,
+                    commands: [{
+                      op: "battle" as const,
+                      setup: { enemyHp: 1 },
+                      onWin: [{ op: "transfer" as const, map: R2_SECOND_MAP_ID, x: 5, y: 5, dir: "down" as const }],
+                    }],
+                  }],
+                },
+                ...(map.events ?? []),
+              ],
+            }
+          : map),
+      }
   : R2_UI_PROJECT;
+
+// B1 regression: the same project served through a ProjectShell + local
+// MapRepository, with a maxActors budget below the start map's event count.
+// Inline projects raise the cap to their own biggest map, so only a shell
+// exposes whether the start map's precached slots pass the cap check.
+const capMaps = new Map(R2_UI_PROJECT.maps.map((map) => [map.id, map]));
+const capIndex = R2_UI_PROJECT.maps.map((map) => ({
+  id: map.id,
+  width: map.width,
+  height: map.height,
+  entry: `maps/${map.id}.json`,
+  sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+}));
+const { maps: _maps, ...shellFields } = R2_UI_PROJECT;
+const capProject: ProjectShell = { ...shellFields, mapIndex: capIndex };
+const capRepository: MapRepository = {
+  meta: (id) => capIndex.find((entry) => entry.id === id),
+  acquire: (id) => capMaps.get(id)!,
+  releaseExcept: () => {},
+};
+const mountedProject: ProjectSource = capRepro ? capProject : project;
 
 function ToyBattleScene(props: BattleSceneViewProps) {
   const state = () => toyState(props.state);
@@ -165,13 +233,15 @@ function ToyBattleScene(props: BattleSceneViewProps) {
 
 mount(() => (
   <GameView
-    project={project}
-    assets={GAME_ASSETS}
+    project={mountedProject}
+    maps={capRepro ? capRepository : undefined}
+    assets={capRepro ? { ...GAME_ASSETS, maxActors: 1 } : GAME_ASSETS}
     battle={toyBattleRules}
     battleScene={ToyBattleScene}
-    attractTape={rewindFixture ? [] : undefined}
+    attractTape={kv2Fixture ? [...KV2_TAPE] : rewindFixture ? [] : undefined}
     onAnimatedStats={(layer, value) => {
       stats[layer] = value;
     }}
+    onLayerSync={syncTick}
   />
 ));

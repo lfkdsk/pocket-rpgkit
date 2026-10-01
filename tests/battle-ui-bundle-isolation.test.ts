@@ -74,7 +74,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // page hook combine with KAU1's shared audio/effects state path. Demo and
 // audio isolation are pinned separately; the identifiers below continue to
 // prove that the Sunstone bundle does not pull in battle UI.
-const EXPECTED_BYTES = 686_415;
+// KV2's per-map actor pool (grow-only slots, battle-gated map animation
+// and balloon layers) adds 2,301 shared GameView bytes.
+const EXPECTED_BYTES = 688_716;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {

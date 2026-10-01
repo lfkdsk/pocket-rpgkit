@@ -28,7 +28,7 @@
 import { batch, createSignal, onCleanup, onMount, Show, type Accessor, type Component } from "solid-js";
 import { Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createJumpBatch, type JumpBatch } from "@pocketjs/framework/animation";
-import { createElement, setProp } from "@pocketjs/framework/renderer";
+import { createElement, insertNode, setProp } from "@pocketjs/framework/renderer";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { useActions } from "@pocketjs/framework/actions";
 import { simulationHz } from "@pocketjs/framework/clock";
@@ -218,11 +218,34 @@ function playerFrame(
   };
 }
 
-/** The only mounted actor subtree. It owns enough stable image slots for any
- *  transfer destination and rebinds them without replacing native nodes. */
+/** Per-map actor node pool statistics (GameView's onActorStats). */
+export interface ActorPoolStats {
+  /** The map whose events the pool is currently bound to. */
+  mapId: string;
+  /** Slots bound to a current-map event this frame. */
+  active: number;
+  /** Image nodes owned by the pool (>= active). Grows when a transfer
+   *  destination has more events; never shrinks. */
+  pooled: number;
+  /** Nodes created over this component instance's life. */
+  created: number;
+}
+
+/** The only mounted actor subtree. It owns one stable image slot per event
+ *  of the CURRENT map and grows the slot pool when a transfer destination
+ *  has more events, rebinding without replacing native nodes. The pool
+ *  never shrinks, so revisiting a small map after a big one reuses the big
+ *  pool's nodes (parked hidden); `cap` (the baked global maxActors) bounds
+ *  the growth and stays the resource budget. */
 function CurrentMapActors(props: {
   slots: () => readonly GameEvent[];
+  /** Initial pool size: the start map's event count. */
   slotCount: number;
+  /** Hard upper bound on pool growth (GameAssets.maxActors / inline max). */
+  cap: number;
+  /** The upper-plane root the actor nodes mount under. Growth inserts new
+   *  nodes there so they stay siblings of the clipped upper rows. */
+  host: () => NodeMirror | undefined;
   worldWidth: number;
   sprites: Sprites;
   npcSrc: GameAssets["npcSrc"];
@@ -234,16 +257,25 @@ function CurrentMapActors(props: {
   state: () => SessionState;
   worldNode: () => NodeMirror | undefined;
   camera: () => CameraState;
+  onStats?: (stats: ActorPoolStats) => void;
   /** While false, the per-frame actor sync pauses (the pool stays mounted
    *  and hidden with the world). Omit for always active. */
   active?: Accessor<boolean>;
+  /** Fired once per synced frame, after the active gate. */
+  onSync?: () => void;
 }) {
   startupProfileMark("ui-actors:start");
   const initial = props.state();
   let slots = props.slots();
   const stride = props.worldWidth;
-  const npcs: NpcRenderSlot[] = Array.from({ length: props.slotCount }, (_, index) => {
-    const source = slots[index];
+  let created = 0;
+  /** Create one pool slot. At mount `slots` holds the start map and the
+   *  initial state is current, so slots bind their event's art directly.
+   *  Growth (`hidden`) runs mid-transfer against the stale mount state; the
+   *  same onFrame pass rebinds the new slots, so they start parked hidden
+   *  with an empty source instead of writing a throwaway frame. */
+  const newSlot = (index: number, hidden = false): NpcRenderSlot => {
+    const source = hidden ? undefined : slots[index];
     const frame = source
       ? npcFrame(initial, source, props.sprites, props.npcSrc, props.extensions)
       : [0, 0, "", 16, 1, false] as const;
@@ -253,9 +285,34 @@ function CurrentMapActors(props: {
     ));
     setProp(node, "src", frame[2]);
     if (source) setProp(node, "debugName", `rpgkit-npc-${source.id}`);
+    created++;
     return { node, px: frame[0], py: frame[1] };
-  });
+  };
+  const npcs: NpcRenderSlot[] = Array.from({ length: props.slotCount }, (_, index) => newSlot(index));
   startupProfileMark("ui-actors:pooled");
+
+  const report = (): void => {
+    props.onStats?.({ mapId: props.state().mapId, active: slots.length, pooled: npcs.length, created });
+  };
+
+  /** Grow the pool to `needed` slots, inserting only the delta nodes. The
+   *  transfer rebind in the same onFrame pass configures their art, so new
+   *  nodes start hidden. */
+  const grow = (needed: number): void => {
+    if (needed > props.cap) {
+      throw new Error(
+        `GameView: map ${JSON.stringify(props.state().mapId)} needs ${needed} actor slots; ` +
+        `GameAssets.maxActors is ${props.cap}`,
+      );
+    }
+    const host = props.host();
+    if (!host) throw new Error("GameView: actor pool host is not mounted");
+    while (npcs.length < needed) {
+      const slot = newSlot(npcs.length, true);
+      insertNode(host, slot.node);
+      npcs.push(slot);
+    }
+  };
 
   const [playerDepth, setPlayerDepth] = createSignal(actorDepth(initial.move.px, initial.move.py, stride));
   const [playerVisual, setPlayerVisual] = createSignal(
@@ -305,14 +362,21 @@ function CurrentMapActors(props: {
     cy = camera.y;
   };
 
-  onMount(compilePositions);
+  onMount(() => {
+    report();
+    compilePositions();
+  });
 
   onFrame(() => {
     if (props.active && !props.active()) return;
+    props.onSync?.();
     const state = props.state();
     const next = props.slots();
     const transfer = next !== slots;
-    if (transfer) slots = next;
+    if (transfer) {
+      slots = next;
+      if (slots.length > npcs.length) grow(slots.length);
+    }
     let moved = false;
     let dirty = transfer;
     const camera = props.camera();
@@ -369,8 +433,9 @@ function CurrentMapActors(props: {
         frame[4],
         frame[5],
       ), oldStyle);
-      if (transfer) setProp(npc.node, "debugName", slots[index] ? `rpgkit-npc-${slots[index]!.id}` : undefined);
+      if (transfer) setProp(npc.node, "debugName", slots[index] ? `rpgkit-npc-${slots[index]!.id}` : undefined, npc.node.domAttrs?.debugName);
     }
+    if (transfer) report();
     px = state.move.px;
     py = state.move.py;
     cx = camera.x;
@@ -632,6 +697,12 @@ export interface GameViewProps {
   onAnimatedStats?: (layer: "below" | "above", stats: AnimatedTilesStats) => void;
   /** Optional diagnostics for state-driven map animation instances. */
   onMapAnimStats?: (layer: "below" | "above", stats: MapAnimStats) => void;
+  /** Optional diagnostics for the per-map actor node pool. */
+  onActorStats?: (stats: ActorPoolStats) => void;
+  /** Per-frame heartbeat from each world layer's sync hook, fired only on
+   *  frames the hook actually runs — so it stays silent while a scene gates
+   *  the world. Tests use it to prove the hooks paused; omit in production. */
+  onLayerSync?: (layer: "actors" | "mapAnimBelow" | "mapAnimAbove" | "balloons") => void;
   /** Browser repositories can report their frame barrier without putting
    * network timing into SessionState. null means ticking has resumed. */
   onMapLoading?: (mapId: string | null) => void;
@@ -731,11 +802,24 @@ export function GameView(props: GameViewProps) {
   const mapsById = session.maps;
   const sprites = (project.sprites ?? {}) as Sprites;
   const initialMap = mapsById.get(state.mapId)!;
-  const slotCache = new Map<string, GameEvent[]>([[state.mapId, collectMapSlots(initialMap)]]);
   const inlineMaxActors = isProjectShell(project)
     ? 0
     : Math.max(0, ...project.maps.map((map) => collectMapSlots(map).length));
-  const actorSlotCount = Math.max(slotCache.get(state.mapId)!.length, assets.maxActors ?? 0, inlineMaxActors);
+  // The baked global maximum stays the resource budget and hard cap; the
+  // pool itself starts at the current map's needs and grows on transfer.
+  const actorSlotCap = Math.max(assets.maxActors ?? 0, inlineMaxActors);
+  // The start map's slots are precached and mounted directly (no cache-miss
+  // grow), so they pass the same cap check here: a sharded project whose
+  // entry map declares more events than the budget allows is rejected up
+  // front instead of silently overshooting the resource budget.
+  const initialSlots = collectMapSlots(initialMap);
+  if (initialSlots.length > actorSlotCap) {
+    throw new Error(
+      `GameView: map ${JSON.stringify(state.mapId)} needs ${initialSlots.length} actor slots; ` +
+      `GameAssets.maxActors is ${actorSlotCap}`,
+    );
+  }
+  const slotCache = new Map<string, GameEvent[]>([[state.mapId, initialSlots]]);
   const dimensions = isProjectShell(project)
     ? project.mapIndex
     : project.maps.map((map) => ({ id: map.id, width: map.width, height: map.height }));
@@ -748,10 +832,10 @@ export function GameView(props: GameViewProps) {
       const map = mapsById.get(state.mapId);
       if (!map) throw new Error(`GameView: map ${JSON.stringify(state.mapId)} is not resident`);
       slots = collectMapSlots(map);
-      if (slots.length > actorSlotCount) {
+      if (slots.length > actorSlotCap) {
         throw new Error(
           `GameView: map ${JSON.stringify(state.mapId)} needs ${slots.length} actor slots; ` +
-          `GameAssets.maxActors is ${actorSlotCount}`,
+          `GameAssets.maxActors is ${actorSlotCap}`,
         );
       }
       slotCache.set(state.mapId, slots);
@@ -927,6 +1011,8 @@ export function GameView(props: GameViewProps) {
   // The world camera and actor slots stay stable across transfers, so their
   // coordinates can share one precompiled position batch.
   let worldNode: NodeMirror | undefined;
+  // The upper-plane root the actor pool mounts under; growth inserts there.
+  let actorHost: NodeMirror | undefined;
   let prevButtons = 0;
   let blocked: {
     buttons: number;
@@ -1186,6 +1272,8 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               anims={worldAnims}
               assets={assets}
+              active={() => !sceneActive()}
+              onSync={() => props.onLayerSync?.("mapAnimBelow")}
               debugName="rpgkit-map-anim-below"
               onStats={(stats) => props.onMapAnimStats?.("below", stats)}
             />
@@ -1206,12 +1294,15 @@ export function GameView(props: GameViewProps) {
             })}
             visible={() => upperSelection().visible}
             debugName="rpgkit-actors"
+            nodeRef={(node) => { actorHost = node; }}
             onStreamStats={(stats) => props.onStreamStats?.("upper", stats)}
             onAnimatedStats={(stats) => props.onAnimatedStats?.("above", stats)}
           >
             <CurrentMapActors
               slots={currentSlots}
-              slotCount={actorSlotCount}
+              slotCount={slotCache.get(state.mapId)!.length}
+              cap={actorSlotCap}
+              host={() => actorHost}
               worldWidth={worldWidth}
               sprites={sprites}
               npcSrc={assets.npcSrc}
@@ -1223,7 +1314,9 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               worldNode={() => worldNode}
               camera={() => camera}
+              onStats={props.onActorStats}
               active={() => !sceneActive()}
+              onSync={() => props.onLayerSync?.("actors")}
             />
           </OccludingUpperLayer>
 
@@ -1245,6 +1338,8 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               anims={worldAnims}
               assets={assets}
+              active={() => !sceneActive()}
+              onSync={() => props.onLayerSync?.("mapAnimAbove")}
               debugName="rpgkit-map-anim-above"
               onStats={(stats) => props.onMapAnimStats?.("above", stats)}
             />
@@ -1254,6 +1349,8 @@ export function GameView(props: GameViewProps) {
               state={() => state}
               anims={worldAnims}
               assets={assets}
+              active={() => !sceneActive()}
+              onSync={() => props.onLayerSync?.("balloons")}
               anchor={(balloon: Readonly<BalloonEffectState>): BalloonAnchor => {
                 if (balloon.target === "player") {
                   const art = playerFrame(

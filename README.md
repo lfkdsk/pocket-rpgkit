@@ -936,11 +936,14 @@ While a battle scene is active, host input goes only to `BattleRules.step`.
 By default page synchronization, player/NPC movement, and every map event
 fiber freeze; the battle-owning fiber remains parked. Set
 `scene={{ worldContinues: true }}` to opt into background world simulation;
-battle requests raised there still queue safely. `GameView` keeps the map and
-dialog layers mounted but hidden (`display:none`, so core skips layout,
-paint and hit-testing) while a scene is open, pausing their per-frame sync
-hooks; the registered scene component mounts on first use and likewise stays
-mounted (hidden) between battles, so scene entry/exit frames pay no
+battle requests raised there still queue safely. `GameView` keeps the world
+subtree mounted but hidden (`display:none`, so core skips layout, paint and
+hit-testing) while a scene is open, and pauses every world layer's
+per-frame sync hook (ground, animated tiles, extra layers, occlusion,
+actors, map animations, balloons) until the scene closes; the dialog box is
+a persistent sibling that hides its own boxes while a scene owns the
+screen; the registered scene component mounts on first use and likewise
+stays mounted (hidden) between battles, so scene entry/exit frames pay no
 mount/unmount cost. The optional effects component is a permanent root sibling
 of both visibility gates, so a battle BGM swap and map-BGM restoration do not
 remount the audio driver. The battle component
