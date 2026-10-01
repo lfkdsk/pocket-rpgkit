@@ -426,10 +426,12 @@ simDescribe("sunstone — render budget", () => {
     // controls with their separately compiled legacy loop, KA1's state-driven
     // map animation layer, and KS1's shared screen effect, scripted camera,
     // backdrop and pooled balloon renderer, KAU1 deterministic audio, AI2's
-    // optional trace, KB6 kept-alive scenes, and battle audio restoration:
-    // 568,033 B measured. The bound keeps a narrow margin so an accidental
-    // bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(576_000);
+    // optional trace, KB6 kept-alive scenes, and battle audio restoration.
+    // The PocketJS upstream rebase adds 10,219 B of shared motion, MicroTS,
+    // devtools, frame-dispatch, and clock/contract code: 578,252 B measured.
+    // The bound keeps a narrow margin so an accidental bundle-in still trips
+    // it.
+    expect(jsBytes).toBeLessThan(586_000);
   });
 });
 

@@ -65,9 +65,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // distinctive battle identifiers below remain absent. KAU1's deterministic
 // audio state/commands and generic effects injection point are also shared;
 // its separately imported WAV host adapter remains absent (pinned by
-// audio-bundle-isolation.test.ts). The exact combined size is re-measured
-// after every shared-path change.
-const EXPECTED_BYTES = 568_033;
+// audio-bundle-isolation.test.ts). Rebasing PocketJS onto upstream main adds
+// 10,219 shared bytes: motion framework/contracts (4,634), MicroTS contract
+// (2,191), devtools (2,163), frame dispatch (741), and clock/contract glue
+// (490). The exact combined size is re-measured after every shared-path
+// change.
+const EXPECTED_BYTES = 578_252;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is unchanged", () => {
