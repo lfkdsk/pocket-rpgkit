@@ -73,6 +73,11 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/spriteDef" }
     },
+    "animations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/animation" },
+      "description": "Frame animations playable with the mapAnim command; the cooker slices each sheet into one static baked image per frame."
+    },
     "items": {
       "type": "array",
       "items": { "$ref": "#/$defs/item" }
@@ -211,6 +216,27 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
           }
         }
       ]
+    },
+    "animation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sheet", "frameDuration"],
+      "oneOf": [
+        { "required": ["frames"] },
+        { "required": ["count"] }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "sheet": { "type": "string", "minLength": 1, "description": "Build-time source sheet, cooked into one static baked image per frame; the runtime never loads it. A missing sheet is a build error." },
+        "frameW": { "type": "integer", "minimum": 1, "maximum": 256, "description": "Frame width in px; defaults to 16 (one tile)." },
+        "frameH": { "type": "integer", "minimum": 1, "maximum": 256, "description": "Frame height in px; defaults to 16. A taller frame is anchored to its tile's bottom edge." },
+        "cols": { "type": "integer", "minimum": 1, "description": "Sheet columns for row-major frame indexing; the cooker's sheet metadata applies when omitted." },
+        "frames": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 }, "description": "Frame indices into the sheet (row-major), in play order." },
+        "count": { "type": "integer", "minimum": 1, "description": "Frame count when frames is omitted (sequential 0..count-1 play order)." },
+        "frameDuration": { "type": "number", "exclusiveMinimum": 0, "description": "Duration of each frame in virtual seconds; compiled to reference ticks so the same virtual instant shows the same frame at 60/30/20/4 Hz." },
+        "loop": { "type": "boolean", "description": "Default loop behavior; a mapAnim command's loop overrides it." }
+      },
+      "description": "A frame animation a mapAnim command plays on the map. The runtime frame index is a pure function of the saved reference tick, so rewind and save/load reproduce pixels exactly."
     },
     "item": {
       "type": "object",
@@ -674,6 +700,53 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         {
           "type": "object",
           "additionalProperties": false,
+
+          "required": ["op", "id", "anim"],
+          "oneOf": [
+            { "required": ["x", "y"], "not": { "required": ["target"] } },
+            { "required": ["target"], "not": { "anyOf": [{ "required": ["x"] }, { "required": ["y"] }] } }
+          ],
+          "properties": {
+            "op": { "const": "mapAnim" },
+            "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Instance id, unique among live instances; stopAnim and a same-id replay reference it." },
+            "anim": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Project animation id (project.animations)." },
+            "x": { "type": "integer", "minimum": 0, "description": "Tile column; required with y when target is absent." },
+            "y": { "type": "integer", "minimum": 0, "description": "Tile row; required with x when target is absent." },
+            "target": {
+              "oneOf": [
+                { "enum": ["player"] },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["event"],
+                  "properties": { "event": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" } }
+                }
+              ],
+              "description": "Character to follow: the instance keeps painting on the character's live pixel position. Alternative to x/y."
+            },
+            "follow": { "type": "boolean", "description": "With a target: true (default) tracks the character's live pixel position; false snapshots the character's tile at execution and pins the instance there (Tuxemon play_map_animation parity)."
+            },
+            "layer": { "enum": ["below", "above"], "description": "Default 'above' (Tuxemon layer 4): over characters. 'below' paints under them." },
+            "loop": { "type": "boolean", "description": "Overrides the animation's default loop behavior." },
+            "wait": { "type": "boolean", "description": "Park the fiber until the playthrough completes (one-shot) or the instance is stopped (looping: blocks until stopAnim, MV 'Wait for Completion' parity)." }
+          },
+          "description": "Play a frame animation on a tile or following a character (Tuxemon play_map_animation/play_tile_animation, MV Show Animation). State-driven: the instance starts on the run tick with the saved frame clock as its origin, so playback is identical under rewind and after a save/load. A transfer clears all instances."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op"],
+          "not": { "required": ["id", "anim"] },
+          "properties": {
+            "op": { "const": "stopAnim" },
+            "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Stop one instance by id." },
+            "anim": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Stop every instance of this animation id." }
+          },
+          "description": "Stop map animations: one instance by id, every instance of one animation by name, or every live map animation when neither is given. A fiber parked on a stopped instance's wait resumes."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "call", "args", "prompt"],
           "properties": {
             "op": { "const": "extChoice" },
@@ -693,6 +766,7 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             }
           },
           "description": "Extension-provided dynamic choice list. Rows are recomputed from live state; selection optionally writes result variables and invokes the registered resolver."
+
         },
         {
           "type": "object",

@@ -94,7 +94,7 @@ describe("K4 fix 3 — restore refuses a checksum-valid envelope with an out-of-
     const player = initialMovement(2, 2, 0, { tile: 16, speed: 2 });
     const snap = createSnapshot("a", player, {
       frame: 0, sw: createSwitchState(), main: null, parallels: {}, modal: null,
-      erased: {}, touched: {}, inputLocked: false, placements: {}, cues: [],
+      erased: {}, touched: {}, inputLocked: false, placements: {}, anims: [], cues: [],
       pendingTransfer: null, pendingMoveRoutes: [], pendingBattles: [], pendingPlacements: [],
       abortedRoutes: [],
     }, 0);

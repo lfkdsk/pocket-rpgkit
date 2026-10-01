@@ -216,6 +216,8 @@ export function commandFields(command: Command): EditableField[] {
     case "appearance":
     case "layer":
     case "tileProperty":
+    case "mapAnim":
+    case "stopAnim":
     case "battle": return [];
   }
 }

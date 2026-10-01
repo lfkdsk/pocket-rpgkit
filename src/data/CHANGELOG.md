@@ -425,5 +425,36 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
 - Keyframes are runtime acceleration data only. Neither `rpgkit-project/v1`
   nor the `rpgkit-save/v1` envelope changed.
 
+## v1 amendment — 2026-09-30 (map animations: mapAnim / stopAnim)
+
+- `project.animations` lists frame animations: `{ id, sheet, frameDuration,
+  frames | count, frameW?, frameH?, cols?, loop? }`. The cooker slices each
+  sheet into one static baked image per frame; a missing sheet is a build
+  error. `frameDuration` is seconds of virtual time, compiled to reference
+  ticks with the world's hz, so the same virtual instant shows the same
+  frame at 60/30/20/4 Hz.
+- `mapAnim` plays an instance on a tile (`x`/`y`) or following the player or
+  a named event (`target`), `layer` "above" (default) or "below" characters,
+  with `loop` overriding the definition default and optional `wait` parking
+  the fiber until one playthrough completes (one-shot) or until `stopAnim`
+  stops the instance (looping). `stopAnim` stops one instance by `id`,
+  every instance of an animation name, or all live instances.
+- Instances are per-map-visit interpreter state keyed by `id` with the saved
+  frame clock as their origin: playback is identical under rewind and after
+  a save/load, a same-id replay restarts the instance, and a transfer clears
+  all instances. A playing (non-waited) animation does not make the world
+  busy; stopping a waited instance resumes its fiber. Older saves without the
+  field keep it absent (no `anims` key), not an empty list. The normative
+  schema identity is refreshed as usual.
+- `mapAnim` gains `follow:false` to snapshot a target's tile at execution
+  and pin the instance there (Tuxemon `play_map_animation` parity); the
+  default `follow:true` tracks the character's live interpolated pixel
+  position. A `wait:true` on a looping animation now blocks until `stopAnim`
+  stops the instance (MV "Wait for Completion" parity), not one cycle. A
+  default-frozen battle shifts every live instance's `start` and every
+  `animWait` fiber's `since` by the paused duration so playback resumes from
+  the same visual frame. Frames taller than one tile shift up by half their
+  height, matching Tuxemon's map view anchor.
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

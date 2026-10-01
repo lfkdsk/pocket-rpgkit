@@ -21,7 +21,8 @@ const INTEGER_OPS = new Set([
   "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp",
   "wait", "gold", "item", "se", "erase", "exit", "transfer",
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
-  "appearance", "layer", "tileProperty", "ext", "extChoice", "battle",
+  "mapAnim", "stopAnim", "appearance", "layer", "tileProperty",
+  "ext", "extChoice", "battle",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -593,6 +594,36 @@ function validateProg(prog: unknown, path: string): string | null {
         if (problem) return problem;
         break;
       }
+      case "mapAnim": {
+        if (needStr("id")) return fail(`${here}.id`, "string required");
+        if (needStr("anim")) return fail(`${here}.anim`, "string required");
+        if (ins.target === null) {
+          if (!isNonNegInt(ins.x) || !isNonNegInt(ins.y)) {
+            return fail(`${here}`, "x/y non-negative integers required without a target");
+          }
+        } else if (
+          ins.target !== "player" &&
+          !(isRecord(ins.target) && typeof ins.target.event === "string" && ins.target.event.length > 0)
+        ) {
+          return fail(`${here}.target`, '"player" or {event: id} required');
+        }
+        if (ins.layer !== "below" && ins.layer !== "above") {
+          return fail(`${here}.layer`, "'below' or 'above' required");
+        }
+        if (ins.loop !== null && typeof ins.loop !== "boolean") {
+          return fail(`${here}.loop`, "boolean or null required");
+        }
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "stopAnim":
+        if (ins.id !== null && typeof ins.id !== "string") {
+          return fail(`${here}.id`, "string or null required");
+        }
+        if (ins.anim !== null && typeof ins.anim !== "string") {
+          return fail(`${here}.anim`, "string or null required");
+        }
+        break;
       case "extChoice": {
         if (typeof ins.call !== "string" || !extensionCallNameValid(ins.call)) {
           return fail(`${here}.call`, "namespaced extension call required");
@@ -638,7 +669,7 @@ function validateProg(prog: unknown, path: string): string | null {
   return null;
 }
 
-const FIBER_MODES = new Set(["run", "text", "choices", "shop", "wait", "external"]);
+const FIBER_MODES = new Set(["run", "text", "choices", "shop", "wait", "animWait", "external"]);
 
 function validateFiber(
   v: unknown,
@@ -853,6 +884,34 @@ function validateMoveOverride(v: unknown, path: string, event: boolean): string 
   }
   if (v.cooldown !== undefined && !isNonNegInt(v.cooldown)) {
     return fail(`${path}.cooldown`, "non-negative integer required");
+  }
+  return null;
+}
+
+/** Live mapAnim instances: a save may carry mid-animation state (the frame
+ *  clock restores it pixel-identically), so each entry is range-checked and
+ *  instance ids must stay unique (the reducer replaces same-id replays). */
+function validateMapAnims(v: unknown, path: string): string | null {
+  if (!Array.isArray(v)) return fail(path, "array required");
+  const seen = new Set<string>();
+  for (let i = 0; i < v.length; i++) {
+    const at = `${path}[${i}]`;
+    const a = v[i];
+    if (!isRecord(a)) return fail(at, "animation instance must be an object");
+    if (typeof a.id !== "string" || a.id.length === 0) return fail(`${at}.id`, "non-empty string required");
+    if (seen.has(a.id)) return fail(`${at}.id`, "duplicate animation instance id");
+    seen.add(a.id);
+    if (typeof a.anim !== "string" || a.anim.length === 0) return fail(`${at}.anim`, "non-empty string required");
+    if (!isNonNegInt(a.start)) return fail(`${at}.start`, "non-negative integer required");
+    if (!isNonNegInt(a.x) || !isNonNegInt(a.y)) return fail(`${at}`, "x/y non-negative integers required");
+    if (
+      a.target !== null && a.target !== "player" &&
+      !(isRecord(a.target) && typeof a.target.event === "string" && a.target.event.length > 0)
+    ) {
+      return fail(`${at}.target`, '"player" or {event: id} or null required');
+    }
+    if (a.layer !== "below" && a.layer !== "above") return fail(`${at}.layer`, "'below' or 'above' required");
+    if (typeof a.loop !== "boolean") return fail(`${at}.loop`, "boolean required");
   }
   return null;
 }
@@ -1097,6 +1156,10 @@ export function validateSnapshot(snap: unknown): string | null {
   if (it.moveControls !== undefined) {
     const mc = validateMoveControls(it.moveControls, "state.interp.moveControls");
     if (mc) return mc;
+  }
+  if (it.anims !== undefined) {
+    const al = validateMapAnims(it.anims, "state.interp.anims");
+    if (al) return al;
   }
   if (it.eventAppearances !== undefined) {
     const appearances = validateEventAppearances(it.eventAppearances, "state.interp.eventAppearances");

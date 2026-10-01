@@ -1,0 +1,74 @@
+{
+  "assets/map-ka1-field-ground-0.png": {
+    "psm": 3
+  },
+  "assets/map-ka1-field-upper-0.png": {
+    "psm": 3
+  },
+  "assets/map-ka1-field-ground-1.png": {
+    "psm": 3
+  },
+  "assets/map-ka1-field-upper-1.png": {
+    "psm": 3
+  },
+  "assets/walker-idle-0.png": {
+    "psm": 3
+  },
+  "assets/walker-idle-1.png": {
+    "psm": 3
+  },
+  "assets/walker-idle-2.png": {
+    "psm": 3
+  },
+  "assets/walker-idle-3.png": {
+    "psm": 3
+  },
+  "assets/walker-walkL-0.png": {
+    "psm": 3
+  },
+  "assets/walker-walkL-1.png": {
+    "psm": 3
+  },
+  "assets/walker-walkL-2.png": {
+    "psm": 3
+  },
+  "assets/walker-walkL-3.png": {
+    "psm": 3
+  },
+  "assets/walker-walkR-0.png": {
+    "psm": 3
+  },
+  "assets/walker-walkR-1.png": {
+    "psm": 3
+  },
+  "assets/walker-walkR-2.png": {
+    "psm": 3
+  },
+  "assets/walker-walkR-3.png": {
+    "psm": 3
+  },
+  "assets/anim-pulse-0.png": {
+    "psm": 3
+  },
+  "assets/anim-pulse-1.png": {
+    "psm": 3
+  },
+  "assets/anim-pulse-2.png": {
+    "psm": 3
+  },
+  "assets/anim-pulse-3.png": {
+    "psm": 3
+  },
+  "assets/anim-ring-0.png": {
+    "psm": 3
+  },
+  "assets/anim-ring-1.png": {
+    "psm": 3
+  },
+  "assets/anim-tower-0.png": {
+    "psm": 3
+  },
+  "assets/anim-tower-1.png": {
+    "psm": 3
+  }
+}

@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-stack/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 26 commands), map-character motion,
+  event interpreter (pages, triggers, 28 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -413,7 +413,7 @@ repositories must give `acquire` the same synchronous validated contract as
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
 
-### The 26 commands
+### The 28 commands
 
 | op | purpose |
 | --- | --- |
@@ -439,6 +439,8 @@ earlier resident map within the same host frame.
 | `lockInput` / `unlockInput` | cross-event input lock; freezes the mover and action but not autorun/parallel |
 | `place` | relocate the player, `"this"`, or a named event to a tile, optionally facing a direction |
 | `shop` | MV-style buy/sell over gold and item counts, from an `id`-namespaced goods list with per-good price/sellPrice/stock/condition overrides |
+| `mapAnim` | play a project frame animation on a tile or following the player/a named event, above or below characters, looping or once; `wait` parks the fiber until one playthrough completes (one-shot) or until `stopAnim` stops the instance (looping) |
+| `stopAnim` | stop one map animation instance by id, every instance of an animation name, or all live map animations |
 | `ext` | call a namespaced, game-registered pure command with JSON arguments |
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
@@ -1012,6 +1014,39 @@ NPC images anchor their bottom edge to the occupied 16px tile. Their facing
 and left/idle/right pose come from the saved mover state, while the upper
 map layer and `above: true` animations paint over the part extending into
 the tile above.
+
+### Map animations (`mapAnim` / `stopAnim`)
+
+A project may list frame animations in `animations`:
+
+```ts
+animations: [
+  { id: "pulse", sheet: "assets/anim/pulse.png", count: 4, frameDuration: 0.15, loop: false },
+]
+```
+
+Each entry names a build-time sheet the cooker slices into one static baked
+image per frame (`frames` lists sheet indices in play order; `count` plays
+`0..count-1`). `frameDuration` is seconds of virtual time, compiled to
+reference ticks with the world's hz, so the same virtual instant shows the
+same frame at 60/30/20/4 Hz. A missing sheet is a build error.
+
+`mapAnim` plays an instance on a tile (`x`/`y`) or following the player or a
+named event (`target` — the instance keeps painting on the character's live
+tile). `layer` is `"above"` (default, over characters) or `"below"`; `loop`
+overrides the definition's default; `wait` parks the fiber until one
+playthrough completes when the animation is one-shot, or until `stopAnim`
+stops the instance when it loops (stopping the instance releases the wait
+early either way).
+Instances are reducer state keyed by `id` with the saved frame clock as
+their origin: playback is identical under rewind and after a save/load, and
+a same-id replay restarts the instance. `stopAnim` stops one instance by
+`id`, every instance of an animation name, or all live instances; a fiber
+parked on a stopped instance's `wait` resumes. Animations are per-map-visit
+state — a transfer clears them — and a playing (non-waited) animation does
+not make the world busy. `GameAssets.anims` maps each animation id to its
+cooked frame refs; `MapAnimLayer` mounts instances from a pooled node set,
+so playback itself costs no per-frame node churn.
 
 ### Themes and speaker portraits
 

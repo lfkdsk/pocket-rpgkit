@@ -422,11 +422,11 @@ simDescribe("sunstone — render budget", () => {
     // variable-operand arithmetic, and fix 3's construction/restore/ext/
     // battle finite-state normalization), plus the shared bounded-keyframe
     // rewind path, the extension-driven dynamic-choice provider/resolver path,
-    // the generic runtime appearance/layer render path, and KM1's runtime
-    // speed/wander/route/facing controls. KM1 fix 1's separately compiled
-    // legacy movement loop adds 12,980 measured bytes (499,418 -> 512,398)
-    // so no-control games can bypass the controlled per-frame path entirely.
-    expect(jsBytes).toBeLessThan(519_000);
+    // the generic runtime appearance/layer render path, KM1's runtime movement
+    // controls with their separately compiled legacy loop, and KA1's
+    // state-driven map animation layer: 525,552 B measured. The bound keeps a
+    // narrow margin so an accidental bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(533_000);
   });
 });
 

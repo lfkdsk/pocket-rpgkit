@@ -522,6 +522,7 @@ export function createSession(
     extensions,
     items: project.items,
     inventory: project.system?.inventory,
+    animations: project.animations,
   };
   assertRegisteredExtensions(extensions, commonExtensionCalls(commonEvents));
   assertBattleRegistered(options.battle ?? null, commonEvents.some((event) => commandsUseBattle(event.commands)));
@@ -1165,10 +1166,28 @@ function advanceBattleScene(
   if (gold !== undefined) s.interp.sw.gold = gold;
   if (scene.pausedTicks > 0) {
     const shift = (fiber: SessionState["interp"]["main"]): void => {
-      if (fiber?.mode === "wait" || fiber?.mode === "text") fiber.since += scene.pausedTicks;
+      if (
+        fiber?.mode === "wait" ||
+        fiber?.mode === "text" ||
+        fiber?.mode === "animWait"
+      ) {
+        fiber.since += scene.pausedTicks;
+      }
     };
     shift(s.interp.main);
     for (const fiber of Object.values(s.interp.parallels)) shift(fiber);
+    // Map animation clocks are absolute (instance.start against interp.frame).
+    // A default-frozen scene advances the reference clock but not the world,
+    // so without this shift a hidden animation would burn frames (and a
+    // looping one could finish) behind the battle. Shift every live start by
+    // the paused duration so playback resumes from the same visual frame.
+    // The array is copy-on-write (shared with the previous state), so the
+    // shift writes a fresh array of fresh instances. An explicit
+    // worldContinues scene never freezes the world and needs no shift.
+    const anims = s.interp.anims;
+    if (anims !== undefined) {
+      s.interp.anims = anims.map((a) => ({ ...a, start: a.start + scene.pausedTicks }));
+    }
   }
   s.interp = continueBattle(s.interp, scene.fiber, completion.result, transfer);
   s.sw = s.interp.sw;
@@ -1462,11 +1481,15 @@ function stepReferenceTick(
 
   // 4. Interpreter — only displaced NPC cells need to supplement the
   // world's authored spatial index. Static characters resolve from the
-  // indexed event origin without growing the per-frame record.
+  // indexed event origin without growing the per-frame record. A world
+  // with event-targeted mapAnim additionally gets every live character's
+  // cell so the command resolves the target without an authored fallback.
   const eventCells = keyedRecord<{ x: number; y: number }>();
+  const liveEventCells = world.needsMapAnimTarget ? keyedRecord<{ x: number; y: number }>() : undefined;
   for (const ev of map.events ?? []) {
     const ch = s.chars.chars[ev.id];
     if (ch && (ch.tx !== ev.x || ch.ty !== ev.y)) eventCells[ev.id] = { x: ch.tx, y: ch.ty };
+    if (liveEventCells && ch) liveEventCells[ev.id] = { x: ch.tx, y: ch.ty };
   }
   const interpInput: InterpInput = {
     confirmEdge: input.confirmEdge,
@@ -1478,6 +1501,7 @@ function stepReferenceTick(
     facing: s.move.facing,
     prevFacing,
     eventCells,
+    ...(liveEventCells ? { liveEventCells } : {}),
     eventPages,
     worldIdleBlockers: sessionWorldIdleBlockers(s),
   };

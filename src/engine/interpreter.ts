@@ -41,6 +41,7 @@ import {
   type MoveControlState,
 } from "./move-control.ts";
 import type {
+  AnimationDef,
   Command,
   CommonEvent,
   Condition,
@@ -536,6 +537,24 @@ export type Instr =
     }
   | { op: "common"; id: string }
   | { op: "shop"; id: string; goods: readonly ShopGood[]; sell: boolean; sellList: "disable" | "hide" }
+  | {
+      op: "mapAnim";
+      id: string;
+      anim: string;
+      /** Null when the instance follows `target`. */
+      x: number | null;
+      y: number | null;
+      target: "player" | { event: string } | null;
+      /** With a target: true keeps painting on the character's live pixel
+       *  position; false snapshots the character's tile at execution and
+       *  pins the instance there (Tuxemon play_map_animation parity). */
+      follow: boolean;
+      layer: "below" | "above";
+      /** Null: use the compiled def's default. */
+      loop: boolean | null;
+      wait: boolean;
+    }
+  | { op: "stopAnim"; id: string | null; anim: string | null }
   | { op: "ext"; call: string; args: JsonValue }
   | {
       op: "extChoice";
@@ -682,6 +701,23 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
         case "shop":
           emit({ op: "shop", id: c.id, goods: c.goods, sell: c.sell ?? true, sellList: c.sellList ?? "disable" });
           break;
+        case "mapAnim":
+          emit({
+            op: "mapAnim",
+            id: c.id,
+            anim: c.anim,
+            x: c.x ?? null,
+            y: c.y ?? null,
+            target: c.target ?? null,
+            follow: c.follow ?? true,
+            layer: c.layer ?? "above",
+            loop: c.loop ?? null,
+            wait: c.wait ?? false,
+          });
+          break;
+        case "stopAnim":
+          emit({ op: "stopAnim", id: c.id ?? null, anim: c.anim ?? null });
+          break;
         case "ext":
           emit({ op: "ext", call: c.call, args: deepClone(c.args) });
           break;
@@ -747,6 +783,13 @@ export interface InterpInput {
   /** Live cells of map characters this frame (P1④ NPC motion); event id ->
    *  cell. Events absent from the record stand on their authored x/y. */
   eventCells?: Record<string, Cell>;
+  /** Live cells of every event with a live character this frame (event id ->
+   *  cell), built by the session only when World.needsMapAnimTarget. A
+   *  mapAnim `{event}` target resolves here and nowhere else: an event
+   *  absent from the record (erased, page inactive, never spawned) has no
+   *  live character, so the command plays nothing (Tuxemon get_npc parity)
+   *  instead of falling back to the authored x/y. */
+  liveEventCells?: Record<string, Cell>;
   /** Active page/sprite snapshot used by appearance conditions. The
    * interpreter overlays its live command state, so a following `if` sees
    * an appearance command issued earlier in the same reference tick. */
@@ -950,10 +993,87 @@ interface Fiber {
   pageIndex: number;
   parallel: boolean;
   stack: { prog: Prog; pc: number }[];
-  mode: "run" | "text" | "choices" | "shop" | "wait" | "external";
+  mode: "run" | "text" | "choices" | "shop" | "wait" | "animWait" | "external";
   /** Frame on which the current wait/text started. */
   since: number;
   erase: boolean;
+}
+
+/** A live map animation instance (InterpState.anims). The list changes
+ *  only when a mapAnim/stopAnim command runs or the map is entered (the
+ *  interpreter rebuilds on entry, so animations never survive a transfer,
+ *  matching Tuxemon's per-map AnimationManager). During playback the
+ *  reducer does no per-frame work: the UI derives the frame from `start`
+ *  and the compiled timing (animFrameIndex), so playback is identical
+ *  under rewind and after a save/load. */
+export interface MapAnimInstance {
+  /** Author-owned instance id, unique among live instances. stopAnim and
+   *  a same-id replay reference it. */
+  id: string;
+  /** AnimationDef id. */
+  anim: string;
+  /** Reference tick (interp frame) on which the instance starts playing. */
+  start: number;
+  /** Fixed tile position (target === null). For a following instance this
+   *  is the target's last live cell: it is written at creation and refreshed
+   *  every tick the target character is live, so when the target leaves the
+   *  map the renderer pins the animation to the cell it last occupied
+   *  rather than the creation cell. */
+  x: number;
+  y: number;
+  /** When set, the instance keeps painting on this character's live tile.
+   *  "player" is always live; an event target is live only while its
+   *  character is on the map (see x/y for the pin on departure). */
+  target: "player" | { event: string } | null;
+  layer: "below" | "above";
+  loop: boolean;
+}
+
+/** An AnimationDef compiled for a World's hz: cumulative tick counts per
+ *  frame, so frame selection is integer math on the reference clock. */
+export interface CompiledAnim {
+  /** Number of frames. */
+  frames: number;
+  /** Cumulative tick at which each frame ends (length = frames). */
+  steps: readonly number[];
+  /** Ticks for one full playthrough (steps[frames-1]). */
+  total: number;
+  /** Default loop flag from the def. */
+  loop: boolean;
+}
+
+/** Compile an AnimationDef's authored seconds into reference ticks. The
+ *  frame order is the authored `frames` list, else 0..count-1. */
+export function compileAnim(def: AnimationDef, hz: number = TICK_HZ): CompiledAnim {
+  const order = def.frames ?? (def.count !== undefined ? Array.from({ length: def.count }, (_, i) => i) : null);
+  if (order === null || order.length === 0) {
+    throw new Error(`animation ${def.id}: frames or count must name at least one frame`);
+  }
+  const per = secondsToFrames(def.frameDuration, hz);
+  if (per <= 0) {
+    throw new Error(`animation ${def.id}: frameDuration must be positive at ${hz} Hz`);
+  }
+  const steps: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < order.length; i++) {
+    acc += per;
+    steps.push(acc);
+  }
+  return { frames: order.length, steps, total: acc, loop: def.loop === true };
+}
+
+/** The frame index an instance shows on reference tick `frame`, or -1 when
+ *  a non-looping instance has finished. Pure: same (instance, frame) always
+ *  selects the same frame. */
+export function animFrameIndex(compiled: CompiledAnim, instance: MapAnimInstance, frame: number): number {
+  const elapsed = frame - instance.start;
+  if (elapsed < 0) return 0;
+  const t = instance.loop ? elapsed % compiled.total : elapsed;
+  if (!instance.loop && elapsed >= compiled.total) return -1;
+  for (let i = 0; i < compiled.frames; i++) {
+    if (t < compiled.steps[i]!) return i;
+  }
+  return compiled.frames - 1;
 }
 
 export interface World {
@@ -981,6 +1101,10 @@ export interface World {
   /** True when a page default or route control step needs the KM1 movement
    * path before a standalone moveControl command has created sparse state. */
   needsMovementControlPath?: boolean;
+  /** True when a compiled program contains a mapAnim with an event target:
+   *  the session then builds InterpInput.liveEventCells so the command can
+   *  resolve the target's live character. Zero cost when unused. */
+  needsMapAnimTarget?: boolean;
   /** Project item catalog (id -> Item), for a shop's price fallback
    *  (goods entries without their own `price` use the item's own) and its
    *  sell price fallback (floor(item.price / 2) when a shop has no
@@ -993,6 +1117,9 @@ export interface World {
   /** Project.system.messageBlocksPlayer: an open box of any fiber holds
    *  the player (messageHoldsPlayer). */
   messageBlocksPlayer?: boolean;
+  /** Project animation catalog (AnimationDef id -> compiled timing), for
+   *  mapAnim commands and the UI's frame selection. */
+  anims: ReadonlyMap<string, CompiledAnim>;
   /** Pure game handlers, retained with the compiled world and never saved. */
   extensions: ExtensionRuntime;
 }
@@ -1005,6 +1132,7 @@ export interface WorldOptions {
   extensions?: ExtensionRuntime;
   items?: readonly Item[];
   inventory?: { maxPerItem?: number; maxKinds?: number };
+  animations?: readonly AnimationDef[];
 }
 
 export interface KeyedEvent {
@@ -1067,6 +1195,13 @@ export interface InterpState {
    *  field is allocated lazily so an old project that never uses a control
    *  retains its byte-for-byte reducer/save shape. */
   moveControls?: MoveControlState;
+  /** Live map animation instances (mapAnim/stopAnim). Per map visit: the
+   *  interpreter rebuilds on entry, so a transfer clears them. The list
+   *  changes only on a start/stop command; playback itself is frame-derived
+   *  (animFrameIndex), so a save mid-animation restores pixel-identical.
+   *  Omitted when empty so a project without animations keeps byte-identical
+   *  state (and saves) against older builds. */
+  anims?: MapAnimInstance[];
   /** MV Change Image-style event overrides for this map visit. Each entry
    * is tied to its issuing page and is discarded on the next page change. */
   eventAppearances?: Record<string, EventAppearanceState>;
@@ -1179,6 +1314,7 @@ function liveConditionContext(
 
 const CONTEXT_EVENT_PAGES = 1;
 const CONTEXT_TILE_PROPERTIES = 2;
+const CONTEXT_MAP_ANIM_TARGET = 4;
 
 function conditionContextFlags(condition: Condition): number {
   if (condition.kind === "appearance" && condition.target !== "player") {
@@ -1209,6 +1345,15 @@ function programContextFlags(program: readonly Instr[]): number {
       if (instruction.onWin) flags |= programContextFlags(instruction.onWin);
       if (instruction.onLose) flags |= programContextFlags(instruction.onLose);
       if (instruction.onEscape) flags |= programContextFlags(instruction.onEscape);
+    } else if (
+      instruction.op === "mapAnim" &&
+      // A fixed-coordinate mapAnim compiles to `target: null` (the command
+      // carries x/y instead). typeof null === "object", so the null check is
+      // required: only a `{event}` target needs the live-character set.
+      instruction.target !== null &&
+      typeof instruction.target === "object"
+    ) {
+      flags |= CONTEXT_MAP_ANIM_TARGET;
     }
   }
   return flags;
@@ -1294,6 +1439,7 @@ export function createWorld(
     maxPerItem: options.inventory?.maxPerItem ?? SHOP_ITEM_CAP,
     maxKinds: options.inventory?.maxKinds,
   };
+  const animsById = new Map((options.animations ?? []).map((def) => [def.id, compileAnim(def, hz)]));
   const keyed = indexEvents(map);
   return {
     hz,
@@ -1308,9 +1454,11 @@ export function createWorld(
     needsEventPages: (contextFlags & CONTEXT_EVENT_PAGES) !== 0,
     needsTilePropertyContext: (contextFlags & CONTEXT_TILE_PROPERTIES) !== 0,
     needsMovementControlPath,
+    needsMapAnimTarget: (contextFlags & CONTEXT_MAP_ANIM_TARGET) !== 0,
     items: itemsById,
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
+    anims: animsById,
     extensions: options.extensions ?? createExtensionRuntime(),
   };
 }
@@ -1388,6 +1536,10 @@ export function ownRecord<K extends SwitchRecord>(sw: SwitchState, k: K): Switch
   return sw[k];
 }
 
+/** Deep-copy interpreter state for a snapshot or a non-in-place fold. The
+ *  switch bank is field-for-field copied; compiled programs and the anims
+ *  list are shared (anims is copy-on-write: mapAnim/stopAnim take a private
+ *  copy before mutating, so a shared list is never written). */
 export function cloneInterp(s0: InterpState): InterpState {
   return copyInterp(s0, {
     switches: keyedRecord(s0.sw.switches),
@@ -1453,6 +1605,10 @@ function copyInterp(s0: InterpState, sw: SwitchState, shareTileProperties: boole
     touched: keyedRecord(s0.touched),
     inputLocked: s0.inputLocked,
     placements: clonePlacements(s0.placements),
+    // The anims list is mutated only by mapAnim/stopAnim (which copy it
+    // first via writableAnims), so a working copy shares the source array:
+    // steady-state playback costs no per-frame clone.
+    anims: s0.anims,
     ...(s0.eventAppearances ? {
       eventAppearances: Object.fromEntries(
         Object.entries(s0.eventAppearances).map(([id, appearance]) => [id, { ...appearance }]),
@@ -1501,6 +1657,77 @@ function eventOrigin(ev: GameEvent, s: InterpState, input: InterpInput): Cell {
     keyedValue(s.placements, ev.id) ??
     { x: ev.x, y: ev.y }
   );
+}
+
+/** Drop finished one-shot instances so the list cannot grow without bound
+ *  across a long map visit. Called only from mapAnim/stopAnim, never per
+ *  frame: playback itself stays allocation-free. A looping instance is
+ *  never pruned. */
+/** A writable anims list for a mutating command. copyInterp shares the
+ *  source array (steady-state playback clones nothing), so the first
+ *  mutation of a step takes a private copy; an empty list is created on
+ *  demand. The copy is shallow — instances are replaced, never mutated. */
+function writableAnims(s: InterpState): MapAnimInstance[] {
+  if (s.anims === undefined) {
+    s.anims = [];
+    return s.anims;
+  }
+  s.anims = [...s.anims];
+  return s.anims;
+}
+
+function pruneMapAnims(s: InterpState, w: World): void {
+  const anims = s.anims;
+  if (!anims || anims.length === 0) return;
+  const isDead = (a: MapAnimInstance): boolean => {
+    const compiled = w.anims.get(a.anim);
+    return !!compiled && !a.loop && s.frame - a.start >= compiled.total;
+  };
+  let firstDead = -1;
+  for (let i = 0; i < anims.length; i++) {
+    if (isDead(anims[i]!)) { firstDead = i; break; }
+  }
+  if (firstDead < 0) return; // nothing to prune; keep the shared array
+  const kept = anims.slice(0, firstDead);
+  for (let i = firstDead + 1; i < anims.length; i++) {
+    const a = anims[i]!;
+    if (!isDead(a)) kept.push(a);
+  }
+  s.anims = kept.length === 0 ? undefined : kept;
+}
+
+/** Refresh every event-following instance's anchor to its target's live
+ *  cell. The renderer paints a following instance on the character's live
+ *  pixel while it is on the map, and falls back to the instance's x/y once
+ *  the character leaves (erased / page off). Without this refresh that
+ *  fallback is the creation cell, so an animation bound at (5,6) would jump
+ *  back to (5,6) after the character walked to (7,1) and vanished. The
+ *  session only builds `liveEventCells` for worlds with the mapAnim-target
+ *  capability, so this whole path is skipped (zero cost) when no event
+ *  target is authored. The array is copied only when an anchor actually
+ *  moves, so a stationary target allocates nothing. */
+function syncFollowAnchors(s: InterpState, input: InterpInput): void {
+  const cells = input.liveEventCells;
+  if (!cells) return;
+  const anims = s.anims;
+  if (!anims || anims.length === 0) return;
+  let firstMoved = -1;
+  for (let i = 0; i < anims.length; i++) {
+    const a = anims[i]!;
+    if (a.target === null || a.target === "player") continue;
+    const cell = keyedValue(cells, a.target.event);
+    if (cell && (a.x !== cell.x || a.y !== cell.y)) { firstMoved = i; break; }
+  }
+  if (firstMoved < 0) return; // every follower is stationary or targetless
+  const writable = writableAnims(s);
+  for (let i = firstMoved; i < writable.length; i++) {
+    const a = writable[i]!;
+    if (a.target === null || a.target === "player") continue;
+    const cell = keyedValue(cells, a.target.event);
+    if (cell && (a.x !== cell.x || a.y !== cell.y)) {
+      writable[i] = { ...a, x: cell.x, y: cell.y };
+    }
+  }
 }
 
 interface Rect {
@@ -2468,6 +2695,21 @@ function runFiber(
       top.pc++;
     } else return;
   }
+  if (f.mode === "animWait") {
+    const top = f.stack[0]!;
+    const ins = top.prog[top.pc]! as Extract<Instr, { op: "mapAnim" }>;
+    const compiled = w.anims.get(ins.anim);
+    const live = (s.anims ?? []).find((a) => a.id === ins.id);
+    // The wait ends when the instance stops (stopAnim/transfer/prune) or its
+    // animation leaves the catalog. A one-shot additionally ends after one
+    // playthrough; a looping instance keeps playing until stopAnim ends it —
+    // MV's "Wait for Completion" on a looping animation blocks until the
+    // animation is stopped, never after a single cycle.
+    if (!compiled || !live || (!live.loop && s.frame - f.since >= compiled.total)) {
+      f.mode = "run";
+      top.pc++;
+    } else return;
+  }
   if (f.mode === "text") {
     const top = f.stack[0]!;
     const ins = top.prog[top.pc]!;
@@ -2753,6 +2995,99 @@ function runFiber(
         top.pc++;
         break;
       }
+      case "mapAnim": {
+        const compiled = w.anims.get(ins.anim);
+        if (!compiled) {
+          s.error = { kind: "content", message: `mapAnim in ${f.key}: unknown animation ${ins.anim}` };
+          return;
+        }
+        pruneMapAnims(s, w);
+        let x = ins.x;
+        let y = ins.y;
+        // The instance follows the target by default. follow:false snapshots
+        // the character's tile at execution and pins the instance there
+        // (Tuxemon play_map_animation reads character.tile_pos once and
+        // stores the coordinates, never a live reference).
+        let target = ins.target;
+        if (ins.target !== null) {
+          if (ins.target === "player") {
+            x = input.playerCell.x;
+            y = input.playerCell.y;
+          } else {
+            // An event target resolves from the live character set only
+            // (Tuxemon get_npc looks up _on_map): an erased, inactive, or
+            // never-spawned event has no live character, so play nothing
+            // rather than ghost the animation at the authored x/y.
+            const cell = input.liveEventCells ? keyedValue(input.liveEventCells, ins.target.event) : undefined;
+            if (!cell) {
+              s.error = {
+                kind: "content",
+                message: `mapAnim in ${f.key}: target event ${ins.target.event} has no live character on this map`,
+              };
+              return;
+            }
+            x = cell.x;
+            y = cell.y;
+          }
+          if (!ins.follow) target = null;
+        } else if (
+          x === null || y === null ||
+          !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0
+        ) {
+          s.error = {
+            kind: "content",
+            message: `mapAnim in ${f.key}: x/y must be non-negative integers when target is absent`,
+          };
+          return;
+        }
+        const loop = ins.loop ?? compiled.loop;
+        // A same-id replay replaces the live instance (deterministic restart).
+        const anims = writableAnims(s);
+        let kept = 0;
+        for (let i = 0; i < anims.length; i++) {
+          const a = anims[i]!;
+          if (a.id !== ins.id) anims[kept++] = a;
+        }
+        anims.length = kept;
+        anims.push({
+          id: ins.id,
+          anim: ins.anim,
+          start: s.frame,
+          x,
+          y,
+          target,
+          layer: ins.layer,
+          loop,
+        });
+        if (ins.wait) {
+          f.mode = "animWait";
+          f.since = s.frame;
+          return;
+        }
+        top.pc++;
+        break;
+      }
+      case "stopAnim": {
+        pruneMapAnims(s, w);
+        const anims = s.anims;
+        if (anims) {
+          const writable = writableAnims(s);
+          let kept = 0;
+          for (let i = 0; i < writable.length; i++) {
+            const a = writable[i]!;
+            const drop = ins.id !== null
+              ? a.id === ins.id
+              : ins.anim !== null
+                ? a.anim === ins.anim
+                : true;
+            if (!drop) writable[kept++] = a;
+          }
+          writable.length = kept;
+          if (kept === 0) s.anims = undefined;
+        }
+        top.pc++;
+        break;
+      }
       case "erase":
         f.erase = true;
         finishFiber(s, f);
@@ -2982,6 +3317,11 @@ export function stepInterpWithExtensionsInPlace(
   if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension);
   const mainBattles = s.pendingBattles.splice(queuedBattleCount);
   s.pendingBattles.push(...mainBattles, ...parallelBattles);
+  // Refresh following instances' anchors from this tick's live-character
+  // snapshot so a target that walks away and then leaves the map pins the
+  // animation to its last live cell (see syncFollowAnchors). A fatalized
+  // state returned above is frozen and never reaches here.
+  if (!s.error) syncFollowAnchors(s, input);
   return extension.ext;
 }
 

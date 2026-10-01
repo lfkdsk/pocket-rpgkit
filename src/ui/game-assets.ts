@@ -131,6 +131,10 @@ export interface GameAssets {
   stream?: StreamedGameAssets;
   /** Map id -> render-only animated tile placements. */
   animated?: Readonly<Record<string, readonly AnimatedTile[]>>;
+  /** AnimationDef id -> cooked per-frame static images in play order. The
+   *  mapAnim layer selects frames[animFrameIndex(...)] per frame from the
+   *  saved reference tick; never an auto-play atlas. */
+  anims?: Readonly<Record<string, { frames: readonly string[]; w: number; h: number }>>;
   /** Optional named runtime layers and prepackaged variants. The reducer
    * stores only {visible,variant}; these immutable assets remain render-only. */
   layers?: Readonly<Record<string, GameVisualLayerAssets>>;

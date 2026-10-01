@@ -1,7 +1,7 @@
 // src/engine/schema-validate.ts — minimal JSON Schema (draft
 // 2020-12 subset) validator covering the constructs data/schema.json uses:
 // type, const, enum, properties/required/additionalProperties, items,
-// minItems/maxItems, oneOf/anyOf/allOf, if/then/else, $ref + $defs, pattern,
+// minItems/maxItems, oneOf/anyOf/allOf/not, if/then/else, $ref + $defs, pattern,
 // minLength/maxLength, minimum/maximum, exclusiveMinimum, minProperties,
 // uniqueItems, prefixItems. Not a general-purpose validator — a zero-dependency checker
 // for THIS schema, so the runtime data keeps an acceptance gate without
@@ -167,6 +167,13 @@ export function validateSchema(
     }
     if (sch.allOf) {
       for (const branch of sch.allOf as Schema[]) if (!walk(branch, v)) valid = false;
+    }
+    if (sch.not) {
+      const wasRecording = recording;
+      recording = false;
+      const matches = walk(sch.not as Schema, v);
+      recording = wasRecording;
+      if (matches) fail("not: matched a forbidden schema");
     }
     if (sch.if) {
       const wasRecording = recording;

@@ -1,7 +1,7 @@
 // src/engine/types.ts — data types for rpgkit-project/v1 (the schema
 // in data/schema.json is normative). P1① carried the map/sheet subset; P1③
 // widens to the event vocabulary the interpreter consumes (R2 report §2–3):
-// pages, triggers, the 15-op command list, page conditions. The interpreter
+// pages, triggers, the 23-command list, page conditions. The interpreter
 // (interpreter.ts) is a pure fold over these types: no host imports. P1②
 // adds the sheet dirBlock directional masks consumed by passability.ts.
 
@@ -294,6 +294,46 @@ export type Command =
    *  (default, MV parity) lists it dimmed and unconfirmable; "hide"
    *  (Tuxemon parity, only resellable items) omits it. */
   | { op: "shop"; id: string; goods: ShopGood[]; sell?: boolean; sellList?: "disable" | "hide" }
+  /** Play a frame animation on the map (Tuxemon play_map_animation /
+   *  play_tile_animation, RPG Maker Show Animation). The instance is
+   *  reducer state keyed by `id`: it starts on the tick the command runs
+   *  with the saved frame clock as its origin, so playback is identical
+   *  under rewind and after a save/load. A replay with a live instance of
+   *  the same `id` replaces it. Position is EITHER a tile (`x`/`y`, both
+   *  required) OR a character to follow (`target`: "player" or a map
+   *  event by id); a bound instance keeps painting on the character's
+   *  live pixel position as it moves. `follow:false` with a `target`
+   *  snapshots the character's tile at execution and pins the instance
+   *  there (Tuxemon play_map_animation parity: it reads character.tile_pos
+   *  once and stores the coordinates, never a live reference). An event
+   *  target must name a live character: one that is erased, on an inactive
+   *  page, or never spawned has no live position, so the command plays
+   *  nothing (a content error) instead of falling back to the event's
+   *  authored x/y (Tuxemon get_npc looks up the live _on_map set only). A
+   *  following instance whose target leaves the map mid-playback keeps
+   *  playing, pinned to the target's last live cell. `layer`
+   *  "above" (default, Tuxemon layer 4) paints over characters, "below"
+   *  under them. `loop` overrides the AnimationDef default. `wait` parks
+   *  the fiber until one playthrough completes for a one-shot animation,
+   *  or until `stopAnim` stops the instance for a looping one; stopping
+   *  the instance releases the wait early either way. Animations are
+   *  per-map-visit state: a transfer clears them. */
+  | {
+      op: "mapAnim";
+      id: string;
+      anim: string;
+      x?: number;
+      y?: number;
+      target?: "player" | { event: string };
+      follow?: boolean;
+      layer?: "below" | "above";
+      loop?: boolean;
+      wait?: boolean;
+    }
+  /** Stop map animations: one instance by `id`, every instance of one
+   *  animation by `anim`, or every live map animation when neither is
+   *  given. A fiber parked on a stopped instance's `wait` resumes. */
+  | { op: "stopAnim"; id?: string; anim?: string }
   /** Cross-event input lock. While the lock is held the mover
    *  ignores the d-pad and action presses cannot start an event; autorun
    *  and parallel fibers keep folding. MV lock_controls/unlock_controls. */
@@ -464,6 +504,37 @@ export type WalkerSpriteDef = WalkerSheetSpriteDef | WalkerAtlasSpriteDef;
  *  the cooker slices into per-facing/pose frames. */
 export type SpriteDef = ImageSpriteDef | WalkerSpriteDef;
 
+/** A frame animation a `mapAnim` command plays on the map. The sheet is
+ *  cooked into one static baked image per authored frame (the same pipeline
+ *  as walker sheets), so the runtime frame index is a pure function of the
+ *  saved reference tick: rewind and save/load reproduce pixels exactly,
+ *  and no host auto-play clock is involved. */
+export interface AnimationDef {
+  id: string;
+  /** Build-time source sheet. The asset cooker slices it into frames; the
+   *  runtime never loads it. A sheet the cooker cannot find is a build
+   *  error (the importer references animations by name). */
+  sheet: string;
+  /** Frame size in px; defaults to 16x16 (one tile). A taller frame is
+   *  anchored to its tile's bottom edge, like a 16x32 walker. */
+  frameW?: number;
+  frameH?: number;
+  /** Sheet columns for row-major frame indexing; the cooker's own sheet
+   *  metadata applies when omitted. */
+  cols?: number;
+  /** Frame indices into the sheet (row-major), in play order. Defaults to
+   *  0..`count`-1 when `count` is given instead. */
+  frames?: number[];
+  /** Frame count when `frames` is omitted (sequential play order). */
+  count?: number;
+  /** Duration of each frame in virtual seconds. Compiled to reference
+   *  ticks with the world's hz, so the same virtual instant shows the same
+   *  frame at 60/30/20/4 Hz. */
+  frameDuration: number;
+  /** Default loop behavior; a `mapAnim` command's `loop` overrides it. */
+  loop?: boolean;
+}
+
 /** Project-wide runtime options (RPG Maker's System settings). Every field
  *  is optional and its absence keeps the v1 behavior. */
 export interface ProjectSystem {
@@ -502,6 +573,8 @@ export interface Project {
   items: Item[];
   /** Page.sprite key -> static character image. */
   sprites?: Record<string, SpriteDef>;
+  /** Frame animations playable with the `mapAnim` command, by id. */
+  animations?: AnimationDef[];
   commonEvents?: CommonEvent[];
   maps: MapDef[];
 }

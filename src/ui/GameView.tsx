@@ -60,6 +60,7 @@ import {
   eventIdLess,
   modalChanged,
 } from "../engine/interpreter.ts";
+import type { CompiledAnim } from "../engine/interpreter.ts";
 import type {
   CameraState,
   Facing,
@@ -85,6 +86,7 @@ import type {
   ScreenLayerVariant,
 } from "./game-assets.ts";
 import { AnimatedTiles, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
+import { MapAnimLayer, type MapAnimStats } from "./MapAnimLayer.tsx";
 import { ChunkLayer } from "./ChunkLayer.tsx";
 import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
@@ -589,6 +591,8 @@ export interface GameViewProps {
   onStreamStats?: (layer: "ground" | "upper", stats: StreamedChunkLayerStats) => void;
   /** Optional diagnostics for viewport-mounted animated tile sprites. */
   onAnimatedStats?: (layer: "below" | "above", stats: AnimatedTilesStats) => void;
+  /** Optional diagnostics for state-driven map animation instances. */
+  onMapAnimStats?: (layer: "below" | "above", stats: MapAnimStats) => void;
   /** Browser repositories can report their frame barrier without putting
    * network timing into SessionState. null means ticking has resumed. */
   onMapLoading?: (mapId: string | null) => void;
@@ -701,6 +705,11 @@ export function GameView(props: GameViewProps) {
   };
 
   const [mapId, setMapId] = createSignal(state.mapId);
+  // Compiled animation timing for the resident map (World.anims); an empty
+  // map for projects without animations keeps the layer's frame math cheap.
+  const EMPTY_ANIMS: ReadonlyMap<string, CompiledAnim> = new Map();
+  const worldAnims = (): ReadonlyMap<string, CompiledAnim> =>
+    session.worlds.get(state.mapId)?.anims ?? EMPTY_ANIMS;
   const [pose, setPose] = createSignal<WalkPose>(walkPose(state.move.phase));
   const [facing, setFacing] = createSignal<Facing>(state.move.facing);
   const [modal, setModal] = createSignal<Modal | null>(null);
@@ -1014,6 +1023,16 @@ export function GameView(props: GameViewProps) {
               viewport={() => viewport()}
             />
           ))}
+          {assets.anims ? (
+            <MapAnimLayer
+              above={false}
+              state={() => state}
+              anims={worldAnims}
+              assets={assets}
+              debugName="rpgkit-map-anim-below"
+              onStats={(stats) => props.onMapAnimStats?.("below", stats)}
+            />
+          ) : null}
 
           <OccludingUpperLayer
             mapId={mapId()}
@@ -1060,6 +1079,16 @@ export function GameView(props: GameViewProps) {
               viewport={() => viewport()}
             />
           ))}
+          {assets.anims ? (
+            <MapAnimLayer
+              above
+              state={() => state}
+              anims={worldAnims}
+              assets={assets}
+              debugName="rpgkit-map-anim-above"
+              onStats={(stats) => props.onMapAnimStats?.("above", stats)}
+            />
+          ) : null}
             </View>
           </View>
 

@@ -21,11 +21,11 @@ state.
   `approach` move steps (fixed neighbour order, respects all edge guards
   and bodies; the search is sliced across reference ticks to bound QuickJS
   frame cost).
-- `interpreter.ts` — event pages, triggers, the 26-command interpreter
+- `interpreter.ts` — event pages, triggers, the 28-command interpreter
   (the v1 15 plus `lockInput` / `unlockInput` / `place` / `shop` / `ext` /
   `extChoice` / `battle` / `moveControl` / `appearance` / `layer` /
-  `tileProperty`), the typewriter clock, the seeded RNG, saveable switch
-  state.
+  `tileProperty` / `mapAnim` / `stopAnim`), the typewriter clock, the seeded
+  RNG, saveable switch state.
 - `extensions.ts` — namespaced pure command/condition/dynamic-choice handlers,
   the opaque JSON extension slot, validation and save codecs.
 - `battle.ts` — game-owned battle reducer and scene contracts.
