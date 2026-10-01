@@ -32,6 +32,7 @@ import {
   dispatchPreviewMessage,
   previewAllowlist,
   type PreviewBackend,
+  type PreviewMessage,
   type PreviewLoadResult,
   type PreviewStartResult,
   type PreviewStartTarget,
@@ -102,7 +103,16 @@ function PreviewBattleScene(props: BattleSceneViewProps): JSX.Element {
   );
 }
 
+function messageResult(state: SessionState): PreviewMessage | null {
+  const modal = state.interp.modal;
+  if (!modal) return null;
+  if (modal.kind === "text") return { kind: "text", text: modal.lines.join("\n") };
+  if (modal.kind === "choices") return { kind: "choices", text: [modal.prompt, ...modal.options].join("\n") };
+  return { kind: "shop", text: "" };
+}
+
 function stateResult(state: SessionState): PreviewStateResult {
+  const interp = state.interp;
   return {
     status: "running",
     map: state.mapId,
@@ -112,6 +122,10 @@ function stateResult(state: SessionState): PreviewStateResult {
     py: state.move.py,
     dir: DIR_NAMES[state.move.facing] ?? "down",
     moving: state.move.moving,
+    frame: state.frame,
+    running: (interp.main ? 1 : 0) + Object.keys(interp.parallels).length,
+    event: interp.main?.key ?? null,
+    message: messageResult(state),
     switches: { ...state.sw.switches },
     variables: { ...state.sw.variables },
     gold: state.sw.gold,

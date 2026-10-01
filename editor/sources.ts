@@ -16,6 +16,9 @@ export interface EditorSource {
   document: string;
   /** Sheet id -> the example's source tile sheet (16px cell grid). */
   sheets: Record<string, string>;
+  /** The example's demo chapters (save points), offered by Studio's
+   * play-test: a module and the name of its exported DemoOptions. */
+  chapters?: { module: string; export: string };
 }
 
 export const EDITOR_SOURCES: readonly EditorSource[] = [
@@ -26,6 +29,7 @@ export const EDITOR_SOURCES: readonly EditorSource[] = [
       town: "examples/sunstone/assets/src/town-tiles.png",
       dun: "examples/sunstone/assets/src/dungeon-tiles.png",
     },
+    chapters: { module: "examples/sunstone/demo-chapters.ts", export: "SUNSTONE_DEMO" },
   },
   {
     id: "meadow",

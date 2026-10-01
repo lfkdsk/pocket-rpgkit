@@ -17,11 +17,15 @@ over `postMessage`. It is built onto the kit's site as the `preview` app
 - `start` — warps to a map/cell/facing, or restores a chapter supplied with
   `load`, through the demo runtime's validated warp/restore paths
   (`src/ui/demo/runtime.ts`).
-- `state` — reads back map, position, facing, switches, variables, gold and
-  items.
+- `state` — reads back map, position, facing, frame number, running event
+  pages, the open message box, switches, variables, gold and items.
 - `input` — holds a u16 button mask for N frames through the attract
   controller's tape path, then releases.
 - `stop` — unmounts the project and returns to the idle screen.
+
+Studio's play-test panel (`editor/studio/`) is the second frontend: it
+embeds this page as `preview/?embed` (the player page then shows only the
+game screen) from the same site.
 
 The host answers only its own origin plus any origins the embedding page
 configured with `?preview-origin=<origin>` (repeatable, comma-separated).

@@ -48,6 +48,13 @@ const HOST_ONLY: [string, RegExp][] = [
   ["window.alert / prompt", /\bwindow\.(?:alert|prompt)\b|^(?!\s*(?:async\s+)?(?:alert|prompt)\([^)]*\)\s*:).*(?<![.\w])(?:alert|prompt)\(/m],
   ["matchMedia", /\bmatchMedia\b/],
   ["beforeunload", /["']beforeunload["']|\bonbeforeunload\b/i],
+  // The play-test's game page: embedding it and talking to it is the host's.
+  ["postMessage", /\bpostMessage\s*\(/],
+  ["message events", /addEventListener\(\s*["']message["']|\bonmessage\b/],
+  ["iframe", /\biframe\b|\bHTMLIFrameElement\b|\bcontentWindow\b|\bcontentDocument\b/i],
+  ["embedded documents", /<(?:embed|object|frame)\s|(?:\bh|createElement)\(\s*["'](?:embed|object|frame)["']/i],
+  ["other windows", /\bwindow\.(?:parent|top|opener|open)\b|\bwindow\.frames\b/],
+  ["message channels", /\b(?:MessageChannel|BroadcastChannel)\b/],
 ];
 
 /** The browser host: the only files that may use HOST_ONLY APIs. */
@@ -100,7 +107,7 @@ describe("Studio host boundary", () => {
 
   test("the scan recognises each API (the browser host uses them; planted calls are caught)", () => {
     const browser = violations(readFileSync(join(STUDIO, "host-browser.ts"), "utf8"));
-    for (const name of ["localStorage", "URL.createObjectURL", "new Blob", "fetch()", "file input", "download link", "File System Access pickers", "window.confirm / confirm()", "matchMedia", "beforeunload"]) {
+    for (const name of ["localStorage", "URL.createObjectURL", "new Blob", "fetch()", "file input", "download link", "File System Access pickers", "window.confirm / confirm()", "matchMedia", "beforeunload", "postMessage", "message events", "iframe"]) {
       expect(browser).toContain(name);
     }
     const planted: [string, string][] = [
@@ -110,6 +117,16 @@ describe("Studio host boundary", () => {
       ["file input", `h("input", { type: "file" })`],
       ["download link", `link.download = name;`],
       ["URL.createObjectURL", `image.src = URL.createObjectURL(file);`],
+      ["postMessage", `frame.contentWindow.postMessage(message, origin);`],
+      ["message events", `window.addEventListener("message", onMessage);`],
+      ["iframe", `const frame = document.createElement("iframe");`],
+      ["iframe", `h("iframe", { src: "../preview/" })`],
+      ["embedded documents", `h("object", { data: "../preview/" })`],
+      ["embedded documents", `document.createElement("embed")`],
+      ["other windows", `window.parent.postMessage(x, "*")`],
+      ["other windows", `const w = window.open("../preview/");`],
+      ["message channels", `const channel = new MessageChannel();`],
+      ["message channels", `new BroadcastChannel("studio")`],
     ];
     for (const [name, line] of planted) expect(violations(line)).toContain(name);
     // The boot snippet is host code too.
@@ -153,6 +170,8 @@ describe("Studio host boundary", () => {
     expect(violations(page(`<button onclick="localStorage.clear()">x</button>`), true)).toContain("localStorage");
     expect(violations(page(`<body onbeforeunload="return 1">`), true)).toContain("beforeunload");
     expect(violations(page(`<input type="file" id="open">`), true)).toContain("file input");
+    expect(violations(page(`<object data="../preview/"></object>`), true)).toContain("embedded documents");
+    expect(violations(page(`<iframe src="../preview/"></iframe>`), true)).toContain("iframe");
     expect(violations(page(`<!-- localStorage and matchMedia belong to the host -->`), true)).toEqual([]);
   });
 
@@ -188,7 +207,7 @@ function looseSunstone(): MemoryDirectory {
 
 describe("Studio on the memory host", () => {
   test("capabilities cover every feature, each with a reason", () => {
-    const features: HostFeature[] = ["openFile", "openDirectory", "saveInPlace", "storage", "export", "localArt", "checks", "dynamicChecks", "agent"];
+    const features: HostFeature[] = ["openFile", "openDirectory", "saveInPlace", "storage", "export", "localArt", "checks", "dynamicChecks", "agent", "preview"];
     const caps = new MemoryHost().capabilities();
     expect(Object.keys(caps).sort()).toEqual([...features].sort());
     for (const feature of features) expect(caps[feature].reason.length).toBeGreaterThan(5);

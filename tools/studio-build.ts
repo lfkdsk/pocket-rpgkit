@@ -18,6 +18,8 @@
 //   studio.js                editor/studio/main.ts bundled for the browser
 //   examples.json            the bundled examples (shape: StudioExamples)
 //   examples/<id>.json       each editor/sources.ts document, verbatim
+//                            (with each example's demo chapters as save
+//                            codes, for the play-test's start menu)
 //   examples/sunstone-pack.json
 //                            Sunstone as an rpgkit-edit/sharded-pack-v1
 //   art/sheets/<sheet>.png   tile sheets, keyed by sheet id
@@ -70,6 +72,14 @@ export interface StudioExample {
   sheets: Record<string, string>;
   sprites: Record<string, string>;
   player?: string;
+  /** Demo chapters a play-test can start from (save codes, no tapes). */
+  chapters?: StudioChapter[];
+}
+
+export interface StudioChapter {
+  id: string;
+  title: string;
+  snapshot: string;
 }
 
 export interface StudioExamples {
@@ -164,6 +174,24 @@ function copyExample(kitRoot: string, out: Output, source: EditorSource, project
   return { sheets, sprites, ...(player ? { player } : {}) };
 }
 
+/** An example's demo chapters as save codes (editor/sources.ts names the
+ *  module). Tapes stay behind: a play-test restores the save point and plays
+ *  live. */
+async function exampleChapters(kitRoot: string, source: EditorSource): Promise<StudioChapter[] | undefined> {
+  if (!source.chapters) return undefined;
+  const module = (await import(join(kitRoot, source.chapters.module))) as Record<string, unknown>;
+  const demo = module[source.chapters.export] as { chapters?: readonly { id: unknown; title: unknown; snapshot: unknown }[] } | undefined;
+  if (!demo || !Array.isArray(demo.chapters)) {
+    throw new Error(`studio: ${source.chapters.module} exports no ${source.chapters.export}.chapters for ${source.id}`);
+  }
+  return demo.chapters.map((chapter, index) => {
+    if (typeof chapter.id !== "string" || typeof chapter.title !== "string" || typeof chapter.snapshot !== "string") {
+      throw new Error(`studio: chapter ${index} of ${source.id} needs a string id, title and save code`);
+    }
+    return { id: chapter.id, title: chapter.title, snapshot: chapter.snapshot };
+  });
+}
+
 /** The Sunstone document as a sharded pack, in the splitter's default JSON
  *  entry encoding. */
 export function studioPackText(project: Project): string {
@@ -242,7 +270,8 @@ export async function buildStudio(options: StudioBuildOptions): Promise<{ files:
     const project = JSON.parse(text.toString("utf8")) as Project;
     const document = out.write(`examples/${source.id}.json`, text, `document of ${source.id}`);
     const art = copyExample(kitRoot, out, source, project);
-    examples.push({ id: source.id, title: project.title, kind: "inline", document, ...art });
+    const chapters = await exampleChapters(kitRoot, source);
+    examples.push({ id: source.id, title: project.title, kind: "inline", document, ...art, ...(chapters ? { chapters } : {}) });
     if (source.id === STUDIO_PACK_SOURCE) {
       packArt = art;
       packProject = project;
@@ -263,7 +292,7 @@ export async function buildStudio(options: StudioBuildOptions): Promise<{ files:
   }
 
   const manifest: StudioExamples = {
-    examples: examples.map(({ id, title, kind, document, sheets, sprites, player }) => ({
+    examples: examples.map(({ id, title, kind, document, sheets, sprites, player, chapters }) => ({
       id,
       title,
       kind,
@@ -271,6 +300,7 @@ export async function buildStudio(options: StudioBuildOptions): Promise<{ files:
       sheets,
       sprites,
       ...(player ? { player } : {}),
+      ...(chapters ? { chapters } : {}),
     })),
   };
   out.write("examples.json", `${JSON.stringify(manifest, null, 2)}\n`, "examples.json");

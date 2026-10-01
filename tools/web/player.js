@@ -39,6 +39,8 @@
 //            compatibility mouse events from it, so an app that only reads
 //            the mouse (Alpine Post's click-to-walk) answers a tap.
 //   pad      the on-screen buttons, for devices without a keyboard.
+// Embedding: ?embed hides everything but the game screen and fits it to
+// the window, for a page that frames the player in an iframe.
 //   files    an editor page handles load/save over the companion: Open and
 //            bundled inline projects send load lines; self-contained sharded
 //            packs send a shell catalog and answer map reads lazily. SAVE
@@ -778,6 +780,10 @@ export class BrowserEditorHost {
 class Player {
   constructor(config) {
     this.config = config;
+    // ?embed: the page shows only the game screen, sized to the window, for
+    // a page that frames the player (Studio's play-test panel).
+    this.embedded = new URLSearchParams(location.search).has("embed");
+    if (this.embedded) document.body.classList.add("embedded");
     this.stage = $("stage");
     this.canvas = $("screen");
     this.overlay = $("overlay");
@@ -1318,7 +1324,9 @@ class Player {
     const style = getComputedStyle(area);
     const areaWidth = area.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     const top = this.stage.getBoundingClientRect().top + window.scrollY;
-    const areaHeight = Math.max(window.innerHeight - top - RESERVE_PX, window.innerHeight * 0.5);
+    const areaHeight = this.embedded
+      ? window.innerHeight
+      : Math.max(window.innerHeight - top - RESERVE_PX, window.innerHeight * 0.5);
     const density = this.config.rasterDensity ?? 1;
     const { size, k } = fitViewport(this.config.viewport, areaWidth, areaHeight, dpr, density);
     const [w, h] = size;

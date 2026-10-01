@@ -204,14 +204,66 @@ their tooltips say why. They are reserved for the desktop app.
 | = and -, 0 | Zoom in and out, fit |
 | Space+drag, middle-drag, Shift+wheel | Pan |
 | Delete, Ctrl/⌘+D | Delete or duplicate the selected event |
-| Esc | Clear the selection |
+| Esc | Clear the selection; in the play-test, give the keyboard back to the editor |
+| Ctrl/⌘+Enter | Play-test (from the selected cell unless the panel's Start says otherwise) |
 | ? | Show the shortcuts |
+
+## Play-test
+
+**Play** in the toolbar (Ctrl/⌘+Enter; with the panel open it plays again
+from the panel's Start choice) opens the play-test panel beside the
+canvas and runs the open document in the real game engine: the site's
+[`preview` player page](protocols.md#5-preview-protocol--rpgkit-previewv1)
+embedded in the panel and driven over `rpgkit-preview/v1`. Your edits do not
+have to be saved first; the game gets the current export bytes.
+
+![The play-test panel running the edited elder dialogue](screenshots/studio/studio-playtest-dialogue.png)
+
+| Control | What it does |
+| --- | --- |
+| **Start** | Where the game starts: the selected cell (click a cell with the select tool; with none selected, the project start), the project start, or a chapter. Chapters are offered for documents with the title of a bundled example that has them (Sunstone's Village, Forest and Cave save points); a chapter restores its save point and plays live. |
+| **Facing** | The player's facing at the selected cell. |
+| **Play** | Loads the latest document and starts at the chosen place. |
+| **Reload** | Loads the latest document and starts at the same place as the running game. It is highlighted once you edit after the game loaded. |
+| **Restart** | Starts the game afresh at the same place with the document it already has: switches, items and the rest start over, and edits made since wait for Reload. After Stop, it loads the latest document. |
+| **Stop** / **×** | Unloads the game / closes the panel. |
+
+Below the game, a readout refreshes four times a second from the protocol's
+`state`: map, position (and whether the player is moving), facing, frame
+number, event pages running, the event in the main slot, gold, and the open
+message box.
+
+**Keyboard.** Click the game to give it the keyboard (it also takes it when
+it starts): arrow keys walk, Enter, Z or A confirms, B or Backspace cancels.
+**Esc** gives the keyboard back to the editor. (On the standalone player
+page Esc also cancels; in Studio it is reserved for leaving the game.)
+
+![The play-test panel, dark theme](screenshots/studio/studio-playtest-dark.png)
+
+What the game shows is the editor's stand-in art: the preview page bundles
+the PocketJS editor's playtest palette, so sheets it does not bake draw as
+blanks, and unregistered extensions, battles and backdrops show the same
+visible stand-ins as the PocketJS editor's playtest.
+
+Limits:
+
+- A document whose `load` message would exceed the protocol's 4 MiB message
+  limit is not sent: the panel says how large it is and disables Play and
+  Reload.
+- Sharded packs and folders are put together into one inline document for
+  the play-test (the protocol accepts only inline documents), so the same
+  4 MiB limit applies to the whole project.
+- Starting at a cell uses the host's checked warp: the cell must be inside
+  the map, standable and free of events; otherwise the panel shows the
+  host's reason.
+- Studio only embeds a preview page from its own site, and reads replies
+  only from that iframe's window and the site's origin; anything else is
+  ignored. A preview page that speaks another protocol version is reported
+  in the panel.
 
 ## Limits
 
-- No play-test yet. The next phase embeds the real game through the preview
-  protocol (an iframe plus `postMessage`) and starts it from the selected
-  cell; the toolbar's play button is the reserved place for it.
+- Play-test: see [Play-test](#play-test).
 - Walker sprites without a chosen PNG show a placeholder badge.
 - Sharded packs: see [Sharded packs](#sharded-packs).
 - Browser storage holds one saved document per site origin; download a copy
@@ -264,7 +316,9 @@ Everything that depends on where Studio runs goes through one interface,
 `StudioHost` ([`editor/studio/host.ts`](../editor/studio/host.ts)): opening
 files and folders, save and restore, export, picking local art, running
 checks, starting an agent, confirmations, closing with unsaved edits, and the
-theme preference. Each host also reports which of these it can do, with a
+theme preference, and the play-test connection (`StudioHost.preview()`,
+interface in [`editor/studio/preview.ts`](../editor/studio/preview.ts)).
+Each host also reports which of these it can do, with a
 reason, and the UI enables or disables its controls from that. The web page
 uses the browser host (`host-browser.ts`). Tests use an in-memory host
 (`host-memory.ts`). A desktop shell would implement the same interface
@@ -272,7 +326,12 @@ with native files and processes. Opening and saving project folders is
 host-neutral code (`project-directory.ts`) written against a small
 directory interface. `tests/studio-host.test.ts` scans `editor/studio/`
 (every script and page) so that storage, download, fetch, file-picker,
-dialog and media-query calls appear only in the browser host. That includes
+dialog, media-query, iframe and `postMessage` calls appear only in the
+browser host. The browser host's play-test (`BrowserPreview`) embeds
+`../preview/?embed` (the player page shows only its game screen with
+`?embed`) and talks to it; the panel (`preview-panel.ts`) renders the
+host-neutral controller `PlayTest` (`preview.ts`), which checks the document
+against the protocol's limits and decides what to send. That includes
 the page shell: `index.html` only marks a slot (`<!-- studio:host-boot -->`),
 and the build puts the browser host's pre-paint theme script
 (`host-browser-boot.ts`) there; a desktop shell would use its own page.
@@ -290,6 +349,7 @@ PocketJS editor), `tests/studio-host.test.ts` (the host boundary; open, save,
 restore, export and folder saves on the in-memory host),
 `tests/studio-directory-save.test.ts` (folder saves with injected write
 failures leave the old version), `tests/studio-import-limits.test.ts`,
-`tests/studio-inspector-model.test.ts`, `tests/studio-build.test.ts`
-and the browser run `bun tools/studio-verify.ts`, which also regenerates the
+`tests/studio-inspector-model.test.ts`, `tests/studio-build.test.ts`,
+`tests/studio-playtest.test.ts` (what the play-test sends, on the in-memory
+host) and the browser run `bun tools/studio-verify.ts`, which also regenerates the
 screenshots in `docs/screenshots/studio/`.

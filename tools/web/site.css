@@ -254,6 +254,19 @@ table.controls td { padding: 4px 0; color: var(--muted); }
 }
 .focus-hint[hidden] { display: none; }
 
+/* ?embed (tools/web/player.js): only the game screen, centred in the
+   window, for a page that frames the player. */
+body.embedded { background: #000; overflow: hidden; }
+body.embedded .bar,
+body.embedded .caption,
+body.embedded .pad,
+body.embedded .info,
+body.embedded .demo-controls,
+body.embedded .site-footer { display: none; }
+body.embedded main { display: flex; align-items: center; justify-content: center; height: 100vh; }
+body.embedded .screen-area { width: 100%; padding: 0; }
+body.embedded .stage { box-shadow: none; }
+
 .caption {
   margin: 10px auto 0;
   padding: 0 16px;

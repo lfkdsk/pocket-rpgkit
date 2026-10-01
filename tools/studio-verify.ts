@@ -27,7 +27,22 @@
 //   limits    a picked file over the pack limit is refused before it is read;
 //             the served page carries the browser host's boot script
 //   perf      a 100×100 map: zoom, pan and a 200-cell stroke stay fast
-//   shots     dark, light, map editing, command tree, problems, narrow
+//   playtest  Play opens the panel with the site's preview page embedded:
+//             the game starts at the selected village cell (state reports
+//             that cell), frames advance and the readout refreshes; Esc
+//             hands the keyboard back; after editing the elder's dialogue,
+//             Reload restarts the latest document at the same cell, and
+//             walking up and pressing Enter shows the edited line; Restart
+//             after opening the village chest (+25 gold, the thorn key, self
+//             switch A) puts gold, items and the switch back to their start
+//             values; Stop, a chapter start and the sharded pack also play;
+//             forged
+//             replies (Studio's own window, a sandboxed frame, a second
+//             same-origin frame) are ignored; a protocol version mismatch is
+//             shown; a document over the protocol's message limit is refused
+//             with its reason and never sent
+//   shots     dark, light, map editing, command tree, problems, narrow,
+//             and the play-test panel (light, dark, running, edited dialogue)
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -37,6 +52,8 @@ import { loadProject } from "../editor/engine/document.ts";
 import type { Project } from "../src/engine/types.ts";
 import { Cdp, launchChrome } from "./lib/cdp.ts";
 import { splitProjectMaps } from "./lib/map-project.ts";
+import { DEFAULT_UI_THEME } from "../src/ui/theme.ts";
+import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -177,6 +194,120 @@ async function main(): Promise<void> {
     const path = join(SHOTS, `${name}.png`);
     writeFileSync(path, Buffer.from(data.data, "base64"));
     results[`shot:${name}`] = path.slice(ROOT.length + 1);
+  };
+  /** A play-test documentation shot with semantic checks. The capture goes
+   *  to OUT first and replaces the committed picture only when every check
+   *  passes, so a broken frame never overwrites the docs. Dynamic areas (the
+   *  readout's frame number, the status bar's `op N ms`) are never sampled. */
+  const playShot = async (name: string, want: { dialogue: boolean; theme: "light" | "dark" }) => {
+    // Focusing a field scrolls the inspector so that the top of its page
+    // tabs is cut off at the panel edge; scroll back just enough that the
+    // page tabs show whole and the edited field stays in view.
+    results[`inspectorScroll:${name}`] = await evaluate<number[]>(`(() => {
+      const i = document.getElementById("inspector");
+      const before = i.scrollTop;
+      const tabs = i.querySelector(".ins-tabs");
+      if (tabs) {
+        const cut = i.getBoundingClientRect().top - tabs.getBoundingClientRect().top;
+        if (cut > -8) i.scrollTop = Math.max(0, before - cut - 8);
+      }
+      return [before, i.scrollTop];
+    })()`);
+    await evaluate(`(() => { __studio.app.notices = []; __studio.app.emit("notice"); })()`);
+    await sleep(200);
+    const layout = await evaluate<any>(`(() => {
+      const box = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
+      const frame = document.querySelector("#playtest-screen iframe");
+      const doc = frame?.contentDocument;
+      const shown = (sel) => [...(doc?.querySelectorAll(sel) ?? [])].filter((el) => doc.defaultView.getComputedStyle(el).display !== "none" && el.getClientRects().length > 0).length;
+      const canvas = box(doc?.getElementById("screen"));
+      const fr = box(frame);
+      const right = document.querySelector("aside.right");
+      const inspector = document.getElementById("inspector");
+      return {
+        vw: innerWidth, vh: innerHeight,
+        theme: document.documentElement.dataset.theme,
+        bg: getComputedStyle(document.getElementById("playtest")).backgroundColor,
+        toolbarBg: getComputedStyle(document.getElementById("toolbar")).backgroundColor,
+        frame: fr, inner: frame ? { w: frame.clientWidth, h: frame.clientHeight } : null,
+        canvas: canvas && fr ? { x: fr.x + canvas.x, y: fr.y + canvas.y, w: canvas.w, h: canvas.h } : null,
+        embedded: !!doc?.body.classList.contains("embedded"),
+        chromeShown: shown(".bar, .caption, .pad, .info, .demo-controls, .site-footer"),
+        panel: box(document.getElementById("playtest")),
+        hint: box(document.querySelector(".playtest-hint")),
+        toolbar: box(document.getElementById("toolbar")),
+        statusbar: box(document.getElementById("statusbar")),
+        right: box(right),
+        inspector: box(inspector),
+        inspectorClipX: inspector ? inspector.scrollWidth - inspector.clientWidth : null,
+      };
+    })()`);
+    const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const bytes = Buffer.from(data.data, "base64");
+    const draft = join(OUT, `${name}.png`);
+    writeFileSync(draft, bytes);
+    const img = decodePng(new Uint8Array(bytes));
+    const at = (x: number, y: number): [number, number, number] => {
+      const i = (Math.floor(y) * img.width + Math.floor(x)) * 4;
+      return [img.rgba[i]!, img.rgba[i + 1]!, img.rgba[i + 2]!];
+    };
+    /** Fraction of pixels in a rectangle that pass `test`. */
+    const share = (r: { x: number; y: number; w: number; h: number }, test: (p: [number, number, number]) => boolean): number => {
+      let hit = 0;
+      let all = 0;
+      for (let y = Math.ceil(r.y); y < Math.floor(r.y + r.h); y++) {
+        for (let x = Math.ceil(r.x); x < Math.floor(r.x + r.w); x++) {
+          all++;
+          if (test(at(x, y))) hit++;
+        }
+      }
+      return all ? hit / all : 0;
+    };
+    const rgb = (css: string): [number, number, number] => (css.match(/\d+/g) ?? []).slice(0, 3).map(Number) as [number, number, number];
+    const hex = (h: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+    const near = (a: [number, number, number], b: [number, number, number], tol: number) => Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol && Math.abs(a[2] - b[2]) <= tol;
+    const luma = (p: [number, number, number]) => 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+    const ok: [string, boolean, unknown][] = [];
+    ok.push(["the capture is the 1440×900 window", img.width === layout.vw && img.height === layout.vh && img.width === 1440 && img.height === 900, `${img.width}×${img.height}`]);
+    const f = layout.frame;
+    ok.push(["the game iframe is 480×272 and inside the window", layout.inner?.w === 480 && layout.inner?.h === 272 && f && f.x >= 0 && f.y >= 0 && f.x + f.w <= layout.vw && f.y + f.h <= layout.vh, { frame: f, inner: layout.inner }]);
+    const c = layout.canvas;
+    ok.push(["the embed shows only the game screen, filling the frame", layout.embedded && layout.chromeShown === 0 && c && Math.abs(c.x - f.x) <= 1 && Math.abs(c.y - f.y) <= 1 && Math.abs(c.w - 480) <= 1 && Math.abs(c.h - 272) <= 1, { embedded: layout.embedded, chromeShown: layout.chromeShown, canvas: c }]);
+    // The world: the upper part of the screen, above where a message box sits.
+    const world = share({ x: f.x, y: f.y, w: f.w, h: f.h * 0.55 }, (p) => Math.max(...p) > 48);
+    const colors = new Set<number>();
+    for (let y = f.y + 4; y < f.y + f.h * 0.55; y += 3) for (let x = f.x + 4; x < f.x + f.w - 4; x += 3) { const p = at(x, y); colors.add(((p[0] >> 4) << 8) | ((p[1] >> 4) << 4) | (p[2] >> 4)); }
+    ok.push(["the world is drawn (not black, many colours)", world > 0.3 && colors.size >= 12, { lit: world.toFixed(2), colors: colors.size }]);
+    // The message window: paper fill and ink text in the lower part.
+    const lower = { x: f.x + 8, y: f.y + f.h * 0.66, w: f.w - 16, h: f.h * 0.3 };
+    const paper = share(lower, (p) => near(p, hex(DEFAULT_UI_THEME.paper), 8));
+    const ink = share(lower, (p) => near(p, hex(DEFAULT_UI_THEME.ink), 40));
+    ok.push([want.dialogue ? "the message window shows paper and text" : "no message window is open",
+      want.dialogue ? paper > 0.5 && ink > 0.01 : paper < 0.05, { paper: paper.toFixed(3), ink: ink.toFixed(4) }]);
+    // Theme chrome: the empty play-test panel below its hint and the toolbar.
+    const bg = rgb(layout.bg);
+    const below = { x: layout.panel.x + 20, y: layout.hint.y + layout.hint.h + 20, w: layout.panel.w - 40, h: Math.min(60, layout.statusbar.y - (layout.hint.y + layout.hint.h) - 30) };
+    const panelMatch = below.h > 10 ? share(below, (p) => near(p, bg, 3)) : 0;
+    const bar = rgb(layout.toolbarBg);
+    const barMatch = share({ x: 700, y: layout.toolbar.y + 2, w: 120, h: 4 }, (p) => near(p, bar, 3)) || share({ x: layout.toolbar.x + layout.toolbar.w / 2 - 40, y: layout.toolbar.y + 1, w: 80, h: 2 }, (p) => near(p, bar, 3));
+    const themed = want.theme === "light" ? luma(bg) > 200 && luma(bar) > 200 : luma(bg) < 60 && luma(bar) < 60;
+    ok.push([`the chrome uses the ${want.theme} theme`, layout.theme === want.theme && themed && panelMatch > 0.95 && barMatch > 0.5, { theme: layout.theme, bg, bar, panelMatch: panelMatch.toFixed(2), barMatch: barMatch.toFixed(2) }]);
+    // Panels: the play-test panel, the inspector and the window edges.
+    const r = layout.right;
+    const insp = layout.inspector;
+    ok.push(["the inspector is not clipped", r && insp && r.x + r.w <= layout.vw && insp.x >= r.x && insp.x + insp.w <= r.x + r.w && insp.y + insp.h <= layout.statusbar.y + 1 && layout.inspectorClipX <= 0 && layout.panel.x + layout.panel.w <= r.x + 1, { right: r, inspector: insp, clipX: layout.inspectorClipX, panel: layout.panel }]);
+    let all = true;
+    for (const [label, pass, detail] of ok) {
+      expect(`shot ${name}: ${label}`, pass, JSON.stringify(detail));
+      all &&= pass;
+    }
+    if (all) {
+      const path = join(SHOTS, `${name}.png`);
+      writeFileSync(path, bytes);
+      results[`shot:${name}`] = path.slice(ROOT.length + 1);
+    } else {
+      results[`shot:${name}`] = `rejected; see ${draft.slice(ROOT.length + 1)}`;
+    }
   };
   const mouse = async (type: string, x: number, y: number, button: "left" | "right" | "middle" | "none" = "left", extra: Record<string, unknown> = {}) => {
     await cdp.send("Input.dispatchMouseEvent", { type, x, y, button, buttons: type === "mouseReleased" || button === "none" ? 0 : button === "left" ? 1 : button === "right" ? 2 : 4, clickCount: 1, ...extra });
@@ -690,6 +821,235 @@ async function main(): Promise<void> {
     await shot("studio-narrow");
     const narrow = await evaluate<{ overflowX: boolean; canvas: number }>(`({ overflowX: document.documentElement.scrollWidth > innerWidth + 1, canvas: document.querySelector(".map-canvas").getBoundingClientRect().width })`);
     expect("narrow: the layout fits an 820 px window", !narrow.overflowX && narrow.canvas > 700, JSON.stringify(narrow));
+
+    // ---- play-test ----
+    phase = "playtest";
+    await viewport(1440, 900);
+    await navigate(`${base}?example=sunstone`);
+    await waitFor("sheet art", `__studio.art.sheetStatus("town").source === "bundled"`);
+    const playState = () => evaluate<any>(`__studio.play.state`);
+    const waitRunning = (label: string) => waitFor(label, `__studio.play.status === "running" && __studio.play.readings > 0 || (__studio.play.status === "error" && "error: " + __studio.play.error)`, 25_000);
+    const theme0 = await evaluate<string>(`document.documentElement.dataset.theme`);
+    if (theme0 !== "light") await clickSelector("#studio-theme");
+    await key("v", "KeyV", 0, "v");
+    const startCell = await cell(9, 7);
+    await click(startCell.x, startCell.y);
+    const picked = await evaluate<any>(`__studio.app.selection`);
+    expect("playtest: the select tool picks village cell (9, 7)", picked.kind === "cell" && picked.x === 9 && picked.y === 7, JSON.stringify(picked));
+    const playEnabled = await evaluate<boolean>(`!document.getElementById("studio-play").disabled`);
+    expect("playtest: the toolbar's Play button is enabled", playEnabled, String(playEnabled));
+    await clickSelector("#studio-play");
+    const started = await waitRunning("the game running");
+    expect("playtest: the embedded game starts", started === true, String(started));
+    const frameInfo = await evaluate<any>(`(() => { const f = document.querySelector("#playtest-screen iframe"); return f ? { src: new URL(f.src).pathname + new URL(f.src).search, sameOrigin: new URL(f.src).origin === location.origin } : null; })()`);
+    expect("playtest: the panel embeds the site's preview page", frameInfo?.src?.endsWith("/preview/?embed") && frameInfo.sameOrigin, JSON.stringify(frameInfo));
+    const first = await playState();
+    expect("playtest: state reports the selected cell", first?.map === "village" && first.x === 9 && first.y === 7 && first.dir === "down", JSON.stringify(first));
+    const readings0 = await evaluate<number>(`__studio.play.readings`);
+    await sleep(1200);
+    const later = await playState();
+    const readings1 = await evaluate<number>(`__studio.play.readings`);
+    expect("playtest: the frame number advances", later?.frame > first?.frame, `${first?.frame} -> ${later?.frame}`);
+    expect("playtest: the readout refreshes several times a second", readings1 - readings0 >= 3, `${readings1 - readings0} readings in 1.2 s`);
+    const readout = await evaluate<Record<string, string>>(`Object.fromEntries([...document.querySelectorAll("#playtest-readout dd")].map((d) => [d.dataset.field, d.textContent]))`);
+    expect("playtest: the readout shows map, position and frame", readout.map === "village" && readout.position === "(9, 7)" && Number(readout.frame) > 0, JSON.stringify(readout));
+    const focused = await evaluate<string>(`document.activeElement?.tagName ?? ""`);
+    expect("playtest: the game has the keyboard after starting", focused === "IFRAME", focused);
+    await mouse("mouseMoved", 420, 760, "none"); // no toolbar tooltip in the shot
+    await playShot("studio-playtest-light", { dialogue: false, theme: "light" });
+
+    await key("Escape", "Escape");
+    await sleep(150);
+    const released = await evaluate<{ tag: string; status: string }>(`({ tag: document.activeElement?.tagName ?? "", cls: document.activeElement?.className ?? "", status: __studio.play.status })`);
+    expect("playtest: Esc returns the keyboard to the editor", released.tag !== "IFRAME" && released.status === "running", JSON.stringify(released));
+
+    // Edit the elder's first line in the inspector.
+    const NEW_LINE = "ELDER: Studio says hello!";
+    const elderCell = await cell(9, 5);
+    await click(elderCell.x, elderCell.y);
+    await sleep(150);
+    await clickSelector(`[data-action="select-command"]`);
+    await waitFor("text field", `!!document.querySelector('[data-field="command.lines"]')`);
+    await evaluate(`(() => {
+      const f = document.querySelector('[data-field="command.lines"]');
+      f.focus();
+      f.value = ${JSON.stringify(`${NEW_LINE}\nThe play-test runs this edit.`)};
+      f.dispatchEvent(new Event("input", { bubbles: true }));
+      f.dispatchEvent(new Event("change", { bubbles: true }));
+      f.blur();
+    })()`);
+    await sleep(200);
+    const edited = await evaluate<unknown>(`__studio.app.currentMap().events.find((e) => e.id === "elder").pages[0].commands[0].lines`);
+    expect("playtest: the elder's dialogue is edited", JSON.stringify(edited) === JSON.stringify([NEW_LINE, "The play-test runs this edit."]), JSON.stringify(edited));
+    const stale = await evaluate<{ stale: boolean; pressed: string | null }>(`({ stale: __studio.play.stale, pressed: document.getElementById("playtest-reload")?.getAttribute("aria-pressed") })`);
+    expect("playtest: Reload is marked once the document changes", stale.stale && stale.pressed === "true", JSON.stringify(stale));
+    await clickSelector("#playtest-reload");
+    await waitFor("the reloaded game", `__studio.play.status === "running" && __studio.play.readings > 0 && !__studio.play.stale`, 20_000);
+    const reloaded = await playState();
+    expect("playtest: Reload starts the latest document at the same cell", reloaded?.map === "village" && reloaded.x === 9 && reloaded.y === 7 && reloaded.message === null, JSON.stringify(reloaded));
+
+    // Walk up to the elder with the real keyboard and press Enter.
+    const iframeBox = await evaluate<{ x: number; y: number }>(`(() => { const r = document.querySelector("#playtest-screen iframe").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await click(iframeBox.x, iframeBox.y);
+    await sleep(100);
+    const gameKey = async (keyName: string, code: string, holdMs: number) => {
+      const keyCode = ({ ArrowUp: 38, Enter: 13 } as Record<string, number>)[keyName] ?? 0;
+      await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: keyName, code, windowsVirtualKeyCode: keyCode });
+      await sleep(holdMs);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: keyName, code, windowsVirtualKeyCode: keyCode });
+    };
+    await gameKey("ArrowUp", "ArrowUp", 220);
+    await waitFor("the player at (9, 6)", `(() => { const s = __studio.play.state; return s && s.y === 6 && !s.moving && s.dir === "up"; })()`, 8000);
+    await gameKey("Enter", "Enter", 80);
+    await waitFor("the elder's dialogue", `__studio.play.state?.message?.text.startsWith(${JSON.stringify(NEW_LINE)})`, 8000);
+    await sleep(1800); // let the typewriter reveal the line
+    const talking = await playState();
+    expect("playtest: the game shows the edited dialogue", talking?.message?.kind === "text" && talking.message.text.startsWith(NEW_LINE) && talking.running >= 1 && talking.event === "village/elder", JSON.stringify({ message: talking?.message, running: talking?.running, event: talking?.event }));
+    const shown = await evaluate<string>(`document.querySelector('#playtest-readout dd[data-field="message"]').textContent`);
+    expect("playtest: the readout shows the open message", shown.startsWith(NEW_LINE), shown);
+    await playShot("studio-playtest-dialogue", { dialogue: true, theme: "light" });
+    await clickSelector("#studio-theme");
+    await evaluate(`__studio.play.focusGame()`);
+    await mouse("mouseMoved", 420, 760, "none");
+    await sleep(250);
+    await playShot("studio-playtest-dark", { dialogue: true, theme: "dark" });
+    await clickSelector("#studio-theme");
+    await sleep(150);
+
+    // Restart: a fresh game at the same cell (the frame counter starts over).
+    const beforeRestart = await playState();
+    await clickSelector("#playtest-restart");
+    await waitFor("the restarted game", `(() => { const s = __studio.play.state; return __studio.play.status === "running" && s && s.y === 7 && s.message === null; })()`, 10_000);
+    const restarted = await playState();
+    expect("playtest: Restart starts afresh at the start cell", restarted?.map === "village" && restarted.x === 9 && restarted.y === 7 && restarted.dir === "down" && restarted.running === 0 && restarted.frame < beforeRestart?.frame, JSON.stringify({ before: beforeRestart?.frame, after: restarted }));
+
+    // Restart forgets what the game earned. Start below Sunstone's village
+    // chest facing it, open it (+25 gold, the thorn key, self switch A), then
+    // Restart: gold and items are back to their start values, and the chest
+    // offers its first page again (self switch A is clear).
+    const closeMessage = async (label: string) => {
+      for (let i = 0; i < 8 && (await playState())?.message; i++) {
+        await gameKey("Enter", "Enter", 80);
+        await sleep(400);
+      }
+      const after = await playState();
+      if (after?.message) throw new Error(`the ${label} message did not close: ${JSON.stringify(after.message)}`);
+    };
+    const chestCell = await cell(17, 4);
+    await click(chestCell.x, chestCell.y);
+    await sleep(150);
+    await evaluate(`(() => { const s = document.getElementById("playtest-dir"); s.value = "up"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await clickSelector("#playtest-play");
+    await waitFor("the game below the chest", `(() => { const s = __studio.play.state; return __studio.play.status === "running" && s && s.x === 17 && s.y === 4 && s.dir === "up"; })()`, 15_000);
+    const beforeChest = await playState();
+    expect("playtest: the game starts below the chest with no key", beforeChest?.gold === 5 && !beforeChest.items["thorn-key"] && beforeChest.message === null, JSON.stringify({ gold: beforeChest?.gold, items: beforeChest?.items }));
+    const box = await evaluate<{ x: number; y: number }>(`(() => { const r = document.querySelector("#playtest-screen iframe").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await click(box.x, box.y);
+    await sleep(100);
+    await gameKey("Enter", "Enter", 80);
+    await waitFor("the chest's text", `__studio.play.state?.message?.text.startsWith("Found 25 gold")`, 8000);
+    const opened = await playState();
+    expect("playtest: opening the chest adds 25 gold and the thorn key", opened?.gold === beforeChest.gold + 25 && opened.items["thorn-key"] === 1 && opened.event === "village/village-chest", JSON.stringify({ gold: opened?.gold, items: opened?.items, event: opened?.event }));
+    await closeMessage("chest");
+    await gameKey("Enter", "Enter", 80);
+    await waitFor("the empty chest's text", `__studio.play.state?.message?.text.startsWith("The chest is empty")`, 8000);
+    const emptied = await playState();
+    expect("playtest: the chest's self switch A is set (its second page runs)", emptied?.event === "village/village-chest" && emptied.gold === beforeChest.gold + 25, JSON.stringify({ message: emptied?.message, gold: emptied?.gold }));
+    await closeMessage("empty chest");
+    await clickSelector("#playtest-restart");
+    await waitFor("the restarted chest game", `(() => { const s = __studio.play.state; return __studio.play.status === "running" && __studio.play.readings > 0 && s && s.x === 17 && s.y === 4 && s.message === null; })()`, 15_000);
+    const afresh = await playState();
+    expect("playtest: Restart puts gold and items back to their start values", afresh?.gold === beforeChest.gold && !afresh.items["thorn-key"] && JSON.stringify(afresh.items) === JSON.stringify(beforeChest.items) && JSON.stringify(afresh.switches) === JSON.stringify(beforeChest.switches), JSON.stringify({ gold: afresh?.gold, items: afresh?.items, switches: afresh?.switches }));
+    await gameKey("Enter", "Enter", 80);
+    await waitFor("the chest's first page again", `(() => { const t = __studio.play.state?.message?.text ?? ""; return t.startsWith("Found 25 gold") || t.startsWith("The chest is empty"); })()`, 8000);
+    const reopened = await playState();
+    expect("playtest: after Restart the chest's self switch A is clear (first page again)", reopened?.message?.text.startsWith("Found 25 gold") && reopened.gold === beforeChest.gold + 25, JSON.stringify({ message: reopened?.message, gold: reopened?.gold }));
+    await closeMessage("reopened chest");
+
+    // Forged replies: Studio's own window, a sandboxed frame and a second
+    // same-origin frame answer a pending request; only the game's reply counts.
+    const forged = await evaluate<any>(`(async () => {
+      const preview = __studio.host.preview();
+      const ignored0 = preview.debug().ignored;
+      const fake = (id) => ({ protocol: "rpgkit-preview/v1", type: "reply", requestId: id, ok: true, result: { status: "running", map: "forged", x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, frame: 1, running: 0, event: null, message: null, switches: {}, variables: {}, gold: 999, items: {} } });
+      const request = preview.state();
+      const id = preview.debug().pending.at(-1);
+      window.postMessage(fake(id), "*");
+      const sandboxed = document.createElement("iframe");
+      sandboxed.setAttribute("sandbox", "allow-scripts");
+      sandboxed.srcdoc = "<script>parent.postMessage(" + JSON.stringify(fake(id)) + ", '*'); parent.postMessage({ protocol: 'rpgkit-preview/v1', type: 'event', event: 'ready', version: 1 }, '*');<\/script>";
+      const twin = document.createElement("iframe");
+      twin.srcdoc = "<script>parent.postMessage(" + JSON.stringify(fake(id)) + ", '*');<\/script>";
+      document.body.append(sandboxed, twin);
+      const result = await request;
+      await new Promise((r) => setTimeout(r, 400));
+      sandboxed.remove();
+      twin.remove();
+      return { ok: result.ok, map: result.ok ? result.value.map : result.message, ignored: preview.debug().ignored - ignored0, status: __studio.play.status, readoutMap: document.querySelector('#playtest-readout dd[data-field="map"]').textContent };
+    })()`);
+    expect("playtest: forged replies are ignored and the game's own reply wins", forged.ok && forged.map === "village" && forged.ignored >= 4 && forged.readoutMap === "village", JSON.stringify(forged));
+
+    // Unrelated traffic from the game page (not this protocol) is not an error.
+    await evaluate(`document.querySelector("#playtest-screen iframe").contentWindow.eval("parent.postMessage({ hello: 'studio' }, '*'); parent.postMessage('text', '*')")`);
+    await sleep(600);
+    const unrelated = await evaluate<any>(`({ status: __studio.play.status, error: __studio.play.error, readings: __studio.play.readings })`);
+    expect("playtest: unrelated messages from the game page are ignored", unrelated.status === "running" && unrelated.error === null, JSON.stringify(unrelated));
+
+    // A chapter start: Sunstone ships its demo chapters as save points.
+    const chapters = await evaluate<string[]>(`[...document.querySelectorAll('#playtest-from option')].map((o) => o.value)`);
+    expect("playtest: Sunstone's chapters are offered", ["chapter:village", "chapter:forest", "chapter:cave"].every((id) => chapters.includes(id)), JSON.stringify(chapters));
+    await evaluate(`(() => { const s = document.getElementById("playtest-from"); s.value = "chapter:forest"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await clickSelector("#playtest-play");
+    await waitFor("the forest chapter", `(() => { const s = __studio.play.state; return __studio.play.status === "running" && s && s.map === "forest"; })()`, 15_000);
+    const forest = await playState();
+    expect("playtest: a chapter start restores its save point", forest?.map === "forest" && forest.x === 10 && forest.y === 13, JSON.stringify({ map: forest?.map, x: forest?.x, y: forest?.y }));
+    await sleep(300);
+    await playShot("studio-playtest-running", { dialogue: false, theme: "light" });
+
+    await clickSelector("#playtest-stop");
+    await waitFor("stopped", `__studio.play.status === "stopped"`);
+    const afterStop = await evaluate<any>(`(async () => { const r = await __studio.host.preview().state(); return { ok: r.ok, code: r.ok ? null : r.code, status: __studio.play.status }; })()`);
+    expect("playtest: Stop unloads the game", afterStop.ok === false && afterStop.code === "not-loaded" && afterStop.status === "stopped", JSON.stringify(afterStop));
+
+    // A protocol version mismatch from the game page is shown, not swallowed.
+    await evaluate(`(() => { const s = document.getElementById("playtest-from"); s.value = "selection"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await clickSelector("#playtest-play");
+    await waitRunning("the game running again");
+    await evaluate(`document.querySelector("#playtest-screen iframe").contentWindow.eval("parent.postMessage({ protocol: 'rpgkit-preview/v2', type: 'event', event: 'ready', version: 2 }, '*')")`);
+    await waitFor("the version error", `__studio.play.status === "error"`, 5000);
+    const versionText = await evaluate<string>(`document.getElementById("playtest-error")?.textContent ?? ""`);
+    expect("playtest: a protocol version mismatch is shown", /rpgkit-preview\/v2/.test(versionText) && /rpgkit-preview\/v1/.test(versionText), versionText);
+    await clickSelector("#playtest-play");
+    const recovered = await waitRunning("a fresh game after the mismatch");
+    expect("playtest: Play embeds a fresh game after the mismatch", recovered === true, String(recovered));
+
+    // The sharded pack plays, put together as one document.
+    await clickSelector("#playtest-close");
+    await evaluate(`__studio.files.openExample("sunstone-pack")`);
+    await waitFor("the pack", `__studio.app.session?.kind === "pack"`);
+    await clickSelector("#studio-play");
+    await waitRunning("the pack running");
+    const packState = await playState();
+    const packNote = await evaluate<boolean>(`__studio.play.expanded`);
+    expect("playtest: a sharded pack plays as one document", packState?.map === "village" && packNote, JSON.stringify({ map: packState?.map, x: packState?.x, y: packState?.y, expanded: packNote }));
+    await clickSelector("#playtest-close");
+
+    // Over the protocol's 4 MiB message limit: refused with the reason, never sent.
+    const big = JSON.parse(readFileSync(join(ROOT, "examples", "sunstone", "data", "sunstone.json"), "utf8")) as Project;
+    for (let i = 1; i <= 7; i++) {
+      big.maps.push({ id: `big-${i}`, name: `Big ${i}`, width: 256, height: 256, sheets: ["town"], ground: new Array(256 * 256).fill("town.37"), events: [] } as unknown as Project["maps"][number]);
+    }
+    const bigText = `${JSON.stringify(big)}\n`;
+    await evaluate(`__studio.files.openText(${JSON.stringify(bigText)}, "big.json", "big.json")`);
+    await waitFor("the big document", `__studio.app.session?.maps().length === 10`);
+    const sentBefore = await evaluate<number>(`__studio.host.preview().debug().sent`);
+    await clickSelector("#studio-play");
+    await sleep(500);
+    const overLimit = await evaluate<any>(`({ blocked: __studio.play.blocked, notice: document.getElementById("playtest-error")?.textContent ?? "", playDisabled: document.getElementById("playtest-play")?.disabled, reloadDisabled: document.getElementById("playtest-reload")?.disabled, frame: !!document.querySelector("#playtest-screen iframe"), status: __studio.play.status })`);
+    expect("playtest: an over-limit document is refused with its reason", /Too large to play-test/.test(overLimit.notice) && /4\.0 MiB/.test(overLimit.notice) && overLimit.playDisabled && overLimit.reloadDisabled, JSON.stringify(overLimit));
+    const sentAfter = await evaluate<number>(`__studio.host.preview().debug().sent`);
+    expect("playtest: the over-limit document is never sent", !overLimit.frame && sentAfter === sentBefore, JSON.stringify({ frame: overLimit.frame, sentBefore, sentAfter }));
+    await clickSelector("#playtest-close");
 
     // ---- dark theme shot last so the stored theme does not leak ----
     phase = "dark";

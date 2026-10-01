@@ -82,6 +82,10 @@ const ICONS: Record<string, string> = {
   warn: "M10 3l8 14H2zM10 8v4M10 14v1",
   image: "M3 4h14v12H3zM3 13l4-4 4 4 2-2 4 4",
   play: "M6 4l10 6-10 6z",
+  stop: "M5 5h10v10H5z",
+  restart: "M4 10a6 6 0 1 0 2-4.5M4 3v3h3",
+  reload: "M16 10a6 6 0 1 1-2-4.5M16 3v3h-3",
+  close: "M5 5l10 10M15 5 5 15",
   agent: "M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6zM15 14l.6 1.4L17 16l-1.4.6L15 18l-.6-1.4L13 16l1.4-.6z",
   help: "M10 2a8 8 0 1 0 .01 0M7.5 7.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.7M10 14.5v.5",
 };

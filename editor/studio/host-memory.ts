@@ -22,6 +22,16 @@ import {
 import { MAX_PACK_BYTES, openFileProblem, PNG_HEADER_BYTES, pngProblem, utf8Bytes } from "../api/limits.ts";
 import { checkProblems } from "./problems.ts";
 import { isStagingPath, openDirectoryProject, saveDirectoryTarget, type ProjectDirectory } from "./project-directory.ts";
+import type {
+  PreviewChapter,
+  PreviewLoadResult,
+  PreviewOutcome,
+  PreviewStartResult,
+  PreviewStateResult,
+  PreviewTarget,
+  StudioPreview,
+} from "./preview.ts";
+import type { Project } from "../../src/engine/types.ts";
 
 type OpenListener = (opened: OpenedProject | { error: string }) => void;
 
@@ -36,6 +46,108 @@ export interface DirectoryFault {
   nth?: number;
   /** The thrown error's message (default "injected <op> failure"). */
   message?: string;
+}
+
+/** A stand-in game for play-test tests: records every request and answers
+ * like the preview host, without an engine. */
+export class MemoryPreview implements StudioPreview {
+  /** Requests in order, e.g. "connect:playtest-screen", "start:village:9:7:up". */
+  calls: string[] = [];
+  /** Document texts handed to load(). */
+  loaded: string[] = [];
+  chapters: (readonly PreviewChapter[])[] = [];
+  /** Make the next request of this type fail with this code and message. */
+  failNext: { type: string; code: string; message: string } | null = null;
+  connected = false;
+  private position: PreviewStartResult | null = null;
+  private frame = 0;
+  private releaseListeners = new Set<() => void>();
+
+  private failure(type: string): PreviewOutcome<never> | null {
+    const fail = this.failNext;
+    if (!fail || fail.type !== type) return null;
+    this.failNext = null;
+    return { ok: false, code: fail.code, message: fail.message };
+  }
+
+  async connect(slotId: string): Promise<PreviewOutcome<void>> {
+    this.calls.push(`connect:${slotId}`);
+    const failed = this.failure("connect");
+    if (failed) return failed;
+    this.connected = true;
+    return { ok: true, value: undefined };
+  }
+
+  async load(documentText: string, chapters: readonly PreviewChapter[]): Promise<PreviewOutcome<PreviewLoadResult>> {
+    this.calls.push("load");
+    if (!this.connected) return { ok: false, code: "disconnected", message: "not connected" };
+    const failed = this.failure("load");
+    if (failed) return failed;
+    this.loaded.push(documentText);
+    this.chapters.push(chapters);
+    const project = JSON.parse(documentText) as Project;
+    return {
+      ok: true,
+      value: {
+        title: project.title,
+        maps: project.maps.map((map) => ({ id: map.id, name: map.name ?? map.id, width: map.width, height: map.height })),
+        start: { map: project.start.map, x: project.start.x, y: project.start.y, dir: project.start.dir },
+      },
+    };
+  }
+
+  async start(target: PreviewTarget): Promise<PreviewOutcome<PreviewStartResult>> {
+    this.calls.push(target.kind === "chapter" ? `start:chapter:${target.chapter}` : `start:${target.map}:${target.x}:${target.y}:${target.dir ?? "-"}`);
+    const failed = this.failure("start");
+    if (failed) return failed;
+    this.frame = 0;
+    this.position = target.kind === "chapter" ? { map: target.chapter, x: 0, y: 0, dir: "down" } : { map: target.map, x: target.x, y: target.y, dir: target.dir ?? "down" };
+    return { ok: true, value: this.position };
+  }
+
+  async state(): Promise<PreviewOutcome<PreviewStateResult>> {
+    this.calls.push("state");
+    const failed = this.failure("state");
+    if (failed) return failed;
+    const at = this.position;
+    if (!at) return { ok: false, code: "not-loaded", message: "no project is loaded" };
+    this.frame += 15;
+    return {
+      ok: true,
+      value: {
+        status: "running", map: at.map, x: at.x, y: at.y, px: at.x * 16, py: at.y * 16, dir: at.dir, moving: false,
+        frame: this.frame, running: 0, event: null, message: null, switches: {}, variables: {}, gold: 0, items: {},
+      },
+    };
+  }
+
+  async stop(): Promise<PreviewOutcome<void>> {
+    this.calls.push("stop");
+    const failed = this.failure("stop");
+    if (failed) return failed;
+    this.position = null;
+    return { ok: true, value: undefined };
+  }
+
+  focusGame(): void {
+    this.calls.push("focus");
+  }
+
+  onRelease(listener: () => void): () => void {
+    this.releaseListeners.add(listener);
+    return () => this.releaseListeners.delete(listener);
+  }
+
+  /** The user pressed Esc in the game. */
+  release(): void {
+    for (const listener of this.releaseListeners) listener();
+  }
+
+  disconnect(): void {
+    this.calls.push("disconnect");
+    this.connected = false;
+    this.position = null;
+  }
 }
 
 /** A ProjectDirectory over a Map of POSIX paths to text. */
@@ -158,7 +270,15 @@ export class MemoryHost implements StudioHost {
       checks: available("rpgkit-check's static lint, in-process."),
       dynamicChecks: unavailable("Not run in tests."),
       agent: unavailable(NEEDS_DESKTOP),
+      preview: this.playTest ? available("Play-tests run on MemoryHost.playTest.") : unavailable("This host has no game to play-test in."),
     };
+  }
+
+  /** The stand-in game; set to null to model a host without play-testing. */
+  playTest: MemoryPreview | null = new MemoryPreview();
+
+  preview(): MemoryPreview | null {
+    return this.playTest;
   }
 
   onOpen(listener: OpenListener): () => void {

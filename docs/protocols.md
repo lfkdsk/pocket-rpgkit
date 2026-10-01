@@ -221,7 +221,8 @@ Contract:
 iframe and drives it with `postMessage`. The kit ships a host app (the
 `preview` player page, `tools/preview/`) and a reference frontend
 (`/preview-demo.html` on the site, source
-[`../tools/web/preview-demo.html`](../tools/web/preview-demo.html)). The
+[`../tools/web/preview-demo.html`](../tools/web/preview-demo.html)); Studio's
+play-test panel is a second frontend ([Studio](studio.md#play-test)). The
 host plays an arbitrary `rpgkit-project/v1` document through the production
 `GameView` with the editor playtest art, so no game bundle or baked pak is
 needed.
@@ -246,6 +247,16 @@ Every host enforces these bounds before doing expensive work
 (stringify, validation, traversal). The constants live in
 `tools/preview/protocol.ts` (`PREVIEW_LIMITS`); an over-budget message is
 refused with `error.code: "too-large"` and never reaches the backend.
+Every reply — success, parse error and backend error alike — leaves
+through one exit that measures it by the same rule before it is sent: a
+reply over the whole-message bound (for example a `state` reply carrying an
+enormous dialogue text, or a backend error with a huge message) is replaced
+by a short `ok: false` reply with `error.code: "too-large"`, so a host never
+posts more than 4 MiB. Error messages that quote a request value (an
+unsupported `protocol`, an unknown `type`) quote at most 64 characters of
+it, followed by `... (truncated, N chars)`; a non-string value is named by
+kind (`an object`, `an array`). Notifications (`input`/`stop` without a
+`requestId`) never get a reply, whatever happens.
 
 | Bound | Value | What is counted |
 | --- | --- | --- |
@@ -274,7 +285,7 @@ notification, and it gets no reply (there is no valid correlation key).
 | --- | --- | --- |
 | `load` | `document`: project JSON text or object; optional `chapters`: `[{id, title, snapshot, tape?}]` (save snapshot/code + u16 tape, for `start` by chapter) | `{title, maps: [{id, name, width, height}], start: {map, x, y, dir}}` |
 | `start` | `map` + `x` + `y` + optional `dir` (`down`/`left`/`up`/`right`), **or** `chapter` (a chapter id supplied with `load`) | `{map, x, y, dir}` after the warp/restore |
-| `state` | — | `{status, map, x, y, px, py, dir, moving, switches, variables, gold, items}` |
+| `state` | — | `{status, map, x, y, px, py, dir, moving, frame, running, event, message, switches, variables, gold, items}` |
 | `input` | `buttons`: u16 mask; optional `frames` (1–600, default 1) | empty ok |
 | `stop` | — | empty ok; unmounts the project |
 
@@ -282,6 +293,17 @@ Reply envelope: `{protocol, type: "reply", requestId, ok: true, result}` or
 `{..., ok: false, error: {code, message}}`. The host also sends one
 unsolicited event on boot: `{protocol, type: "event", event: "ready",
 version: 1}` (to `window.parent`, target `*`).
+
+In a `state` reply, `frame` is the session frame counter (it advances once
+per simulated frame), `running` counts the event pages running now (the main
+one plus parallels), `event` is the `map/event` key of the page in the main
+slot or null, and `message` is the open message box or null:
+`{kind: "text", text}` with the dialogue lines joined by newlines,
+`{kind: "choices", text}` with the prompt and options one per line, or
+`{kind: "shop", text: ""}`. These four fields are optional additions
+within v1: the preview host always sends them, but a frontend must accept a
+`state` reply without them (the public `PreviewStateResult` type marks them
+optional), and a frontend written before them ignores them.
 
 `load` validates the document through the editor's schema gate; a JSON or
 schema failure is refused with `error.code: "bad-document"` and the first
@@ -364,7 +386,8 @@ check).
   nor apply against a changed base.
 - **`rpgkit-preview/v1`.** The protocol string travels on every message and
   the host announces itself with a `ready` event. Additive changes — new
-  optional request fields, new message types, new error codes — stay v1; a
+  optional request or reply fields, new message types, new error codes —
+  stay v1; a
   frontend ignores what it does not know. Changing the meaning or shape of
   an existing message, or removing one, bumps the protocol to `v2`, and a
   host replies `bad-version` to a protocol it does not speak. Frontends

@@ -11,6 +11,7 @@
 // can sit on the far side of an IPC bridge.
 
 import type { Project } from "../../src/engine/types.ts";
+import type { PreviewChapter, StudioPreview } from "./preview.ts";
 import type { StudioProblem } from "./problems.ts";
 
 // ---- capabilities ----------------------------------------------------------------
@@ -33,7 +34,9 @@ export type HostFeature =
   /** rpgkit-check's dynamic checks, which run the game engine. */
   | "dynamicChecks"
   /** Start a local agent process that proposes edits. */
-  | "agent";
+  | "agent"
+  /** Play the open document in the real game engine (rpgkit-preview/v1). */
+  | "preview";
 
 export interface FeatureStatus {
   available: boolean;
@@ -85,6 +88,9 @@ export interface StudioExample {
   sheets: Record<string, string>;
   sprites: Record<string, string>;
   player?: string;
+  /** Save points a play-test can start from, for documents with this
+   * example's title. */
+  chapters?: PreviewChapter[];
 }
 
 // ---- art, checks, agent ------------------------------------------------------------
@@ -154,6 +160,10 @@ export interface StudioHost {
 
   runChecks(request: CheckRequest): Promise<CheckOutcome>;
   runAgent(request: AgentRequest): Promise<AgentOutcome>;
+
+  /** The play-test connection (preview.ts), or null when the "preview"
+   * capability is unavailable. One per host; the UI shows it in a panel. */
+  preview(): StudioPreview | null;
 
   /** Ask before a destructive step (discarding edits). */
   confirm(message: string): Promise<boolean>;

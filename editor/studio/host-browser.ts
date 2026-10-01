@@ -12,6 +12,9 @@
 //   export    a Blob behind a download link
 //   checks    schema + rpgkit-check static lint, in the page
 //   agent     not here: it needs a local process
+//   preview   the site's `preview` player page in an iframe, driven over
+//             postMessage (rpgkit-preview/v1); replies are accepted only from
+//             that iframe's window and the site's own origin
 
 import { THEME_KEY } from "./host-browser-boot.ts";
 import { checkProblems } from "./problems.ts";
@@ -34,6 +37,17 @@ import {
   type ThemeChoice,
 } from "./host.ts";
 import { openDirectoryProject, saveDirectoryTarget, type ProjectDirectory } from "./project-directory.ts";
+import {
+  PREVIEW_PROTOCOL,
+  type PreviewChapter,
+  type PreviewLoadResult,
+  type PreviewOutcome,
+  type PreviewStartResult,
+  type PreviewStateResult,
+  type PreviewTarget,
+  type StudioPreview,
+} from "./preview.ts";
+import { PREVIEW_VERSION } from "../../tools/preview/protocol.ts";
 
 export const STORAGE_KEY = "pocket-rpgkit:studio:document:v1";
 export { THEME_KEY };
@@ -130,6 +144,231 @@ async function writeHandle(handle: FileHandle, text: string): Promise<void> {
   await writable.close();
 }
 
+/** The site's preview player page, relative to Studio (both live on the
+ * same site: <site>/studio/ and <site>/preview/). ?embed shows only the game
+ * screen. */
+export const PREVIEW_PAGE = "../preview/?embed";
+/** How long the embedded page may take to boot and announce itself. */
+const READY_TIMEOUT_MS = 20_000;
+/** Loading validates the whole document in the game page. */
+const LOAD_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 5_000;
+
+interface Pending {
+  resolve(outcome: PreviewOutcome<unknown>): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** rpgkit-preview/v1 over postMessage to an iframe of the site's preview
+ * page. Studio only embeds a page of its own origin, and only messages whose
+ * source is that iframe's window and whose origin is the site's are read;
+ * anything else is counted in `ignored` and dropped. */
+export class BrowserPreview implements StudioPreview {
+  private frame: HTMLIFrameElement | null = null;
+  private origin = "";
+  private ready = false;
+  /** Set when the embedded page speaks another protocol version. */
+  private versionError: string | null = null;
+  private waiting: Pending | null = null;
+  private pending = new Map<string, Pending>();
+  private seq = 0;
+  private releaseListeners = new Set<() => void>();
+  /** Messages dropped by the source, origin and protocol checks. */
+  ignored = 0;
+  /** Requests posted to the game page. */
+  sent = 0;
+
+  constructor(private readonly page: string = PREVIEW_PAGE) {
+    window.addEventListener("message", (event) => this.receive(event));
+  }
+
+  async connect(slotId: string): Promise<PreviewOutcome<void>> {
+    this.disconnect();
+    const slot = document.getElementById(slotId);
+    if (!slot) return { ok: false, code: "unavailable", message: `Studio has no #${slotId} to show the game in.` };
+    const url = new URL(this.page, location.href);
+    if (url.origin !== location.origin) {
+      return { ok: false, code: "unavailable", message: `The preview page must be on this site (${location.origin}), not ${url.origin}.` };
+    }
+    const frame = document.createElement("iframe");
+    frame.className = "playtest-frame";
+    frame.title = "Game preview";
+    frame.src = url.href;
+    frame.addEventListener("load", () => this.hookKeys(frame));
+    this.frame = frame;
+    this.origin = url.origin;
+    const outcome = new Promise<PreviewOutcome<unknown>>((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiting = null;
+        resolve({ ok: false, code: "timeout", message: `The game page (${url.pathname}) did not start within ${READY_TIMEOUT_MS / 1000} s. Is the site's preview page built?` });
+      }, READY_TIMEOUT_MS);
+      this.waiting = { resolve, timer };
+    });
+    slot.replaceChildren(frame);
+    return (await outcome) as PreviewOutcome<void>;
+  }
+
+  load(documentText: string, chapters: readonly PreviewChapter[]): Promise<PreviewOutcome<PreviewLoadResult>> {
+    return this.request("load", { document: documentText, ...(chapters.length ? { chapters } : {}) }, LOAD_TIMEOUT_MS);
+  }
+
+  start(target: PreviewTarget): Promise<PreviewOutcome<PreviewStartResult>> {
+    const { kind: _kind, ...fields } = target;
+    return this.request("start", fields);
+  }
+
+  state(): Promise<PreviewOutcome<PreviewStateResult>> {
+    return this.request("state", {});
+  }
+
+  stop(): Promise<PreviewOutcome<void>> {
+    return this.request("stop", {});
+  }
+
+  focusGame(): void {
+    const frame = this.frame;
+    if (!frame) return;
+    frame.focus();
+    try {
+      // The player page reads keys on its game screen element.
+      frame.contentDocument?.getElementById("stage")?.focus({ preventScroll: true });
+    } catch { /* not readable: the iframe keeps the focus */ }
+  }
+
+  onRelease(listener: () => void): () => void {
+    this.releaseListeners.add(listener);
+    return () => this.releaseListeners.delete(listener);
+  }
+
+  disconnect(): void {
+    for (const [id, pending] of this.pending) this.settle(this.pending, id, pending, { ok: false, code: "disconnected", message: "The game was closed." });
+    if (this.waiting) {
+      clearTimeout(this.waiting.timer);
+      this.waiting.resolve({ ok: false, code: "disconnected", message: "The game was closed." });
+      this.waiting = null;
+    }
+    this.frame?.remove();
+    this.frame = null;
+    this.ready = false;
+    this.versionError = null;
+  }
+
+  /** Test hook: requests awaiting a reply, requests sent, and the drop count. */
+  debug(): { pending: string[]; ignored: number; sent: number; origin: string; ready: boolean } {
+    return { pending: [...this.pending.keys()], ignored: this.ignored, sent: this.sent, origin: this.origin, ready: this.ready };
+  }
+
+  private settle(map: Map<string, Pending>, id: string, pending: Pending, outcome: PreviewOutcome<unknown>): void {
+    clearTimeout(pending.timer);
+    map.delete(id);
+    pending.resolve(outcome);
+  }
+
+  private request<T>(type: string, fields: Record<string, unknown>, timeout = REQUEST_TIMEOUT_MS): Promise<PreviewOutcome<T>> {
+    const target = this.frame?.contentWindow;
+    if (this.versionError) return Promise.resolve({ ok: false, code: "bad-version", message: this.versionError });
+    if (!target || !this.ready) return Promise.resolve({ ok: false, code: "disconnected", message: "The game is not running." });
+    const requestId = `studio-${++this.seq}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        resolve({ ok: false, code: "timeout", message: `The game did not answer ${type} within ${timeout / 1000} s.` });
+      }, timeout);
+      this.pending.set(requestId, { resolve: resolve as (outcome: PreviewOutcome<unknown>) => void, timer });
+      this.sent++;
+      try {
+        target.postMessage({ protocol: PREVIEW_PROTOCOL, type, requestId, ...fields }, this.origin);
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(requestId);
+        resolve({ ok: false, code: "disconnected", message: `Could not reach the game: ${message(error)}` });
+      }
+    });
+  }
+
+  private receive(event: MessageEvent): void {
+    const frame = this.frame;
+    // Only the iframe Studio embedded, on the site's own origin: a message
+    // from any other window or origin (even a same-origin one) is dropped.
+    if (!frame || event.source !== frame.contentWindow || event.origin !== this.origin) {
+      this.ignored++;
+      return;
+    }
+    const data = event.data as Record<string, unknown> | null;
+    if (!data || typeof data !== "object") {
+      this.ignored++;
+      return;
+    }
+    // Other traffic from the page (not this protocol family) is not ours to
+    // judge; only a preview host on another version is an error.
+    const otherVersion = typeof data.protocol === "string" && data.protocol !== PREVIEW_PROTOCOL && data.protocol.startsWith("rpgkit-preview/");
+    if (data.protocol !== PREVIEW_PROTOCOL && !otherVersion) {
+      this.ignored++;
+      return;
+    }
+    if (otherVersion || (data.type === "event" && data.event === "ready" && data.version !== PREVIEW_VERSION)) {
+      const version = `${String(data.protocol)}${data.version === undefined ? "" : ` version ${String(data.version)}`}`;
+      this.versionMismatch(`The game page speaks ${version}; this Studio needs ${PREVIEW_PROTOCOL} version ${PREVIEW_VERSION}. Reload Studio and the site together.`);
+      this.ignored++;
+      return;
+    }
+    if (data.type === "event" && data.event === "ready") {
+      this.ready = true;
+      const waiting = this.waiting;
+      this.waiting = null;
+      if (waiting) {
+        clearTimeout(waiting.timer);
+        waiting.resolve({ ok: true, value: undefined });
+      }
+      return;
+    }
+    if (data.type === "reply" && typeof data.requestId === "string") {
+      const pending = this.pending.get(data.requestId);
+      if (!pending) {
+        this.ignored++;
+        return;
+      }
+      const error = data.error as { code?: unknown; message?: unknown } | undefined;
+      this.settle(this.pending, data.requestId, pending, data.ok === true
+        ? { ok: true, value: data.result }
+        : { ok: false, code: String(error?.code ?? "internal"), message: String(error?.message ?? "the game reported an error") });
+      return;
+    }
+    this.ignored++;
+  }
+
+  /** A host on another protocol version: fail whatever is waiting, visibly. */
+  private versionMismatch(message: string): void {
+    const outcome: PreviewOutcome<unknown> = { ok: false, code: "bad-version", message };
+    this.ready = false;
+    this.versionError = message;
+    if (this.waiting) {
+      clearTimeout(this.waiting.timer);
+      this.waiting.resolve(outcome);
+      this.waiting = null;
+    }
+    for (const [id, pending] of this.pending) this.settle(this.pending, id, pending, outcome);
+  }
+
+  /** Esc inside the game hands the keyboard back to Studio. The player page
+   * maps Esc to cancel too; Studio takes it first, and B / Backspace still
+   * cancel in the game. */
+  private hookKeys(frame: HTMLIFrameElement): void {
+    let inner: Window | null = null;
+    try {
+      inner = frame.contentWindow;
+      inner?.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        frame.blur();
+        window.focus();
+        for (const listener of this.releaseListeners) listener();
+      }, true);
+    } catch { /* another origin: never embedded (connect checks) */ }
+  }
+}
+
 export class BrowserHost implements StudioHost {
   readonly name = "browser";
   private listeners = new Set<OpenListener>();
@@ -193,7 +432,15 @@ export class BrowserHost implements StudioHost {
       checks: available("Schema validation and rpgkit-check's static lint run in this page."),
       dynamicChecks: unavailable("rpgkit-check's engine checks (reachability, locks) are not wired into the web page; run rpgkit-check locally or use the desktop app."),
       agent: unavailable(NEEDS_DESKTOP),
+      preview: available("Plays the open document in the real game engine, embedded from this site's preview page."),
     };
+  }
+
+  private playTest: BrowserPreview | null = null;
+
+  preview(): BrowserPreview {
+    this.playTest ??= new BrowserPreview();
+    return this.playTest;
   }
 
   private emit(opened: OpenedProject | { error: string }): void {

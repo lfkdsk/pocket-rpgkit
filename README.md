@@ -1544,6 +1544,12 @@ made from the in-game menu. When the hook is absent (for example a game built
 without `demo`), the same buttons fall back to the `?chapter=` reload links
 above, so the metadata keeps working everywhere.
 
+Every web player page, with or without `demo`, also accepts `?embed`: the
+page hides its header, caption, chapter buttons, on-screen pad, controls
+table and footer and fits the game screen to the window, for pages that show
+the player in an iframe (Studio's play-test panel embeds the `preview` page
+this way). The editor page's file tools stay visible.
+
 Saves are FNV-checksummed envelopes over a safe-point snapshot (mover on a
 tile boundary, no modal, no parked request, no active scene). Hosts with `data.fs` write
 three slots through `src/host/save-fs.ts`; other hosts exchange the same

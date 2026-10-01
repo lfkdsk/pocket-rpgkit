@@ -77,6 +77,13 @@ export interface PreviewStartResult {
   dir: string;
 }
 
+export interface PreviewMessage {
+  kind: "text" | "choices" | "shop";
+  /** Whole dialogue text (lines joined with "\n"), the choice prompt and
+   *  options one per line, or "" for a shop. */
+  text: string;
+}
+
 export interface PreviewStateResult {
   status: "running";
   map: string;
@@ -86,6 +93,16 @@ export interface PreviewStateResult {
   py: number;
   dir: string;
   moving: boolean;
+  // The next four fields are optional additions within v1: the preview host
+  // always sends them, but a frontend must still accept a reply without them.
+  /** Session frame counter; it advances once per simulated frame. */
+  frame?: number;
+  /** Event pages running now: the main one (if any) plus parallels. */
+  running?: number;
+  /** Key ("map/event") of the event page running in the main slot. */
+  event?: string | null;
+  /** The open message box: dialogue text, a choice prompt, or a shop. */
+  message?: PreviewMessage | null;
   switches: Record<string, boolean>;
   variables: Record<string, number | string>;
   gold: number;
@@ -151,6 +168,28 @@ export function isAllowedOrigin(allow: ReadonlySet<string>, origin: string): boo
 
 const DIRS: readonly Dir[] = ["down", "left", "up", "right"];
 const MAX_INPUT_FRAMES = 600;
+
+/** The most code units of a request value an error message quotes back. */
+export const PREVIEW_ECHO_LIMIT = 64;
+
+/** A short, bounded rendering of a request value for an error message: a
+ *  string is quoted and cut to PREVIEW_ECHO_LIMIT code units (never through
+ *  a surrogate pair) with a "(truncated)" marker; a number, boolean or null
+ *  prints as itself; anything else is named by kind. The cost is bounded by
+ *  the limit, whatever the size of `value`. */
+export function echoPreviewValue(value: unknown): string {
+  if (typeof value === "string") {
+    if (value.length <= PREVIEW_ECHO_LIMIT) return JSON.stringify(value);
+    let end = PREVIEW_ECHO_LIMIT;
+    const last = value.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end--;
+    return `${JSON.stringify(value.slice(0, end))}... (truncated, ${value.length} chars)`;
+  }
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return "an array";
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
 
 function asObject(data: unknown): Record<string, unknown> {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -367,7 +406,7 @@ export function parsePreviewMessage(data: unknown): PreviewRequest {
   if (msg.protocol !== PREVIEW_PROTOCOL) {
     throw new PreviewError(
       "bad-version",
-      `unsupported protocol ${JSON.stringify(msg.protocol ?? null)}; expected "${PREVIEW_PROTOCOL}"`,
+      `unsupported protocol ${echoPreviewValue(msg.protocol)}; expected "${PREVIEW_PROTOCOL}"`,
     );
   }
   if (typeof msg.type !== "string") throw new PreviewError("bad-message", "type is missing");
@@ -394,7 +433,7 @@ export function parsePreviewMessage(data: unknown): PreviewRequest {
     case "stop":
       return { type: "stop", requestId };
     default:
-      throw new PreviewError("bad-message", `unknown type ${JSON.stringify(msg.type)}`);
+      throw new PreviewError("bad-message", `unknown type ${echoPreviewValue(msg.type)}`);
   }
 }
 
@@ -417,6 +456,33 @@ function runBackend(backend: PreviewBackend, request: PreviewRequest): unknown {
   }
 }
 
+/** The single exit every reply leaves through. A candidate reply —
+ *  success, parse error or backend error alike — is measured against the
+ *  whole-message budget; one over it is replaced by a constant `too-large`
+ *  error that carries only the (already bounded) requestId. */
+function boundedReply(candidate: PreviewReply): PreviewReply {
+  try {
+    assertWithinByteBudget(candidate, PREVIEW_LIMITS.maxMessageBytes, "reply");
+    return candidate;
+  } catch (error) {
+    // Measuring can only fail on budget, unless a result object misbehaves
+    // (a throwing getter); either way the replacement is short and constant.
+    const bounded =
+      error instanceof PreviewError && error.code === "too-large"
+        ? error
+        : new PreviewError("internal", "reply could not be measured");
+    return errorReply(candidate.requestId, bounded);
+  }
+}
+
+function errorReply(requestId: string, error: unknown): PreviewReply {
+  const pe =
+    error instanceof PreviewError
+      ? error
+      : new PreviewError("internal", error instanceof Error ? error.message : String(error));
+  return { protocol: PREVIEW_PROTOCOL, type: "reply", requestId, ok: false, error: { code: pe.code, message: pe.message } };
+}
+
 /** Validate, authorize and run one message against the backend. The caller
  *  posts a returned reply to `event.source` with `event.origin`; "drop" and
  *  null produce no reply. */
@@ -436,8 +502,7 @@ export function dispatchPreviewMessage(
     // malformed or absent id leaves the message silent (it never ran).
     const id = correlationId(data);
     if (!id) return null;
-    const pe = error instanceof PreviewError ? error : new PreviewError("internal", String(error));
-    return { protocol: PREVIEW_PROTOCOL, type: "reply", requestId: id, ok: false, error: { code: pe.code, message: pe.message } };
+    return boundedReply(errorReply(id, error));
   }
   if (request.requestId === undefined) {
     // A notification has no reply channel; run it inside the same boundary
@@ -450,22 +515,18 @@ export function dispatchPreviewMessage(
     }
     return null;
   }
+  let reply: PreviewReply;
   try {
     const result = runBackend(backend, request);
-    return result === undefined
-      ? { protocol: PREVIEW_PROTOCOL, type: "reply", requestId: request.requestId, ok: true }
-      : { protocol: PREVIEW_PROTOCOL, type: "reply", requestId: request.requestId, ok: true, result };
+    reply =
+      result === undefined
+        ? { protocol: PREVIEW_PROTOCOL, type: "reply", requestId: request.requestId, ok: true }
+        : { protocol: PREVIEW_PROTOCOL, type: "reply", requestId: request.requestId, ok: true, result };
   } catch (error) {
-    const pe =
-      error instanceof PreviewError
-        ? error
-        : new PreviewError("internal", error instanceof Error ? error.message : String(error));
-    return {
-      protocol: PREVIEW_PROTOCOL,
-      type: "reply",
-      requestId: request.requestId,
-      ok: false,
-      error: { code: pe.code, message: pe.message },
-    };
+    reply = errorReply(request.requestId, error);
   }
+  // Replies obey the same whole-message budget as requests: a backend result
+  // or error message that would exceed it (for example a huge dialogue text
+  // in a `state` reply) becomes a bounded `too-large` error instead.
+  return boundedReply(reply);
 }

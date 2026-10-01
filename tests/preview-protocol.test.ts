@@ -4,10 +4,12 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  PREVIEW_ECHO_LIMIT,
   PREVIEW_LIMITS,
   PREVIEW_PROTOCOL,
   PreviewError,
   dispatchPreviewMessage,
+  echoPreviewValue,
   isAllowedOrigin,
   parsePreviewMessage,
   previewAllowlist,
@@ -37,6 +39,10 @@ const STATE_RESULT: PreviewStateResult = {
   py: 34,
   dir: "down",
   moving: false,
+  frame: 120,
+  running: 1,
+  event: "yard/gardener",
+  message: { kind: "text", text: "Hello there." },
   switches: { "met-gardener": true },
   variables: {},
   gold: 10,
@@ -562,5 +568,173 @@ describe("preview UTF-8 counting", () => {
     expect(bytes).toBeGreaterThan(limit);
     expect(bytes).toBeLessThanOrEqual(limit + 3);
     expect(pieces).toBeLessThan(surrogates.length / 32);
+  });
+});
+
+describe("preview state reply compatibility and limits", () => {
+  const allow = previewAllowlist(SELF, "");
+
+  /** A backend whose state reply is `result`. */
+  function stateBackend(result: PreviewStateResult): PreviewBackend {
+    return { ...fakeBackend(), state: () => result };
+  }
+
+  test("a state reply in the original v1 shape (no frame/running/event/message) is still a valid result", () => {
+    // Typed on purpose: the four newer fields are optional within v1, so the
+    // original shape must compile as a PreviewStateResult.
+    const original: PreviewStateResult = {
+      status: "running",
+      map: "yard",
+      x: 2,
+      y: 2,
+      px: 34,
+      py: 34,
+      dir: "down",
+      moving: false,
+      switches: {},
+      variables: {},
+      gold: 0,
+      items: {},
+    };
+    const reply = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, stateBackend(original));
+    expect(reply).toMatchObject({ ok: true, result: original });
+    expect((reply as { result: PreviewStateResult }).result.message).toBeUndefined();
+  });
+
+  /** A state result whose message text pads the whole reply to exactly
+   *  `extra` bytes over the budget. */
+  function stateReplyWith(extra: number): PreviewStateResult {
+    const base: PreviewStateResult = { ...STATE_RESULT, message: { kind: "text", text: "" } };
+    const overhead = structuralUtf8({ protocol: PREVIEW_PROTOCOL, type: "reply", requestId: "r1", ok: true, result: base });
+    const available = PREVIEW_LIMITS.maxMessageBytes - overhead + extra;
+    const repeats = Math.floor(available / 3);
+    const text = "☃".repeat(repeats) + "x".repeat(available - repeats * 3);
+    return { ...base, message: { kind: "text", text } };
+  }
+
+  test("a state reply of exactly the budget is sent; one byte over becomes a bounded too-large error", () => {
+    const atLimit = stateReplyWith(0);
+    const ok = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, stateBackend(atLimit));
+    expect(ok).toMatchObject({ ok: true });
+    expect(structuralUtf8(ok)).toBe(PREVIEW_LIMITS.maxMessageBytes);
+    const refused = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, stateBackend(stateReplyWith(1)));
+    expect(refused).toMatchObject({ ok: false, requestId: "r1", error: { code: "too-large" } });
+    expect(structuralUtf8(refused)).toBeLessThan(1024);
+  });
+
+  test("the review's 4 MiB dialogue text is refused rather than replied with ok", () => {
+    // 4194305 UTF-8 bytes of text alone: the reply would be 4194593 bytes.
+    const text = "é".repeat(2097152) + "x";
+    expect(utf8Len(text)).toBe(4194305);
+    const huge: PreviewStateResult = { ...STATE_RESULT, message: { kind: "text", text } };
+    const reply = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, stateBackend(huge));
+    expect(reply).toMatchObject({ ok: false, error: { code: "too-large" } });
+    expect((reply as { result?: unknown }).result).toBeUndefined();
+    expect(structuralUtf8(reply)).toBeLessThanOrEqual(PREVIEW_LIMITS.maxMessageBytes);
+  });
+});
+
+describe("every preview reply leaves through the same byte budget", () => {
+  const allow = previewAllowlist(SELF, "");
+
+  /** A backend whose `state` throws `error`. */
+  function throwingBackend(error: unknown): PreviewBackend {
+    return {
+      ...fakeBackend(),
+      state: () => {
+        throw error;
+      },
+    };
+  }
+
+  /** A backend-error message that pads the whole error reply to exactly
+   *  `extra` bytes over the budget. */
+  function errorMessageWith(extra: number): string {
+    const overhead = structuralUtf8({
+      protocol: PREVIEW_PROTOCOL,
+      type: "reply",
+      requestId: "r1",
+      ok: false,
+      error: { code: "bad-start", message: "" },
+    });
+    return "x".repeat(PREVIEW_LIMITS.maxMessageBytes - overhead + extra);
+  }
+
+  test("the review's bad-version request of exactly the budget gets a short, truncated echo", () => {
+    // A request measured at exactly 4 MiB whose whole size is an invalid
+    // protocol value: the parser used to quote all of it back (4194425 bytes).
+    const base = { protocol: "", type: "state", requestId: "r1" };
+    const protocol = "p".repeat(PREVIEW_LIMITS.maxMessageBytes - structuralUtf8(base));
+    const request = { ...base, protocol };
+    expect(previewMessageBytes(request)).toBe(PREVIEW_LIMITS.maxMessageBytes);
+    const reply = dispatchPreviewMessage(request, SELF, allow, fakeBackend());
+    expect(reply).toMatchObject({ ok: false, requestId: "r1", error: { code: "bad-version" } });
+    const message = (reply as { error: { message: string } }).error.message;
+    expect(message).toContain(`"${"p".repeat(PREVIEW_ECHO_LIMIT)}"... (truncated, ${protocol.length} chars)`);
+    expect(message).toContain(`expected "${PREVIEW_PROTOCOL}"`);
+    expect(structuralUtf8(reply)).toBeLessThan(1024);
+  });
+
+  test("echoes in parse errors are bounded for every value kind", () => {
+    expect(echoPreviewValue("rpgkit-preview/v0")).toBe('"rpgkit-preview/v0"');
+    expect(echoPreviewValue("a".repeat(PREVIEW_ECHO_LIMIT))).toBe(JSON.stringify("a".repeat(PREVIEW_ECHO_LIMIT)));
+    expect(echoPreviewValue("a".repeat(PREVIEW_ECHO_LIMIT + 1))).toBe(
+      `${JSON.stringify("a".repeat(PREVIEW_ECHO_LIMIT))}... (truncated, ${PREVIEW_ECHO_LIMIT + 1} chars)`,
+    );
+    // The cut never splits a surrogate pair.
+    const emoji = "a".repeat(PREVIEW_ECHO_LIMIT - 1) + "😀".repeat(4);
+    expect(echoPreviewValue(emoji)).toStartWith(JSON.stringify("a".repeat(PREVIEW_ECHO_LIMIT - 1)) + "...");
+    expect(echoPreviewValue(undefined)).toBe("null");
+    expect(echoPreviewValue(2)).toBe("2");
+    expect(echoPreviewValue({ huge: "x".repeat(100_000) })).toBe("an object");
+    expect(echoPreviewValue(["x".repeat(100_000)])).toBe("an array");
+    const unknownType = dispatchPreviewMessage(msg({ type: "t".repeat(1_000_000) }), SELF, allow, fakeBackend());
+    expect(unknownType).toMatchObject({ ok: false, error: { code: "bad-message" } });
+    expect(structuralUtf8(unknownType)).toBeLessThan(1024);
+  });
+
+  test("the review's 4 MiB backend error message becomes a bounded too-large error", () => {
+    const backend = throwingBackend(new PreviewError("bad-start", "x".repeat(PREVIEW_LIMITS.maxMessageBytes)));
+    const reply = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, backend);
+    expect(reply).toMatchObject({ ok: false, requestId: "r1", error: { code: "too-large" } });
+    expect(structuralUtf8(reply)).toBeLessThan(1024);
+  });
+
+  test("a backend error reply of exactly the budget is sent; one byte over becomes too-large", () => {
+    const atLimit = dispatchPreviewMessage(
+      msg({ type: "state" }),
+      SELF,
+      allow,
+      throwingBackend(new PreviewError("bad-start", errorMessageWith(0))),
+    );
+    expect(atLimit).toMatchObject({ ok: false, requestId: "r1", error: { code: "bad-start" } });
+    expect(structuralUtf8(atLimit)).toBe(PREVIEW_LIMITS.maxMessageBytes);
+    const over = dispatchPreviewMessage(
+      msg({ type: "state" }),
+      SELF,
+      allow,
+      throwingBackend(new PreviewError("bad-start", errorMessageWith(1))),
+    );
+    expect(over).toMatchObject({ ok: false, requestId: "r1", error: { code: "too-large" } });
+    expect(structuralUtf8(over)).toBeLessThan(1024);
+  });
+
+  test("a non-PreviewError backend failure is measured the same way", () => {
+    const huge = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, throwingBackend(new Error("e".repeat(5_000_000))));
+    expect(huge).toMatchObject({ ok: false, error: { code: "too-large" } });
+    expect(structuralUtf8(huge)).toBeLessThan(1024);
+    const small = dispatchPreviewMessage(msg({ type: "state" }), SELF, allow, throwingBackend(new Error("boom")));
+    expect(small).toMatchObject({ ok: false, error: { code: "internal", message: "boom" } });
+  });
+
+  test("a notification never replies, even when its backend error is enormous", () => {
+    const backend: PreviewBackend = {
+      ...fakeBackend(),
+      stop: () => {
+        throw new PreviewError("internal", "x".repeat(PREVIEW_LIMITS.maxMessageBytes * 2));
+      },
+    };
+    const notice = { protocol: PREVIEW_PROTOCOL, type: "stop" };
+    expect(dispatchPreviewMessage(notice, SELF, allow, backend)).toBeNull();
   });
 });

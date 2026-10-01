@@ -14,7 +14,8 @@ import type { HostFeature, StudioHost, ThemeChoice } from "./host.ts";
 import { BrowserHost } from "./host-browser.ts";
 import { mountInspector } from "./inspector.ts";
 import { eventCopyOp } from "./inspector-model.ts";
-import { previewHost } from "./preview.ts";
+import { PlayTest } from "./preview.ts";
+import { mountPlayTestPanel } from "./preview-panel.ts";
 import { mountMapTree } from "./map-tree.ts";
 import { mountPalette } from "./palette.ts";
 import { schemaProblems, type StudioProblem } from "./problems.ts";
@@ -60,6 +61,8 @@ canvas = new MapCanvas($("canvas-host"), app, art);
 mountMapTree($("maps"), app);
 mountPalette($("palette"), app, art);
 mountInspector($("inspector"), app);
+const play = new PlayTest(app, host, () => files.examples);
+const playPanel = mountPlayTestPanel($("playtest"), app, play, () => canvas?.canvas.focus());
 
 const TOOLS: [Tool, string, string, string][] = [
   ["select", "select", "Select / move events", "V"],
@@ -155,12 +158,22 @@ function renderToolbar(): void {
     h("div", { class: "spacer" }),
     h("div", { class: "group" },
       iconButton("image", "Art…", () => openArtDialog(), { disabled: !session, id: "studio-art", text: true }),
-      iconButton("play", previewHost() ? "Play-test from the selected cell" : "Play-test (coming in the next phase)", () => void playTest(), { disabled: !session || !previewHost(), id: "studio-play" }),
+      iconButton("play", can("preview").available ? "Play-test the open document" : `Play-test: ${can("preview").reason}`, () => playPanel.open(), { shortcut: `${MOD}+Enter`, disabled: !session || !can("preview").available, id: "studio-play", pressed: play.open }),
       iconButton("agent", can("agent").available ? "Ask an agent" : `Agent: ${can("agent").reason}`, () => void askAgent(), { disabled: !session || !can("agent").available, id: "studio-agent" }),
       iconButton(effectiveTheme() === "dark" ? "sun" : "moon", effectiveTheme() === "dark" ? "Light theme" : "Dark theme", toggleTheme, { id: "studio-theme" }),
       iconButton("help", "Keyboard shortcuts", () => openShortcuts(), { shortcut: "?" })),
   );
 }
+
+let playWasOpen = false;
+play.on(() => {
+  if (play.open === playWasOpen) return;
+  playWasOpen = play.open;
+  renderToolbar();
+  // The canvas just gained or lost the panel's width: show the whole map
+  // once it has been resized (the resize lands after the next frame).
+  requestAnimationFrame(() => requestAnimationFrame(() => canvas?.fit()));
+});
 
 function saveLabel(): string {
   if (files.saving > 0) return `Saving${files.savingTo ? ` to ${files.savingTo}` : ""}…`;
@@ -176,17 +189,6 @@ async function askAgent(): Promise<void> {
   const outcome = await host.runAgent({ prompt: "", projectText: session.exportText() });
   if (!outcome.ok) app.notify("error", outcome.message);
   else app.notify("ok", `${outcome.proposals.length} proposal${outcome.proposals.length === 1 ? "" : "s"} from the agent.`);
-}
-
-/** Start the registered preview host from the selected cell, else the
- * document's start position. */
-async function playTest(): Promise<void> {
-  const host = previewHost();
-  const session = app.session;
-  if (!host || !session) return;
-  const selection = app.selection;
-  const start = selection.kind === "cell" ? { map: app.mapId, x: selection.x, y: selection.y } : session.globals().start;
-  await host.start(session.exportText(), { map: start.map, x: start.x, y: start.y });
 }
 
 // ---- status bar and problems ---------------------------------------------------------
@@ -514,6 +516,7 @@ window.addEventListener("keydown", (event) => {
   if (mod && key === "s") { event.preventDefault(); void files.save(); return; }
   if (mod && key === "o") { event.preventDefault(); files.openFile(); return; }
   if (mod && event.shiftKey && key === "e") { event.preventDefault(); void files.download(); return; }
+  if (mod && key === "enter") { if (!app.session || !can("preview").available) return; event.preventDefault(); playPanel.open(); return; }
   if (mod && key === "d") { if (isTyping(event)) return; event.preventDefault(); duplicateSelectedEvent(); return; }
   if (mod || event.altKey || isTyping(event)) return;
   if (document.querySelector("dialog[open]")) return;
@@ -543,6 +546,7 @@ window.addEventListener("keydown", (event) => {
   files,
   host,
   canvas,
+  play,
   frameStats: () => canvas?.stats,
   cellToClient: (x: number, y: number) => canvas?.cellToClient(x, y),
   tileAt: (x: number, y: number) => {
