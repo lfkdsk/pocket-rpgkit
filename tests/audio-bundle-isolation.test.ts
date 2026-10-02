@@ -53,10 +53,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // envelope text in UTF-8 bytes (Meadow and the WAV fixture never decode
 // one). The WAV fixture gains the overlay slot's 1,411 and the held-mask 39:
 // 1,450.
+// PocketJS #508's opt-in model-trace guards and #512's retired console-bridge
+// cleanup add 323 shared bytes to each bundle.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 502_622;
-const EXPECTED_SUNSTONE_QOA_BYTES = 806_739;
-const EXPECTED_WAV_FIXTURE_BYTES = 642_283;
+const EXPECTED_MEADOW_BYTES = 502_945;
+const EXPECTED_SUNSTONE_QOA_BYTES = 807_062;
+const EXPECTED_WAV_FIXTURE_BYTES = 642_606;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",
