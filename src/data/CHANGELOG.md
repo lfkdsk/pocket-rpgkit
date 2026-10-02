@@ -647,5 +647,33 @@ No format change. Behavior fix in the session fold:
 - The schema identity is unchanged. The fix applies to every accepted
   identity alike, so `MAP_SCHEMA_COMPATIBLE_HASHES` is unaffected.
 
+## v1 amendment — 2026-10-01 (saves keep the current map's characters)
+
+- Save snapshots gain the optional `mapRuntime`: the current map's character
+  table (cells, facing, step in progress, running and patrol move routes with
+  their progress and any path search in flight, the wander RNG), a move route
+  running on the player and a fade-in after a transfer. A load continues
+  frame for frame like the game that never stopped. The envelope stays
+  `rpgkit-save/v1`: saves without the field load as before (characters start
+  again from the map on the next tick). An older runtime ignores the field
+  on any save its own checks accept; it refuses a save whose parallel event
+  is waiting on a move route (see below).
+- A parallel event waiting on a move route can now be saved and loaded: its
+  route travels with the save and resumes it. Without the route (an older
+  save) such a fiber is still refused.
+- Save codes are DEFLATE-compressed by default (`z1` prefix); uncompressed
+  codes still decode and `encodeSaveCode(..., { compress: false })` still
+  writes them. Older runtimes read only the uncompressed form.
+- Loads check the saved characters' motion fields together: a character at
+  rest sits on its tile, one mid-step lies between its tile and the next
+  along its step direction at a speed the runtime can produce, and the step
+  lands inside the map. Save codes longer than a 16 MiB envelope can encode
+  to, envelope text over 16 MiB in UTF-8 bytes (non-ASCII characters count
+  their full encoded width) and data nested deeper than 128 levels are
+  refused before parsing; every decode failure is a typed `SaveError`.
+- The project format and `schema.json` are unchanged, so the schema identity
+  (`MAP_SCHEMA_HASH`) is unchanged and no row is added to
+  [Schema identities](#schema-identities).
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

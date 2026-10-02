@@ -43,8 +43,10 @@ import { centerOffset } from "../engine/viewport.ts";
 import {
   createSession,
   fadeOpacity,
+  acquireSessionMap,
   isSessionWorldIdle,
   prepareSessionMap,
+  releaseSessionMapsExcept,
   startSession,
   stepSession,
   type Session,
@@ -102,7 +104,7 @@ import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChun
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
 import { startupProfileMark } from "../startup-profile.ts";
 import { frameProfileMark } from "../frame-profile.ts";
-import type { GameViewDemoConfig } from "./demo-contract.ts";
+import type { GameViewDemoConfig, GameViewOverlayConfig, GameViewSessionHost } from "./demo-contract.ts";
 
 type Sprites = Record<string, SpriteDef>;
 
@@ -802,6 +804,11 @@ export interface GameViewProps {
   /** Opt-in demo transport/menu runtime. Kept behind a factory so the base
    * GameView has no dependency on a concrete ui/demo implementation. */
   demo?: GameViewDemoConfig;
+  /** Opt-in game overlay (a save/load menu, a debug panel) with live-session
+   * access. It does not create an attract controller: without
+   * `attractTape`/`demo`, L rewind and idle attract stay off. Load a save
+   * through `loadIntoView` from `pocket-rpgkit/ui/saves`. */
+  overlay?: GameViewOverlayConfig;
   /** DialogBox colours (ui/theme.ts); missing keys keep the kit default. */
   theme?: Partial<UiTheme>;
   /** DialogBox speaker portraits: NAME -> 64x64 image src. */
@@ -936,6 +943,34 @@ export function GameView(props: GameViewProps) {
   // Make that controller state the render boot state before deriving any map,
   // camera, actor or scene model below.
   if (demoRuntime) state = attract!.state;
+  // Set when an overlay replaced the session; the next host frame presents
+  // the new state instead of folding one.
+  let replaced = false;
+  // Button mask of the latest folded frame (also the edge base below).
+  let prevButtons = 0;
+  const sessionHost: GameViewSessionHost = {
+    project,
+    session,
+    getState: () => state,
+    // Under attract the reducer folds the controller's mask (a tape mask
+    // during the demo), not the host buttons.
+    heldButtons: attract ? () => attract.foldedMask() : () => prevButtons,
+    replaceState: (next, held = 0) => {
+      if (attract) {
+        // The attract timeline restarts at the loaded state as live play, so
+        // rewind cannot cross the load.
+        state = attract.loadState(next, held, [], false);
+      } else {
+        acquireSessionMap(session, next.mapId);
+        releaseSessionMapsExcept(session, [next.mapId]);
+        state = next;
+      }
+      replaced = true;
+    },
+  };
+  const overlayRuntime = props.overlay ? props.overlay.create(sessionHost) : null;
+  // An overlay may also load a save while it is created.
+  replaced = false;
   const readState = (): Readonly<SessionState> => state;
   startupProfileMark("game-view:state");
   globalThis.__rpgSessionState = state;
@@ -1147,7 +1182,7 @@ export function GameView(props: GameViewProps) {
   const choiceActions = { confirm: { label: "ok", run: confirm } };
   const backActions = { ...choiceActions, back: { label: "back", run: cancel } };
   const actions = useActions(createMemo(() => {
-    if (demoRuntime?.isOpen()) return {};
+    if (demoRuntime?.isOpen() || overlayRuntime?.isOpen()) return {};
     // A full-screen scene is the sole foreground input owner. Map modals
     // remain parked in reducer state while the world is frozen, but must not
     // capture confirm/back until the scene closes and reveals them again.
@@ -1169,7 +1204,6 @@ export function GameView(props: GameViewProps) {
   let worldNode: NodeMirror | undefined;
   // The upper-plane root the actor pool mounts under; growth inserts there.
   let actorHost: NodeMirror | undefined;
-  let prevButtons = 0;
   let blocked: {
     buttons: number;
     input?: SessionInput;
@@ -1268,6 +1302,27 @@ export function GameView(props: GameViewProps) {
     if (blocked) {
       if (blocked.error) throw blocked.error;
       if (!blocked.ready) return;
+    }
+    if (overlayRuntime && (replaced || !blocked)) {
+      const overlayStep = replaced ? null : overlayRuntime.step(buttons, pressed);
+      if (replaced || overlayStep?.consumed || overlayStep?.stateChanged) {
+        // Same contract as a demo menu: the overlay owns this host frame, and
+        // a replaced session is presented without an extra world tick.
+        if (replaced && blocked) props.onMapLoading?.(null);
+        if (replaced) blocked = null;
+        replaced = false;
+        attract?.syncLiveButtons(buttons);
+        prevButtons = buttons;
+        edge.confirm = false;
+        edge.cancel = false;
+        syncPresentedState(
+          prev,
+          attract ? attract.status() : null,
+          attract ? attract.worldAnimationTick() : worldAnimationTick(),
+        );
+        frameProfileMark("frame:end");
+        return;
+      }
     }
     if (!blocked && demoRuntime) {
       const demoStep = demoRuntime.step(buttons, pressed);
@@ -1686,6 +1741,7 @@ export function GameView(props: GameViewProps) {
       {/* Opt-in demo chrome stays above the world/fade but below fatal
           errors. Its implementation is supplied by the isolated demo entry. */}
       {demoRuntime ? demoRuntime.render(props.theme) : null}
+      {overlayRuntime ? overlayRuntime.render(props.theme) : null}
       <Show when={fatalError() !== null}>
         <View
           class="absolute inset-0 flex-col justify-center items-center"

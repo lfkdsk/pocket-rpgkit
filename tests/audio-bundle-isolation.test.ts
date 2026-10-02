@@ -42,10 +42,21 @@ const maybeTest = preflight.ok ? test : test.skip;
 // all three. Sunstone's opted-in demo menu adds lazy tape providers, a global
 // timelineFrame and a once-per-provider shared tape cache (2,461 bytes);
 // Meadow and the WAV fixture do not opt into the demo menu.
+// Saves that keep the current map's characters, compressed save codes and
+// GameView's overlay slot leave Meadow unchanged (it never decodes a save).
+// Sunstone, whose demo chapters decode codes, gains 28,977 bytes: 24,285 for
+// the inflate half of the DEFLATE codec, validating, snapshotting and
+// restoring the character table and route-parked parallels, and the overlay
+// slot, less its shorter chapter codes (measured together); then 1,970 for
+// the joint character-motion checks, 39 for the overlay's attract-aware held
+// mask, 1,869 for the save-code length and depth bounds and 814 for counting
+// envelope text in UTF-8 bytes (Meadow and the WAV fixture never decode
+// one). The WAV fixture gains the overlay slot's 1,411 and the held-mask 39:
+// 1,450.
 // Re-measure after every shared-path change.
 const EXPECTED_MEADOW_BYTES = 502_622;
-const EXPECTED_SUNSTONE_QOA_BYTES = 777_762;
-const EXPECTED_WAV_FIXTURE_BYTES = 640_833;
+const EXPECTED_SUNSTONE_QOA_BYTES = 806_739;
+const EXPECTED_WAV_FIXTURE_BYTES = 642_283;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

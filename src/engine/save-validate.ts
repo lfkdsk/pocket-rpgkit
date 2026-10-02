@@ -954,6 +954,7 @@ function validateFiber(
   path: string,
   wantParallel: boolean,
   mapId: string,
+  routeWaiters: ReadonlySet<string> = new Set(),
 ): string | null {
   if (!isRecord(v)) return fail(path, "fiber must be an object");
   if (typeof v.key !== "string" || !v.key.includes("/")) {
@@ -1027,10 +1028,17 @@ function validateFiber(
       }
       break;
     }
+    case "external": {
+      // At a safe point the only external work left is a waited move route
+      // already running. It resumes when the saved map runtime carries the
+      // route that names this fiber; a save without it cannot.
+      const ins = top.pc < top.prog.length ? top.prog[top.pc] : undefined;
+      if (routeWaiters.has(v.key) && isRecord(ins) && ins.op === "moveRoute" && ins.wait === true) break;
+      return fail(`${path}.mode`, "a save cannot park a fiber in external mode unless a saved route resumes it");
+    }
     case "text":
     case "choices":
     case "shop":
-    case "external":
       // A safe point carries no open modal and no parked external request,
       // so a fiber suspended in one of these modes cannot be resumed: the
       // modal/pending fields it would read back are absent by construction.
@@ -1486,6 +1494,255 @@ function validateModal(v: unknown, path: string, liveKeys: ReadonlySet<string>):
 
 /** Deep-validate a decoded snapshot and its save-time invariants. Returns
  *  null when the session is safe to restore, otherwise a reason string. */
+function isBool(v: unknown): v is boolean {
+  return typeof v === "boolean";
+}
+
+function isDir4(v: unknown): v is number {
+  return isNonNegInt(v) && v <= 3;
+}
+
+function validateTarget(v: unknown, path: string): string | null {
+  if (v === "player") return null;
+  if (isRecord(v) && typeof v.event === "string" && v.event.length > 0) return null;
+  return fail(path, "'player' or {event} required");
+}
+
+/** An incremental BFS in flight (pathfind.ts). Beyond types, the visited
+ *  cells must form the tree the search itself builds: the queue holds each
+ *  parented cell once, in order, and every cell's parent is an adjacent cell
+ *  queued before it. That rules out the parent cycles a crafted file could
+ *  use to hang the path backtrack. */
+function validatePathSearch(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "path search object required");
+  const { W, N, start, goal, qh, qt } = v;
+  if (!isNonNegInt(W) || W < 1 || !isNonNegInt(N) || N < 1 || N % W !== 0) {
+    return fail(path, "positive W and N (a multiple of W) required");
+  }
+  if (!isNonNegInt(start) || start >= N || !isNonNegInt(goal) || goal >= N) {
+    return fail(path, "start/goal cells inside the map required");
+  }
+  if (!isNonNegInt(qt) || qt < 1 || qt > N || !isNonNegInt(qh) || qh > qt) {
+    return fail(path, "queue cursors 0 <= qh <= qt <= N required");
+  }
+  if (v.through !== undefined && v.through !== true) return fail(`${path}.through`, "true or absent required");
+  const ints = (key: string, min: number, max: number): number[] | string => {
+    const arr = v[key];
+    if (!Array.isArray(arr) || arr.length !== N) return fail(`${path}.${key}`, `array of ${N} integers required`);
+    for (let i = 0; i < N; i++) {
+      const x = arr[i];
+      if (typeof x !== "number" || !Number.isInteger(x) || x < min || x > max) {
+        return fail(`${path}.${key}[${i}]`, `integer ${min}..${max} required`);
+      }
+    }
+    return arr as number[];
+  };
+  const parent = ints("parent", -2, 4 * N - 1);
+  if (typeof parent === "string") return parent;
+  const queue = ints("queue", -0x80000000, 0x7fffffff);
+  if (typeof queue === "string") return queue;
+  if (v.blockedMask !== null) {
+    const mask = ints("blockedMask", 0, 1);
+    if (typeof mask === "string") return mask;
+  }
+  const order = new Int32Array(N).fill(-1);
+  for (let k = 0; k < qt; k++) {
+    const cell = queue[k]!;
+    if (cell < 0 || cell >= N || order[cell] !== -1) {
+      return fail(`${path}.queue[${k}]`, "distinct cells inside the map required");
+    }
+    order[cell] = k;
+    const word = parent[cell]!;
+    if (k === 0) {
+      if (cell !== start || word !== -2) return fail(`${path}.queue[0]`, "the search must start at its start cell");
+      continue;
+    }
+    if (word < 0) return fail(`${path}.parent[${cell}]`, "a queued cell needs a parent");
+    const from = word >> 2;
+    const dir = word & 3;
+    const adjacent = dir === 0 ? cell === from + W
+      : dir === 1 ? cell === from - 1 && from % W > 0
+      : dir === 2 ? cell === from - W
+      : cell === from + 1 && from % W + 1 < W;
+    // order[] is filled as the queue is walked, so a parent not yet seen
+    // (-1) is one queued later or never.
+    if (!adjacent || order[from] === -1) {
+      return fail(`${path}.parent[${cell}]`, "parent must be an adjacent cell queued earlier");
+    }
+  }
+  for (let i = 0; i < N; i++) {
+    if (order[i] === -1 && parent[i] !== -1) return fail(`${path}.parent[${i}]`, "only queued cells may have a parent");
+  }
+  return null;
+}
+
+function validatePathPlan(v: unknown, path: string): string | null {
+  if (v === null) return null;
+  if (!isRecord(v)) return fail(path, "path plan object or null required");
+  if (v.search !== null) {
+    const e = validatePathSearch(v.search, `${path}.search`);
+    if (e) return e;
+  }
+  if (!Array.isArray(v.dirs) || !v.dirs.every(isDir4)) return fail(`${path}.dirs`, "array of directions 0..3 required");
+  if (!isNonNegInt(v.blockedTicks)) return fail(`${path}.blockedTicks`, "non-negative integer required");
+  if (!isBool(v.done)) return fail(`${path}.done`, "boolean required");
+  if (v.approach !== null) {
+    const a = v.approach;
+    if (!isRecord(a)) return fail(`${path}.approach`, "object or null required");
+    const t = validateTarget(a.target, `${path}.approach.target`);
+    if (t) return t;
+    if (!isDir4(a.side)) return fail(`${path}.approach.side`, "direction 0..3 required");
+    if (!isNonNegInt(a.distance) || a.distance < 1) return fail(`${path}.approach.distance`, "positive integer required");
+  }
+  return null;
+}
+
+/** Fields shared by a character route (chars.ts RouteRun) and the player's
+ *  forced route (session.ts PlayerRoute). */
+function validateRouteCommon(v: Record<string, unknown>, path: string): string | null {
+  if (!Array.isArray(v.steps)) return fail(`${path}.steps`, "array of move steps required");
+  for (let i = 0; i < v.steps.length; i++) {
+    const e = validateMoveStep(v.steps[i], `${path}.steps[${i}]`);
+    if (e) return e;
+  }
+  if (!isNonNegInt(v.pc) || v.pc > v.steps.length) return fail(`${path}.pc`, "step index 0..steps.length required");
+  if (!isBool(v.repeat) || !isBool(v.skippable)) return fail(path, "repeat/skippable booleans required");
+  // A waited route names the fiber it resumes. The fiber may already be gone
+  // (its own page stopped); resuming a missing or unparked fiber is a no-op,
+  // so only the type is checked.
+  if (v.waiter !== null && (typeof v.waiter !== "string" || v.waiter.length === 0)) {
+    return fail(`${path}.waiter`, "null or a fiber key required");
+  }
+  if (v.pathRetriesLeft !== null && !isNonNegInt(v.pathRetriesLeft)) {
+    return fail(`${path}.pathRetriesLeft`, "null or non-negative integer required");
+  }
+  return validatePathPlan(v.plan, `${path}.plan`);
+}
+
+function validateRouteRun(v: unknown, path: string): string | null {
+  if (v === null) return null;
+  if (!isRecord(v)) return fail(path, "route object or null required");
+  if (!isBool(v.patrol)) return fail(`${path}.patrol`, "boolean required");
+  if (!isNonNegInt(v.waitLeft)) return fail(`${path}.waitLeft`, "non-negative integer required");
+  return validateRouteCommon(v, path);
+}
+
+const CHAR_INTS = ["tx", "ty", "facing", "phase", "stepDir", "pageIndex", "thinkIn"] as const;
+
+/** project.tileSize is fixed at 16 by the schema. */
+const SAVE_TILE = 16;
+/** The slowest step the runtime can latch: the 8-tick base step (2 px per
+ *  reference tick) at MV speed grade 1, four halvings below the default 5. */
+const MAX_STEP_FRAMES = 128;
+const STEP_DX = [0, -1, 0, 1] as const; // down, left, up, right (Dir4)
+const STEP_DY = [1, 0, -1, 0] as const;
+
+/** Joint motion invariants of one character (chars.ts CharState), mirroring
+ *  how the step loop reads them back: at rest the pixel position is the tile
+ *  origin; mid-step it lies on the stepDir axis, strictly between the origin
+ *  and the target tile, and the speed recovered from it (movement.ts
+ *  activeStepConfig) divides the tile into a whole number of ticks. A
+ *  pair that fails would land the character somewhere its fields never said,
+ *  or make the next tick throw. */
+function charMotionProblem(ch: Record<string, unknown>, at: string): string | null {
+  const { tx, ty, px, py, phase, stepDir } = ch as Record<string, number>;
+  const ox = tx * SAVE_TILE;
+  const oy = ty * SAVE_TILE;
+  if (ch.moving !== true) {
+    if (phase !== 0) return fail(`${at}.phase`, "a character at rest must have phase 0");
+    if (px !== ox || py !== oy) return fail(at, "a character at rest must sit on its tile origin");
+    return null;
+  }
+  if (phase < 1) return fail(`${at}.phase`, "a moving character needs phase >= 1");
+  if (tx + STEP_DX[stepDir]! < 0 || ty + STEP_DY[stepDir]! < 0) {
+    return fail(at, "a moving character must step into a cell with non-negative coordinates");
+  }
+  const dx = px - ox;
+  const dy = py - oy;
+  const along = dx * STEP_DX[stepDir]! + dy * STEP_DY[stepDir]!;
+  const across = STEP_DX[stepDir] === 0 ? dx : dy;
+  if (across !== 0 || !(along > 0 && along < SAVE_TILE)) {
+    return fail(at, "a moving character's pixel position must lie between its tile and the stepDir neighbour");
+  }
+  // along < SAVE_TILE already makes frames > phase.
+  const frames = SAVE_TILE / (along / phase);
+  if (!Number.isInteger(frames) || frames > MAX_STEP_FRAMES) {
+    return fail(`${at}.phase`, "phase and pixel offset must describe a step the runtime can finish");
+  }
+  return null;
+}
+
+/** Fiber keys the saved routes will resume when they finish. Shape errors
+ *  are left to validateMapRuntime. */
+function savedRouteWaiters(v: unknown): Set<string> {
+  const out = new Set<string>();
+  if (!isRecord(v)) return out;
+  const add = (route: unknown): void => {
+    if (isRecord(route) && typeof route.waiter === "string") out.add(route.waiter);
+  };
+  if (isRecord(v.chars) && isRecord(v.chars.chars)) {
+    for (const ch of Object.values(v.chars.chars)) {
+      if (isRecord(ch)) add(ch.route);
+    }
+  }
+  add(v.playerRoute);
+  return out;
+}
+
+/** The map runtime a session save records beside the interpreter
+ *  (save.ts SaveMapRuntime). Map-specific checks (event ids, pages, map
+ *  bounds) happen in save-restore.ts. */
+function validateMapRuntime(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "object required");
+  const chars = v.chars;
+  if (!isRecord(chars)) return fail(`${path}.chars`, "character table object required");
+  if (!isU32(chars.rng)) return fail(`${path}.chars.rng`, "u32 RNG cursor required");
+  if (!isRecord(chars.chars)) return fail(`${path}.chars.chars`, "record required");
+  for (const [id, ch] of Object.entries(chars.chars)) {
+    const at = `${path}.chars.chars.${id}`;
+    if (!isRecord(ch)) return fail(at, "character object required");
+    if (ch.id !== id) return fail(`${at}.id`, "must match its table key");
+    for (const key of CHAR_INTS) {
+      if (!isNonNegInt(ch[key])) return fail(`${at}.${key}`, "non-negative integer required");
+    }
+    if (!isDir4(ch.facing) || !isDir4(ch.stepDir)) return fail(at, "facing/stepDir must be 0..3");
+    if (!isFiniteNumber(ch.px) || !isFiniteNumber(ch.py)) return fail(at, "finite px/py required");
+    if (!isBool(ch.moving) || !isBool(ch.visible) || !isBool(ch.blocks)) {
+      return fail(at, "moving/visible/blocks booleans required");
+    }
+    const motion = charMotionProblem(ch, at);
+    if (motion) return motion;
+    const route = validateRouteRun(ch.route, `${at}.route`);
+    if (route) return route;
+    const patrol = validateRouteRun(ch.patrol, `${at}.patrol`);
+    if (patrol) return patrol;
+  }
+  if (v.playerRoute !== null) {
+    const r = v.playerRoute;
+    const at = `${path}.playerRoute`;
+    if (!isRecord(r)) return fail(at, "route object or null required");
+    // A positive phase means the player is mid-step, which is never a save
+    // point; zero is idle and a negative phase counts down a route wait.
+    if (typeof r.phase !== "number" || !Number.isSafeInteger(r.phase) || r.phase > 0) {
+      return fail(`${at}.phase`, "integer <= 0 required (the player rests at a save)");
+    }
+    if (!isDir4(r.dir)) return fail(`${at}.dir`, "direction 0..3 required");
+    if (!isBool(r.takeOver)) return fail(`${at}.takeOver`, "boolean required");
+    const e = validateRouteCommon(r, at);
+    if (e) return e;
+  }
+  if (v.fade !== null) {
+    const f = v.fade;
+    // The fade-out half always carries a pending transfer, which is never a
+    // save point; only the fade-in after a transfer can be saved.
+    if (!isRecord(f) || f.phase !== "in" || !isNonNegInt(f.half) || f.half < 1 ||
+      !isNonNegInt(f.left) || f.left < 1 || f.left > f.half) {
+      return fail(`${path}.fade`, "null or a fade-in {phase:'in', left 1..half, half} required");
+    }
+  }
+  return null;
+}
+
 export function validateSnapshot(snap: unknown): string | null {
   if (!isRecord(snap)) return "state: snapshot must be an object";
   if (typeof snap.map !== "string" || snap.map.length === 0) {
@@ -1541,6 +1798,7 @@ export function validateSnapshot(snap: unknown): string | null {
     }
   }
   if (!isRecord(it.parallels)) return "state.interp.parallels: record required";
+  const routeWaiters = savedRouteWaiters(snap.mapRuntime);
   for (const [key, fiber] of Object.entries(it.parallels)) {
     if (typeof key !== "string") return "state.interp.parallels: string keys required";
     // The reducer resolves modal ownership, erasure and page state through
@@ -1550,7 +1808,7 @@ export function validateSnapshot(snap: unknown): string | null {
     if (isRecord(fiber) && fiber.key !== key) {
       return "state.interp.parallels: fiber key must match its dictionary key";
     }
-    const fe = validateFiber(fiber, `state.interp.parallels.${key}`, true, snap.map);
+    const fe = validateFiber(fiber, `state.interp.parallels.${key}`, true, snap.map, routeWaiters);
     if (fe) return fe;
   }
 
@@ -1615,6 +1873,10 @@ export function validateSnapshot(snap: unknown): string | null {
   }
   if (!Array.isArray(it.abortedRoutes) || it.abortedRoutes.length !== 0) {
     return "state.interp.abortedRoutes: route aborts must drain before save";
+  }
+  if (snap.mapRuntime !== undefined) {
+    const rt = validateMapRuntime(snap.mapRuntime, "state.mapRuntime");
+    if (rt) return rt;
   }
   return null;
 }

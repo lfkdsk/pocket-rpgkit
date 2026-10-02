@@ -671,9 +671,22 @@ async function shopTrace(root: string): Promise<Trace> {
   step({ confirmEdge: true }); // buy finite item
   step({ cancelEdge: true }); // leave
   step({}); // settle the action fiber
-  const envelope = saveMod.encodeEnvelope(saveMod.createSessionSnapshot(session, state, 0));
-  state = restoreMod.restoreSessionEnvelope(session, envelope);
-  recorder.capture(state);
+  const snapshot = saveMod.createSessionSnapshot(session, state, 0);
+  const envelope = saveMod.encodeEnvelope(snapshot);
+  // Saves later gained the optional map runtime (characters, player route,
+  // fade); everything the baseline wrote must still encode byte for byte.
+  const { mapRuntime: _mapRuntime, ...baselineFields } = snapshot;
+  const baselineEnvelope = saveMod.encodeEnvelope(baselineFields);
+  const restored = restoreMod.restoreSessionEnvelope(session, envelope);
+  // A restore now keeps the saved characters where the baseline started
+  // from an empty table that the next tick refilled from the map. Compare
+  // the rest of the restored frame, and require the kept table to be the
+  // saved one wherever the save carries it.
+  if ("mapRuntime" in snapshot && valueHash(restored.chars) !== valueHash(state.chars)) {
+    throw new Error("shop save roundtrip restored a different character table");
+  }
+  recorder.capture({ ...restored, chars: null });
+  state = restored;
   step({ confirmEdge: true }); // reopen
   step({ downEdge: true }); // Sell
   step({ confirmEdge: true }); // enter sell stage
@@ -681,7 +694,7 @@ async function shopTrace(root: string): Promise<Trace> {
   if (state.sw.items.tonic !== 0 || state.sw.shopStock["finite-shop:tonic"] !== 1) {
     throw new Error("shop save roundtrip ended with the wrong inventory/stock");
   }
-  return recorder.finish({ envelopeHash: valueHash(envelope), final: valueHash(state) });
+  return recorder.finish({ envelopeHash: valueHash(baselineEnvelope), final: valueHash(state) });
 }
 
 function dialogProject(): any {

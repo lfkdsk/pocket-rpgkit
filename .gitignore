@@ -14,3 +14,5 @@ dist/
 # Procedural test-fixture art, written by the fixture's gen-assets.ts on
 # every `bun run build:example`.
 tests/fixtures/*/assets/
+# The save/load fixture copies Sunstone's image metadata with its art.
+tests/fixtures/ks2-save/images.json

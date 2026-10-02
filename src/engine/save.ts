@@ -9,6 +9,11 @@
 //              clock, switches/variables/self-switches/items/gold, the
 //              mulberry32 RNG cursor, blocking and parallel fibers (with
 //              their compiled stacks), modal, erased/touch latches
+//   mapRuntime — the current map's character table (cells, facing, step
+//              interpolation, page, running and patrol routes with their
+//              progress, the wander RNG), the player's forced route and a
+//              transfer fade-in. Older v1 saves omit it; their restore
+//              rebuilds the characters from the map as before.
 //
 // Nothing here is host-derived: a save point is a SAFE POINT — mover at a
 // tile boundary, no blocking fiber except a resumable waited screen effect,
@@ -22,18 +27,25 @@
 // The web/other-targets fallback is the save CODE: the same envelope
 // encoded as URL-safe base64 (no padding), copied in/out by hand. Its
 // alphabet is A-Z a-z 0-9 - _, every key of which the framework OSK
-// types. Pure TS, no host imports, QuickJS-safe (no TextEncoder/btoa).
+// types. By default the envelope is DEFLATE-compressed first and the code
+// starts with "z1"; a plain code (always starting "e", the base64 of "{")
+// still decodes. Pure TS, no host imports, QuickJS-safe (no
+// TextEncoder/btoa).
 
 import type { MovementState } from "./movement.ts";
+import type { CharsState, PathPlan, RouteRun } from "./chars.ts";
+import type { PathSearchState } from "./pathfind.ts";
 import type { InterpState } from "./interpreter.ts";
 import { cloneInterp, createSwitchState, isBusy } from "./interpreter.ts";
 import { deepClone, keyedRecord } from "./clone.ts";
 import { assertJsonValue, encodeExtension } from "./extensions.ts";
 import { envelopeConsistent, validateSnapshot } from "./save-validate.ts";
+import { InflateError, deflateRaw, inflateRaw } from "./deflate.ts";
+import { utf8BytesWithin } from "./utf8.ts";
 import type { MapContentIdentity } from "./map-repository.ts";
 import { MAP_SCHEMA_HASH, describeMapSchemaRefusal, isCompatibleMapSchemaHash } from "./schema-identity.ts";
 import type { JsonValue } from "./types.ts";
-import type { Session, SessionState } from "./session.ts";
+import type { FadeState, PlayerRoute, Session, SessionState } from "./session.ts";
 
 export const SAVE_FORMAT = "rpgkit-save/v1" as const;
 export const SAVE_VERSION = 1 as const;
@@ -55,6 +67,22 @@ export interface SaveSnapshot {
   interp: InterpState;
   /** Game-owned state in its encoded JSON form. Older v1 saves hydrate null. */
   ext: JsonValue;
+  /** The current map's runtime outside the interpreter. Absent in saves
+   *  written before it was recorded (and in snapshots built without a
+   *  session); restoring those rebuilds the characters from the map. */
+  mapRuntime?: SaveMapRuntime;
+}
+
+/** Map-visit state the session keeps beside the interpreter. Everything in
+ *  it decides future frames: where each character stands and faces, its
+ *  step interpolation, its running route and progress (including a
+ *  pathfinding search in flight), its page patrol, the shared wander RNG,
+ *  the player's forced route and a transfer fade-in. Plain JSON: path
+ *  search buffers are stored as number arrays. */
+export interface SaveMapRuntime {
+  chars: CharsState;
+  playerRoute: PlayerRoute | null;
+  fade: FadeState | null;
 }
 
 /** A save is only valid at a safe point: the mover rests on a tile and no
@@ -83,13 +111,74 @@ export function canSave(player: MovementState, interp: InterpState, scene: unkno
  *  has no structuredClone (F1/task-1173); movement state is a flat record
  *  and interpreter state goes through its own hand-written cloner. */
 export function cloneSnapshot(snap: SaveSnapshot): SaveSnapshot {
-  return {
+  const out: SaveSnapshot = {
     map: snap.map,
     player: { ...snap.player },
     held: snap.held >>> 0,
     interp: cloneInterp(snap.interp),
     ext: deepClone((snap as SaveSnapshot & { ext?: JsonValue }).ext ?? null),
   };
+  if (snap.mapRuntime !== undefined) out.mapRuntime = cloneMapRuntime(snap.mapRuntime);
+  return out;
+}
+
+/** Copy session map runtime into its plain-JSON save form. Typed path
+ *  search buffers (live state) and number arrays (a decoded save) both
+ *  become fresh number arrays; chars.ts revives either form. */
+export function cloneMapRuntime(rt: SaveMapRuntime): SaveMapRuntime {
+  const chars: CharsState["chars"] = keyedRecord();
+  for (const id of Object.keys(rt.chars.chars)) {
+    const ch = rt.chars.chars[id]!;
+    chars[id] = { ...ch, route: jsonRoute(ch.route), patrol: jsonRoute(ch.patrol) };
+  }
+  return {
+    chars: { rng: rt.chars.rng, chars },
+    playerRoute: rt.playerRoute
+      ? {
+          ...rt.playerRoute,
+          steps: deepClone(rt.playerRoute.steps),
+          plan: jsonPlan(rt.playerRoute.plan),
+        }
+      : null,
+    fade: rt.fade ? { ...rt.fade } : null,
+  };
+}
+
+function jsonRoute(route: RouteRun | null): RouteRun | null {
+  return route ? { ...route, steps: deepClone(route.steps), plan: jsonPlan(route.plan) } : null;
+}
+
+function jsonPlan(plan: PathPlan | null): PathPlan | null {
+  if (!plan) return null;
+  return {
+    ...plan,
+    search: jsonSearch(plan.search),
+    dirs: [...plan.dirs],
+    approach: plan.approach
+      ? {
+          ...plan.approach,
+          target: plan.approach.target === "player" ? "player" : { ...plan.approach.target },
+        }
+      : null,
+  };
+}
+
+function jsonSearch(search: PathSearchState | null): PathSearchState | null {
+  if (!search) return null;
+  const numbers = (v: ArrayLike<number> | Record<string, number>, n: number): number[] => {
+    const out = new Array<number>(n);
+    const src = v as Record<number, number>;
+    for (let i = 0; i < n; i++) out[i] = src[i]!;
+    return out;
+  };
+  // The save form holds plain arrays where the live state holds typed
+  // arrays; clonePathSearch converts back on restore.
+  return {
+    ...search,
+    parent: numbers(search.parent, search.N),
+    queue: numbers(search.queue, search.N),
+    blockedMask: search.blockedMask ? numbers(search.blockedMask, search.N) : null,
+  } as unknown as PathSearchState;
 }
 
 export function createSnapshot(
@@ -99,12 +188,13 @@ export function createSnapshot(
   held: number,
   ext: JsonValue = null,
   scene: unknown = null,
+  mapRuntime?: SaveMapRuntime,
 ): SaveSnapshot {
   if (!canSave(player, interp, scene)) {
     throw new Error("save: snapshot is only valid at a tile boundary with no modal or scene open and no external work pending");
   }
   assertJsonValue(ext, "save extension state");
-  return normalizeInterp(cloneSnapshot({ map, player, held, interp, ext }));
+  return normalizeInterp(cloneSnapshot({ map, player, held, interp, ext, ...(mapRuntime ? { mapRuntime } : {}) }));
 }
 
 /** Session-aware save entry point. It applies the registered extension
@@ -121,6 +211,7 @@ export function createSessionSnapshot(
     held,
     encodeExtension(session.extensions, state.ext),
     state.scene,
+    { chars: state.chars, playerRoute: state.playerRoute, fade: state.fade },
   );
 }
 
@@ -218,10 +309,12 @@ function tileLevelMovement(move: MovementState): { tx: number; ty: number; facin
   return { tx: move.tx, ty: move.ty, facing: move.facing };
 }
 
-/** The canonical hash of a session state's resumable identity — the same
- *  payload as a save snapshot (map, player, the FULL interpreter state,
- *  ext), normalized so two states that fold the same reducer future hash
- *  equal:
+/** The canonical hash of a session state's resumable identity — the
+ *  snapshot payload apart from the map runtime (map, player, the FULL
+ *  interpreter state, ext), normalized so two states that fold the same
+ *  reducer future hash equal. Character positions and routes stay out, as
+ *  they always have: the reach search plans at the level of story state and
+ *  the player's tile, and would otherwise split one state per NPC step:
  *
  *  - between-fold transients are dropped exactly as a save snapshot drops
  *    them (cues, pending transfer/route/battle/placement queues);
@@ -357,50 +450,171 @@ const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 const B64URL_INV: Record<string, number> = {};
 for (let i = 0; i < B64URL.length; i++) B64URL_INV[B64URL[i]!] = i;
 
-/** URL-safe base64 without padding; whitespace tolerant on the way back. */
+/** First characters of a compressed save code: "z" marks the compressed
+ *  encoding (a plain code always starts "e") and "1" is its version, raw
+ *  DEFLATE of the envelope's UTF-8 JSON. */
+export const SAVE_CODE_COMPRESSED_PREFIX = "z1";
+
+/** Largest envelope a save may hold, in UTF-8 bytes: a compressed code may
+ *  not inflate past it, and longer envelope text is refused unparsed. */
+export const SAVE_CODE_MAX_BYTES = 16_777_216; // 16 MiB
+
+/** Longest save code accepted without whitespace: a plain code of a
+ *  maximal envelope, ceil(SAVE_CODE_MAX_BYTES / 3) * 4 characters (written
+ *  as a literal so bundles that never decode a code drop it). Pasted input
+ *  may carry up to as much whitespace again. */
+const SAVE_CODE_MAX_CHARS = 22_369_624;
+
+/** Deepest array/object nesting a save may hold. Real saves nest about ten
+ *  levels; decoding and validation walk the state recursively, so a small
+ *  code inflating to a much deeper document would exhaust the call stack
+ *  (QuickJS well before JSC). */
+export const SAVE_MAX_DEPTH = 128;
+
+/** Whether a snapshot, once wrapped in its envelope, nests arrays/objects
+ *  deeper than SAVE_MAX_DEPTH. Iterative, so it is safe on any input. */
+export function saveDepthExceeded(snapshot: unknown): boolean {
+  // The envelope is level 1; the snapshot object sits at level 2.
+  const stack: [unknown, number][] = [[snapshot, 1]];
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (v === null || typeof v !== "object") continue;
+    if (depth + 1 > SAVE_MAX_DEPTH) return true;
+    const children = Array.isArray(v) ? v : Object.values(v as Record<string, unknown>);
+    for (const child of children) {
+      if (child !== null && typeof child === "object") stack.push([child, depth + 1]);
+    }
+  }
+  return false;
+}
+
+/** The same bound read off JSON text before parsing it: brackets outside
+ *  string literals. */
+function textDepthExceeded(text: string): boolean {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (inString) {
+      if (c === 0x5c) i++; // backslash: skip the escaped character
+      else if (c === 0x22) inString = false;
+    } else if (c === 0x22) {
+      inString = true;
+    } else if (c === 0x7b || c === 0x5b) {
+      if (++depth > SAVE_MAX_DEPTH) return true;
+    } else if (c === 0x7d || c === 0x5d) {
+      depth--;
+    }
+  }
+  return false;
+}
+
+/** Public decode boundary: every refusal is a SaveError. Anything else
+ *  thrown while decoding untrusted input (a defect the checks above missed)
+ *  is reported as unreadable data rather than escaping as a raw error. */
+function typedDecode<T>(decode: () => T): T {
+  try {
+    return decode();
+  } catch (error) {
+    if (error instanceof SaveError) throw error;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new SaveError("bad-json", `save data could not be decoded: ${reason}`);
+  }
+}
+
+export interface SaveCodeOptions {
+  /** DEFLATE the envelope before encoding (default true). False writes the
+   *  plain code older runtimes read. */
+  compress?: boolean;
+}
+
+/** URL-safe base64 without padding; whitespace tolerant on the way back.
+ *  Compressed unless `options.compress` is false. */
 export function encodeSaveCode(
   snapshot: SaveSnapshot,
   content?: MapContentIdentity | null,
+  options: SaveCodeOptions = {},
 ): string {
   const bytes = utf8Encode(encodeEnvelope(snapshot, content));
-  let out = "";
+  return options.compress === false
+    ? base64UrlEncode(bytes)
+    : SAVE_CODE_COMPRESSED_PREFIX + base64UrlEncode(deflateRaw(bytes));
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  const parts: string[] = [];
   for (let i = 0; i < bytes.length; i += 3) {
     const b0 = bytes[i]!;
     const b1 = i + 1 < bytes.length ? bytes[i + 1]! : 0;
     const b2 = i + 2 < bytes.length ? bytes[i + 2]! : 0;
-    out += B64URL[b0 >> 2]!;
-    out += B64URL[((b0 & 3) << 4) | (b1 >> 4)]!;
-    if (i + 1 < bytes.length) out += B64URL[((b1 & 15) << 2) | (b2 >> 6)]!;
-    if (i + 2 < bytes.length) out += B64URL[b2 & 63]!;
+    parts.push(B64URL[b0 >> 2]!);
+    parts.push(B64URL[((b0 & 3) << 4) | (b1 >> 4)]!);
+    if (i + 1 < bytes.length) parts.push(B64URL[((b1 & 15) << 2) | (b2 >> 6)]!);
+    if (i + 2 < bytes.length) parts.push(B64URL[b2 & 63]!);
   }
-  return out;
+  return parts.join("");
 }
 
-export function decodeSaveCode(
-  code: string,
-  expectedContent?: MapContentIdentity | null,
-): SaveSnapshot {
-  const clean = code.replace(/\s+/g, "");
-  if (clean.length === 0) throw new SaveError("bad-json", "save code is empty");
-  const bytes: number[] = [];
+function base64UrlDecode(clean: string): Uint8Array {
+  if (clean.length % 4 === 1) throw new SaveError("bad-json", "save code has a truncated final group");
+  const bytes = new Uint8Array(Math.floor(clean.length / 4) * 3 + Math.max(0, (clean.length % 4) - 1));
+  let o = 0;
   for (let i = 0; i < clean.length; i += 4) {
     const c0 = B64URL_INV[clean[i]!];
     const c1 = B64URL_INV[clean[i + 1]!];
     const c2 = i + 2 < clean.length ? B64URL_INV[clean[i + 2]!] : 0;
     const c3 = i + 3 < clean.length ? B64URL_INV[clean[i + 3]!] : 0;
-    if (c0 === undefined || c1 === undefined ||
-      (i + 2 < clean.length && B64URL_INV[clean[i + 2]!] === undefined) ||
-      (i + 3 < clean.length && B64URL_INV[clean[i + 3]!] === undefined)) {
+    if (c0 === undefined || c1 === undefined || c2 === undefined || c3 === undefined) {
       throw new SaveError("bad-json", "save code contains characters outside the save alphabet");
     }
     const n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
-    bytes.push((n >> 16) & 255);
-    if (i + 2 < clean.length) bytes.push((n >> 8) & 255);
-    if (i + 3 < clean.length) bytes.push(n & 255);
+    bytes[o++] = (n >> 16) & 255;
+    if (i + 2 < clean.length) bytes[o++] = (n >> 8) & 255;
+    if (i + 3 < clean.length) bytes[o++] = n & 255;
   }
-  const text = utf8Decode(new Uint8Array(bytes));
+  return bytes;
+}
+
+/** Decode either save-code encoding (compressed "z1…" or plain). Every
+ *  refusal is a SaveError. */
+export function decodeSaveCode(
+  code: string,
+  expectedContent?: MapContentIdentity | null,
+): SaveSnapshot {
+  return typedDecode(() => decodeSaveCodeUnchecked(code, expectedContent));
+}
+
+function decodeSaveCodeUnchecked(
+  code: string,
+  expectedContent?: MapContentIdentity | null,
+): SaveSnapshot {
+  if (typeof code !== "string") throw new SaveError("bad-json", "save code must be a string");
+  if (code.length > SAVE_CODE_MAX_CHARS * 2) {
+    throw new SaveError("bad-json", `save code is longer than ${SAVE_CODE_MAX_CHARS * 2} characters`);
+  }
+  const clean = code.replace(/\s+/g, "");
+  if (clean.length === 0) throw new SaveError("bad-json", "save code is empty");
+  if (clean.length > SAVE_CODE_MAX_CHARS) {
+    throw new SaveError("bad-json", `save code is longer than ${SAVE_CODE_MAX_CHARS} characters`);
+  }
+  let bytes: Uint8Array;
+  if (clean[0] === "z") {
+    if (!clean.startsWith(SAVE_CODE_COMPRESSED_PREFIX)) {
+      throw new SaveError("version", `save code encoding ${JSON.stringify(clean.slice(0, 2))} is newer than this build reads`);
+    }
+    const packed = base64UrlDecode(clean.slice(SAVE_CODE_COMPRESSED_PREFIX.length));
+    try {
+      bytes = inflateRaw(packed, SAVE_CODE_MAX_BYTES);
+    } catch (error) {
+      if (!(error instanceof InflateError)) throw error;
+      throw new SaveError("bad-json", `save code is damaged: ${error.message}`);
+    }
+  } else {
+    bytes = base64UrlDecode(clean);
+  }
+  const text = utf8Decode(bytes);
   if (text === null) throw new SaveError("bad-json", "save code is not valid UTF-8");
-  return decodeEnvelopeText(text, expectedContent);
+  return decodeEnvelopeTextUnchecked(text, expectedContent);
 }
 
 /** Strict UTF-8 decode: validate lead/continuation bytes, overlong forms,
@@ -451,10 +665,26 @@ function utf8Decode(bytes: Uint8Array): string | null {
 
 // --- decode + validate ------------------------------------------------------
 
+/** Decode and fully validate envelope JSON text. Every refusal is a
+ *  SaveError. */
 export function decodeEnvelopeText(
   text: string,
   expectedContent?: MapContentIdentity | null,
 ): SaveSnapshot {
+  return typedDecode(() => decodeEnvelopeTextUnchecked(text, expectedContent));
+}
+
+function decodeEnvelopeTextUnchecked(
+  text: string,
+  expectedContent?: MapContentIdentity | null,
+): SaveSnapshot {
+  if (typeof text !== "string") throw new SaveError("bad-json", "save data must be text");
+  if (!utf8BytesWithin(text, SAVE_CODE_MAX_BYTES)) {
+    throw new SaveError("bad-json", `save data is larger than ${SAVE_CODE_MAX_BYTES} bytes`);
+  }
+  if (textDepthExceeded(text)) {
+    throw new SaveError("bad-json", `save data nests deeper than ${SAVE_MAX_DEPTH} levels`);
+  }
   let envelope: SaveEnvelope;
   try {
     envelope = JSON.parse(text) as SaveEnvelope;

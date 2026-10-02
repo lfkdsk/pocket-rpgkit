@@ -45,6 +45,12 @@ export {
   type GameViewProps,
   type SceneComponent,
 } from "./GameView.tsx";
+export type {
+  GameViewDemoRuntime,
+  GameViewDemoStepResult,
+  GameViewOverlayConfig,
+  GameViewSessionHost,
+} from "./demo-contract.ts";
 export { NameInputScene, type NameInputSceneProps } from "./name-input/NameInputScene.tsx";
 export type {
   AnimatedTile,

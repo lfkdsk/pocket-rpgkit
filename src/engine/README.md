@@ -46,8 +46,14 @@ state.
 - `schema-validate.ts` — zero-dependency checker for the JSON schema
   subset `../data/schema.json` uses.
 - `save.ts`, `save-validate.ts`, `save-restore.ts`, `save-menu.ts` —
-  save envelope/codecs, structural validation, the map-aware restore gate,
-  and the save-menu navigation reducer.
+  save envelope/codecs (snapshots include the current map's character
+  table, player route and fade-in), structural validation, the map-aware
+  restore gate with the structured `saveSession`/`loadSession`, and the
+  save-menu navigation reducer.
+- `deflate.ts` — raw DEFLATE for compressed save codes; no imports, built
+  lazily so bundles that never decode a code drop it.
+- `utf8.ts` — UTF-8 byte counting for size budgets (save envelope text,
+  preview protocol strings); stops just past the budget.
 - `attract.ts`, `tape.ts` — the attract/takeover/rewind controller over
   one unified u16 input stream, bounded runtime keyframes, and RLE/devtools
   tape helpers.

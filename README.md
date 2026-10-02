@@ -1311,8 +1311,8 @@ The published package exports the engine surface (`pocket-rpgkit`), the
 Solid components (`pocket-rpgkit/ui`), the opt-in lazy image path
 (`pocket-rpgkit/ui/image`), the opt-in WAV/QOA bridge
 (`pocket-rpgkit/ui/audio`), the battle UI kit (`pocket-rpgkit/ui/battle`),
-the demo controls (`pocket-rpgkit/ui/demo`),
-the host adapters (`pocket-rpgkit/host`), and the schema
+the demo controls (`pocket-rpgkit/ui/demo`), save and load for a GameView
+(`pocket-rpgkit/ui/saves`), the host adapters (`pocket-rpgkit/host`), and the schema
 (`pocket-rpgkit/schema`). The
 in-repo examples import the sources relatively, because PocketJS's build
 pass 1 walks relative imports; `examples/meadow/meadow.tsx` shows the
@@ -1570,12 +1570,104 @@ table and footer and fits the game screen to the window, for pages that show
 the player in an iframe (Studio's play-test panel embeds the `preview` page
 this way). The editor page's file tools stay visible.
 
-Saves are FNV-checksummed envelopes over a safe-point snapshot (mover on a
-tile boundary, no modal, no parked request, no active scene). Hosts with `data.fs` write
-three slots through `src/host/save-fs.ts`; other hosts exchange the same
-envelope as URL-safe base64 text (the save code). For a sharded project, pass
-`session.content` to `saveSlotFs`, `loadSlotFs` and `listSlotsFs`; this writes
-the build identity and rejects slots from another map manifest or schema.
+Chapter snapshots and save codes are the same data as ordinary saves; see
+[Saves and save codes](#saves-and-save-codes).
+
+### Saves and save codes
+
+A save is an FNV-checksummed `rpgkit-save/v1` envelope over a safe-point
+snapshot: the player rests on a tile boundary, no message, menu or scene is
+open, and no transfer, battle or other event request is waiting. The snapshot
+holds the map id, the player, the full interpreter state, the game's
+extension state and the current map's runtime: every character's cell,
+facing and step in progress, its running move route and how far along it is
+(including a path search still being computed), its page patrol, the wander
+RNG, a move route running on the player, and a fade-in after a transfer. A
+loaded save therefore continues frame for frame like the game that never
+stopped, at every host rate, even in the middle of a scripted scene. Saves
+written before the map runtime was recorded still load; their characters
+start again from the map, as they always did.
+
+Hosts with `data.fs` write three slots through `src/host/save-fs.ts`; other
+hosts exchange the save code, the envelope as text a player can copy or
+type on the on-screen keyboard (`A-Z a-z 0-9 - _` only). `encodeSaveCode`
+deflates the envelope first and prefixes `z1`; `decodeSaveCode` reads that
+and the older uncompressed codes (they start with `e`). Pass
+`{ compress: false }` to write a code an older runtime can read. For a
+sharded project, pass `session.content` to the encoders, `saveSlotFs`,
+`loadSlotFs` and `listSlotsFs`; this writes the build identity and rejects
+saves from another map manifest or schema.
+
+| Save | Plain code | Compressed code |
+| --- | --- | --- |
+| Sunstone, cave chapter | 1,179 characters | 648 characters |
+| A save from a large imported game (12.9 KB envelope: 81 variables, 51 switches, 8 KB of game state) | 17,183 characters | 3,934 characters |
+
+In QuickJS on the desktop host, encoding that 12.9 KB save takes about
+13 ms compressed (8 ms plain) and decoding about 10 ms either way.
+
+**Saving and loading in a GameView.** A game's own menu gets live access
+through the `overlay` prop. It receives a host with `getState`, `session`
+and `replaceState`, and returns the same `step`/`isOpen`/`render` runtime as
+the demo controls; a step that returns `consumed` folds no game input that
+frame. `pocket-rpgkit/ui/saves` pairs the host with the structured save and
+load:
+
+```tsx
+import { BTN } from "@pocketjs/framework/input";
+import { GameView } from "pocket-rpgkit/ui";
+import { loadIntoView, saveFromView } from "pocket-rpgkit/ui/saves";
+import { encodeSaveCode } from "pocket-rpgkit";
+
+let code: string | null = null;
+const saves = {
+  create(host) {
+    return {
+      step(_buttons, pressed) {
+        if (pressed & BTN.START) {
+          const saved = saveFromView(host);
+          if (saved.ok) code = encodeSaveCode(saved.snapshot, host.session.content);
+          else showMessage(saved.error.code); // "not-safe-point"
+          return { consumed: true };
+        }
+        if (pressed & BTN.SELECT && code) {
+          const loaded = loadIntoView(host, code);
+          if (!loaded.ok) showMessage(loaded.error.message);
+          return { consumed: true, stateChanged: loaded.ok };
+        }
+        return { consumed: false };
+      },
+      isOpen: () => false,
+      render: () => null,
+    };
+  },
+};
+
+mount(() => <GameView project={project} assets={GAME_ASSETS} overlay={saves} />);
+```
+
+`loadIntoView` accepts a snapshot object, an envelope's JSON text or a save
+code. It decodes, validates and rebuilds the session for the saved map
+first, so a refused save leaves the running game untouched; on success the
+next frame shows the loaded state without advancing it. Unlike the demo
+controls, an overlay creates no attract controller: L stays an ordinary
+button and nothing rewinds. Beside an `attractTape` or `demo`, a save taken
+while the demo plays records the buttons the demo was holding, and a load
+continues as live play. A refusal carries `error.code`:
+
+| Code | Meaning |
+| --- | --- |
+| `not-safe-point` | (save) the player is mid-step, a message, menu or scene is open, or an event request is pending |
+| `bad-json` | empty, damaged or truncated data, envelope JSON over 16 MiB (16,777,216 bytes counted as UTF-8, whatever the characters), or nested deeper than 128 levels |
+| `format`, `version` | not an `rpgkit-save` envelope, or one from a newer format or code encoding |
+| `checksum` | the data was edited or corrupted |
+| `content` | a save from another content build (different map manifest or schema) |
+| `shape` | the state fails validation or does not fit this build's maps |
+| `map-not-ready` | an asynchronous map repository must load `error.mapId` first: `await prepareSessionMap(host.session, error.mapId)` and load again |
+
+Without a GameView, `saveSession(session, state, held)` and
+`loadSession(session, input)` from `pocket-rpgkit` return the same results
+and leave installing the loaded `state` to the caller.
 
 ### Large-map streamed rendering
 

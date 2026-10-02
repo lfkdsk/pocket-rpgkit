@@ -190,7 +190,9 @@ export interface FadeState {
   half: number;
 }
 
-interface PlayerRoute {
+/** A forced move route running on the player (a `moveRoute` targeting the
+ *  player). Saved with the map runtime so a restored route resumes. */
+export interface PlayerRoute {
   steps: readonly MoveStep[];
   pc: number;
   repeat: boolean;

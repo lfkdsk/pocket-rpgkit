@@ -27,6 +27,7 @@ import {
   decodeSaveCode,
   encodeEnvelope,
   encodeSaveCode,
+  SAVE_CODE_COMPRESSED_PREFIX,
   fnv1aBytes,
   fnv1aText,
   loadFromStore,
@@ -338,7 +339,12 @@ describe("P1⑤ save — base64url save code", () => {
     expect(code).not.toContain("=");
     expect(code).not.toContain("+");
     expect(code).not.toContain("/");
-    expect(code.length % 4).not.toBe(1); // valid unpadded base64 length
+    // The compressed prefix is followed by valid unpadded base64.
+    expect(code.startsWith(SAVE_CODE_COMPRESSED_PREFIX)).toBe(true);
+    expect((code.length - SAVE_CODE_COMPRESSED_PREFIX.length) % 4).not.toBe(1);
+    const plain = encodeSaveCode(createSnapshot("m", restPlayer(), createInterpState(), 0), null, { compress: false });
+    expect(plain).toMatch(/^e[A-Za-z0-9_-]+$/);
+    expect(plain.length % 4).not.toBe(1);
   });
 
   test("round-trips rich state to the same snapshot an envelope load gives", () => {

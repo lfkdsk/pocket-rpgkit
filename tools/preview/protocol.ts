@@ -7,6 +7,7 @@
 // docs/protocols.md, section "Preview protocol".
 
 import type { Dir } from "../../src/engine/types.ts";
+import { utf8BytesWithin, utf8UnitBytes } from "../../src/engine/utf8.ts";
 
 export const PREVIEW_PROTOCOL = "rpgkit-preview/v1";
 export const PREVIEW_VERSION = 1;
@@ -200,46 +201,10 @@ function asObject(data: unknown): Record<string, unknown> {
 
 // ---- byte budget --------------------------------------------------------------
 
-/** Byte cost of the UTF-8 encoding that starts at code unit `i`, and how
- *  many following code units the encoding consumes. A high surrogate paired
- *  with the following low surrogate encodes as one 4-byte scalar; a lone
- *  surrogate (a high not followed by a low, or any low) encodes as the
- *  3-byte U+FFFD and does not consume its successor. This matches TextEncoder
- *  and the postMessage structured-clone wire exactly, including strings that
- *  arrive with unpaired surrogates. */
-function utf8UnitBytes(s: string, i: number): { bytes: number; skip: number } {
-  const code = s.charCodeAt(i);
-  if (code < 0x80) return { bytes: 1, skip: 0 };
-  if (code < 0x800) return { bytes: 2, skip: 0 };
-  if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
-    const next = s.charCodeAt(i + 1);
-    if (next >= 0xdc00 && next <= 0xdfff) return { bytes: 4, skip: 1 };
-  }
-  return { bytes: 3, skip: 0 };
-}
-
 /** Add the UTF-8 byte length of `s` one code unit at a time, so a budget
  *  callback can stop the walk partway through a long string. */
 function walkStringBytes(s: string, add: (n: number) => void): void {
-  for (let i = 0; i < s.length; i++) {
-    const { bytes, skip } = utf8UnitBytes(s, i);
-    add(bytes);
-    i += skip;
-  }
-}
-
-/** Whether `s` is at most `limit` UTF-8 bytes. The scan stops as soon as the
- *  running total exceeds the limit, so an oversized string costs work
- *  proportional to the limit, not to the string. */
-function utf8BytesWithin(s: string, limit: number): boolean {
-  let total = 0;
-  for (let i = 0; i < s.length; i++) {
-    const { bytes, skip } = utf8UnitBytes(s, i);
-    total += bytes;
-    if (total > limit) return false;
-    i += skip;
-  }
-  return true;
+  for (let i = 0; i < s.length; i++) add(utf8UnitBytes(s, i));
 }
 
 /** Structural JSON size: string UTF-8 bytes, 8 per number, 4 per

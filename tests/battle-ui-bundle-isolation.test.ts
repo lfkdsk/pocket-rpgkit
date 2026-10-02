@@ -99,7 +99,14 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Applying same-tick place/moveRoute requests in command order adds 2,745
 // shared interpreter/session bytes. Sunstone's opted-in demo menu adds lazy
 // tape providers, a global timelineFrame and a shared tape cache (2,461).
-const EXPECTED_BYTES = 777_762;
+// Saves that keep the current map's characters, compressed chapter codes and
+// GameView's overlay slot add 28,977 bytes: 24,285 for inflate, validating,
+// snapshotting and restoring the character table and the overlay slot, less
+// the shorter codes (measured together), then 1,970 for joint
+// character-motion checks, 39 for the overlay's held mask under attract,
+// 1,869 for save-code length and depth bounds and 814 for counting envelope
+// text in UTF-8 bytes.
+const EXPECTED_BYTES = 806_739;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

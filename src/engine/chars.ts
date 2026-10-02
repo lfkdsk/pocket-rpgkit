@@ -155,8 +155,8 @@ export interface RouteRun {
   /** MOTION_HZ reference ticks left of an in-route wait step. */
   waitLeft: number;
   /** Expansion state for the current pathTo/approach step; null on
-   *  ordinary steps and between route steps. Not part of the save snapshot
-   *  (routes are per-visit transient state). */
+   *  ordinary steps and between route steps. A session save records it,
+   *  search in flight included, in the snapshot's map runtime. */
   plan: PathPlan | null;
   /** Remaining full BFS replans for the current path step. This lives on
    *  the route, not PathPlan, because replanning deliberately discards and

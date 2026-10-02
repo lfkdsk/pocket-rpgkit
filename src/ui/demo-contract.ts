@@ -33,3 +33,28 @@ export interface GameViewDemoRuntime {
 export interface GameViewDemoConfig {
   create(host: GameViewDemoHost): GameViewDemoRuntime;
 }
+
+/** Live-session access for a game's own overlay (a save/load menu, a debug
+ * panel). Unlike the demo host it creates no attract controller, so an
+ * overlay leaves L rewind and idle attract off. */
+export interface GameViewSessionHost {
+  readonly project: ProjectSource;
+  readonly session: Session;
+  readonly getState: () => SessionState;
+  /** Button mask folded into the reducer on the latest frame (the attract
+   * tape's mask while a demo plays): the `held` of a save taken now. */
+  readonly heldButtons: () => number;
+  /** Replace the running session, presented on the next host frame without
+   * folding a world tick (or immediately when called from `step`, which
+   * must then report `stateChanged`). `held` seeds the previous button mask
+   * under an attract tape; live play continues from the real buttons.
+   * `loadSession` (engine/save-restore.ts) produces a valid state from a
+   * save; `loadIntoView` (ui/session-saves.ts) does both in one call. */
+  readonly replaceState: (next: SessionState, held?: number) => void;
+}
+
+/** Opt-in overlay runtime with live-session access. It shares the demo
+ * runtime contract: a consumed step folds no reducer input. */
+export interface GameViewOverlayConfig {
+  create(host: GameViewSessionHost): GameViewDemoRuntime;
+}

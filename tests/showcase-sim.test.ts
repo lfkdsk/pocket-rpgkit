@@ -139,7 +139,7 @@ const pins: Record<string, string> = {
   battle: "be26dddf",
   streaming: "8f1494d7",
   theme: "0ad10d88",
-  "save-code": "3915d13f",
+  "save-code": "66f83b1c",
   "save-verified": "c1156966",
   attract: "72f143e6",
   rewind: "e817e2e9",

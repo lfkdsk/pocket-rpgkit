@@ -53,6 +53,33 @@ commands and the four triggers. The matching TypeScript types are
 - **Saves** are a separate envelope, `rpgkit-save/v1`
   (`src/engine/save.ts`): FNV-checksummed, validated by
   `src/engine/save-validate.ts` before live state is replaced.
+  - Envelope: `{format: "rpgkit-save/v1", version: 1, frame, checksum,
+    content?, state}`. `checksum` is FNV-1a 32 (8 hex digits) over the
+    canonical JSON of `state`; `frame` repeats `state.interp.frame`;
+    `content` (`{manifest, schema}`) appears in sharded projects.
+  - `state`: `map`, `player` (the mover on a tile boundary), `held` (the
+    button mask of the save frame), `interp` (the full interpreter state,
+    cues and request queues drained), `ext` (the game's extension state,
+    `null` when absent) and, since the map runtime was recorded, the
+    optional `mapRuntime`: `{chars: {rng, chars: {<event id>: character}},
+    playerRoute, fade}`. A character keeps its cell, pixel position, facing,
+    step phase, page, visibility and body, wander timer, running `route` and
+    page `patrol` (steps, step index, repeat/skip flags, the fiber it
+    resumes, wait and path-plan progress). A path search still being
+    computed is stored with its buffers as number arrays; the validator
+    checks they form the search tree the runtime builds. `playerRoute` is a
+    move route running on the player; `fade` is the fade-in after a
+    transfer. A save without `mapRuntime` restores as before: characters
+    start again from the map on the next tick. With it, a parallel event
+    waiting on a saved route resumes when the route finishes; without it,
+    such a save is refused (`shape`).
+  - Save code: the envelope's UTF-8 JSON as unpadded URL-safe base64
+    (`A-Z a-z 0-9 - _`). The compressed form, written by default, is `z1`
+    followed by the base64 of the envelope's raw DEFLATE (RFC 1951) stream;
+    the uncompressed form begins with `e` (the base64 of `{`). Whitespace is
+    ignored. Any other `z` prefix is a newer encoding and is refused with
+    `version`; a stream that does not inflate, or inflates past 16 MiB, is
+    `bad-json`.
 
 ## 2. Edit protocol — `rpgkit-edit`
 
@@ -375,12 +402,23 @@ check).
 - **`rpgkit-save/v1`.** The envelope carries `format` and `version`; a
   mismatch is a typed rejection, never a silent migration. The public
   `SaveErrorCode` values are `bad-json` (empty, malformed or non-UTF-8 save
-  data), `format` (not an `rpgkit-save/v1` envelope), `version` (envelope
+  data, envelope JSON over 16 MiB, or JSON nested deeper than 128 levels;
+  the size is the text's UTF-8 byte count, measured before parsing and only
+  until it passes 16,777,216, with a lone surrogate counted as 3 bytes and a
+  surrogate pair as 4), `format` (not an `rpgkit-save/v1` envelope), `version` (envelope
   version this build cannot load), `checksum` (FNV mismatch), `content`
   (sharded-project identity mismatch: a different manifest, or a schema
   identity that is neither current nor listed as compatible) and `shape`
   (envelope or state fails validation). Old saves that omit newer optional
-  fields keep their defaults.
+  fields keep their defaults. Adding an optional field to the snapshot (the
+  map runtime is the latest) keeps `rpgkit-save/v1`: older saves still load,
+  and an older runtime ignores the new field on any save its own checks
+  accept (it refuses one whose parallel event waits on a saved move route,
+  and it reads only uncompressed save codes). The project schema, and with
+  it the schema identity, is unchanged by snapshot-only additions. The
+  session-level loader (`loadSession`) adds `not-safe-point` for a save
+  attempted off a safe point and `map-not-ready` when an asynchronous map
+  repository must load the saved map first.
 - **`rpgkit-edit/patch-v1`.** The patch format is versioned in its `format`
   field. `beforeHash`/`afterHash` fail closed, so a patch can neither probe
   nor apply against a changed base.

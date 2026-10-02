@@ -440,10 +440,12 @@ simDescribe("sunstone — render budget", () => {
     // 771,534 B. The compatible schema identity list adds about 1 KB, and
     // applying same-tick place/route requests in command order adds 2,745 B;
     // demo tape providers, timelineFrame and the shared, windowed chapter tape
-    // add 2,461 B of opted-in demo code: 777,762 B measured. The ui/demo and
+    // add 2,461 B of opted-in demo code: 777,762 B. Saving the current map's
+    // characters, inflating compressed chapter codes, the overlay slot and
+    // the save-input checks add 28,163 B: 805,925 B measured. The ui/demo and
     // ui/audio input-graph tests separately prove non-opted-in code stays out;
     // the bound keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(780_000);
+    expect(jsBytes).toBeLessThan(808_000);
   });
 });
 
