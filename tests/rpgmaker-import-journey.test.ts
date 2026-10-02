@@ -52,6 +52,23 @@ function census(rgba: Uint8Array, test: (r: number, g: number, b: number) => boo
   for (let i = 0; i < rgba.length; i += 4) if (test(rgba[i]!, rgba[i + 1]!, rgba[i + 2]!)) n++;
   return n;
 }
+function censusRect(
+  rgba: Uint8Array,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  test: (r: number, g: number, b: number) => boolean,
+): number {
+  let n = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      if (test(rgba[i]!, rgba[i + 1]!, rgba[i + 2]!)) n++;
+    }
+  }
+  return n;
+}
 const water = (r: number, g: number, b: number) => b > 150 && b > r + 60 && b > g + 20;
 const grass = (r: number, g: number, b: number) => g > 120 && g > r + 30 && g > b + 30;
 /** The kit dialog paper (#0b1626). */
@@ -136,8 +153,14 @@ describe("rpgmaker-import journey: hollow-mz (village, house, cave, battle)", ()
       "map001/ev009": "B",
       "map002/ev002": "A",
     });
-    for (const mark of ["intro", "village", "elder-choices", "house", "chest", "gate-open", "cave", "battle", "golem-down", "end"]) {
+    for (const mark of ["intro", "village", "elder-choices", "luck-text", "house", "chest", "gate-open", "cave", "battle", "golem-down", "end"]) {
       expect(d.marks[mark]).toBeNumber();
+    }
+    const luckText = d.markStates["luck-text"]!.interp.modal;
+    expect(luckText?.kind).toBe("text");
+    if (luckText?.kind === "text") {
+      expect(luckText.lines.join(" ")).toContain(`luck today reads ${luck}.`);
+      expect(luckText.lines.join(" ")).not.toContain("{v:");
     }
   });
 
@@ -158,6 +181,14 @@ describe("rpgmaker-import journey: hollow-mz (village, house, cave, battle)", ()
     expect(census(shots.get("intro")!, navy)).toBeGreaterThan(W * 40);
     // The elder's choices box.
     expect(census(shots.get("elder-choices")!, navy)).toBeGreaterThan(W * 20);
+    // The live variable line is fully typeset, not a blank first reveal
+    // frame or a literal broken token. Its exact expanded number is checked
+    // in the reducer assertion above; here the dialog's text region must
+    // contain rendered light glyph pixels.
+    expect(censusRect(
+      shots.get("luck-text")!, 20, 182, 460, 240,
+      (r, g, b) => r > 170 && g > 170 && b > 170,
+    )).toBeGreaterThan(W);
     // The house interior has no grass.
     expect(census(shots.get("house")!, grass)).toBeLessThan(W * H / 50);
     // The placeholder battle fills the screen with its backdrop.
@@ -174,6 +205,7 @@ describe("rpgmaker-import journey: stage-mv (cutscene)", () => {
     expect([s.move.tx, s.move.ty, s.move.facing]).toEqual([13, 10, 3]);
     expect(s.sw.switches).toMatchObject({ s001: true, s002: true, s003: true, s004: false });
     expect(s.sw.variables).toMatchObject({ v001: 3, v002: 1 });
+    expect(d.markStates["cutscene-done"]!.sw.variables.v001).toBe(3);
     expect(s.sw.self).toMatchObject({ "map001/ev001": "A" });
     expect(s.interp.erased).toMatchObject({ "map001/ev007": true });
     for (const mark of ["curtain", "tint", "balloon", "cutscene-done", "claps", "end"]) expect(d.marks[mark]).toBeNumber();

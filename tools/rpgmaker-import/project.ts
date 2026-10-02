@@ -219,15 +219,10 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
         };
         const kitPage = convertPage(page, index, ctx);
         if ((page.trigger === 1 || page.trigger === 2) && page.priorityType === 1 && kitPage.commands.length > 0) {
-          // MV starts a same-as-characters touch event when the player
-          // walks INTO it (checkEventTriggerTouchFront); the kit starts a
-          // touch page only when the player stands on its cell. Lower to
-          // "step on it": the page stops blocking and, when the tile
-          // under it is impassable (a door in a wall), the cell is opened.
-          kitPage.blocks = false;
+          // The kit records a bump only when the event body, rather than the
+          // terrain below it, refuses the step. Make an impassable underlying
+          // tile passable while keeping the imported event body blocking.
           bumpCells.add(ev.y * rmMap.width + ev.x);
-          cov.record("trigger", "touch by walking into it", "Degraded",
-            "lowered to stepping onto the event's cell; needs a kit touch-front trigger");
         }
         return kitPage;
       });
@@ -386,7 +381,12 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     title: truncate(nonEmpty(rm.system.gameTitle, "Imported RPG Maker project"), 80),
     tileSize: 16,
     start: { map: mapId(rm.system.startMapId), x: rm.system.startX, y: rm.system.startY, dir: "down" },
-    system: { messageBlocksPlayer: true },
+    system: {
+      messageBlocksPlayer: true,
+      ...(cov.list("escape").some((row) => row.key === "\\V" && row.counts.Native > 0)
+        ? { textVariables: true }
+        : {}),
+    },
     ...(leader?.name ? { playerName: leader.name } : {}),
     sheets,
     items,
@@ -433,6 +433,8 @@ export function invertInitialParty(project: Project, initialParty: readonly numb
         return inverted.has(c.id) ? { ...c, id: inverted.get(c.id)!, value: !c.value } : c;
       case "if":
         return { ...c, if: cond(c.if), then: cmds(c.then), ...(c.else ? { else: cmds(c.else) } : {}) };
+      case "loop":
+        return { ...c, commands: cmds(c.commands) };
       case "choices":
         return {
           ...c,

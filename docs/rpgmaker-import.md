@@ -25,7 +25,8 @@ with a `www/` folder work too). The output folder receives:
 | `pictures/*.png` | Pictures used by Show Picture, copied unchanged. |
 | `system/balloon.png` | The balloon sheet, when Show Balloon Icon is used. |
 | `assets.json` | The render manifest an asset cooker bakes: sheets, sprites, pictures, animated water cells per map, the balloon sheet, the player's sprite. |
-| `coverage.md`, `coverage.json` | What happened to every construct in this project, and the table of every MV/MZ command. |
+| `coverage.md` | What happened to every construct in this project, followed by the table of every MV/MZ command. |
+| `coverage.json` | The machine-readable per-project construct counts (the static command table is Markdown-only). |
 
 `--placeholders silent` drops the visible text boxes that stand in for
 plugin and script commands (they still count as Placeholder).
@@ -97,8 +98,10 @@ See the coverage table in [the report](#coverage) for every command code.
 In short:
 
 - Pages keep their order; the kit, like MV, runs the highest-numbered page
-  whose conditions hold. Triggers map one to one, except Event Touch, which
-  becomes Player Touch (an event walking into the player does not start it).
+  whose conditions hold. RPG Maker Event Touch maps to `eventTouch`.
+  Non-blocking Player Touch maps to `playerTouch`; blocking Player Touch
+  maps to `eventTouch` so walking into the event still starts it, with the
+  documented caveat that a moving event can also initiate that contact.
 - Conditions on switches, variables (≥), self switches, items and party
   members map directly.
 - Commands map to kit commands where one exists; where the kit has a
@@ -118,9 +121,9 @@ In short:
 ## Command table
 
 Every MV/MZ event command code and what the importer does with a minimal
-use of it: 39 of the 107 commands map natively, 4 run degraded, 4 become
+use of it: 39 of the 107 commands map natively, 3 run degraded, 4 become
 placeholders (Battle Processing, Script and the two plugin commands) and
-60 are dropped, half of them actor, enemy and battle-only commands. "Needs
+61 are dropped, half of them actor, enemy and battle-only commands. "Needs
 kit" names the runtime capability a native mapping would take; it is the
 list of what the kit would need to import an RPG Maker game completely.
 `tests/rpgmaker-import.test.ts` keeps this table in step with the
@@ -138,11 +141,11 @@ for that project, to `coverage.md`.
 | 108 | Comment | MV/MZ | Native |  |  |
 | 109 | Skip | MZ | Native |  |  |
 | 111 | Conditional Branch | MV/MZ | Native |  | conditions over timer, actor stats, enemies, event facing, buttons, vehicles |
-| 112 | Loop | MV/MZ | Degraded | loop body runs once; needs a kit loop/break op | a loop/break command (forward-only jumps cannot repeat a block) |
-| 113 | Break Loop | MV/MZ | Native |  | a loop/break command |
+| 112 | Loop | MV/MZ | Native |  |  |
+| 113 | Break Loop | MV/MZ | Native |  |  |
 | 115 | Exit Event Processing | MV/MZ | Native |  | a return-from-common-event command (exit ends the calling fiber) |
 | 117 | Common Event | MV/MZ | Native |  |  |
-| 118 | Label | MV/MZ | Native |  | labels and goto |
+| 118 | Label | MV/MZ | Dropped |  | labels and goto |
 | 119 | Jump to Label | MV/MZ | Dropped |  | labels and goto |
 | 121 | Control Switches | MV/MZ | Native |  |  |
 | 122 | Control Variables | MV/MZ | Native |  | variable sources for item/gold/actor/character/party/timer game data |
@@ -243,15 +246,22 @@ Besides the commands, the report counts conditional branch types, page
 conditions, triggers, movement route steps, message escape codes and tile
 constructs. Of note:
 
-- **Touch events that block** (same-as-characters priority) start in MV
-  when the player walks into them. The kit starts a touch page only when
-  the player stands on its cell, so the importer makes such pages
-  non-blocking and opens the cell's passage (a door set into a wall becomes
-  a door the player steps onto). Needs a kit "touch front" trigger.
-- **Loops** run their body once unless the loop is the whole page of an
-  autorun or parallel event (the page itself repeats, and Break Loop
-  becomes Exit Event Processing). A cutscene that polls in a loop
-  therefore moves on without waiting. Needs a kit loop/break command.
+- **Touch events that block** (same-as-characters priority) keep blocking
+  and use `eventTouch`, so walking into them starts the page without moving
+  onto their cell. For a door embedded in an impassable wall, the importer
+  opens the underlying terrain edge while the event body remains the
+  blocker. Blocking RPG Maker Player Touch is counted Degraded because a
+  moving event can also initiate the kit contact; direct Event Touch is
+  counted Native. Non-blocking Player Touch remains `playerTouch`.
+- **Loops** use the kit's structured `loop` and `break` commands for every
+  shape, including a loop that occupies an entire autorun or parallel page.
+  The loop back-edge does not re-evaluate page conditions; conditions are
+  checked again only after the page program ends and is eligible to start
+  anew. A Break Loop outside a parsed loop ends that page or common event
+  and is conservatively counted Degraded for malformed flat command lists.
+  Label and Jump to Label remain Dropped: RPG Maker permits arbitrary jumps
+  through its flat command list, which a structured command tree cannot
+  represent. See [Loops and labels](../src/engine/README.md#loops-and-labels).
 - **Self switches**: the kit keeps one self-switch letter per event, so an
   event that sets B after A loses A (counted Degraded where it happens).
 - **Waited movement routes** that change a switch, the character's
@@ -260,8 +270,12 @@ constructs. Of note:
   waits for the route anyway. Unwaited or repeating routes drop those
   steps.
 - **Escape codes**: `\N[1]`/`\P[1]` become the `{name}` token and `\G` the
-  currency unit; `\V[n]` shows a visible `[Vn]` marker (no variable text
-  token yet); colour, icon, font-size and timing codes are stripped.
+  currency unit. `\V[n]` becomes `{v:vNNN}` and the generated project sets
+  `system.textVariables: true` only when such a token is present, so it is
+  expanded from live state when the text or choice opens. Expansion is one
+  pass; RPG Maker plugin-written strings containing another `\V` are not
+  recursively expanded. Colour, icon, font-size and timing codes are
+  stripped.
 
 ## Known limitations
 

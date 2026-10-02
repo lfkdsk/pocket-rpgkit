@@ -1188,7 +1188,7 @@ function hollowVillage(): RmMap {
     ]),
     event(6, "To Cave", 19, 0, [
       page({
-        trigger: 1,
+        trigger: 2,
         list: list(switchOn(S_IN_CAVE), cmd(250, SE.steps), transfer(3, 10, 13, 8, 1)),
       }),
     ]),

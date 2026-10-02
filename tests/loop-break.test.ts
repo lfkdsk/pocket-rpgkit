@@ -4,7 +4,7 @@
 // program, even from a nested `if` or from a branch program (choices option
 // or cancel, battle/scene result) that runs as its own stack frame. A called
 // common event is a separate program. A break with no enclosing loop ends
-// the program root (MV Break Loop parity).
+// the program root.
 //
 // A loop never trips the runaway budget by itself: at a back-edge the fiber
 // yields to the next tick after LOOP_YIELD_STEPS steps, staying in "run"

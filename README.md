@@ -821,9 +821,11 @@ Maker Loop / Repeat Above). `{ "op": "break" }` leaves the innermost loop
 from anywhere inside its body: nested `if` blocks and the branches of
 `choices`, `battle` and `scene` included. A called common event is its own
 program, so a `break` inside one never leaves the caller's loop; a `break`
-outside any loop ends the current page or common event (RPG Maker Break Loop
-parity). A loop is ordinary fiber state: it saves, loads and rewinds with
-the session, and a parallel page waiting inside a loop can be saved. A pass
+outside any loop ends the current page or common event. This also matches a
+well-formed RPG Maker list, whose interpreter scans to the matching Repeat
+Above or reaches the list end. A loop is ordinary fiber state: it saves,
+loads and rewinds with the session, and a parallel page waiting inside a
+loop can be saved. A pass
 that waits (`wait`, a text box, a waited route) is paced in virtual time,
 so it runs identically at every host rate. A pass that never waits still
 cannot stall a frame: once its fiber has taken 1,000 interpreter steps in
@@ -976,9 +978,10 @@ attract/demo input ownership alone do not make the world busy.
 `{kind:"bgmPlaying", id?, negate?}` tests any or one named BGM and is false
 while that BGM is paused or suspended behind an ME.
 Switch/variable ids prefixed `local.` reset on every map entry; a page `dir`
-sets the character's initial facing. Conditions compile to forward jumps; no
-command can express a loop, and the runtime backstops a hand-crafted cyclic
-program with a fatal interpreter error instead of hanging the frame loop.
+sets the character's initial facing. Conditions and ordinary `jmp`
+instructions compile to forward jumps; structured `loop` is the sole source
+of a guarded `repeat` back-edge. The runtime rejects any other hand-crafted
+cyclic program instead of hanging the frame loop.
 Within one reference tick, parallel fibers run in ascending event-key order
 before the blocking main fiber. Main can therefore observe an earlier
 parallel write, while a parallel cannot observe a main write made later in

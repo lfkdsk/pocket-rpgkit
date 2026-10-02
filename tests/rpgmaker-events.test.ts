@@ -27,6 +27,7 @@ import {
   convertPage,
   convertPageConditions,
   parseTree,
+  wrap,
   type EventContext,
 } from "../tools/rpgmaker-import/events.ts";
 import { audioId } from "../tools/rpgmaker-import/ids.ts";
@@ -219,29 +220,32 @@ describe("tree parsing", () => {
     expect(branch.elseBody!.map((n) => n.cmd.code)).toEqual([113]);
   });
 
-  test("converts the nested tree (loop runs once on an action page)", () => {
+  test("converts the nested tree with a native loop and nested break", () => {
     const { cmds, cov } = conv(nested);
     expect(cmds).toEqual([
       {
-        op: "choices",
-        prompt: "",
-        options: [
-          {
-            text: "A",
-            commands: [{
-              op: "if",
-              if: { kind: "switch", id: "s001" },
-              then: [{ op: "if", if: { kind: "switch", id: "s002", value: false }, then: [{ op: "switch", id: "s003", value: true }] }],
-              else: [],
-            }],
-          },
-          { text: "B", commands: [] },
-        ],
-        cancel: { commands: [{ op: "exit" }] },
+        op: "loop",
+        commands: [{
+          op: "choices",
+          prompt: "",
+          options: [
+            {
+              text: "A",
+              commands: [{
+                op: "if",
+                if: { kind: "switch", id: "s001" },
+                then: [{ op: "if", if: { kind: "switch", id: "s002", value: false }, then: [{ op: "switch", id: "s003", value: true }] }],
+                else: [{ op: "break" }],
+              }],
+            },
+            { text: "B", commands: [] },
+          ],
+          cancel: { commands: [{ op: "exit" }] },
+        }],
       },
     ]);
-    expect(counts(cov, "command", "112")).toMatchObject({ Degraded: 1 });
-    expect(counts(cov, "command", "113")).toMatchObject({ Degraded: 1 });
+    expect(counts(cov, "command", "112")).toMatchObject({ Native: 1 });
+    expect(counts(cov, "command", "113")).toMatchObject({ Native: 1 });
     expect(counts(cov, "command", "111")).toMatchObject({ Native: 2 });
     expect(counts(cov, "command", "102")).toMatchObject({ Native: 1 });
     expect(counts(cov, "command", "115")).toMatchObject({ Native: 1 });
@@ -270,40 +274,64 @@ describe("loops", () => {
     C(413, 0),
   ];
 
-  test("a loop that is a parallel page's whole list is the page re-run", () => {
+  test("a loop that is a parallel page's whole list stays a native loop", () => {
     const ctx = makeCtx();
     const page = convertPage(rmPage([C(108, 0, ["note"]), ...loopBody], { trigger: 4 }), 0, ctx);
     expect(page.trigger).toBe("parallel");
-    expect(page.commands).toEqual([
+    expect(page.commands).toEqual([{ op: "loop", commands: [
       { op: "wait", seconds: 1 },
-      { op: "if", if: { kind: "switch", id: "s001" }, then: [{ op: "exit" }] },
-    ]);
+      { op: "if", if: { kind: "switch", id: "s001" }, then: [{ op: "break" }] },
+    ] }]);
     expect(counts(ctx.cov, "command", "112")).toMatchObject({ Native: 1, Degraded: 0 });
     expect(counts(ctx.cov, "command", "113")).toMatchObject({ Native: 1 });
     expect(counts(ctx.cov, "trigger", "parallel")).toMatchObject({ Native: 1 });
   });
 
-  test("the same loop on an action page runs once", () => {
+  test("the same loop on an action page stays a native loop", () => {
     const ctx = makeCtx();
     const page = convertPage(rmPage(loopBody), 0, ctx);
-    expect(page.commands).toEqual([
+    expect(page.commands).toEqual([{ op: "loop", commands: [
       { op: "wait", seconds: 1 },
-      { op: "if", if: { kind: "switch", id: "s001" }, then: [] },
-    ]);
-    expect(counts(ctx.cov, "command", "112")).toMatchObject({ Degraded: 1 });
-    expect(counts(ctx.cov, "command", "113")).toMatchObject({ Degraded: 1 });
+      { op: "if", if: { kind: "switch", id: "s001" }, then: [{ op: "break" }] },
+    ] }]);
+    expect(counts(ctx.cov, "command", "112")).toMatchObject({ Native: 1 });
+    expect(counts(ctx.cov, "command", "113")).toMatchObject({ Native: 1 });
   });
 
-  test("a loop followed by other commands is not the whole body", () => {
+  test("a loop followed by other commands remains native", () => {
     const ctx = makeCtx();
     convertPage(rmPage([...loopBody, C(121, 0, [1, 1, 0])], { trigger: 3 }), 0, ctx);
-    expect(counts(ctx.cov, "command", "112")).toMatchObject({ Degraded: 1 });
+    expect(counts(ctx.cov, "command", "112")).toMatchObject({ Native: 1 });
   });
 
-  test("Break Loop outside a loop exits", () => {
+  test("Break Loop outside a loop uses the kit's root break and is reported degraded", () => {
     const { cmds, cov } = conv([C(113, 0)]);
-    expect(cmds).toEqual([{ op: "exit" }]);
-    expect(only(cov, 113)).toBe("Native");
+    expect(cmds).toEqual([{ op: "break" }]);
+    expect(only(cov, 113)).toBe("Degraded");
+  });
+
+  test("an imported counting loop executes until break on the real interpreter", () => {
+    const { cmds } = conv([
+      C(112, 0),
+      C(122, 1, [1, 1, 1, 0, 1]),
+      C(111, 1, [1, 1, 0, 3, 1]),
+      C(113, 2),
+      END(2),
+      C(412, 1),
+      END(1),
+      C(413, 0),
+      C(121, 0, [1, 1, 0]),
+    ]);
+    const state = runKit(cmds, { variables: { v001: 0 } });
+    expect(state.sw.variables.v001).toBe(3);
+    expect(state.sw.switches.s001).toBe(true);
+  });
+
+  test("Label and Jump to Label remain explicitly dropped", () => {
+    const { cmds, cov } = conv([C(118, 0, ["top"]), C(119, 0, ["top"])]);
+    expect(cmds).toEqual([]);
+    expect(only(cov, 118)).toBe("Dropped");
+    expect(only(cov, 119)).toBe("Dropped");
   });
 });
 
@@ -316,10 +344,10 @@ describe("messages", () => {
       ["\\N[1] has \\V[3] \\G, \\c[2]red\\C[0] \\I[5]!", "\\n[2] and \\P[1]/\\P[2] \\\\ \\{big\\} \\.\\|\\!\\>\\<\\^\\$ \\FS[20]x"],
       ctx,
     );
-    expect(out).toEqual(["{name} has [V3] G, red !", "Therese and {name}/Therese \\ big  x"]);
+    expect(out).toEqual(["{name} has {v:v003} G, red !", "Therese and {name}/Therese \\ big  x"]);
     const esc = (k: string) => counts(ctx.cov, "escape", k);
     expect(esc("\\N")).toMatchObject({ Native: 1, Degraded: 1 });
-    expect(esc("\\V")).toMatchObject({ Degraded: 1 });
+    expect(esc("\\V")).toMatchObject({ Native: 1 });
     expect(esc("\\G")).toMatchObject({ Native: 1 });
     expect(esc("\\C")).toMatchObject({ Degraded: 2 });
     expect(esc("\\I")).toMatchObject({ Degraded: 1 });
@@ -351,6 +379,22 @@ describe("messages", () => {
     expect(r.cmds.length).toBeGreaterThan(1);
     for (const c of r.cmds) expect(c.op).toBe("text");
     expect(only(r.cov, 101)).toBe("Degraded");
+  });
+
+  test("wrapping and choice truncation never split a converted variable token", () => {
+    expect(wrap([`${"x".repeat(49)}{v:v003}tail`], 52)).toEqual(["x".repeat(49), "{v:v003}tail"]);
+    const label = `${"x".repeat(61)}\\V[3]tail`;
+    const r = conv([
+      C(102, 0, [[label, "No"], -1, 0, 2, 0]),
+      C(402, 0, [0, label]), END(1),
+      C(402, 0, [1, "No"]), END(1),
+      C(404, 0),
+    ]);
+    expect(r.cmds[0]).toMatchObject({
+      op: "choices",
+      options: [{ text: "x".repeat(61), commands: [] }, { text: "No", commands: [] }],
+    });
+    expect(only(r.cov, 102)).toBe("Degraded");
   });
 
   test("Show Text before Show Choices folds into the prompt", () => {
@@ -872,7 +916,7 @@ describe("pages", () => {
       moveRoute: { list: [{ code: 2 }, { code: 15, parameters: [16] }, { code: 0 }], repeat: true, skippable: true, wait: false },
     }), 1, ctx);
     expect(page).toEqual({
-      trigger: "playerTouch",
+      trigger: "eventTouch",
       condition: {
         variable: { id: "v005", op: ">=", value: 10 },
         selfSwitch: "C",
@@ -889,15 +933,15 @@ describe("pages", () => {
       commands: [{ op: "switch", id: "s001", value: true }],
     });
     expectSchemaValid(page, { $ref: "#/$defs/page" });
-    expect(counts(ctx.cov, "trigger", "eventTouch")).toMatchObject({ Degraded: 1 });
+    expect(counts(ctx.cov, "trigger", "eventTouch")).toMatchObject({ Native: 1 });
     for (const k of ["variable", "selfSwitch", "item", "actor"]) expect(counts(ctx.cov, "pageCondition", k).Native).toBe(1);
     expect(counts(ctx.cov, "pageCondition", "switch").Native).toBe(2);
   });
 
-  test("no conditions; random move; trigger table", () => {
+  test("no conditions; random move; native trigger table", () => {
     const ctx = makeCtx();
     expect(convertPageConditions(NO_CONDS, ctx)).toBeUndefined();
-    for (const [rm, kit] of [[0, "action"], [1, "playerTouch"], [3, "autorun"], [4, "parallel"]] as const) {
+    for (const [rm, kit] of [[0, "action"], [1, "playerTouch"], [2, "eventTouch"], [3, "autorun"], [4, "parallel"]] as const) {
       const page = convertPage(rmPage([], { trigger: rm, moveType: 1 }), 0, ctx);
       expect(page.trigger).toBe(kit);
       expect(page.moveType).toBe("random");
@@ -905,6 +949,28 @@ describe("pages", () => {
       expectSchemaValid(page, { $ref: "#/$defs/page" });
     }
   });
+
+  test("a blocking Player Touch page maps to eventTouch but a below-character page stays playerTouch", () => {
+    const blockingCtx = makeCtx();
+    const blocking = convertPage(rmPage([C(121, 0, [1, 1, 0])], { trigger: 1, priorityType: 1 }), 0, blockingCtx);
+    expect(blocking).toMatchObject({ trigger: "eventTouch", blocks: true });
+    expect(counts(blockingCtx.cov, "trigger", "playerTouch")).toMatchObject({ Degraded: 1, Native: 0 });
+
+    const belowCtx = makeCtx();
+    const below = convertPage(rmPage([C(121, 0, [1, 1, 0])], { trigger: 1, priorityType: 0 }), 0, belowCtx);
+    expect(below).toMatchObject({ trigger: "playerTouch", blocks: false });
+    expect(counts(belowCtx.cov, "trigger", "playerTouch")).toMatchObject({ Native: 1, Degraded: 0 });
+  });
+
+  test.each([[0, false], [1, true], [2, false]] as const)(
+    "Event Touch priority %i stays native and blocks=%s",
+    (priorityType, blocks) => {
+      const ctx = makeCtx();
+      const page = convertPage(rmPage([C(121, 0, [1, 1, 0])], { trigger: 2, priorityType }), 0, ctx);
+      expect(page).toMatchObject({ trigger: "eventTouch", blocks });
+      expect(counts(ctx.cov, "trigger", "eventTouch")).toMatchObject({ Native: 1, Degraded: 0 });
+    },
+  );
 });
 
 describe("common events", () => {
@@ -938,13 +1004,13 @@ describe("common events", () => {
     expect(counts(ctx.cov, "command", "115")).toMatchObject({ Degraded: 1 });
   });
 
-  test("a parallel common event's whole-body loop", () => {
+  test("a parallel common event keeps its whole-body loop native", () => {
     const ctx = makeCtx({ owner: common("none") });
     const ce = convertCommonEvent({
       id: 2, name: "", trigger: 2, switchId: 1,
       list: [C(112, 0), C(230, 1, [6]), END(1), C(413, 0), END(0)],
     }, ctx);
-    expect(ce.commands).toEqual([{ op: "wait", seconds: 0.1 }]);
+    expect(ce.commands).toEqual([{ op: "loop", commands: [{ op: "wait", seconds: 0.1 }] }]);
     expect(counts(ctx.cov, "command", "112")).toMatchObject({ Native: 1 });
   });
 });

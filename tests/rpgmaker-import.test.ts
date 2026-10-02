@@ -16,7 +16,7 @@ import type { Project } from "../src/engine/types.ts";
 import { RM_COMMANDS } from "../tools/rpgmaker-import/catalog.ts";
 import { importToDirectory } from "../tools/rpgmaker-import/index.ts";
 import { loadRmProject, RmLoadError } from "../tools/rpgmaker-import/load.ts";
-import { importRmProject } from "../tools/rpgmaker-import/project.ts";
+import { importRmProject, invertInitialParty } from "../tools/rpgmaker-import/project.ts";
 import { commandTableLines, staticCommandTable } from "../tools/rpgmaker-import/report.ts";
 import { writePngBytes } from "../tools/rpgmaker-import/png.ts";
 import { RMI_GAMES } from "./fixtures/rmi-play/games.ts";
@@ -46,7 +46,7 @@ function allCommands(project: Project): { op: string }[] {
   const visit = (list: readonly unknown[]): void => {
     for (const c of list as Record<string, unknown>[]) {
       out.push(c as { op: string });
-      for (const key of ["then", "else", "onWin", "onLose", "onEscape", "onDone", "onCancel"]) {
+      for (const key of ["commands", "then", "else", "onWin", "onLose", "onEscape", "onDone", "onCancel"]) {
         if (Array.isArray(c[key])) visit(c[key] as unknown[]);
       }
       if (c.op === "choices") {
@@ -86,6 +86,26 @@ describe("rpgmaker-import: output", () => {
     }
   });
 
+  test("variable text tokens opt the generated project in only when used", async () => {
+    expect(hollow.project.system).toMatchObject({ messageBlocksPlayer: true, textVariables: true });
+    expect(stage.project.system).toMatchObject({ messageBlocksPlayer: true, textVariables: true });
+    const messages = allCommands(hollow.project).filter((c) => c.op === "text") as unknown as { lines: string[] }[];
+    expect(messages.some((m) => m.lines.some((line) => line.includes("{v:v002}")))).toBe(true);
+
+    const noTokens = loadRmProject(STAGE);
+    for (const map of noTokens.maps.values()) {
+      for (const ev of map.events) for (const page of ev?.pages ?? []) {
+        for (const command of page.list) {
+          command.parameters = command.parameters?.map((value) =>
+            typeof value === "string" ? value.replace(/\\V\[\d+\]/gi, "number") : value,
+          );
+        }
+      }
+    }
+    const imported = await importRmProject(noTokens);
+    expect(imported.project.system).toEqual({ messageBlocksPlayer: true });
+  });
+
   test("plugin and script commands are visible placeholders, battles a battle op", () => {
     const texts = allCommands(hollow.project).filter((c) => c.op === "text") as unknown as { lines: string[] }[];
     expect(texts.some((t) => t.lines.join(" ").includes("Plugin command not ported"))).toBe(true);
@@ -116,7 +136,7 @@ describe("rpgmaker-import: output", () => {
     expect(silent.cov.list("command").find((r) => r.key === "357")!.counts.Placeholder).toBeGreaterThan(0);
   });
 
-  test("tile passage: walls block, the fence blocks one edge, the walked-into door is opened", () => {
+  test("tile passage: walls block, the fence blocks one edge, and a touch door keeps a body-only bump path", () => {
     const map = hollow.project.maps[0]!;
     const table = buildPassage(map, new Map(hollow.project.sheets.map((s) => [s.id, s])));
     // House wall (A3) at (9,4) blocks; grass at (11,9) passes.
@@ -127,10 +147,15 @@ describe("rpgmaker-import: output", () => {
     // walking along it is not.
     const fenceSheet = hollow.project.sheets[0]!;
     expect(Object.values(fenceSheet.dirBlock ?? {})).toContainEqual(["down"]);
-    // The door (11,5) is a same-as-characters touch event on the wall: its
-    // cell is opened so stepping onto it starts the transfer.
+    // The door (11,5) is a same-as-characters touch event on the wall. The
+    // terrain below it is opened, but its event body remains blocking, so a
+    // refused player step is attributed to the body and starts eventTouch.
     expect(map.passage).toContainEqual([5 * map.width + 11, "pass"]);
     expect(canStepFrom(table, 11, 6, 2)).toBe(true);
+    const door = map.events!.find((event) => event.id === "ev003")!.pages[0]!;
+    expect(door).toMatchObject({ trigger: "eventTouch", blocks: true });
+    const cave = map.events!.find((event) => event.id === "ev006")!.pages[0]!;
+    expect(cave).toMatchObject({ trigger: "eventTouch", blocks: false });
   });
 
   test("the starting party member's switch is stored inverted", async () => {
@@ -140,6 +165,26 @@ describe("rpgmaker-import: output", () => {
     // Actor 2 joins (129): a plain party switch; actor 1 is never toggled.
     expect(ids.has("party-actor002")).toBe(true);
     expect([...ids].some((id) => id.startsWith("party-out-"))).toBe(false);
+  });
+
+  test("starting-party switch inversion reaches commands nested in a loop", () => {
+    const project = structuredClone(hollow.project);
+    const page = project.maps[0]!.events![0]!.pages[0]!;
+    page.commands = [{
+      op: "loop",
+      commands: [
+        { op: "switch", id: "party-actor001", value: true },
+        { op: "if", if: { kind: "switch", id: "party-actor001" }, then: [{ op: "break" }] },
+      ],
+    }];
+    invertInitialParty(project, [1]);
+    expect(project.maps[0]!.events![0]!.pages[0]!.commands).toEqual([{
+      op: "loop",
+      commands: [
+        { op: "switch", id: "party-out-actor001", value: false },
+        { op: "if", if: { kind: "switch", id: "party-out-actor001", value: false }, then: [{ op: "break" }] },
+      ],
+    }]);
   });
 
   test("coverage counts every command the fixtures use, by code", () => {
@@ -163,6 +208,10 @@ describe("rpgmaker-import: output", () => {
     for (const r of rows) expect(r.disposition).not.toBe("—");
     const by = new Map(rows.map((r) => [r.code, r]));
     expect(by.get(101)!.disposition).toBe("Native");
+    expect(by.get(112)!.disposition).toBe("Native");
+    expect(by.get(113)!.disposition).toBe("Native");
+    expect(by.get(118)!.disposition).toBe("Dropped");
+    expect(by.get(119)!.disposition).toBe("Dropped");
     expect(by.get(355)!.disposition).toBe("Placeholder");
     expect(by.get(357)!.disposition).toBe("Placeholder");
     expect(by.get(301)!.disposition).toBe("Placeholder");

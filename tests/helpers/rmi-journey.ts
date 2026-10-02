@@ -93,7 +93,9 @@ export class RmiDriver {
     const map = this.session.maps.get(this.state.mapId)!;
     const out = new Set<number>();
     for (const ev of map.events ?? []) {
-      if (ev.pages.some((p) => p.trigger === "playerTouch")) out.add(ev.y * map.width + ev.x);
+      if (ev.pages.some((p) => (p.trigger === "playerTouch" || p.trigger === "eventTouch") && p.blocks !== true)) {
+        out.add(ev.y * map.width + ev.x);
+      }
     }
     return out;
   }
@@ -243,11 +245,16 @@ export function playHollow(project: Project): RmiDriver {
   d.walkTo(12, 9);
   d.press(FACE.right);
   d.watch("elder-choices", (s) => s.interp.modal?.kind === "choices");
+  d.watch("luck-text", (s) =>
+    s.interp.modal?.kind === "text" &&
+    s.interp.modal.complete &&
+    s.interp.modal.lines.some((line) => line.includes("luck today")),
+  );
   d.talk({ pick: ["I'll help"] });
   d.walkTo(11, 6);
-  // The door is a same-priority touch event on the house wall: MV starts it
-  // when the player walks into it; the import opens the cell so the step
-  // onto it starts the event.
+  // The door is a same-priority Player Touch event on the house wall. The
+  // import keeps its body blocking and maps it to eventTouch, so this bump
+  // starts the event without moving the player onto the door.
   d.stepOnce(FACE.up);
   d.settle({ wantMap: "map002" });
   d.mark("house");
@@ -282,9 +289,8 @@ export function playHollow(project: Project): RmiDriver {
   return d;
 }
 
-/** stage-mv: the opening cutscene, then the usher. The Director's wait
- *  loop runs once in the import (no kit loop op), so the tape waits for
- *  the Stagehand's three claps before talking to the usher. */
+/** stage-mv: the opening cutscene, then the usher. The Director's native
+ *  polling loop waits for the Stagehand's three claps before continuing. */
 export function playStage(project: Project): RmiDriver {
   const d = new RmiDriver(project);
   d.watch("curtain", (s) => s.interp.screen?.backdrop !== undefined && s.interp.modal?.kind === "text");
@@ -292,7 +298,6 @@ export function playStage(project: Project): RmiDriver {
   d.watch("balloon", (s) => Object.keys(s.interp.screen?.balloons ?? {}).length > 0);
   d.settle({ maxFrames: 20000 });
   d.mark("cutscene-done");
-  for (let i = 0; i < 3000 && Number(d.state.sw.variables["v001"] ?? 0) < 3; i++) d.go(0);
   d.mark("claps");
   d.walkTo(13, 10);
   d.press(FACE.right);

@@ -91,7 +91,7 @@ Events that matter:
 | 1 | 3 | House Door | (11, 5) | player touch, same priority (walk into it), on the house wall |
 | 1 | 4 | Gate | (19, 6) | tile image, blocks; p2 (switch 2) passable, no image |
 | 1 | 5 | Guard | (18, 7) | action; p2 (item 2 held); p3 (self A) |
-| 1 | 6 | To Cave | (19, 0) | player touch, below characters (step on it) |
+| 1 | 6 | To Cave | (19, 0) | event touch, below characters (step on it) |
 | 1 | 7 | Villager | (3, 3) | custom route, off the path |
 | 1 | 9 | Bell | (0, 14) | parallel; the page body is one loop; Ticks += 1 per second until 5, then self B |
 | 2 | 1 | Exit | (6, 9) | player touch, below (step on it) |

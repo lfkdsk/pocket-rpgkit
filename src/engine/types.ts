@@ -374,7 +374,7 @@ export type Command =
    *  never stalls the host. */
   | { op: "loop"; commands: Command[] }
   /** Leave the innermost enclosing `loop`; outside any loop it ends the
-   *  current page or common event (RPG Maker Break Loop parity). */
+   *  current page or common event. */
   | { op: "break" }
   | { op: "common"; id: string }
   /** T2-10 shop: a goods list plus buy/sell. `id` namespaces this shop's

@@ -46,9 +46,9 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 111, name: "Conditional Branch", flavor: "MV/MZ", needsKit: "conditions over timer, actor stats, enemies, event facing, buttons, vehicles" },
   { code: 411, name: "Else", flavor: "MV/MZ", continuation: true },
   { code: 412, name: "Branch End", flavor: "MV/MZ", continuation: true },
-  { code: 112, name: "Loop", flavor: "MV/MZ", needsKit: "a loop/break command (forward-only jumps cannot repeat a block)" },
+  { code: 112, name: "Loop", flavor: "MV/MZ" },
   { code: 413, name: "Repeat Above", flavor: "MV/MZ", continuation: true },
-  { code: 113, name: "Break Loop", flavor: "MV/MZ", needsKit: "a loop/break command" },
+  { code: 113, name: "Break Loop", flavor: "MV/MZ" },
   { code: 115, name: "Exit Event Processing", flavor: "MV/MZ", needsKit: "a return-from-common-event command (exit ends the calling fiber)" },
   { code: 117, name: "Common Event", flavor: "MV/MZ" },
   { code: 118, name: "Label", flavor: "MV/MZ", needsKit: "labels and goto" },
@@ -264,7 +264,7 @@ function sampleBody(code: number): RmCommand[] {
     case 109: return [cmd(109, 0, [])];
     case 111: return [cmd(111, 0, [0, 1, 0]), END(1), cmd(412, 0, [])];
     case 112: return [cmd(112, 0, []), cmd(230, 1, [60]), END(1), cmd(413, 0, [])];
-    case 113: return [cmd(113, 0, [])];
+    case 113: return [cmd(112, 0, []), cmd(113, 1, []), END(1), cmd(413, 0, [])];
     case 115: return [cmd(115, 0, [])];
     case 117: return [cmd(117, 0, [1])];
     case 118: return [cmd(118, 0, ["Top"])];

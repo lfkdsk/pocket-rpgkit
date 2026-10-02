@@ -11,8 +11,7 @@
 //                        and party changes are not reflected)
 //   \G                -> System.currencyUnit literal     Native
 //   \\                -> a backslash                     Native
-//   \V[n]             -> a visible "[Vn]" marker         Degraded (no
-//                        variable text token)
+//   \V[n]             -> {v:vNNN}                         Native
 //   \C[n] \I[n] \{ \} \$ \. \| \! \> \< \^, MZ \PX[n] \PY[n] \FS[n] and
 //   plugin codes      -> stripped                         Degraded (colour,
 //                        icons, font size, gold window, message timing)
@@ -21,6 +20,7 @@
 // ("\\V", "\\C", ...).
 
 import type { Coverage, Disposition } from "./coverage.ts";
+import { variableId } from "./ids.ts";
 import type { RmProject } from "./rm-types.ts";
 
 export interface TextContext {
@@ -82,8 +82,8 @@ function convertLine(text: string, ctx: TextContext): string {
       const code = pre[0][0]!.toUpperCase();
       const n = pre[2] === undefined ? 0 : Number(pre[2]);
       if (code === "V") {
-        out += `[V${n}]`;
-        rec("V", "Degraded", "no variable text token; shown as a [Vn] marker");
+        out += `{v:${variableId(n)}}`;
+        rec("V", "Native");
       } else if (code === "N") {
         out += actorName(n, ctx, (d, r) => rec("N", d, r));
       } else if (code === "P") {

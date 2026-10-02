@@ -12,10 +12,9 @@
 // Lowerings that keep behaviour exact count as Native: comparisons against
 // another variable go through a scratch variable, `>`/`<` become `>=`/`<=`
 // with the constant moved by one, transfers by variable become a search
-// tree over the imported map ids, a whole-body loop in a re-running page is
-// the page itself, and constant multiplication goes through a scratch
-// variable. Scratch variables (ids.tempVariableId) are written and read
-// within one run of instant commands, so no other fiber can observe them.
+// tree over the imported map ids, and constant multiplication goes through
+// a scratch variable. Scratch variables (ids.tempVariableId) are written and
+// read within one run of instant commands, so no other fiber can observe them.
 
 import { NAME_INPUT_SCENE_ID } from "../../src/engine/name-input.ts";
 import type {
@@ -240,8 +239,6 @@ interface State {
   /** A parallel/autorun common event: RM runs it with event id 0, so
    *  self-switch, erase and "this event" commands are no-ops there. */
   eventless: boolean;
-  /** The list contains a Jump to Label (labels then matter). */
-  hasJump: boolean;
   /** Movement speed of "this" event's page, when known. */
   pageSpeed: number | undefined;
   selfMulti?: boolean;
@@ -250,20 +247,19 @@ interface State {
 /** Facts a branch body may rely on: gold/item floors proven by an
  *  enclosing condition, and the innermost loop kind. */
 interface Scope {
-  loop: "none" | "whole" | "once";
+  loop: boolean;
   gold: number;
   items: ReadonlyMap<string, number>;
 }
 
-const ROOT_SCOPE: Scope = { loop: "none", gold: 0, items: new Map() };
+const ROOT_SCOPE: Scope = { loop: false, gold: 0, items: new Map() };
 
-function makeState(ctx: EventContext, trigger: OwnerTrigger, list: readonly RmCommand[], pageSpeed?: number): State {
+function makeState(ctx: EventContext, trigger: OwnerTrigger, pageSpeed?: number): State {
   return {
     ctx,
     trigger,
     calledCommon: ctx.owner.kind === "common" && trigger === "none",
     eventless: ctx.owner.kind === "common" && trigger !== "none",
-    hasJump: list.some((c) => c.code === 119),
     pageSpeed,
   };
 }
@@ -302,41 +298,14 @@ export function convertCommands(list: RmCommand[], ctx: EventContext): Command[]
 }
 
 function convertList(list: readonly RmCommand[], ctx: EventContext, trigger: OwnerTrigger, pageSpeed?: number): Command[] {
-  const st = makeState(ctx, trigger, list, pageSpeed);
-  const nodes = parseTree(list);
-  // A Loop that is the whole list of a page/common event the runtime
-  // re-runs (autorun, parallel) is that re-run: emit the body once and let
-  // Break Loop end the run (the next run re-enters the loop). Comments
-  // around it are no-ops.
-  const significant = nodes.filter((nd) => nd.cmd.code !== 108);
-  if (
-    (trigger === "autorun" || trigger === "parallel") &&
-    significant.length === 1 &&
-    significant[0]!.cmd.code === 112
-  ) {
-    const out: Command[] = [];
-    for (const nd of nodes) {
-      if (nd.cmd.code === 112) {
-        rec(st, 112, "Native");
-        out.push(...emitList(nd.body ?? [], st, { ...ROOT_SCOPE, loop: "whole" }));
-      } else {
-        out.push(...emitNode(nd, st, ROOT_SCOPE));
-      }
-    }
-    return out;
-  }
-  return emitList(nodes, st, ROOT_SCOPE);
+  const st = makeState(ctx, trigger, pageSpeed);
+  return emitList(parseTree(list), st, ROOT_SCOPE);
 }
 
 const TRIGGERS: readonly { key: string; trigger: Trigger; d: Disposition; reason?: string }[] = [
   { key: "action", trigger: "action", d: "Native" },
   { key: "playerTouch", trigger: "playerTouch", d: "Native" },
-  {
-    key: "eventTouch",
-    trigger: "playerTouch",
-    d: "Degraded",
-    reason: "event-initiated touch not modelled; fires on player touch only",
-  },
+  { key: "eventTouch", trigger: "eventTouch", d: "Native" },
   { key: "autorun", trigger: "autorun", d: "Native" },
   { key: "parallel", trigger: "parallel", d: "Native" },
 ];
@@ -345,8 +314,20 @@ const TRIGGERS: readonly { key: string; trigger: Trigger; d: Disposition; reason
  *  supplies the map/event identity. */
 export function convertPage(page: RmEventPage, index: number, ctx: EventContext): Page {
   const t = TRIGGERS[page.trigger] ?? TRIGGERS[0]!;
-  ctx.cov.record("trigger", t.key, t.d, t.reason);
-  const trigger = t.trigger;
+  // MV starts a same-priority Player Touch page when the player's step is
+  // refused by the event body. The kit's playerTouch is entry-only, so use
+  // eventTouch for that shape. It also reacts when the event walks into the
+  // player, which MV reserves for Event Touch, hence the honest degradation.
+  const blockingPlayerTouch = page.trigger === 1 && page.priorityType === 1;
+  const trigger: Trigger = blockingPlayerTouch ? "eventTouch" : t.trigger;
+  ctx.cov.record(
+    "trigger",
+    t.key,
+    blockingPlayerTouch ? "Degraded" : t.d,
+    blockingPlayerTouch
+      ? "blocking Player Touch mapped to eventTouch; event movement into the player also fires"
+      : t.reason,
+  );
   const pctx: EventContext =
     ctx.owner.kind === "page" ? { ...ctx, owner: { ...ctx.owner, page: index, trigger } } : ctx;
 
@@ -487,19 +468,15 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
     case 111:
       return emitBranch(nd, st, scope);
     case 112: {
-      rec(st, 112, "Degraded", "loop body runs once; needs a kit loop/break op");
-      return emitList(nd.body ?? [], st, { ...scope, loop: "once" });
+      rec(st, 112, "Native");
+      return [{ op: "loop", commands: emitList(nd.body ?? [], st, { ...scope, loop: true }) }];
     }
     case 113:
-      // Break Loop jumps past the innermost loop's Repeat Above; outside any
-      // loop it skips to the end of the list, i.e. it exits.
-      if (scope.loop === "once") {
-        rec(st, 113, "Degraded", "breaks a loop that runs once; nothing to break");
-        return [];
-      }
-      return exitCommand(st, 113, scope);
+      if (scope.loop) rec(st, 113, "Native");
+      else rec(st, 113, "Degraded", "outside a parsed loop; malformed flat lists can differ at a stray Repeat Above");
+      return [{ op: "break" }];
     case 115:
-      return exitCommand(st, 115, scope);
+      return exitCommand(st, 115);
     case 117: {
       const n = int(p[0]);
       if (!ctx.rm.commonEvents[n]) {
@@ -510,12 +487,9 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
       return [{ op: "common", id: commonId(n) }];
     }
     case 118:
-      // A label alone does nothing; only a jump to it gives it meaning.
-      if (st.hasJump) {
-        rec(st, 118, "Dropped", needs(118));
-      } else {
-        rec(st, 118, "Native");
-      }
+      // The kit's structured branch programs cannot represent RM's flat-list
+      // jump targets, including a target inside a choice branch.
+      rec(st, 118, "Dropped", needs(118));
       return [];
     case 119:
       rec(st, 119, "Dropped", needs(119));
@@ -651,8 +625,8 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
   }
 }
 
-function exitCommand(st: State, code: number, scope: Scope): Command[] {
-  if (st.calledCommon && scope.loop !== "whole") {
+function exitCommand(st: State, code: number): Command[] {
+  if (st.calledCommon) {
     rec(st, code, "Degraded", "in a called common event the kit's exit also ends the caller");
   } else {
     rec(st, code, "Native");
@@ -694,12 +668,29 @@ export function wrap(lines: readonly string[], width = TEXT_WIDTH): string[] {
     while (rest.length > width) {
       let cut = rest.lastIndexOf(" ", width);
       if (cut <= 0) cut = width;
+      cut = tokenSafeCut(rest, cut);
       out.push(rest.slice(0, cut).trimEnd());
       rest = rest.slice(cut).trimStart();
     }
     out.push(rest);
   }
   return out;
+}
+
+/** Never split a runtime text token while wrapping or truncating imported
+ *  text. A token at column zero is shorter than either importer limit, but
+ *  allowing its end also makes this helper total for hand-written ids. */
+function tokenSafeCut(text: string, cut: number): number {
+  for (const match of text.matchAll(/\{name\}|\{v:[^{}]*\}/g)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (start < cut && cut < end) return start > 0 ? start : end;
+  }
+  return cut;
+}
+
+function tokenSafeSlice(text: string, width: number): string {
+  return text.slice(0, tokenSafeCut(text, Math.min(width, text.length)));
 }
 
 /** Show Text right before Show Choices: RM keeps the message on screen
@@ -720,9 +711,10 @@ function emitTextThenChoices(textNode: RmNode, choiceNode: RmNode, st: State, sc
   return out;
 }
 
-function choiceLabel(text: unknown, st: State): string {
-  const s = convertMessage([String(text ?? "")], st.ctx)[0]!.slice(0, CHOICE_WIDTH);
-  return s.length > 0 ? s : "-";
+function choiceLabel(text: unknown, st: State): { text: string; truncated: boolean } {
+  const converted = convertMessage([String(text ?? "")], st.ctx)[0]!;
+  const s = tokenSafeSlice(converted, CHOICE_WIDTH);
+  return { text: s.length > 0 ? s : "-", truncated: converted.length > CHOICE_WIDTH };
 }
 
 /** Show Choices. cancelType -2 runs the When Cancel branch, -1 disallows
@@ -730,7 +722,8 @@ function choiceLabel(text: unknown, st: State): string {
  *  the list as -2). */
 function emitChoices(nd: RmNode, st: State, scope: Scope, prompt: string): Command[] {
   const p = nd.cmd.parameters ?? [];
-  const labels = (Array.isArray(p[0]) ? (p[0] as unknown[]) : []).map((t) => choiceLabel(t, st));
+  const convertedLabels = (Array.isArray(p[0]) ? (p[0] as unknown[]) : []).map((t) => choiceLabel(t, st));
+  const labels = convertedLabels.map((label) => label.text);
   let cancelType = int(p[1], -1);
   if (cancelType >= labels.length) cancelType = -2;
   const bodies: Command[][] = labels.map(() => []);
@@ -744,6 +737,7 @@ function emitChoices(nd: RmNode, st: State, scope: Scope, prompt: string): Comma
     }
   }
   const reasons: string[] = [];
+  if (convertedLabels.some((label) => label.truncated)) reasons.push("choice text longer than 64 characters truncated");
   if (int(p[2], 0) > 0) reasons.push("default cursor row not modelled");
   if (labels.length === 0) {
     rec(st, 102, "Dropped", "no options");
@@ -772,7 +766,7 @@ function emitChoices(nd: RmNode, st: State, scope: Scope, prompt: string): Comma
   rec(st, 102, reasons.length ? "Degraded" : "Native", reasons[0]);
   const cmd: Command = {
     op: "choices",
-    prompt: prompt.slice(0, TEXT_WIDTH),
+    prompt: tokenSafeSlice(prompt, TEXT_WIDTH),
     options: labels.map((text, k) => ({ text, commands: bodies[k]! })),
   };
   if (cancel) cmd.cancel = cancel;
