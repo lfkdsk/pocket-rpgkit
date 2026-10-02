@@ -326,6 +326,24 @@ export const GROW_UPPER: Record<number, string> = {
   351: "assets/grow-upper-351.png",
 };
 
+export const GROW_SIM_GROUND: Record<number, string> = {
+  79: "assets/grow-ground-79.png",
+  80: "assets/grow-ground-80.png",
+  81: "assets/grow-ground-81.png",
+  82: "assets/grow-ground-82.png",
+  83: "assets/grow-ground-83.png",
+  84: "assets/grow-ground-84.png",
+};
+
+export const GROW_SIM_UPPER: Record<number, string> = {
+  85: "assets/grow-upper-85.png",
+  86: "assets/grow-upper-86.png",
+  87: "assets/grow-upper-87.png",
+  88: "assets/grow-upper-88.png",
+};
+
+export const GROW_CARAVAN = "assets/grow-caravan.png";
+
 export const GROW_NPC: Record<string, string> = {
   villager: "assets/grow-villager.png",
 };

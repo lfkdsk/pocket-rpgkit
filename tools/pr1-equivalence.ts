@@ -318,7 +318,9 @@ async function growTrace(root: string): Promise<Trace> {
     };
   };
   const recorder = new Recorder<any>("grow-to-done", view);
-  let state = grow.createGrow(grow.DEFAULT_PARAMS);
+  // The demo later moved to the causal rules; the original stamp rules
+  // stayed selectable as STAMP_PARAMS and are what the baseline grows.
+  let state = grow.createGrow(grow.STAMP_PARAMS ?? grow.DEFAULT_PARAMS);
   recorder.capture(state);
   for (let guard = 0; state.phase !== "done" && guard < 10_000; guard++) {
     state = grow.stepGrowTick(state);

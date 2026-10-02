@@ -22,7 +22,7 @@ import {
   createGrow,
   biomeAt,
   biomeBoundaryX,
-  DEFAULT_PARAMS,
+  STAMP_PARAMS,
   DX,
   DY,
   growToDone,
@@ -78,7 +78,7 @@ function contentOf(s: GrowState) {
 describe("grow: phase order and termination", () => {
   test("runs road, house, farm, villager, then done", () => {
     const seen: string[] = [];
-    let s = createGrow();
+    let s = createGrow(STAMP_PARAMS);
     while (s.phase !== "done") {
       seen.push(s.phase);
       s = stepGrowTick(s);
@@ -93,8 +93,8 @@ describe("grow: phase order and termination", () => {
   });
 
   test("growToTick past the end rests at done and does not overgrow", () => {
-    const total = totalOf(DEFAULT_PARAMS);
-    const past = growToTick(DEFAULT_PARAMS, total + 50);
+    const total = totalOf(STAMP_PARAMS);
+    const past = growToTick(STAMP_PARAMS, total + 50);
     expect(past.phase).toBe("done");
     expect(past.tick).toBe(total);
     expect(past.villagers.length).toBe(past.houses.length);
@@ -107,9 +107,9 @@ function totalOf(p: GrowParams): number {
 
 describe("grow: determinism", () => {
   test("same seed folded twice is field-equal frame by frame", () => {
-    const frames = tickEveryFrames(DEFAULT_PARAMS, 60) * 90;
-    const a = foldFrames(DEFAULT_PARAMS, frames, 60);
-    const b = foldFrames(DEFAULT_PARAMS, frames, 60);
+    const frames = tickEveryFrames(STAMP_PARAMS, 60) * 90;
+    const a = foldFrames(STAMP_PARAMS, frames, 60);
+    const b = foldFrames(STAMP_PARAMS, frames, 60);
     expect(worldSummary(a)).toEqual(worldSummary(b));
     // Deep equality, not just the digest.
     expect(JSON.parse(JSON.stringify(a))).toEqual(JSON.parse(JSON.stringify(b)));
@@ -118,8 +118,8 @@ describe("grow: determinism", () => {
   test("the frame fold lands the same world as the tick fold", () => {
     // Walk to tick k via frames; compare against a direct tick fold.
     const k = 25;
-    const viaFrames = foldFrames(DEFAULT_PARAMS, k * tickEveryFrames(DEFAULT_PARAMS, 60), 60);
-    const viaTicks = foldTicks(DEFAULT_PARAMS, k);
+    const viaFrames = foldFrames(STAMP_PARAMS, k * tickEveryFrames(STAMP_PARAMS, 60), 60);
+    const viaTicks = foldTicks(STAMP_PARAMS, k);
     expect(viaFrames.tick).toBe(k);
     expect(worldSummary(viaFrames)).toEqual(worldSummary(viaTicks));
     expect(viaFrames.ground).toEqual(viaTicks.ground);
@@ -128,8 +128,8 @@ describe("grow: determinism", () => {
   });
 
   test("two seeds grow different roads and a different world hash", () => {
-    const a = growToDone({ ...DEFAULT_PARAMS, seed: 0xaaaa_0001 });
-    const b = growToDone({ ...DEFAULT_PARAMS, seed: 0xbbbb_0002 });
+    const a = growToDone({ ...STAMP_PARAMS, seed: 0xaaaa_0001 });
+    const b = growToDone({ ...STAMP_PARAMS, seed: 0xbbbb_0002 });
     const wa = worldSummary(a);
     const wb = worldSummary(b);
     expect(wa.hash).not.toBe(wb.hash);
@@ -137,7 +137,7 @@ describe("grow: determinism", () => {
   });
 
   test("RNG is only the state cursor: cloning mid-grow replays exactly", () => {
-    const before = foldTicks(DEFAULT_PARAMS, 12);
+    const before = foldTicks(STAMP_PARAMS, 12);
     let s = before;
     for (let i = 0; i < 20; i++) s = stepGrowTick(s);
     // Typed-array grids need an explicit state clone; JSON would turn them
@@ -151,9 +151,9 @@ describe("grow: determinism", () => {
 
 describe("grow: timeline seek", () => {
   test("the default per-seed cache materializes each tick once and stays field-equal", () => {
-    const timeline = new GrowTimeline(DEFAULT_PARAMS);
-    const done = growToDone(DEFAULT_PARAMS);
-    let expected = createGrow(DEFAULT_PARAMS);
+    const timeline = new GrowTimeline(STAMP_PARAMS);
+    const done = growToDone(STAMP_PARAMS);
+    let expected = createGrow(STAMP_PARAMS);
     for (let k = 0; k <= done.tick; k++) {
       const actual = timeline.at(k);
       expect(actual).toEqual(expected);
@@ -168,12 +168,12 @@ describe("grow: timeline seek", () => {
     // while the call count proves seeking does not rerun the reducer.
     for (let k = done.tick; k >= 0; k--) {
       const actual = timeline.at(k);
-      const fresh = growToTick(DEFAULT_PARAMS, k);
+      const fresh = growToTick(STAMP_PARAMS, k);
       expect(contentOf(actual)).toEqual(contentOf(fresh));
       expect(worldSummary(actual).hash).toBe(worldSummary(fresh).hash);
     }
     expect(timeline.stats()).toMatchObject({
-      seed: DEFAULT_PARAMS.seed,
+      seed: STAMP_PARAMS.seed,
       states: Math.ceil(done.tick / 32) + 1,
       stepCalls: done.tick,
       checkpointInterval: 32,
@@ -182,7 +182,7 @@ describe("grow: timeline seek", () => {
 
   test("large configured timelines retain bounded checkpoints", () => {
     const params = {
-      ...DEFAULT_PARAMS,
+      ...STAMP_PARAMS,
       width: 1_024, roadCells: 600, houseCount: 0, farmPatches: 0, decorPatches: 0,
     };
     const timeline = new GrowTimeline(params);
@@ -193,7 +193,7 @@ describe("grow: timeline seek", () => {
   }, 15_000);
 
   test("each tick shares every grid layer it did not write", () => {
-    let previous = createGrow(DEFAULT_PARAMS);
+    let previous = createGrow(STAMP_PARAMS);
     let sharedLayers = 0, transitions = 0;
     while (previous.phase !== "done") {
       const next = stepGrowTick(previous);
@@ -214,10 +214,10 @@ describe("grow: timeline seek", () => {
   });
 
   test("scrubbing to tick k equals growing live to tick k, field by field", () => {
-    const live = growToDone(DEFAULT_PARAMS);
+    const live = growToDone(STAMP_PARAMS);
     for (const k of [0, 1, 5, 17, live.tick - 1, live.tick]) {
-      const scrubbed = growToTick(DEFAULT_PARAMS, k);
-      const grown = foldTicks(DEFAULT_PARAMS, k);
+      const scrubbed = growToTick(STAMP_PARAMS, k);
+      const grown = foldTicks(STAMP_PARAMS, k);
       expect(scrubbed.tick).toBe(Math.min(k, live.tick));
       expect(JSON.parse(JSON.stringify(scrubbed))).toEqual(
         JSON.parse(JSON.stringify(grown)),
@@ -231,11 +231,11 @@ describe("grow: timeline seek", () => {
     // The separate equal-virtual-time test covers 4 Hz, where one frame can
     // land between deadlines and therefore observe an interpolated camera.
     for (const hz of [60, 30, 20]) {
-      let live = createGrow(DEFAULT_PARAMS);
-      for (let frame = 0; frame < liveFrameAtTick(DEFAULT_PARAMS, hz, 55); frame++) {
+      let live = createGrow(STAMP_PARAMS);
+      for (let frame = 0; frame < liveFrameAtTick(STAMP_PARAMS, hz, 55); frame++) {
         live = stepGrowFrame(live, hz);
         if (live.grew) {
-          const scrub = growToTick(DEFAULT_PARAMS, live.tick);
+          const scrub = growToTick(STAMP_PARAMS, live.tick);
           expect(contentOf(live)).toEqual(contentOf(scrub));
         }
       }
@@ -243,9 +243,9 @@ describe("grow: timeline seek", () => {
   }, 15_000);
 
   test("camera advances smoothly between action boundaries", () => {
-    let s = createGrow(DEFAULT_PARAMS);
+    let s = createGrow(STAMP_PARAMS);
     const seen = new Set<number>();
-    for (let frame = 0; frame < liveFrameAtTick(DEFAULT_PARAMS, 60, 40); frame++) {
+    for (let frame = 0; frame < liveFrameAtTick(STAMP_PARAMS, 60, 40); frame++) {
       s = stepGrowFrame(s, 60);
       seen.add(s.cameraX);
     }
@@ -255,7 +255,7 @@ describe("grow: timeline seek", () => {
   });
 
   test("the coalesced delta between any two ticks turns one state into the other", () => {
-    const timeline = new GrowTimeline(DEFAULT_PARAMS);
+    const timeline = new GrowTimeline(STAMP_PARAMS);
     const total = timeline.finish();
     const grids = (k: number) => {
       const s = timeline.at(k);
@@ -304,7 +304,7 @@ describe("grow: timeline seek", () => {
   }, 30_000);
 
   test("the coalesced delta refuses a span that is not recorded yet", () => {
-    const timeline = new GrowTimeline(DEFAULT_PARAMS);
+    const timeline = new GrowTimeline(STAMP_PARAMS);
     const out = [1, 2, 3];
     expect(timeline.changedCells(0, 40, "ground+upper", out)).toBe(false);
     expect(out).toEqual([]);
@@ -314,8 +314,8 @@ describe("grow: timeline seek", () => {
   });
 
   test("every tick between 0 and done is reachable and monotone", () => {
-    const done = growToDone(DEFAULT_PARAMS);
-    let s = createGrow();
+    const done = growToDone(STAMP_PARAMS);
+    let s = createGrow(STAMP_PARAMS);
     const roadCountAt: number[] = [0];
     while (s.phase !== "done") {
       s = stepGrowTick(s);
@@ -328,8 +328,8 @@ describe("grow: timeline seek", () => {
 
 describe("grow: rule invariants", () => {
   test("settled decor uses biome nature on undeveloped walkable cells", () => {
-    const s = growToDone(DEFAULT_PARAMS);
-    expect(s.decor.length).toBe(DEFAULT_PARAMS.decorPatches);
+    const s = growToDone(STAMP_PARAMS);
+    expect(s.decor.length).toBe(STAMP_PARAMS.decorPatches);
     for (const i of s.decor) {
       const x = i % s.params.width;
       const y = Math.floor(i / s.params.width);
@@ -353,10 +353,10 @@ describe("grow: rule invariants", () => {
   });
 
   test("four biome settlements have centers, road-facing homes, work areas and residents", () => {
-    const s = growToDone(DEFAULT_PARAMS);
+    const s = growToDone(STAMP_PARAMS);
     const chapters: { houses: number; farms: number; residents: number }[] = [];
     for (let chapter = 0; chapter < 4; chapter++) {
-      const cx = 16 + chapter * DEFAULT_PARAMS.biomeBandWidth;
+      const cx = 16 + chapter * STAMP_PARAMS.biomeBandWidth;
       // The town's own row: the middle of its plaza column (towns wiggle by a row).
       const plazaRows = Array.from({ length: s.params.height }, (_, y) => y).filter((y) => s.ground[y * s.params.width + cx] === GROW_TILE.PLAZA);
       const cy = plazaRows[Math.floor(plazaRows.length / 2)]!;
@@ -383,12 +383,12 @@ describe("grow: rule invariants", () => {
   });
 
   test("wilderness forms adjacent clusters and development clears occupied cells", () => {
-    const done = growToDone(DEFAULT_PARAMS);
+    const done = growToDone(STAMP_PARAMS);
     let natural = 0, adjacent = 0;
-    for (let y = 1; y < DEFAULT_PARAMS.height - 1; y++) for (let x = 1; x < 128; x++) {
-      if (!naturalTileAt(DEFAULT_PARAMS, x, y)) continue; natural++;
-      if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => naturalTileAt(DEFAULT_PARAMS, x + dx!, y + dy!))) adjacent++;
-      const i = y * DEFAULT_PARAMS.width + x;
+    for (let y = 1; y < STAMP_PARAMS.height - 1; y++) for (let x = 1; x < 128; x++) {
+      if (!naturalTileAt(STAMP_PARAMS, x, y)) continue; natural++;
+      if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => naturalTileAt(STAMP_PARAMS, x + dx!, y + dy!))) adjacent++;
+      const i = y * STAMP_PARAMS.width + x;
       if (done.ground[i] >= 0 || done.upper[i] >= 0 || done.road[i]) expect(wildernessTileAt(done, x, y)).toBe(0);
     }
     expect(natural).toBeGreaterThan(900);
@@ -401,28 +401,28 @@ describe("grow: rule invariants", () => {
 
   test("each seeded biome seam varies by row and neighboring rows stay joined", () => {
     for (let band = 1; band <= 4; band++) {
-      const xs = Array.from({ length: DEFAULT_PARAMS.height }, (_, y) => biomeBoundaryX(DEFAULT_PARAMS, band, y));
+      const xs = Array.from({ length: STAMP_PARAMS.height }, (_, y) => biomeBoundaryX(STAMP_PARAMS, band, y));
       expect(new Set(xs).size).toBeGreaterThan(1);
       for (let y = 1; y < xs.length; y++) expect(Math.abs(xs[y]! - xs[y - 1]!)).toBeLessThanOrEqual(1);
       for (let y = 0; y < xs.length; y++) {
-        expect(biomeAt(DEFAULT_PARAMS, xs[y]! - 1, y)).toBe(((band - 1) % 4) as 0 | 1 | 2 | 3);
-        expect(biomeAt(DEFAULT_PARAMS, xs[y]!, y)).toBe((band % 4) as 0 | 1 | 2 | 3);
+        expect(biomeAt(STAMP_PARAMS, xs[y]! - 1, y)).toBe(((band - 1) % 4) as 0 | 1 | 2 | 3);
+        expect(biomeAt(STAMP_PARAMS, xs[y]!, y)).toBe((band % 4) as 0 | 1 | 2 | 3);
       }
       // Mutation proof: the former straight boundary has one x for all rows.
-      expect(new Set(new Array(xs.length).fill(band * DEFAULT_PARAMS.biomeBandWidth)).size).toBe(1);
+      expect(new Set(new Array(xs.length).fill(band * STAMP_PARAMS.biomeBandWidth)).size).toBe(1);
     }
   });
 
   test("visible 60-column windows remain at least 30 percent authored or natural", () => {
-    let s = createGrow(DEFAULT_PARAMS);
+    let s = createGrow(STAMP_PARAMS);
     while (true) {
-      const camera = Math.max(0, s.cameraX + DEFAULT_PARAMS.cameraLeadPx - 960 * 0.6);
+      const camera = Math.max(0, s.cameraX + STAMP_PARAMS.cameraLeadPx - 960 * 0.6);
       const x0 = Math.max(0, Math.floor(camera / 16) - 1);
       const x1 = Math.floor((camera + 959) / 16) + 1;
       let occupied = 0, total = 0;
-      for (let y = 0; y < DEFAULT_PARAMS.height; y++) for (let x = x0; x <= x1; x++) {
-        total++; const i = y * DEFAULT_PARAMS.width + x;
-        if (s.ground[i] >= 0 || s.upper[i] >= 0 || naturalTileAt(DEFAULT_PARAMS, x, y)) occupied++;
+      for (let y = 0; y < STAMP_PARAMS.height; y++) for (let x = x0; x <= x1; x++) {
+        total++; const i = y * STAMP_PARAMS.width + x;
+        if (s.ground[i] >= 0 || s.upper[i] >= 0 || naturalTileAt(STAMP_PARAMS, x, y)) occupied++;
       }
       expect(occupied / total, `tick ${s.tick}`).toBeGreaterThanOrEqual(0.3);
       // Mutation proof: an empty 60-column viewport fails the same threshold.
@@ -432,8 +432,8 @@ describe("grow: rule invariants", () => {
   });
 
   test("roads connect to the plaza and stay in the margin", () => {
-    const s = growToDone(DEFAULT_PARAMS);
-    const { x: cx, y: cy } = plazaCenter(DEFAULT_PARAMS);
+    const s = growToDone(STAMP_PARAMS);
+    const { x: cx, y: cy } = plazaCenter(STAMP_PARAMS);
     // Flood fill road cells from the plaza; every laid road is reached.
     const seen = new Set<number>();
     const stack = [[cx, cy]];
@@ -454,7 +454,7 @@ describe("grow: rule invariants", () => {
   });
 
   test("house footprints never overlap and sit on non-road ground", () => {
-    const s = growToDone(DEFAULT_PARAMS);
+    const s = growToDone(STAMP_PARAMS);
     const occupied = new Set<string>();
     for (const h of s.houses) {
       // The door cell is the road.
@@ -474,7 +474,7 @@ describe("grow: rule invariants", () => {
   });
 
   test("farm 4x4 boxes are disjoint and free of roads/huts", () => {
-    const s = growToDone(DEFAULT_PARAMS);
+    const s = growToDone(STAMP_PARAMS);
     const boxes: [number, number, number, number][] = [];
     for (const f of s.farms) {
       // No overlap with any other farm box.
@@ -492,7 +492,7 @@ describe("grow: rule invariants", () => {
   });
 
   test("every house owns one villager whose route never leaves a road", () => {
-    const s = growToDone(DEFAULT_PARAMS);
+    const s = growToDone(STAMP_PARAMS);
     for (const h of s.houses) {
       expect(h.villager).toBeGreaterThanOrEqual(0);
       const v = s.villagers[h.villager]!;
@@ -517,64 +517,64 @@ describe("grow: rule invariants", () => {
 
 describe("grow: parameters ride in state", () => {
   test("tickSeconds divides growth timing but not the grown world", () => {
-    const fast = foldFrames({ ...DEFAULT_PARAMS, tickSeconds: 0.1 }, 6 * 40, 60);
-    const slow = foldFrames({ ...DEFAULT_PARAMS, tickSeconds: 0.4 }, 24 * 40, 60);
+    const fast = foldFrames({ ...STAMP_PARAMS, tickSeconds: 0.1 }, 6 * 40, 60);
+    const slow = foldFrames({ ...STAMP_PARAMS, tickSeconds: 0.4 }, 24 * 40, 60);
     expect(fast.tick).toBe(slow.tick);
     expect(worldSummary(fast).hash).toBe(worldSummary(slow).hash);
   });
 
   test("a different road target changes the world", () => {
-    const a = growToDone({ ...DEFAULT_PARAMS, roadCells: 12 });
-    const b = growToDone({ ...DEFAULT_PARAMS, roadCells: 100 });
+    const a = growToDone({ ...STAMP_PARAMS, roadCells: 12 });
+    const b = growToDone({ ...STAMP_PARAMS, roadCells: 100 });
     expect(a.roads.length).toBeLessThan(b.roads.length);
     expect(worldSummary(a).hash).not.toBe(worldSummary(b).hash);
   });
 
   test("rightward trunk reaches multiple biome bands and keeps its exact budget", () => {
-    const s = growToDone(DEFAULT_PARAMS);
-    expect(s.roads.length).toBeLessThanOrEqual(DEFAULT_PARAMS.roadCells);
+    const s = growToDone(STAMP_PARAMS);
+    expect(s.roads.length).toBeLessThanOrEqual(STAMP_PARAMS.roadCells);
     expect(s.roads.length).toBeGreaterThan(140);
-    expect(s.roadFrontierX).toBeGreaterThan(DEFAULT_PARAMS.biomeBandWidth * 3);
+    expect(s.roadFrontierX).toBeGreaterThan(STAMP_PARAMS.biomeBandWidth * 3);
     // The trunk only grows east; west of the first plaza there are only that
     // town's own lot paths and back lane (lots reach 13 columns west).
-    expect(s.roads.every((r) => r.x >= plazaCenter(DEFAULT_PARAMS).x - 14)).toBe(true);
+    expect(s.roads.every((r) => r.x >= plazaCenter(STAMP_PARAMS).x - 14)).toBe(true);
   });
 });
 
 describe("grow: virtual-time cadence is hz-portable", () => {
   test("tickEveryFrames derives one fixed virtual period at every rate", () => {
-    expect(tickEveryFrames(DEFAULT_PARAMS, 60)).toBe(12);
-    expect(tickEveryFrames(DEFAULT_PARAMS, 30)).toBe(6);
-    expect(tickEveryFrames(DEFAULT_PARAMS, 20)).toBe(4);
+    expect(tickEveryFrames(STAMP_PARAMS, 60)).toBe(12);
+    expect(tickEveryFrames(STAMP_PARAMS, 30)).toBe(6);
+    expect(tickEveryFrames(STAMP_PARAMS, 20)).toBe(4);
     // 0.2 s at 4 Hz is 0.8 frames: one frame crosses the first deadline
     // only partially, so the period rounds to 1; the frame fold fires the
     // whole set of crossed actions per frame instead.
-    expect(tickEveryFrames(DEFAULT_PARAMS, 4)).toBe(1);
+    expect(tickEveryFrames(STAMP_PARAMS, 4)).toBe(1);
   });
 
   for (const seconds of [1, 5, 10, 15]) {
     test(`the same ${seconds} virtual seconds grow the same world at 60/30/20/4 Hz`, () => {
       const runs = [60, 30, 20, 4].map((hz) =>
-        foldFrames(DEFAULT_PARAMS, Math.round(seconds * hz), hz),
+        foldFrames(STAMP_PARAMS, Math.round(seconds * hz), hz),
       );
       const ref = contentOf(runs[0]!);
       for (const s of runs) expect(contentOf(s)).toEqual(ref);
       // A direct tick fold to the reached tick is the same world.
       const target = ref.tick;
-      expect(contentOf(foldTicks(DEFAULT_PARAMS, target))).toEqual(ref);
+      expect(contentOf(foldTicks(STAMP_PARAMS, target))).toEqual(ref);
     });
   }
 
   test("a coarse 4 Hz frame can land several actions in tick order", () => {
-    const s = foldFrames(DEFAULT_PARAMS, 20, 4); // 5 virtual seconds
+    const s = foldFrames(STAMP_PARAMS, 20, 4); // 5 virtual seconds
     expect(s.tick).toBe(25);
   });
 
   test("every rate ends at the same done world", () => {
-    const done = growToDone(DEFAULT_PARAMS);
-    const seconds = Math.ceil(done.tick * DEFAULT_PARAMS.tickSeconds) + 1;
+    const done = growToDone(STAMP_PARAMS);
+    const seconds = Math.ceil(done.tick * STAMP_PARAMS.tickSeconds) + 1;
     const runs = [60, 30, 20, 4].map((hz) =>
-      foldFrames(DEFAULT_PARAMS, Math.round(seconds * hz), hz),
+      foldFrames(STAMP_PARAMS, Math.round(seconds * hz), hz),
     );
     for (const s of runs) {
       expect(s.phase).toBe("done");
@@ -601,22 +601,22 @@ describe("grow: wilderness caches", () => {
   test("natural tiles do not depend on the order cells are first asked for", () => {
     // Each params object owns its caches; a cache miss settles a whole 2x2
     // block, so the visiting order must not leak into any cell.
-    const rows = cells({ ...DEFAULT_PARAMS }, "rows").sort();
-    expect(cells({ ...DEFAULT_PARAMS }, "reverse").sort()).toEqual(rows);
-    expect(cells({ ...DEFAULT_PARAMS }, "scattered").sort()).toEqual(rows);
+    const rows = cells({ ...STAMP_PARAMS }, "rows").sort();
+    expect(cells({ ...STAMP_PARAMS }, "reverse").sort()).toEqual(rows);
+    expect(cells({ ...STAMP_PARAMS }, "scattered").sort()).toEqual(rows);
     expect(rows.filter((cell) => !cell.endsWith(":0")).length).toBeGreaterThan(1_000);
   });
 
   test("warming columns ahead of time leaves the same wilderness and biomes", () => {
-    const cold = { ...DEFAULT_PARAMS };
-    const warm = { ...DEFAULT_PARAMS };
+    const cold = { ...STAMP_PARAMS };
+    const warm = { ...STAMP_PARAMS };
     warmWilderness(warm, 0, 179);
-    for (let y = 0; y < DEFAULT_PARAMS.height; y++) for (let x = 0; x < 180; x++) {
+    for (let y = 0; y < STAMP_PARAMS.height; y++) for (let x = 0; x < 180; x++) {
       expect(naturalTileAt(warm, x, y)).toBe(naturalTileAt(cold, x, y));
       expect(biomeAt(warm, x, y)).toBe(biomeAt(cold, x, y));
     }
-    const done = growToDone(DEFAULT_PARAMS);
-    for (let y = 0; y < DEFAULT_PARAMS.height; y++) for (let x = 0; x < 180; x++) {
+    const done = growToDone(STAMP_PARAMS);
+    for (let y = 0; y < STAMP_PARAMS.height; y++) for (let x = 0; x < 180; x++) {
       expect(wildernessTileAt({ ...done, params: warm }, x, y)).toBe(wildernessTileAt(done, x, y));
     }
   });
@@ -624,7 +624,7 @@ describe("grow: wilderness caches", () => {
 
 describe("D6h art placement", () => {
   test("streams have two or three water cells, changing banks, and road bridges", () => {
-    const s = growToDone(DEFAULT_PARAMS);
+    const s = growToDone(STAMP_PARAMS);
     for (const band of [0, 1]) {
       const widths: number[] = [], lefts = new Set<number>();
       for (let y = 3; y < s.params.height - 3; y++) {
@@ -643,10 +643,10 @@ describe("D6h art placement", () => {
   });
 
   test("developing any part of a tree removes its whole silhouette", () => {
-    const done = growToDone(DEFAULT_PARAMS);
+    const done = growToDone(STAMP_PARAMS);
     let cleared = 0;
-    for (let y = 1; y < DEFAULT_PARAMS.height - 1; y++) for (let x = 1; x < 128; x++) {
-      const whole = naturalStampAt(DEFAULT_PARAMS, x, y);
+    for (let y = 1; y < STAMP_PARAMS.height - 1; y++) for (let x = 1; x < 128; x++) {
+      const whole = naturalStampAt(STAMP_PARAMS, x, y);
       // Visit each multi-cell stamp once, from its top-left cell.
       if (!whole || whole.x !== x || whole.y !== y) continue;
       const cells = Array.from({ length: whole.w * whole.h }, (_, i) => [x + i % whole.w, y + Math.floor(i / whole.w)] as const);

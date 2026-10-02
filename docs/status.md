@@ -103,6 +103,7 @@ The links point to where each feature is described in detail.
 | Packaged maps read as text through the host's native read, with a fallback | Done | [Host map source](../src/engine/README.md#host-map-source-on-demand-maps) |
 | Lazy indexed images | Done | General and battle image components can load one-tile CLUT8+PackBits entries on demand through a bounded LRU and free a battle's working set on exit; legacy eager `ui:img` sources remain supported. See [Battle UI kit](../README.md#battle-ui-kit-pocket-rpgkituibattle) |
 | Endless generated world | Done | The `examples/wander` example |
+| Simulated world history | Done | The `examples/grow` example: villages with food, water and firewood needs (a source's flow and stored level cap the drinking water; a `dry` intervention diverts it), roads worn by footfall, trade routes that carry the live deal and send no caravan without one, decline and abandonment, and a queryable event record shown on a seekable timeline. Every tick is a pure function of the seed; history can be re-run with interventions. Rules, parameters and costs in [its README](../examples/grow/README.md) |
 
 ## Editor
 

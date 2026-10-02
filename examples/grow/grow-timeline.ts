@@ -39,7 +39,7 @@ function canonical(state: GrowState): GrowState {
 }
 
 function editGrid(state: GrowState, edit: GrowGridEdit, value: number): void {
-  const grid = edit.layer === "ground" ? state.ground : edit.layer === "upper" ? state.upper : state.road;
+  const grid = edit.layer === "ground" ? state.ground : edit.layer === "upper" ? state.upper : edit.layer === "road" ? state.road : state.wear!;
   grid[edit.index] = value;
 }
 
@@ -109,7 +109,8 @@ export class GrowTimeline {
     }
 
     const record = this.#records[target]!;
-    const result = { ...record.state, ground: grids.ground, upper: grids.upper, road: grids.road };
+    const result: GrowState = { ...record.state, ground: grids.ground, upper: grids.upper, road: grids.road };
+    if (grids.wear) result.wear = grids.wear;
     rememberGrowGridHash(result, record.gridHash);
     this.#cursor = result;
     return result;
@@ -118,13 +119,23 @@ export class GrowTimeline {
   /**
    * Return the exact reducer state at k, clamped to the terminal state.
    * A caller that no longer needs its current state may pass it as `reusable`
-   * to make that state's typed arrays the seek cursor without an allocation.
+   * to make that state's typed arrays the seek cursor without an allocation;
+   * the passed state is then owned by the timeline and must not be kept.
+   * Without `reusable` the returned grids are copies, so a later seek cannot
+   * rewrite a state the caller is still holding.
    */
   at(tick: number, reusable?: GrowState): GrowState {
     this.#seeks++;
     const requested = Math.max(0, Math.round(tick));
     this.#materializeTo(requested);
-    return this.#moveCursor(Math.min(requested, this.#builder.tick), reusable);
+    const k = Math.min(requested, this.#builder.tick);
+    if (reusable) return this.#moveCursor(k, reusable);
+    const result = this.#moveCursor(k);
+    return {
+      ...result,
+      ground: result.ground.slice(), upper: result.upper.slice(), road: result.road.slice(),
+      ...(result.wear ? { wear: result.wear.slice() } : {}),
+    };
   }
 
   /** Extend recorded history through a bounded target without moving a cursor. */
@@ -133,10 +144,33 @@ export class GrowTimeline {
     return this.#builder.tick;
   }
 
-  /** Metadata and cell edits for an already materialized tick. */
+  /**
+   * Metadata and cell edits for an already materialized tick. The returned
+   * state's grids are reconstructed for that tick and then copied, so a
+   * later seek or a continued recording cannot rewrite a snapshot the
+   * caller is still holding. Callers that only need the edits and metadata
+   * (not the grids) should use `frame` to avoid the reconstruction.
+   */
   snapshot(tick: number): GrowTimelineSnapshot | undefined {
     const record = this.#records[Math.max(0, Math.round(tick))];
-    return record ? { tick: record.state.tick, state: record.state, edits: record.edits, gridHash: record.gridHash } : undefined;
+    if (!record) return undefined;
+    const at = this.#moveCursor(record.state.tick);
+    const state: GrowState = {
+      ...record.state,
+      ground: at.ground.slice(), upper: at.upper.slice(), road: at.road.slice(),
+    };
+    if (at.wear) state.wear = at.wear.slice();
+    return { tick: record.state.tick, state, edits: record.edits, gridHash: record.gridHash };
+  }
+
+  /**
+   * Edits and metadata for a materialized tick, without reconstructing its
+   * grids: `state.ground` and friends are the live builder buffers and must
+   * not be read or kept. For the hot path that applies edits to its own grids.
+   */
+  frame(tick: number): { state: GrowState; edits: readonly GrowGridEdit[]; gridHash: number } | undefined {
+    const record = this.#records[Math.max(0, Math.round(tick))];
+    return record ? { state: record.state, edits: record.edits, gridHash: record.gridHash } : undefined;
   }
 
   /**
@@ -160,7 +194,7 @@ export class GrowTimeline {
       const edits = this.#records[tick]!.edits;
       for (let i = 0; i < edits.length; i++) {
         const edit = edits[i]!;
-        if (edit.layer === "road" || (groundOnly && edit.layer !== "ground")) continue;
+        if (edit.layer === "road" || edit.layer === "wear" || (groundOnly && edit.layer !== "ground")) continue;
         if (marks[edit.index] === epoch) continue;
         marks[edit.index] = epoch;
         out.push(edit.index);

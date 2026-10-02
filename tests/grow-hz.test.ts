@@ -20,6 +20,8 @@ import { describe, expect, test } from "bun:test";
 import { bootWorld, fnv1a } from "../vendor/pocketjs/hosts/sim/sim.ts";
 import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
 import { cameraXForState, DEFAULT_PARAMS, growToDone, liveFrameAtTick, totalTicks, worldSummary } from "../examples/grow/grow.ts";
+import { generateProject } from "../examples/grow/grow-project.ts";
+import { stampOfCell } from "../examples/grow/grow-stamps.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 
 // Without the built bundle/wasm these host tests cannot boot; register
@@ -161,14 +163,15 @@ simDescribe("D3 play rewind means the same virtual time at every rate", () => {
     const at60 = await walkThenRewind(60);
     const at30 = await walkThenRewind(30);
     const at20 = await walkThenRewind(20);
+    const start = generateProject(DEFAULT_PARAMS).start;
     expect(at60.rewoundFrames).toBe(180);
     expect(at30.rewoundFrames).toBe(90);
     expect(at20.rewoundFrames).toBe(60);
     for (const r of [at60, at30, at20]) {
       expect(r.virtualSeconds).toBe(3);
       expect(r.frame).toBe(1); // play frame 1, the clean world
-      expect(r.px).toBe(128); // generated start tile (8,16) at every rate
-      expect(r.py).toBe(256);
+      expect(r.px).toBe(start.x * 16); // the generated start tile at every rate
+      expect(r.py).toBe(start.y * 16);
     }
   }, 30_000);
 });
@@ -185,21 +188,64 @@ function findNode(tree: unknown, name: string): any {
   return undefined;
 }
 
+/**
+ * The nearest walkable bottom-row cell of a wild 2x2 grove tree in the
+ * generated map, and a path to it from the start that keeps off the roads
+ * the villagers walk where it can.
+ */
+function canopyWalk(): { target: { x: number; y: number }; path: { x: number; y: number }[] } {
+  const project = generateProject(DEFAULT_PARAMS);
+  const map = project.maps[0]!;
+  const W = map.width, H = map.height;
+  const blocked = new Set((map.passage ?? []).map(([i]) => i));
+  for (const e of map.events ?? []) blocked.add(e.y * W + e.x);
+  const upper = new Map((map.upper ?? []).map(([i, t]) => [i, Number(String(t).slice("ninja.".length))]));
+  const treePart = (i: number) => {
+    const cell = upper.get(i);
+    const owner = cell === undefined ? undefined : stampOfCell(cell);
+    return owner && owner.stamp.w === 2 && owner.stamp.h === 2 && owner.stamp.key.startsWith("tree") ? owner : undefined;
+  };
+  const isRoad = (i: number) => /^ninja\.(1|83|7)$/.test(String(map.ground[i]));
+  const dist = new Map<number, number>(), prev = new Map<number, number>();
+  const s0 = project.start.y * W + project.start.x;
+  const queue: [number, number][] = [[0, s0]];
+  dist.set(s0, 0);
+  let found = -1;
+  while (queue.length) {
+    queue.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const [d, i] = queue.shift()!;
+    if (d !== dist.get(i)) continue;
+    const part = treePart(i);
+    if (part && part.dy === 1 && treePart(i - W)?.dy === 0) { found = i; break; }
+    const x = i % W, y = (i - x) / W;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = x + dx, ny = y + dy, n = ny * W + nx;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H || blocked.has(n)) continue;
+      const nd = d + (isRoad(n) ? 8 : 1);
+      if (nd < (dist.get(n) ?? Infinity)) { dist.set(n, nd); prev.set(n, i); queue.push([nd, n]); }
+    }
+  }
+  if (found < 0) throw new Error("no reachable grove tree in the generated map");
+  const path: { x: number; y: number }[] = [];
+  for (let i = found; i !== s0; i = prev.get(i)!) path.unshift({ x: i % W, y: Math.floor(i / W) });
+  return { target: { x: found % W, y: Math.floor(found / W) }, path };
+}
+
 async function enterPlayAndWalkUnderCanopy(): Promise<SimWorld> {
   const w = await boot(60);
   pump(w, SETTLED_SECONDS * 60);
   w.frame(BTN.CIRCLE);
   w.tick();
   pump(w, 1);
-  // The generated start is (8,16). Walk to the bottom row of a walkable
-  // 2x2 grove tree at (3,10): five tiles left along the trunk, then six up
-  // between the first town's west lots. Villagers share the trunk, so hold
-  // each direction until the tile is reached (bounded; the world is
-  // deterministic, and the tx/ty assertions catch a blocked walk).
+  // Walk the searched path one tile at a time, holding each direction until
+  // the tile is reached (bounded; the world is deterministic, and the tx/ty
+  // assertions catch a blocked walk).
   const move = () => (globalThis as { __rpgSessionState: { move: { tx: number; ty: number } } }).__rpgSessionState.move;
-  for (let f = 0; f < 160 && move().tx > 3; f++) pump(w, 1, BTN.LEFT);
-  pump(w, 8);
-  for (let f = 0; f < 160 && move().ty > 10; f++) pump(w, 1, BTN.UP);
+  for (const step of canopyWalk().path) {
+    const m = move();
+    const button = step.x > m.tx ? BTN.RIGHT : step.x < m.tx ? BTN.LEFT : step.y > m.ty ? BTN.DOWN : BTN.UP;
+    for (let f = 0; f < 60 && (move().tx !== step.x || move().ty !== step.y); f++) pump(w, 1, button);
+  }
   pump(w, 8);
   return w;
 }
@@ -220,20 +266,24 @@ simDescribe("D3 play entities paint between ground and the upper layer", () => {
 
   test("pixel fixture: Ninja foliage canopy covers the player sprite", async () => {
     const w = await enterPlayAndWalkUnderCanopy();
-    // The player stands on the bottom row of a walkable 2x2 grove tree at
-    // (3,10). The stamp's top row is canopy: its green pixels occupy the tile
-    // above the walker's feet and cover the walker's head.
+    // The player stands on the bottom row of a walkable 2x2 grove tree.
+    // The stamp's top row is canopy: its green pixels occupy the tile above
+    // the walker's feet and cover the walker's head.
+    const { target } = canopyWalk();
     const session = (globalThis as { __rpgSessionState: { move: { tx: number; ty: number } } })
       .__rpgSessionState;
-    expect(session.move.tx).toBe(3);
-    expect(session.move.ty).toBe(10);
+    expect(session.move.tx).toBe(target.x);
+    expect(session.move.ty).toBe(target.y);
+    const cam = (globalThis as { __rpgGrowState: { play?: { cameraX: number; cameraY: number } } }).__rpgGrowState.play!;
+    const sx = target.x * 16 - Math.round(cam.cameraX), sy = (target.y - 1) * 16 - Math.round(cam.cameraY);
+    expect(sx >= 0 && sx + 16 <= 480 && sy >= 0 && sy + 16 <= 272).toBe(true);
     const fb = w.render();
     const isFoliageGreen = (x: number, y: number): boolean => {
       const i = (y * 480 + x) * 4;
       return fb[i + 1]! > 100 && fb[i + 1]! - fb[i]! > 5 && fb[i + 1]! - fb[i + 2]! > 30;
     };
     let green = 0;
-    for (let y = 144; y < 160; y++) for (let x = 48; x < 64; x++) {
+    for (let y = sy; y < sy + 16; y++) for (let x = sx; x < sx + 16; x++) {
       if (isFoliageGreen(x, y)) green++;
     }
     expect(green).toBeGreaterThanOrEqual(100);

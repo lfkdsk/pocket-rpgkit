@@ -20,8 +20,9 @@
 // The player starts on a road cell of the central plaza that no villager
 // occupies.
 
-import type { GameEvent, MapDef, Project, TileId } from "../../src/engine/types.ts";
-import { biomeAt, growToDone, GROW_TILE, plazaCenter, wildernessTileAt, type GrowHouse, type GrowState } from "./grow.ts";
+import type { GameEvent, MapDef, MoveStep, Project, TileId } from "../../src/engine/types.ts";
+import { biomeAt, DX, DY, growHash, growToDone, GROW_TILE, plazaCenter, wildernessTileAt, type Dir4, type GrowHouse, type GrowState } from "./grow.ts";
+import { blocksWalking, describeEvent, eventsOf, MAJOR_EVENTS, SEASON_NAMES, seasonAt } from "./grow-causal.ts";
 import { STAMP_END, STAMP_LIST } from "./grow-stamps.ts";
 
 const SHEET = { id: "ninja", cols: 256, rows: Math.max(1, Math.ceil(STAMP_END / 256)), pak: "chunks" } as const;
@@ -54,6 +55,66 @@ function villagerLine(h: GrowHouse, seed: number): string[] {
   ];
 }
 
+const STEP: readonly MoveStep[] = ["moveDown", "moveLeft", "moveUp", "moveRight"];
+
+/** A causal villager's beat: out along worn road and back, chosen by hash. */
+function causalRoute(done: GrowState, x0: number, y0: number, salt: number): MoveStep[] {
+  const p = done.params;
+  const out: Dir4[] = [];
+  let x = x0, y = y0, dir: Dir4 = 0;
+  for (let n = 0; n < Math.floor(p.villagerRouteLen / 2); n++) {
+    const options: Dir4[] = [];
+    for (let d = 0 as Dir4; d < 4; d = (d + 1) as Dir4) {
+      const nx = x + DX[d], ny = y + DY[d];
+      if (nx >= 1 && ny >= 1 && nx < p.width - 1 && ny < p.height - 1 && done.road[ny * p.width + nx] === 1 && (d ^ 2) !== dir) options.push(d);
+    }
+    if (!options.length) break;
+    const h = growHash(p.seed, x, y, salt + n);
+    const next: Dir4 = options.includes(dir) && h % 10 < 6 ? dir : options[(h >>> 4) % options.length]!;
+    out.push(next); x += DX[next]; y += DY[next]; dir = next;
+  }
+  const steps = out.map((d) => STEP[d]!);
+  if (steps.length) { steps.push("wait"); for (let i = out.length - 1; i >= 0; i--) steps.push(STEP[(out[i]! ^ 2) as Dir4]!); }
+  return steps;
+}
+
+/** The road cell nearest (x, y) within `radius`, or undefined. */
+function nearestRoad(done: GrowState, x: number, y: number, radius: number, taken: Set<number>): { x: number; y: number } | undefined {
+  const p = done.params;
+  for (let r = 0; r <= radius; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+    const nx = x + dx, ny = y + dy;
+    if (nx < 1 || ny < 1 || nx >= p.width - 1 || ny >= p.height - 1) continue;
+    const i = ny * p.width + nx;
+    if (done.road[i] === 1 && !taken.has(i)) return { x: nx, y: ny };
+  }
+  return undefined;
+}
+
+/** History plaques: each village's notice board tells what happened there. */
+function causalPlaques(done: GrowState): GameEvent[] {
+  const p = done.params;
+  return done.sim!.settlements.map((town) => {
+    const year = (tick: number) => `YEAR ${Math.floor((tick - 1) / (p.causal!.seasonTicks * 4)) + 1} ${SEASON_NAMES[seasonAt(p, tick)]}`;
+    const history = eventsOf(done, town.id).filter((e) => MAJOR_EVENTS.has(e.kind) && e.kind !== "founded").slice(-4);
+    const pages: string[][] = [[
+      `<${town.name}>`,
+      `Founded ${year(town.founded)} by the water.`,
+      town.status === "abandoned" ? `Abandoned. At most ${town.peak} lived here.` : `${town.pop} live here now; at most ${town.peak}.`,
+    ]];
+    for (let i = 0; i < history.length; i += 2) {
+      pages.push(history.slice(i, i + 2).flatMap((e) => [year(e.tick), describeEvent(done, e)]));
+    }
+    return {
+      id: `plaque-${town.id + 1}`,
+      name: `${town.name} Notice`,
+      x: town.cx + 1,
+      y: town.cy - 1,
+      pages: [{ trigger: "action", sprite: null, commands: pages.map((lines) => ({ op: "text" as const, lines })) }],
+    };
+  });
+}
+
 /** Build the playable project for a settled (done) grow state. */
 export function growProject(done: GrowState): Project {
   const p = done.params;
@@ -80,7 +141,10 @@ export function growProject(done: GrowState): Project {
       upper.push([outIndex, tile(done.upper[i]!)]);
       // Walkable only when BOTH true: it is decor the grower planted AND
       // its art is foliage. A non-decor use of the same art stays solid.
-      if (!(decorSet.has(i) && CANOPY_CELLS.has(done.upper[i]!))) passage.push([outIndex, "block"]);
+      // A causal world blocks exactly what its own walkers cannot cross,
+      // so stumps and saplings stay walkable as they were in the history.
+      const solid = done.sim ? blocksWalking(done.upper[i]!) : !(decorSet.has(i) && CANOPY_CELLS.has(done.upper[i]!));
+      if (solid) passage.push([outIndex, "block"]);
     }
   }
   // Undeveloped wilderness is a deterministic presentation layer in the
@@ -93,29 +157,42 @@ export function growProject(done: GrowState): Project {
     if (cell) upper.push([y * exportWidth + x, tile(cell)]);
   }
 
-  // Villager events, stable id order (birth order).
-  const events: GameEvent[] = done.villagers.map((v, i) => {
+  // Villager events, stable id order (birth order). A causal villager
+  // whose home fell stands nowhere; the rest wait on the road nearest home.
+  const taken = new Set<number>();
+  const events: GameEvent[] = [];
+  done.villagers.forEach((v, i) => {
     const h = done.houses[v.house]!;
-    return {
+    let x = v.x, y = v.y, route = v.route;
+    if (done.sim) {
+      if (v.left !== undefined || h.ruined !== undefined || h.vacant !== undefined) return;
+      const at = nearestRoad(done, v.x, v.y, 3, taken);
+      if (!at || at.x >= exportWidth) return;
+      x = at.x; y = at.y; route = causalRoute(done, x, y, i * 64);
+      taken.add(y * p.width + x);
+    }
+    events.push({
       id: `villager-${i + 1}`,
       name: `Villager ${i + 1}`,
-      x: v.x,
-      y: v.y,
+      x,
+      y,
       pages: [
         {
           trigger: "action",
           sprite: "villager",
           blocks: true,
-          moveRoute: { steps: [...v.route], repeat: true, skippable: false },
+          moveRoute: { steps: [...route], repeat: true, skippable: false },
           commands: [{ op: "text", lines: villagerLine(h, p.seed) }],
         },
       ],
-    };
+    });
   });
 
   // A plaque on the plaza records the seed — the generated game states its
   // own provenance and how to regrow it identically.
-  const { x: cx, y: cy } = plazaCenter(p);
+  const home = done.sim?.settlements.find((t) => t.status !== "abandoned") ?? done.sim?.settlements[0];
+  const { x: cx, y: cy } = home ? { x: home.cx, y: home.cy } : plazaCenter(p);
+  if (done.sim) events.push(...causalPlaques(done));
   events.push({
     id: "seed-plaque",
     name: "Seed Plaque",
@@ -152,10 +229,10 @@ export function growProject(done: GrowState): Project {
   };
 
   // Start the player on a plaza road cell no villager owns.
-  const claimed = new Set(done.villagers.map((v) => v.y * p.width + v.x));
+  const claimed = new Set(events.filter((e) => e.id.startsWith("villager-")).map((e) => e.y * p.width + e.x));
   let sx = cx;
   let sy = cy + 1;
-  outer: for (let radius = 0; radius <= 2; radius++) {
+  outer: for (let radius = 0; radius <= (done.sim ? 4 : 2); radius++) {
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const x = cx + dx;

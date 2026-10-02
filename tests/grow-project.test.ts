@@ -19,7 +19,7 @@
 import { describe, expect, test } from "bun:test";
 import { validateSchema, type VError } from "../src/engine/schema-validate.ts";
 import { generateProject } from "../examples/grow/grow-project.ts";
-import { DEFAULT_PARAMS, growToDone, type GrowParams } from "../examples/grow/grow.ts";
+import { DEFAULT_PARAMS, growToDone, STAMP_PARAMS, type GrowParams } from "../examples/grow/grow.ts";
 import {
   createSession,
   startSession,
@@ -71,7 +71,8 @@ describe("grown project: JSON round-trip", () => {
 
 describe("grown project: walkable canopy decor", () => {
   test("planted canopy renders on the upper layer but carries no block", () => {
-    const params = seedParams(0x5eed_0001);
+    // Settled decor is a stamp-rule step; causal villages plant none.
+    const params = { ...STAMP_PARAMS, seed: 0x5eed_0001 };
     const done = growToDone(params);
     const project = generateProject(params);
     const map = project.maps[0]!;
@@ -121,12 +122,22 @@ describe("grown project: playable through the normal loader", () => {
   test("the mover starts on a road cell and can walk it", () => {
     const project = generateProject(seedParams(0x5eed_0001));
     const map = project.maps[0]!;
-    const states = play(project, 240, (f) => (f % 8 < 6 ? BTN.RIGHT : 0));
     const start = project.start;
     expect(map.ground[start.y * map.width + start.x]).toMatch(/^ninja\./);
-    // Walking right along/near the plaza moves the mover in px.
+    // Walk toward the first open neighbor (no blocking art, no event): the
+    // grown layout decides which side of the plaza is free.
+    const blocked = new Set((map.passage ?? []).map(([i]) => i));
+    for (const e of map.events ?? []) blocked.add(e.y * map.width + e.x);
+    const ways = [
+      { button: BTN.RIGHT, dx: 1, dy: 0 }, { button: BTN.LEFT, dx: -1, dy: 0 },
+      { button: BTN.DOWN, dx: 0, dy: 1 }, { button: BTN.UP, dx: 0, dy: -1 },
+    ];
+    const way = ways.find((w) => !blocked.has((start.y + w.dy) * map.width + start.x + w.dx))!;
+    expect(way).toBeDefined();
+    const states = play(project, 240, (f) => (f % 8 < 6 ? way.button : 0));
+    // Walking that way moves the mover in px.
     const end = states[states.length - 1]!;
-    expect(end.move.px).toBeGreaterThan(start.x * 16);
+    expect((end.move.px - start.x * 16) * way.dx + (end.move.py - start.y * 16) * way.dy).toBeGreaterThan(0);
     // No interpreter error ever appears.
     for (const s of states) expect(s.interp.error).toBeUndefined();
   });

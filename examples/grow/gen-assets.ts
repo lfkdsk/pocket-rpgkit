@@ -22,7 +22,7 @@ import { TILE } from "../../src/engine/tiles.ts";
 import { blitTile } from "../../tools/lib/chunks.ts";
 import { DEFAULT_PARAMS, GROW_TILE } from "./grow.ts";
 import { STAMP_LIST } from "./grow-stamps.ts";
-import { terrainArt, transitionArt, smallArt, climateTree } from "./grow-art.ts";
+import { terrainArt, transitionArt, smallArt, climateTree, causalArt, caravanArt } from "./grow-art.ts";
 import { generateProject } from "./grow-project.ts";
 
 const HERE = new URL(".", import.meta.url).pathname; // examples/grow/
@@ -220,6 +220,25 @@ for (const st of STAMP_LIST) {
     STAMP_CELLS.push(cell);
   }
 }
+// Causal world cells (worn trails, paved road, quarry floor, ruins) and the
+// trade caravan: pure grow-art recipes, kept out of GROW_GROUND/GROW_UPPER so
+// the records other examples copy stay unchanged.
+const GROW_SIM_GROUND_CELLS = [
+  GROW_TILE.WORN_GRASS, GROW_TILE.WORN_MUD, GROW_TILE.WORN_SAND, GROW_TILE.WORN_SNOW,
+  GROW_TILE.PATH_STONE, GROW_TILE.GRAVEL,
+];
+const GROW_SIM_UPPER_CELLS = [GROW_TILE.RUIN_L, GROW_TILE.RUIN_M, GROW_TILE.RUIN_R, GROW_TILE.RUBBLE];
+const growSimFiles: string[] = [];
+for (const [kind, cells] of [["ground", GROW_SIM_GROUND_CELLS], ["upper", GROW_SIM_UPPER_CELLS]] as const) {
+  for (const cell of cells) {
+    const art = causalArt(cell);
+    if (!art) throw new Error(`grow gen-assets: no causal recipe for cell ${cell}`);
+    writeFileSync(join(ASSETS, `grow-${kind}-${cell}.png`), encodePNG(art, TILE, TILE));
+    growSimFiles.push(`assets/grow-${kind}-${cell}.png`);
+  }
+}
+const growCaravanFile = "assets/grow-caravan.png";
+writeFileSync(join(ASSETS, "grow-caravan.png"), encodePNG(caravanArt(), TILE, TILE));
 const growVillagerFile = "assets/grow-villager.png";
 writeFileSync(join(ASSETS, "grow-villager.png"), encodePNG(cropCell(ninjaSamurai, 0, 0), TILE, TILE));
 
@@ -228,7 +247,7 @@ const growProj = generateProject(DEFAULT_PARAMS);
 writeFileSync(join(HERE, "data", "grow-settlement.json"), JSON.stringify(growProj, null, 2) + "\n");
 
 const imageMeta: Record<string, { psm: number }> = {};
-for (const name of [...terrainFiles, ...growGroundFiles, ...growUpperFiles, growVillagerFile]) {
+for (const name of [...terrainFiles, ...growGroundFiles, ...growUpperFiles, growVillagerFile, ...growSimFiles, growCaravanFile]) {
   imageMeta[name] = { psm: 2 };
 }
 writeFileSync(join(HERE, "images.json"), JSON.stringify(imageMeta, null, 2) + "\n");
@@ -253,6 +272,13 @@ const growManifest =
   `export const GROW_UPPER: Record<number, string> = {\n` +
   [...GROW_UPPER_CELLS, ...STAMP_CELLS].map((c) => `  ${c}: ${JSON.stringify(`assets/grow-upper-${c}.png`)},`).join("\n") +
   `\n};\n\n` +
+  `export const GROW_SIM_GROUND: Record<number, string> = {\n` +
+  GROW_SIM_GROUND_CELLS.map((c) => `  ${c}: ${JSON.stringify(`assets/grow-ground-${c}.png`)},`).join("\n") +
+  `\n};\n\n` +
+  `export const GROW_SIM_UPPER: Record<number, string> = {\n` +
+  GROW_SIM_UPPER_CELLS.map((c) => `  ${c}: ${JSON.stringify(`assets/grow-upper-${c}.png`)},`).join("\n") +
+  `\n};\n\n` +
+  `export const GROW_CARAVAN = ${JSON.stringify(growCaravanFile)};\n\n` +
   `export const GROW_NPC: Record<string, string> = {\n` +
   `  villager: ${JSON.stringify(growVillagerFile)},\n` +
   `};\n\n` +

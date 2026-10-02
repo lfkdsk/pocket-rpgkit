@@ -6,18 +6,26 @@
 // trunk toward the next chapter. Ambient wilderness is coordinate-hashed
 // from the seed and is removed wherever development paints a cell.
 //
+// Those are the stamp rules (STAMP_PARAMS). The demo's DEFAULT_PARAMS run the
+// causal rules of grow-causal.ts instead: villages with needs, roads worn by
+// footfall, trade, decline and an event record (see README.md).
+//
 // Do not import host APIs here: this is a pure reducer.
 
 import { rngNext } from "../../src/engine/interpreter.ts";
 import type { MoveStep } from "../../src/engine/types.ts";
 import { HOUSE_STAMPS, STAMPS, stampCell, stampOfCell, stampOwner } from "./grow-stamps.ts";
+import {
+  causalHashMix, causalSummary, causalTick, copyCausal, createCausalWorld, DEFAULT_CAUSAL,
+  type CausalParams, type CausalSim,
+} from "./grow-causal.ts";
 
 export type Dir4 = 0 | 1 | 2 | 3;
 export const DX = [0, -1, 0, 1] as const;
 export const DY = [1, 0, -1, 0] as const;
 const DIR_STEP: readonly MoveStep[] = ["moveDown", "moveLeft", "moveUp", "moveRight"];
 
-export type GrowPhase = "road" | "house" | "farm" | "villager" | "decor" | "done";
+export type GrowPhase = "road" | "house" | "farm" | "villager" | "decor" | "sim" | "done";
 export type GrowBiome = 0 | 1 | 2 | 3; // grass, mud, sand, snow
 export type SettlementStage = "road" | "center" | "house" | "industry" | "villager" | "done";
 
@@ -34,6 +42,11 @@ export const GROW_TILE = {
   TENT_WALL_L: 70, TENT_DOOR: 71, TENT_WALL_R: 72,
   SNOW_ROOF_L: 73, SNOW_ROOF_M: 74, SNOW_ROOF_R: 75,
   SNOW_WALL_L: 76, SNOW_DOOR: 77, SNOW_WALL_R: 78,
+  // Causal world (grow-causal.ts): ground worn by feet in each biome, paved
+  // road, quarried/ruined floor, and the collapsed walls of abandoned homes.
+  WORN_GRASS: 79, WORN_MUD: 80, WORN_SAND: 81, WORN_SNOW: 82,
+  PATH_STONE: 83, GRAVEL: 84,
+  RUIN_L: 85, RUIN_M: 86, RUIN_R: 87, RUBBLE: 88,
 } as const;
 
 export interface GrowParams {
@@ -56,14 +69,27 @@ export interface GrowParams {
   settlements: number;
   /** PSP camera lead. Wider viewports derive a 60% frontier position. */
   cameraLeadPx: number;
+  /**
+   * Causal rules (grow-causal.ts): settlements with needs, worn roads,
+   * trade, decline and an event record. Absent: the original stamp rules.
+   */
+  causal?: CausalParams;
 }
 
-export const DEFAULT_PARAMS: GrowParams = {
+/** The original rules: each chapter stamps road, center, houses, work area. */
+export const STAMP_PARAMS: GrowParams = {
   seed: 0x5eed_0001, width: 4096, height: 33, tickSeconds: 0.2,
   roadCells: 600, houseCount: 64, farmPatches: 4, branchProb: 0.38, bendProb: 0.3,
   initialRoads: 1, villagerRouteLen: 24, decorPatches: 16,
   biomeBandWidth: 32, settlements: 4, cameraLeadPx: 288,
 };
+
+/**
+ * The demo's world: the same strip and biomes under the causal rules. Its
+ * seed shows the whole arc: a trade lifeline wears a road to the snow
+ * village, the trade falls silent, and a later famine empties it.
+ */
+export const DEFAULT_PARAMS: GrowParams = { ...STAMP_PARAMS, seed: 0x5eed_0022, causal: DEFAULT_CAUSAL };
 
 export function tickEveryFrames(p: GrowParams, hz: number): number {
   return Math.max(1, Math.round(p.tickSeconds * hz));
@@ -73,9 +99,13 @@ export function liveFrameAtTick(p: GrowParams, hz: number, tick: number): number
 }
 
 export interface GrowTip { x: number; y: number; dir: Dir4 }
-export interface GrowHouse { x: number; y: number; door: Dir4; variant: number; villager: number }
+export interface GrowHouse {
+  x: number; y: number; door: Dir4; variant: number; villager: number;
+  /** Causal rules: owning settlement, stamp origin, and when it fell empty or into ruin. */
+  owner?: number; x0?: number; top?: number; key?: string; vacant?: number; ruined?: number;
+}
 export interface GrowFarm { x: number; y: number; biome?: GrowBiome; kind?: number; centerX?: number }
-export interface GrowVillager { x: number; y: number; dir: Dir4; route: MoveStep[]; house: number }
+export interface GrowVillager { x: number; y: number; dir: Dir4; route: MoveStep[]; house: number; left?: number }
 export interface GrowSettlement {
   chapter: number; biome: GrowBiome; centerX: number; centerY: number; stage: SettlementStage;
   roadStartX: number; roadEndX: number; houses: number; industries: number; villagers: number;
@@ -84,6 +114,10 @@ export interface GrowSettlement {
 export interface GrowState {
   frame: number; hz: number; tick: number; phase: GrowPhase; rng: number; params: GrowParams;
   ground: Int32Array; upper: Int32Array; road: Uint8Array; tips: GrowTip[];
+  /** Causal rules: footfall per cell (absent under the stamp rules). */
+  wear?: Uint16Array;
+  /** Causal rules: settlements, trade, regrowth and the event record. */
+  sim?: CausalSim;
   roads: { x: number; y: number }[]; houses: GrowHouse[]; farms: GrowFarm[];
   villagers: GrowVillager[]; decor: number[]; chapter: number;
   frontierX: number; roadFrontierX: number; cameraFromX: number; cameraX: number; grew: boolean;
@@ -203,6 +237,8 @@ function smooth01(e0: number, e1: number, v: number): number {
 }
 /** 0 inside a settlement's clearing, 1 in open country. */
 function clearingFactor(p: GrowParams, x: number, y: number): number {
+  // Causal settlers clear their own ground (logging, building, fields).
+  if (p.causal) return 1;
   const chapter = Math.max(0, Math.round((x - START_X - 8) / Math.max(1, p.biomeBandWidth)));
   const cx = settlementCenterX(p, chapter);
   const cy = Math.floor(p.height / 2);
@@ -351,10 +387,10 @@ export function wildernessTileAt(s: GrowState, x: number, y: number): number {
   return natural;
 }
 
-function idx(s: GrowState, x: number, y: number): number { return y * s.params.width + x; }
-function chance(s: GrowState): number { const r = rngNext(s.rng); s.rng = r.next; return r.value; }
+export function idx(s: GrowState, x: number, y: number): number { return y * s.params.width + x; }
+export function chance(s: GrowState): number { const r = rngNext(s.rng); s.rng = r.next; return r.value; }
 function rollInt(s: GrowState, min: number, max: number): number { return min + Math.floor(chance(s) * (max - min + 1)); }
-function inBounds(s: GrowState, x: number, y: number): boolean {
+export function inBounds(s: GrowState, x: number, y: number): boolean {
   return x >= 1 && x < s.params.width - 1 && y >= 1 && y < s.params.height - 1;
 }
 function setFrontier(s: GrowState, x: number): void { s.frontierX = Math.max(s.frontierX, x); }
@@ -363,15 +399,20 @@ function clearNatural(s: GrowState, x: number, y: number): void {
   const i = idx(s, x, y);
   if (s.decor.includes(i)) s.decor.splice(s.decor.indexOf(i), 1);
 }
-export type GrowGridLayer = "ground" | "upper" | "road";
+export type GrowGridLayer = "ground" | "upper" | "road" | "wear";
 export interface GrowGridEdit { layer: GrowGridLayer; index: number; before: number; after: number }
-interface WritableGrids {
-  ground: boolean; upper: boolean; road: boolean; edits: Map<number, GrowGridEdit>;
+export interface WritableGrids {
+  ground: boolean; upper: boolean; road: boolean; wear?: boolean; edits: Map<number, GrowGridEdit>;
 }
 
 function writable(s: GrowState, grids: WritableGrids, layer: "ground" | "upper"): Int32Array;
 function writable(s: GrowState, grids: WritableGrids, layer: "road"): Uint8Array;
-function writable(s: GrowState, grids: WritableGrids, layer: GrowGridLayer): Int32Array | Uint8Array {
+function writable(s: GrowState, grids: WritableGrids, layer: "wear"): Uint16Array;
+function writable(s: GrowState, grids: WritableGrids, layer: GrowGridLayer): Int32Array | Uint8Array | Uint16Array {
+  if (layer === "wear") {
+    if (!grids.wear) { s.wear = s.wear!.slice(); grids.wear = true; }
+    return s.wear!;
+  }
   if (layer === "ground") {
     if (!grids.ground) { s.ground = s.ground.slice(); grids.ground = true; }
     return s.ground;
@@ -384,12 +425,12 @@ function writable(s: GrowState, grids: WritableGrids, layer: GrowGridLayer): Int
   return s.road;
 }
 
-function writeGrid(s: GrowState, grids: WritableGrids, layer: GrowGridLayer, index: number, value: number): void {
-  const target = layer === "road" ? writable(s, grids, "road") : writable(s, grids, layer);
+export function writeGrid(s: GrowState, grids: WritableGrids, layer: GrowGridLayer, index: number, value: number): void {
+  const target = layer === "road" ? writable(s, grids, "road") : layer === "wear" ? writable(s, grids, "wear") : writable(s, grids, layer);
   const before = target[index]!;
   if (before === value) return;
-  const layerId = layer === "ground" ? 0 : layer === "upper" ? 1 : 2;
-  const key = index * 3 + layerId;
+  const layerId = layer === "ground" ? 0 : layer === "upper" ? 1 : layer === "road" ? 2 : 3;
+  const key = index * 4 + layerId;
   const edit = grids.edits.get(key);
   if (edit) {
     edit.after = value;
@@ -400,19 +441,19 @@ function writeGrid(s: GrowState, grids: WritableGrids, layer: GrowGridLayer, ind
   target[index] = value;
 }
 
-function occupyGround(s: GrowState, grids: WritableGrids, x: number, y: number, tile: number, road = false): void {
+export function occupyGround(s: GrowState, grids: WritableGrids, x: number, y: number, tile: number, road = false): void {
   if (!inBounds(s, x, y)) return;
   const i = idx(s, x, y);
   clearNatural(s, x, y); writeGrid(s, grids, "ground", i, tile);
   if (road) writeGrid(s, grids, "road", i, 1);
   setFrontier(s, x);
 }
-function occupyUpper(s: GrowState, grids: WritableGrids, x: number, y: number, tile: number): void {
+export function occupyUpper(s: GrowState, grids: WritableGrids, x: number, y: number, tile: number): void {
   if (!inBounds(s, x, y)) return;
   clearNatural(s, x, y); writeGrid(s, grids, "upper", idx(s, x, y), tile); setFrontier(s, x);
 }
 
-function cameraTarget(p: GrowParams, frontierX: number): number {
+export function cameraTarget(p: GrowParams, frontierX: number): number {
   const max = Math.max(0, p.width * TILE - VIEW_W);
   return Math.max(0, Math.min(max, frontierX * TILE + TILE - p.cameraLeadPx));
 }
@@ -448,14 +489,19 @@ export function createGrow(params: GrowParams = DEFAULT_PARAMS): GrowState {
     decor: [], chapter: 0, frontierX: 0, roadFrontierX: 0,
     cameraFromX: 0, cameraX: 0, grew: false,
   };
+  const grids: WritableGrids = { ground: true, upper: true, road: true, wear: true, edits: new Map() };
+  if (p.causal) {
+    s.wear = new Uint16Array(size);
+    createCausalWorld(s, grids);
+    return refreshCamera(s);
+  }
   const { x: cx, y: cy } = plazaCenter(p);
-  const grids: WritableGrids = { ground: true, upper: true, road: true, edits: new Map() };
   for (let x = cx - 2; x <= cx; x++) layRoad(s, grids, x, cy, GROW_TILE.ROAD_H);
   s.tips.push({ x: cx, y: cy, dir: 3 });
   return refreshCamera(s);
 }
 
-function layRoad(s: GrowState, grids: WritableGrids, x: number, y: number, kind: number): void {
+export function layRoad(s: GrowState, grids: WritableGrids, x: number, y: number, kind: number): void {
   if (!inBounds(s, x, y)) return;
   const i = idx(s, x, y);
   if (!s.road[i]) s.roads.push({ x, y });
@@ -718,11 +764,13 @@ function stepGrowTickImpl(s0: GrowState, ownsGrids: boolean): GrowState {
   // Prime the sparse descriptions before an owned fold mutates the buffers.
   gridHash(s0.ground, s0.upper);
   const previousGround = s0.ground, previousUpper = s0.upper;
-  const s = copyTickState(s0);
-  const grids: WritableGrids = { ground: ownsGrids, upper: ownsGrids, road: ownsGrids, edits: new Map() };
+  const s = s0.sim ? copyCausalTickState(s0) : copyTickState(s0);
+  const grids: WritableGrids = { ground: ownsGrids, upper: ownsGrids, road: ownsGrids, wear: ownsGrids, edits: new Map() };
   const previousTarget = cameraTarget(s.params, s.roadFrontierX);
   s.cameraFromX = previousTarget; s.grew = true; s.tick++;
-  switch (s.phase) {
+  if (s.sim) {
+    if (s.phase !== "done") causalTick(s, grids);
+  } else switch (s.phase) {
     case "road": roadTick(s, grids); break; case "house": houseTick(s, grids); break; case "farm": farmTick(s, grids); break;
     case "villager": villagerTick(s); break; case "decor": seedSettledDecor(s, grids); s.phase = "done"; break; case "done": break;
   }
@@ -761,12 +809,14 @@ export function totalTicks(params: GrowParams): number { return growToDone(param
 
 export function worldSummary(s: GrowState): {
   seed: number; tick: number; phase: GrowPhase; roads: number; houses: number; farms: number; villagers: number; frontierX: number; roadFrontierX: number; cameraX: number; roadCells: string; hash: string;
+  causal?: ReturnType<typeof causalSummary>;
 } {
-  return { seed: s.params.seed, tick: s.tick, phase: s.phase, roads: s.roads.length, houses: s.houses.length, farms: s.farms.length, villagers: s.villagers.length, frontierX: s.frontierX, roadFrontierX: s.roadFrontierX, cameraX: s.cameraX, roadCells: s.roads.map((r) => `${r.x},${r.y}`).join(" "), hash: growStateHash(s) };
+  const summary = { seed: s.params.seed, tick: s.tick, phase: s.phase, roads: s.roads.length, houses: s.houses.length, farms: s.farms.length, villagers: s.villagers.length, frontierX: s.frontierX, roadFrontierX: s.roadFrontierX, cameraX: s.cameraX, roadCells: s.roads.map((r) => `${r.x},${r.y}`).join(" "), hash: growStateHash(s) };
+  return s.sim ? { ...summary, causal: causalSummary(s) } : summary;
 }
 const gridHashes = new WeakMap<Int32Array, WeakMap<Int32Array, number>>();
 const tickGridEdits = new WeakMap<GrowState, readonly GrowGridEdit[]>();
-interface SparseGrid { values: Map<number, number>; sorted?: number[] }
+interface SparseGrid { values: Map<number, number>; sorted?: Int32Array }
 const sparseGrids = new WeakMap<Int32Array, SparseGrid>();
 const FNV_PRIME = 0x01000193;
 
@@ -815,7 +865,8 @@ function mixEmptyRun(hash: number, count: number): number {
 
 function mixSparseGrid(hash: number, grid: Int32Array): number {
   const sparse = sparseGrid(grid);
-  const indices = sparse.sorted ??= [...sparse.values.keys()].sort((a, b) => a - b);
+  // Typed-array sort is numeric and native; a comparator is slow on QuickJS.
+  const indices = sparse.sorted ??= Int32Array.from(sparse.values.keys()).sort();
   let cursor = 0;
   for (const index of indices) {
     hash = mixEmptyRun(hash, index - cursor);
@@ -827,16 +878,40 @@ function mixSparseGrid(hash: number, grid: Int32Array): number {
 
 function inheritSparseGrid(before: Int32Array, after: Int32Array, edits: readonly GrowGridEdit[], layer: "ground" | "upper"): void {
   const source = sparseGrid(before);
-  const target = before === after ? source : { values: new Map(source.values) };
-  let changed = false;
+  const sorted = source.sorted;
+  const target: SparseGrid = before === after ? source : { values: new Map(source.values), sorted };
+  // Occupancy before this tick of every cell it edited.
+  let was: Map<number, boolean> | undefined;
   for (const edit of edits) {
     if (edit.layer !== layer) continue;
+    was ??= new Map();
+    if (!was.has(edit.index)) was.set(edit.index, target.values.has(edit.index));
     if (edit.after < 0) target.values.delete(edit.index);
     else target.values.set(edit.index, edit.after);
-    changed = true;
   }
-  if (changed) target.sorted = undefined;
   sparseGrids.set(after, target);
+  if (!was || !sorted) return;
+  // Keep the sorted index list: most ticks add or clear a few cells, and a
+  // merge is cheaper than re-sorting every occupied cell (shared arrays are
+  // never edited, so earlier states keep theirs).
+  let added: number[] | undefined, removed: Set<number> | undefined;
+  for (const [index, had] of was) {
+    const has = target.values.has(index);
+    if (had && !has) (removed ??= new Set()).add(index);
+    else if (!had && has) (added ??= []).push(index);
+  }
+  if (!added && !removed) { target.sorted = sorted; return; }
+  const adds = added ? Int32Array.from(added).sort() : new Int32Array(0);
+  const out = new Int32Array(sorted.length - (removed?.size ?? 0) + adds.length);
+  let o = 0, a = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const index = sorted[i]!;
+    if (removed?.has(index)) continue;
+    while (a < adds.length && adds[a]! < index) out[o++] = adds[a++]!;
+    out[o++] = index;
+  }
+  while (a < adds.length) out[o++] = adds[a++]!;
+  target.sorted = out;
 }
 
 function rememberEditedGridHash(
@@ -877,6 +952,7 @@ export function growStateHash(s: GrowState): string {
   for (const h of s.houses) { mix(h.x); mix(h.y); mix(h.variant); }
   mix(s.chapter);
   mix(s.frontierX); mix(s.roadFrontierX); mix(Math.round(s.cameraX * 1000));
+  if (s.sim) hash = causalHashMix(s, hash);
   return hash.toString(16).padStart(8, "0");
 }
 
@@ -886,9 +962,20 @@ function copyTickState(s: GrowState): GrowState {
     farms: s.farms.map((f) => ({ ...f })), villagers: s.villagers.map((v) => ({ ...v, route: [...v.route] })), decor: [...s.decor] };
 }
 
+/**
+ * Causal tick copy. Houses and villagers are replaced, never edited, once
+ * a later state may share them, so the arrays copy shallowly; the sim
+ * copies its own changing parts.
+ */
+function copyCausalTickState(s: GrowState): GrowState {
+  return { ...s, tips: [], roads: s.roads, houses: s.houses.slice(), farms: s.farms, villagers: s.villagers.slice(), decor: s.decor, sim: copyCausal(s.sim!) };
+}
+
 /** Deep copy used when a reducer state must cross a test/tool boundary. */
 export function cloneGrowState(s: GrowState): GrowState {
-  const copy = { ...copyTickState(s), ground: s.ground.slice(), upper: s.upper.slice(), road: s.road.slice() };
+  const base = s.sim ? copyCausalTickState(s) : copyTickState(s);
+  const copy: GrowState = { ...base, ground: s.ground.slice(), upper: s.upper.slice(), road: s.road.slice() };
+  if (s.wear) copy.wear = s.wear.slice();
   rememberGrowGridHash(copy, growGridHash(s));
   return copy;
 }

@@ -129,13 +129,22 @@ simDescribe("D3 grow — timeline HUD semantics", () => {
 
   test("after the camera scrolls, authored content remains beside the 60-percent frontier", async () => {
     const w = await boot(960, 544);
-    for (let frame = 0; frame < 60 * PERIOD; frame++) {
+    // The causal camera follows the director's focus column (roadFrontierX),
+    // which pans toward each new event's place. Sample a boundary where the
+    // focus rests (it did not move on this tick) after the camera scrolled.
+    let at = 60;
+    while (growToTick(DEFAULT_PARAMS, at).roadFrontierX !== growToTick(DEFAULT_PARAMS, at - 1).roadFrontierX
+      || growToTick(DEFAULT_PARAMS, at).cameraX < 600) at++;
+    for (let frame = 0; frame < at * PERIOD; frame++) {
       w.frame(0);
       w.tick();
     }
     const state = pub();
-    expect(state.cameraX).toBe(608);
-    expect(state.frontierX).toBe(55);
+    const canonical = growToTick(DEFAULT_PARAMS, at);
+    expect(state.tick).toBe(at);
+    expect(state.cameraX).toBe(canonical.cameraX);
+    expect(state.frontierX).toBe(canonical.roadFrontierX);
+    expect(state.cameraX).toBeGreaterThan(0);
     expect(state.visibleX0).toBeGreaterThan(0);
     expect(state.frontierX).toBeGreaterThanOrEqual(state.visibleX0);
     expect(state.frontierX).toBeLessThanOrEqual(state.visibleX1);
@@ -274,9 +283,12 @@ simDescribe("D3 scrub — touch seeks the timeline", () => {
         expect(pub().tick).toBe(tick);
       };
       const tour = [0, 140, 20, TOTAL, 64, 3, 120, target];
+      // A jump's node demand depends on the scene it leaves (cells both
+      // scenes show keep their nodes), so the pool can still grow on the
+      // second tour; by the third every jump finds a parked node for every
+      // cell: no node is created or destroyed.
       for (const tick of tour) jump(tick);
-      // Every scene of the tour has been shown once, so a second tour finds
-      // a parked node for every cell: no node is created or destroyed.
+      for (const tick of tour) jump(tick);
       created = 0; destroyed = 0;
       for (const tick of tour) jump(tick);
       expect({ created, destroyed }).toEqual({ created: 0, destroyed: 0 });
@@ -340,30 +352,43 @@ simDescribe("D3 scrub — touch seeks the timeline", () => {
       w.frame(0);
       w.tick();
     }
-    // Scrub first to tick 10, where the first house exists, and sample its
-    // 3x2 footprint in screen space. Then rewind to tick 2, before houses.
-    const house = growToTick(DEFAULT_PARAMS, 10).houses[0]!;
-    const houseRed = (fb: Uint8Array): number => {
-      const state = pub();
-      const y0 = (house.door === 2 ? house.y + 1 : house.y - 2) * 16 - 136;
-      return count(fb, (r, g, b) => r > 150 && g < 110 && b < 90,
-        (house.x - 1) * 16 - state.cameraX, (house.x + 2) * 16 - state.cameraX, y0, y0 + 32);
+    // Scrub to tick 20, where the first village has houses, and copy the
+    // pixels of one wholly on screen (the camera rests on that village
+    // through tick 20) by world position. Then rewind to tick 1 (the village
+    // founded, no house yet): the same world cells must differ.
+    const grownTick = 20;
+    const grownState = growToTick(DEFAULT_PARAMS, grownTick);
+    expect(grownState.cameraX).toBe(growToTick(DEFAULT_PARAMS, 1).cameraX);
+    const house = grownState.houses.find((h) => h.x0! * 16 - grownState.cameraX >= 0 && h.x0! * 16 + 48 - grownState.cameraX <= 480
+      && h.top! * 16 - 136 >= 0 && h.top! * 16 + 48 - 136 <= 256)!;
+    expect(house).toBeDefined();
+    expect(growToTick(DEFAULT_PARAMS, 1).houses).toHaveLength(0);
+    const footprint = (fb: Uint8Array): number[] | undefined => {
+      const camX = pub().cameraX, camY = 136; // 33 rows centered in 256 px
+      const x0 = house.x0! * 16 - camX, y0 = house.top! * 16 - camY;
+      if (x0 < 0 || x0 + 48 > 480 || y0 < 0 || y0 + 48 > 256) return undefined;
+      const out: number[] = [];
+      for (let y = y0; y < y0 + 48; y++) for (let x = x0; x < x0 + 48; x++) {
+        const i = (y * 480 + x) * 4;
+        out.push((fb[i]! << 16) | (fb[i + 1]! << 8) | fb[i + 2]!);
+      }
+      return out;
     };
-    const houseContact = __packTouch(0, Math.round((10 / TOTAL) * 480), 264);
-    for (let f = 0; f < 3; f++) { w.frame(0, 0x8080, [houseContact]); w.tick(); }
-    expect(pub().tick).toBe(10);
-    const grownHouseRed = houseRed(w.render());
-    // Scrub to tick 2 (no houses yet) via the strip.
-    const contact = __packTouch(0, Math.max(4, Math.round((2 / TOTAL) * 480)), 264);
-    for (let f = 0; f < 3; f++) {
-      w.frame(0, 0x8080, [contact]);
-      w.tick();
-    }
-    expect(pub().tick).toBe(2);
-    const rewoundHouseRed = houseRed(w.render());
-    expect(grownHouseRed).toBeGreaterThan(250);
-    expect(rewoundHouseRed).toBeLessThan(150);
-    expect(grownHouseRed - rewoundHouseRed).toBeGreaterThan(250);
+    const seek = (tick: number) => {
+      const contact = __packTouch(0, Math.max(1, Math.round((tick / TOTAL) * 480)), 264);
+      for (let f = 0; f < 3; f++) { w.frame(0, 0x8080, [contact]); w.tick(); }
+      expect(pub().tick).toBe(tick);
+    };
+    seek(grownTick);
+    const grown = footprint(w.render());
+    seek(1);
+    const rewound = footprint(w.render());
+    expect(grown).toBeDefined();
+    expect(rewound).toBeDefined();
+    let differing = 0;
+    for (let i = 0; i < grown!.length; i++) if (grown![i] !== rewound![i]) differing++;
+    // A 3x3 or 4x3 house covers most of its 3x3-cell sample.
+    expect(differing).toBeGreaterThan(grown!.length * 0.6);
   });
 
   test("resuming after a far scrub waits one period for the next action", async () => {

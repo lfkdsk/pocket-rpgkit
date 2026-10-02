@@ -51,6 +51,7 @@ interface GrowPub {
   hash: string;
   cameraX: number;
   frontierX: number;
+  caravans?: number;
   mounted: number;
   visibleX0: number;
   visibleX1: number;
@@ -126,8 +127,9 @@ async function measureWindow(width: number, height: number): Promise<WindowRun> 
       // property update. Growth deadlines can also replace HUD text.
       // The reducer's 480px camera can keep easing while a wide desktop
       // presentation is still clamped at x=0. In that case no visual prop
-      // changes; once the presented camera moves it is one property update.
-      expect(frameCounts.setProp).toBeLessThanOrEqual(1);
+      // changes; once the presented camera moves it is one property update,
+      // plus x and y for each trade caravan walking its route on screen.
+      expect(frameCounts.setProp).toBeLessThanOrEqual(1 + 2 * (pub.caravans ?? 0));
       expect(frameCounts.createNode + frameCounts.destroyNode + frameCounts.setImage).toBe(0);
       cameraOnlyFrames++;
     }
@@ -183,33 +185,39 @@ simDescribe("D6e grow render: viewport-windowed sparse tiles", () => {
   test("480x272 residency stays bounded while old columns unmount", async () => {
     const run = await measureWindow(480, 272);
     if (process.env.GROW_METRICS) console.log("METRICS480", JSON.stringify({ ...run, tree: undefined }));
+    // The causal world's camera rests where the director last panned: the
+    // sand village, focus column 86 at 60 percent of the screen.
     expect(run.final).toMatchObject({
-      tick: 156, cameraX: 1632, frontierX: 119, visibleX0: 101, visibleX1: 132,
+      tick: 240, cameraX: 1104, frontierX: 86, visibleX0: 68, visibleX1: 99,
     });
     expect(run.final.frontierX).toBeGreaterThanOrEqual(run.final.visibleX0);
     expect(run.final.frontierX).toBeLessThanOrEqual(run.final.visibleX1);
     expect(run.final.visibleX0).toBeGreaterThan(0);
-    // Six repeated fill blocks cover this window; 63 seed-dependent
+    // Six repeated fill blocks cover this window; 62 seed-dependent
     // seam cells need individual terrain nodes.
     expect(countNames(run.tree, "rpgkit-grow-terrain-block")).toBe(6);
-    expect(countNames(run.tree, "rpgkit-grow-terrain-seam")).toBe(63);
-    // Art-pass settlements: lot paths instead of dirt yards (fewer ground
-    // cells) and 2x2 grove stamps instead of scattered tufts (fewer upper cells).
-    expect(countNames(run.tree, "rpgkit-grow-gcell")).toBe(68);
-    expect(countNames(run.tree, "rpgkit-grow-ucell")).toBe(235);
-    expect(countNames(run.tree, "rpgkit-grow-gvillager")).toBe(7);
-    expect(run.final.mounted).toBe(379);
-    expect(run.peakMounted).toBe(395);
+    expect(countNames(run.tree, "rpgkit-grow-terrain-seam")).toBe(62);
+    // A worn-in village: trails, dirt and paved roads, fields and the stream
+    // are ground cells; houses, stumps, saplings and the woods are upper.
+    expect(countNames(run.tree, "rpgkit-grow-gcell")).toBe(243);
+    expect(countNames(run.tree, "rpgkit-grow-ucell")).toBe(212);
+    expect(countNames(run.tree, "rpgkit-grow-gvillager")).toBe(6);
+    expect(run.final.mounted).toBe(529);
+    expect(run.peakMounted).toBe(587);
     // Column zero left the window: destruction proves old cells are not
     // retained, and peak residency is below 650 rather than the tens of thousands of
     // nodes an unwindowed full backing strip would require.
     expect(run.cumulative.destroyNode).toBeGreaterThan(1_000);
     expect(run.peakMounted).toBeLessThan(650);
-    expect(run.peakCreate).toBeLessThanOrEqual(100);
-    expect(run.peakDestroy).toBeLessThanOrEqual(80);
-    expect(run.peakStructural).toBeLessThanOrEqual(360);
-    expect(run.structuralFrames).toBeLessThan(300);
-    expect(run.cameraOnlyFrames).toBeGreaterThan(700);
+    // The director camera pans at most six columns a tick, so one frame
+    // mounts at most about a column of both layers.
+    expect(run.peakCreate).toBeLessThanOrEqual(60);
+    expect(run.peakDestroy).toBeLessThanOrEqual(60);
+    expect(run.peakStructural).toBeLessThanOrEqual(160);
+    // Footfall repaints ground somewhere on most ticks; still, most frames
+    // between ticks only move the camera.
+    expect(run.structuralFrames).toBeLessThan(900);
+    expect(run.cameraOnlyFrames).toBeGreaterThan(250);
     expect(run.cumulative.uploadTexture).toBe(0);
     expect(sum(run.idle)).toBe(0);
   });
@@ -218,37 +226,40 @@ simDescribe("D6e grow render: viewport-windowed sparse tiles", () => {
     const run = await measureWindow(960, 544);
     if (process.env.GROW_METRICS) console.log("METRICS960", JSON.stringify({ ...run, tree: undefined }));
     // A 33-row field plus the 16px timeline fills 544px exactly. Sixty-two
-    // columns include one-column overscan on each side.
-    expect(countNames(run.tree, "rpgkit-grow-terrain-block")).toBe(15);
-    expect(countNames(run.tree, "rpgkit-grow-terrain-seam")).toBe(242);
-    expect(run.final.mounted).toBe(1_036);
-    expect(run.peakMounted).toBe(1_170);
+    // columns include one-column overscan on each side; this window lines up
+    // with four 256px fill-block columns (twelve blocks).
+    expect(countNames(run.tree, "rpgkit-grow-terrain-block")).toBe(12);
+    expect(countNames(run.tree, "rpgkit-grow-terrain-seam")).toBe(218);
+    expect(run.final.mounted).toBe(1_454);
+    expect(run.peakMounted).toBe(1_540);
     expect(run.cumulative.destroyNode).toBeGreaterThan(1_300);
     expect(run.peakMounted).toBeLessThan(1_600);
-    expect(run.peakCreate).toBeLessThanOrEqual(160);
-    expect(run.peakDestroy).toBeLessThanOrEqual(120);
-    expect(run.peakStructural).toBeLessThanOrEqual(560);
+    expect(run.peakCreate).toBeLessThanOrEqual(80);
+    expect(run.peakDestroy).toBeLessThanOrEqual(80);
+    expect(run.peakStructural).toBeLessThanOrEqual(240);
     expect(run.cumulative.uploadTexture).toBe(0);
     expect(sum(run.idle)).toBe(0);
   });
 });
 
 simDescribe("D6e grow render: measured 512x512 chunk-rebake alternative", () => {
-  test("dirty chunks would upload 80 MB during one default growth", () => {
+  test("dirty chunks would upload 478 MB during one default growth", () => {
     const cost = dirtyChunkCost();
     if (process.env.GROW_METRICS) console.log("CHUNKS", JSON.stringify(cost));
+    // The causal world changes something in every village on most ticks
+    // (footfall, logging, regrowth), so far more chunks go dirty than the
+    // stamp rules' one-site-a-tick growth (113 + 40 over 156 ticks).
     expect(cost).toEqual({
-      ticks: 156, groundUploads: 113, upperUploads: 40, peakUploadsPerTick: 4,
+      ticks: 240, groundUploads: 243, upperUploads: 669, peakUploadsPerTick: 8,
     });
     const bytesPerUpload = 512 * 512 * 2; // one packed PSM_4444 layer
-    expect((cost.groundUploads + cost.upperUploads) * bytesPerUpload).toBe(80_216_064);
-    // Repainting both layers unconditionally would be 163,577,856 bytes.
-    expect(cost.ticks * 2 * bytesPerUpload).toBe(163_577_856);
+    expect((cost.groundUploads + cost.upperUploads) * bytesPerUpload).toBe(478_150_656);
     // Sixteen terrain cells, sixteen ground cells, fifty-nine upper cells,
-    // 224 Ninja stamp cells (trees, houses, props) and one NPC remain a
-    // 158 KiB tile vocabulary. Four repeated fill blocks add 512 KiB without
-    // scaling with world length.
-    expect((16 + 16 + 59 + 224 + 1) * 16 * 16 * 2).toBe(161_792);
+    // 224 Ninja stamp cells (trees, houses, props), ten causal-world cells
+    // (worn ground, paved road, gravel, ruins), the villager and the
+    // caravan remain a 163 KiB tile vocabulary. Four repeated fill blocks
+    // add 512 KiB without scaling with world length.
+    expect((16 + 16 + 59 + 224 + 10 + 2) * 16 * 16 * 2).toBe(167_424);
     expect(4 * 256 * 256 * 2).toBe(524_288);
     const fullWorldChunkNodes = Math.ceil(DEFAULT_PARAMS.width / 32)
       * Math.ceil(DEFAULT_PARAMS.height / 32) * 2;
@@ -262,7 +273,9 @@ simDescribe("D6e grow render: measured 512x512 chunk-rebake alternative", () => 
     // +16 B for K4's new shop-box string literals ("Buy"/"Sell"/"Leave"/
     // "Back"/"Gold: "), reachable through GrowView's DialogBox import and
     // widening the baked font's glyph coverage by one codepoint.
-    expect(pak.size).toBe(799_264);
+    // +6,432 B for the causal world: eleven new 16x16 cells (six ground,
+    // four ruin pieces, the caravan; 5,632 B) and 800 B of other baked data.
+    expect(pak.size).toBe(805_696);
     expect(pak.size).toBeLessThan(850_000);
   });
 });
