@@ -538,6 +538,39 @@ describe("P1⑤ save — deep structural validation (F4/1173)", () => {
       since: 0, erase: false, ...fiber,
     };
   }
+  const transferProgram = (handoff: unknown) => [{
+    op: "transfer",
+    map: "next",
+    x: 0,
+    y: 0,
+    dir: "keep",
+    fadeFrames: 0,
+    handoff,
+  }, { op: "exit" }];
+  for (const [name, handoff] of [
+    ["a non-object transfer handoff", "seamless-v1"],
+    ["a transfer handoff with a bad mode", { mode: "future", portalId: "door" }],
+    ["a transfer handoff with an empty portal id", { mode: "seamless-v1", portalId: "" }],
+  ] as const) {
+    rejects(name, (s) => {
+      parkParallel(s, {
+        stack: [{ prog: transferProgram(handoff), pc: 0 }],
+        mode: "run",
+      });
+    });
+  }
+  test("a compiled transfer with valid seamless provenance remains loadable", () => {
+    const encoded = checksummed((s) => {
+      parkParallel(s, {
+        stack: [{
+          prog: transferProgram({ mode: "seamless-v1", portalId: "west:east:safe" }),
+          pc: 0,
+        }],
+        mode: "run",
+      });
+    });
+    expect(() => decodeEnvelopeText(encoded)).not.toThrow();
+  });
   test("a parallel program containing a cross-event path route remains loadable", () => {
     const encoded = checksummed((s) => {
       parkParallel(s, {

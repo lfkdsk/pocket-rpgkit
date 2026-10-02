@@ -74,6 +74,7 @@ declare global {
 
 function ShowcaseApp() {
   const project = PROJECT;
+  const attractTape = loadAttractTape(SHOWCASE_TOUR_RUNS);
   const saveSession = createSession(project, simulationHz(), {
     extensions: SHOWCASE_EXTENSIONS,
     battle: showcaseBattleRules,
@@ -146,7 +147,8 @@ function ShowcaseApp() {
         scenes={SCENES}
         sceneViews={SCENE_VIEWS}
         effects={AudioEffects}
-        attractTape={loadAttractTape(SHOWCASE_TOUR_RUNS).masks}
+        attractTape={attractTape.masks}
+        attractTapeWorldTraversal={attractTape.worldTraversal}
         demo={demo}
         theme={theme()}
         choiceIcons={ChoiceIconBox}

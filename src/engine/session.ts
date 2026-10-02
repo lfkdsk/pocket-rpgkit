@@ -75,6 +75,7 @@ import {
   type PendingMoveOperation,
   type PendingPlacement,
   type PendingScene,
+  type PendingTransfer,
   type SwitchState,
   type WorldIdleBlockers,
   type TextPaginator,
@@ -160,7 +161,15 @@ import {
 } from "./screen.ts";
 import { BTN_BITS } from "./camera.ts";
 import type { Dir4, PassageTable } from "./passability.ts";
-import { buildPassage, canStepFrom, stampBlockedCells, withTilePropertyOverrides } from "./passability.ts";
+import {
+  buildPassage,
+  canEnter,
+  canStepFrom,
+  cellBlocksExit,
+  stampBlockedCells,
+  withTilePropertyOverrides,
+} from "./passability.ts";
+import type { WorldHandoffResolver } from "./world-handoff-contract.ts";
 import {
   MAP_SCHEMA_HASH,
   describeMapSchemaRefusal,
@@ -185,10 +194,12 @@ import type {
   Condition,
   JsonValue,
   Sheet,
+  WorldTraversalMode,
 } from "./types.ts";
 
 const DX = [0, -1, 0, 1] as const;
 const DY = [1, 0, -1, 0] as const;
+const OPPOSITE_DIR: readonly Facing[] = [2, 3, 0, 1];
 const DIR_INDEX: Record<Dir, Facing> = { down: 0, left: 1, up: 2, right: 3 };
 
 export interface FadeState {
@@ -223,6 +234,23 @@ export interface PlayerRoute {
   pathRetriesLeft: number | null;
 }
 
+/** One source-owned tile crossing. It exists only between a proven opening's
+ * transfer tick and the atomic target-map entry; final state returns to the
+ * ordinary map-local representation. */
+export interface SeamlessHandoffState {
+  mode: "seamless-v1";
+  portalId: string;
+  sourceMapId: string;
+  targetMapId: string;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  direction: Facing;
+  phase: number;
+  totalTicks: number;
+}
+
 export interface SessionState {
   frame: number;
   mapId: string;
@@ -237,6 +265,9 @@ export interface SessionState {
   ext: JsonValue;
   /** Active full-screen scene. null is the backwards-compatible default. */
   scene: SceneSlot | null;
+  /** Sparse in-flight world crossing. Absent in legacy projects and after
+   * the atomic target entry, preserving the legacy serialized state shape. */
+  handoff?: SeamlessHandoffState;
 }
 
 function sessionWorldIdleBlockers(
@@ -262,7 +293,8 @@ function sessionWorldIdleBlockers(
  * state is host-owned rather than serialized, so a host querying while its
  * menu is open supplies `menuOpen=true`; a normal reducer tick omits it. */
 export function isSessionWorldIdle(state: SessionState, menuOpen = false): boolean {
-  return isWorldIdle(state.interp, sessionWorldIdleBlockers(state, menuOpen));
+  return state.handoff === undefined &&
+    isWorldIdle(state.interp, sessionWorldIdleBlockers(state, menuOpen));
 }
 
 export interface SessionInput extends BattleInput {}
@@ -321,6 +353,10 @@ export interface Session {
   sceneOptions: Required<SceneOptions>;
   /** Published snapshots and their banks must not be mutated by the caller. */
   immutableState: boolean;
+  /** Effective build/session traversal identity. */
+  worldTraversal: WorldTraversalMode;
+  /** Optional immutable-layout resolver. Null keeps every transfer legacy. */
+  handoffResolver: WorldHandoffResolver | null;
 }
 
 export interface SceneOptions {
@@ -353,6 +389,12 @@ export interface SessionOptions {
    *  every world (see WorldOptions.paginateText). GameView passes the
    *  dialog box's paginator; without one every message is one page. */
   paginateText?: TextPaginator;
+  /** Override used by a replay tape. A missing tape identity is supplied as
+   * legacy-transfer by the attract controller. Live sessions omit this. */
+  worldTraversal?: WorldTraversalMode;
+  /** Type-only opt-in seam; concrete layout indexing lives outside the base
+   * session bundle. */
+  handoff?: WorldHandoffResolver;
 }
 
 function visitCondition(c: Condition, found: Set<string>): void {
@@ -704,6 +746,15 @@ export function createSession(
     typeof (optionsOrMaps as MapRepository).meta === "function"
     ? { maps: optionsOrMaps as MapRepository }
     : (optionsOrMaps as SessionOptions | undefined) ?? {};
+  const requestedTraversal = options.worldTraversal ?? project.worldTraversal ?? "legacy-transfer";
+  const worldTraversal: WorldTraversalMode =
+    project.worldTraversal === "seamless-v1" &&
+      requestedTraversal === "seamless-v1" &&
+      project.worldLayout !== undefined &&
+      options.handoff?.topologyHash === project.worldLayout.topologyHash
+      ? "seamless-v1"
+      : "legacy-transfer";
+  const handoffResolver = worldTraversal === "seamless-v1" ? options.handoff! : null;
   const maps = options.maps;
   const extensions = createExtensionRuntime(options.extensions);
   const sheets = new Map<string, Sheet>(project.sheets.map((s) => [s.id, s]));
@@ -759,6 +810,8 @@ export function createSession(
       scenes: options.scenes ?? {},
       sceneOptions: { worldContinues: options.scene?.worldContinues === true },
       immutableState: options.immutableState === true,
+      worldTraversal,
+      handoffResolver,
     };
     acquireSessionMap(session, project.start.map);
     releaseSessionMapsExcept(session, [project.start.map]);
@@ -801,6 +854,8 @@ export function createSession(
     scenes: options.scenes ?? {},
     sceneOptions: { worldContinues: options.scene?.worldContinues === true },
     immutableState: options.immutableState === true,
+    worldTraversal,
+    handoffResolver,
   };
 }
 
@@ -901,6 +956,7 @@ function enterMap(
   if (audio) s.interp.audio = audio;
   s.sw = s.interp.sw;
   s.playerRoute = null;
+  delete s.handoff;
 }
 
 /** The effective terrain for this exact reducer branch. The authored table
@@ -1806,6 +1862,7 @@ function foldSession(
       : null,
     ext: frozen ? s0.ext : cloneExtension(sess.extensions, s0.ext),
     scene: cloneScene(s0.scene, sess.battle?.immutableState),
+    ...(s0.handoff ? { handoff: { ...s0.handoff } } : {}),
   };
   s.frame++;
   const ticks = sess.ticksPerFrame;
@@ -1956,6 +2013,138 @@ function displacedCells(
   return cells;
 }
 
+function mapDimensions(sess: Session, mapId: string): { width: number; height: number } | null {
+  const resident = sess.maps.get(mapId);
+  if (resident) return resident;
+  return sess.mapIndex?.get(mapId) ?? null;
+}
+
+/** Validate every runtime-owned part of a marked opening before publishing
+ * reducer state. A failed proof is intentionally indistinguishable from an
+ * ordinary transfer: unsafe or mismatched content keeps legacy semantics. */
+function tryStartSeamlessHandoff(
+  sess: Session,
+  s: SessionState,
+  transfer: Readonly<PendingTransfer>,
+): boolean {
+  if (
+    sess.worldTraversal !== "seamless-v1" ||
+    sess.handoffResolver === null ||
+    transfer.handoff?.mode !== "seamless-v1" ||
+    transfer.playerTouch !== true ||
+    s.handoff !== undefined ||
+    s.scene !== null ||
+    s.fade !== null ||
+    s.move.moving ||
+    s.move.phase !== 0
+  ) return false;
+
+  const source = sess.maps.get(s.mapId);
+  const targetSize = mapDimensions(sess, transfer.map);
+  if (!source || !targetSize) return false;
+  const resolved = sess.handoffResolver.resolve({
+    portalId: transfer.handoff.portalId,
+    sourceMapId: s.mapId,
+    targetMapId: transfer.map,
+    sourceX: s.move.tx,
+    sourceY: s.move.ty,
+    targetX: transfer.x,
+    targetY: transfer.y,
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    targetWidth: targetSize.width,
+    targetHeight: targetSize.height,
+    facing: s.move.facing,
+    transferDirection: transfer.dir,
+  });
+  if (!resolved) return false;
+
+  // This publishes prepared immutable data, or throws MapNotReadyError so
+  // the host retries the same logical tick after repository preparation.
+  acquireSessionMap(sess, transfer.map);
+  // Opening eligibility is authored against immutable terrain. Runtime
+  // tile-property changes belong to the current map visit and must neither
+  // mint nor revoke importer-proven world topology.
+  const sourcePassage = sess.tables.get(s.mapId)!;
+  const targetPassage = sess.tables.get(transfer.map)!;
+  if (
+    cellBlocksExit(sourcePassage, s.move.tx, s.move.ty, resolved.direction) ||
+    !canEnter(targetPassage, transfer.x, transfer.y, OPPOSITE_DIR[resolved.direction])
+  ) return false;
+
+  const totalTicks = stepFrames(sess.cfg);
+  s.handoff = {
+    mode: "seamless-v1",
+    portalId: transfer.handoff.portalId,
+    sourceMapId: s.mapId,
+    targetMapId: transfer.map,
+    sourceX: s.move.tx,
+    sourceY: s.move.ty,
+    targetX: transfer.x,
+    targetY: transfer.y,
+    direction: resolved.direction,
+    phase: 0,
+    totalTicks,
+  };
+  s.interp.pendingTransfer = null;
+  s.move = {
+    ...s.move,
+    facing: resolved.direction,
+    phase: 0,
+    moving: true,
+    walking: true,
+    stepDir: resolved.direction,
+  };
+  return true;
+}
+
+/** Advance the mover's world-space interpolation before the ordinary source
+ * map tick. The caller commits only after that source tick finishes, so the
+ * target never becomes active early. */
+function advanceSeamlessHandoffMotion(sess: Session, s: SessionState): boolean {
+  const handoff = s.handoff!;
+  const phase = handoff.phase + 1;
+  const pixels = stepPixels(
+    handoff.sourceX * sess.cfg.tile,
+    handoff.sourceY * sess.cfg.tile,
+    handoff.direction,
+    phase,
+    sess.cfg,
+  );
+  s.move.px = pixels.px;
+  s.move.py = pixels.py;
+  s.move.phase = phase;
+  if (phase < handoff.totalTicks) {
+    handoff.phase = phase;
+    return false;
+  }
+  handoff.phase = phase;
+  return true;
+}
+
+function commitSeamlessHandoff(sess: Session, s: SessionState): { x: number; y: number } {
+  const handoff = s.handoff!;
+  // Re-acquire on the commit tick: rewind keyframes retain reducer state,
+  // not derived cache residency. The already-prepared fast path is one map
+  // lookup; an async miss rolls this entire host frame back for retry.
+  const target = acquireSessionMap(sess, handoff.targetMapId);
+  enterMap(
+    s,
+    handoff.targetMapId,
+    handoff.targetX,
+    handoff.targetY,
+    handoff.direction,
+    sess.cfg,
+  );
+  showMapNameBanner(s, target);
+  // Do not run the legacy single-map eviction here. A connected-world cache
+  // driver owns the active/visible/imminent keep-sets and converges them on
+  // this presented frame; flattening the cache first would discard warm
+  // visible maps and create a one-frame release/reload hole. Headless users
+  // can apply releaseSessionMapLayers with their own derived working set.
+  return { x: handoff.targetX, y: handoff.targetY };
+}
+
 /** Advance the session one MOTION_HZ reference tick, mutating the working
  *  clone `s`. Returns the player cell the next tick sees as prevCell. */
 function stepReferenceTick(
@@ -1971,10 +2160,19 @@ function stepReferenceTick(
   // unused hot path to one predictable branch.
   if (s.sw.timer !== undefined) advanceTimer(s.sw);
 
+  // A handoff owns the source map through its final interpolation tick. Move
+  // the player first, like an ordinary step, then let only that source map's
+  // pages, NPCs and effects advance. Atomic target entry happens at the end.
+  const handoffAtStart = s.handoff !== undefined;
+  const handoffCompletes = handoffAtStart
+    ? advanceSeamlessHandoffMotion(sess, s)
+    : false;
+
   // A completion is observed after the previous host frame's reference-tick
   // batch. Its successor therefore starts on this next reference tick, never
   // recursively on the completion frame.
   if (
+    !handoffAtStart &&
     s.scene === null &&
     (s.interp.pendingBattles.length > 0 || (s.interp.pendingScenes?.length ?? 0) > 0)
   ) {
@@ -1982,10 +2180,10 @@ function stepReferenceTick(
     // parallel's page; cancel it before it can grab the scene slot.
     pruneStaleQueuedScenes(sess, s);
   }
-  if (s.scene === null && s.interp.pendingBattles.length > 0) {
+  if (!handoffAtStart && s.scene === null && s.interp.pendingBattles.length > 0) {
     startNextBattleScene(sess, s);
   }
-  if (s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
+  if (!handoffAtStart && s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
     startNextGameScene(sess, s);
   }
 
@@ -2115,7 +2313,7 @@ function stepReferenceTick(
   let playerRouteSettings = DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings;
   let playerRouteEventSettings: Readonly<Record<string, ResolvedMoveSettings>> | undefined;
   if (!needsMovementControlPath) {
-    if (!busy && !capturesDpad && !held && s.playerRoute === null &&
+    if (!handoffAtStart && !busy && !capturesDpad && !held && s.playerRoute === null &&
         !s.interp.inputLocked && s.interp.screen?.backdrop === undefined) {
       // stepMovement consults the table only for a held direction.
       const table = dirFromButtons(input.buttons) === null
@@ -2162,7 +2360,7 @@ function stepReferenceTick(
       : DEFAULT_MOVE_SETTINGS as ResolvedMoveSettings;
     playerRouteSettings = playerSettings;
 
-    if (!busy && !capturesDpad && !held && s.playerRoute === null &&
+    if (!handoffAtStart && !busy && !capturesDpad && !held && s.playerRoute === null &&
         !s.interp.inputLocked && s.interp.screen?.backdrop === undefined) {
       if (playerSettings.runtimeWander) {
         if (s.interp.modal === null) {
@@ -2236,7 +2434,7 @@ function stepReferenceTick(
     s.interp = continueExternal(s.interp, waiter);
   }
   s.sw = s.interp.sw;
-  if (s.playerRoute) {
+  if (s.playerRoute && !handoffAtStart) {
     stepPlayerRoute(s, sess, playerRouteSettings, playerRouteEventSettings, contacts);
   }
   const playerStep = sess.extensions.playerStep;
@@ -2264,10 +2462,10 @@ function stepReferenceTick(
     if (liveEventCells && ch) liveEventCells[ev.id] = { x: ch.tx, y: ch.ty };
   }
   const interpInput: InterpInput = {
-    confirmEdge: input.confirmEdge,
-    cancelEdge: input.cancelEdge,
-    upEdge: input.upEdge,
-    downEdge: input.downEdge,
+    confirmEdge: handoffAtStart ? false : input.confirmEdge,
+    cancelEdge: handoffAtStart ? false : input.cancelEdge,
+    upEdge: handoffAtStart ? false : input.upEdge,
+    downEdge: handoffAtStart ? false : input.downEdge,
     playerCell: { x: s.move.tx, y: s.move.ty },
     prevCell: prevCellIn,
     facing: s.move.facing,
@@ -2349,6 +2547,7 @@ function stepReferenceTick(
   }
   s.sw = s.interp.sw;
   if (
+    !handoffAtStart &&
     s.scene === null &&
     (s.interp.pendingBattles.length > 0 || (s.interp.pendingScenes?.length ?? 0) > 0)
   ) {
@@ -2357,15 +2556,29 @@ function stepReferenceTick(
     // against the post-fold switch bank before the end-of-tick consumption.
     pruneStaleQueuedScenes(sess, s);
   }
-  if (s.scene === null && s.interp.pendingBattles.length > 0) {
+  if (!handoffAtStart && s.scene === null && s.interp.pendingBattles.length > 0) {
     startNextBattleScene(sess, s);
   }
-  if (s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
+  if (!handoffAtStart && s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
     startNextGameScene(sess, s);
   }
-  if (s.interp.pendingTransfer) {
+  if (handoffCompletes) {
+    const landed = commitSeamlessHandoff(sess, s);
+    const result: {
+      x: number;
+      y: number;
+      cues?: SoundCue[];
+      hostActions?: HostAction[];
+    } = landed;
+    if (tickCues) result.cues = tickCues;
+    if (tickHostActions) result.hostActions = tickHostActions;
+    return result;
+  }
+  if (!handoffAtStart && s.interp.pendingTransfer) {
     const t = s.interp.pendingTransfer;
-    if (t.fadeFrames > 0) {
+    if (tryStartSeamlessHandoff(sess, s, t)) {
+      // The source map remains authoritative until the crossing completes.
+    } else if (t.fadeFrames > 0) {
       const half = Math.max(1, Math.round(t.fadeFrames / 2));
       s.fade = { phase: "out", left: half, half };
     } else {

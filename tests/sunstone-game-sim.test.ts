@@ -467,10 +467,13 @@ simDescribe("sunstone — render budget", () => {
     // promotion helper bring it to 873,965 B measured.
     // Merging the interface-text branch (uiText words, BoundedLine, bounded
     // SaveMenu/DialogBox/demo paths) brings the merged product to 898,897 B.
+    // The seamless-v1 traversal identity, transfer provenance, sparse
+    // reducer state and optional GameView resolver seam bring it to
+    // 905,748 B measured; the concrete resolver remains opt-in.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(900_000);
+    expect(jsBytes).toBeLessThan(908_000);
   });
 });
 

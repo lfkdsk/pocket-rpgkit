@@ -8,6 +8,8 @@
 // writes it) and rejects anything malformed, so a corrupt override can
 // never boot a game to a black screen. Pure: no host imports.
 
+import type { WorldTraversalMode } from "./types.ts";
+
 /** Expand run-length [mask,count] pairs to one mask per frame. */
 export function expandTapeRuns(runs: readonly (readonly [number, number])[]): number[] {
   const out: number[] = [];
@@ -32,11 +34,18 @@ interface TapeDocument {
   v?: unknown;
   frames?: unknown;
   masks?: unknown;
+  worldTraversal?: unknown;
 }
 
-/** Parse a devtools tape document into one mask per frame, or null when
- *  the text is not a well-formed, self-consistent tape. */
-export function parseTapeDocument(text: string): number[] | null {
+export interface ParsedTapeDocument {
+  masks: number[];
+  /** Missing on older tapes and therefore normalized to legacy-transfer. */
+  worldTraversal: WorldTraversalMode;
+}
+
+/** Parse masks together with the transfer-timeline identity that gives those
+ * inputs meaning. Unknown identities are rejected instead of being guessed. */
+export function parseTapeDocumentWithIdentity(text: string): ParsedTapeDocument | null {
   let doc: TapeDocument;
   try {
     doc = JSON.parse(text) as TapeDocument;
@@ -46,6 +55,11 @@ export function parseTapeDocument(text: string): number[] | null {
   if (![1, 2, 3].includes(doc.v as number)) return null;
   if (typeof doc.frames !== "number" || !Number.isInteger(doc.frames) || doc.frames < 1) return null;
   if (!Array.isArray(doc.masks)) return null;
+  if (
+    doc.worldTraversal !== undefined &&
+    doc.worldTraversal !== "legacy-transfer" &&
+    doc.worldTraversal !== "seamless-v1"
+  ) return null;
   const out: number[] = [];
   for (const run of doc.masks) {
     if (!Array.isArray(run) || run.length !== 2) return null;
@@ -58,5 +72,14 @@ export function parseTapeDocument(text: string): number[] | null {
   }
   if (out.length === 0) return null;
   if (doc.frames !== out.length) return null;
-  return out;
+  return {
+    masks: out,
+    worldTraversal: doc.worldTraversal ?? "legacy-transfer",
+  };
+}
+
+/** Parse a devtools tape document into one mask per frame, or null when
+ *  the text is not a well-formed, self-consistent tape. */
+export function parseTapeDocument(text: string): number[] | null {
+  return parseTapeDocumentWithIdentity(text)?.masks ?? null;
 }

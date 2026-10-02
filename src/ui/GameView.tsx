@@ -79,6 +79,7 @@ import type {
   JsonValue,
   SpriteDef,
   WorldLayout,
+  WorldTraversalMode,
 } from "../engine/types.ts";
 import { PlayerSprite, playerImageKey } from "./PlayerSprite.tsx";
 import { walkPose, type WalkPose } from "../engine/movement.ts";
@@ -863,6 +864,9 @@ export interface GameViewProps {
   /** One u16 button mask per 60 Hz source frame (engine/attract-tape.ts).
    *  Present: attract/takeover/rewind drive the fold. Absent: live play. */
   attractTape?: readonly number[];
+  /** Traversal identity recorded with attractTape. Missing means the tape was
+   * authored on the legacy transfer timeline. */
+  attractTapeWorldTraversal?: WorldTraversalMode;
   /** Opt-in demo transport/menu runtime. Kept behind a factory so the base
    * GameView has no dependency on a concrete ui/demo implementation. */
   demo?: GameViewDemoConfig;
@@ -1066,6 +1070,10 @@ export function GameView(props: GameViewProps) {
         scene: props.scene,
         immutableState: props.immutableState,
         paginateText,
+        worldTraversal: props.attractTape !== undefined
+          ? props.attractTapeWorldTraversal ?? "legacy-transfer"
+          : project.worldTraversal,
+        handoff: worldRenderer?.handoff,
         ...demoRewind,
       })
     : null;
@@ -1079,6 +1087,7 @@ export function GameView(props: GameViewProps) {
         scene: props.scene,
         immutableState: props.immutableState,
         paginateText,
+        handoff: worldRenderer?.handoff,
       });
   startupProfileMark("game-view:session");
   let state: SessionState = attract ? attract.state : startSession(project, session);

@@ -152,7 +152,10 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The W3 cache fixes and the coordinate-contract helper: 873,965 measured.
 // Merging the interface-text branch (uiText words, BoundedLine, bounded
 // SaveMenu/DialogBox/demo paths) brings the merged product to 898,897 bytes.
-const EXPECTED_BYTES = 898_897;
+// The seamless-v1 traversal identity, transfer provenance, sparse reducer
+// state and optional GameView resolver seam bring it to 905,748 measured. The
+// concrete world handoff resolver remains outside this non-world input graph.
+const EXPECTED_BYTES = 905_748;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

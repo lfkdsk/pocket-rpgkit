@@ -98,6 +98,7 @@ import type {
   TilePropertyOverride,
   TransferCoordinate,
   TransferDirection,
+  TransferHandoff,
   TransferMap,
   VariableRef,
   VariableValue,
@@ -637,6 +638,7 @@ export type Instr =
       y: TransferCoordinate;
       dir: TransferDirection;
       fadeFrames: number;
+      handoff?: TransferHandoff;
       /** Set only on the battle/scene completion transfer continueBattle /
        *  continueScene append to a result branch: a `break` that leaves that
        *  branch still performs it (see the "break" run-loop case). */
@@ -944,6 +946,7 @@ function compileScoped(
             y: c.y,
             dir: c.dir ?? "keep",
             fadeFrames: secondsToFrames(c.fade ?? 0, hz),
+            ...(c.handoff ? { handoff: { ...c.handoff } } : {}),
           });
           break;
         case "moveRoute":
@@ -1443,6 +1446,10 @@ export interface PendingTransfer {
   y: number;
   dir: Dir | "keep";
   fadeFrames: number;
+  handoff?: TransferHandoff;
+  /** Sparse runtime proof that the marked instruction belongs directly to
+   * the playerTouch page which fired it. Other transfer origins stay legacy. */
+  playerTouch?: true;
 }
 export interface PendingMoveRoute {
   fiber: string;
@@ -3776,7 +3783,14 @@ function resolveTransfer(
     };
     return null;
   }
-  return { map, x, y, dir, fadeFrames: ins.fadeFrames };
+  return {
+    map,
+    x,
+    y,
+    dir,
+    fadeFrames: ins.fadeFrames,
+    ...(ins.handoff ? { handoff: { ...ins.handoff } } : {}),
+  };
 }
 
 function emptyRecord(record: object): boolean {
@@ -4819,10 +4833,15 @@ function runFiber(
       case "transfer": {
         const transfer = resolveTransfer(s, ins, f.key);
         if (transfer === null) return;
+        const prefix = `${w.map.id}/`;
+        const eventId = f.key.startsWith(prefix) ? f.key.slice(prefix.length) : "";
+        const directPlayerTouch = f.stack.length === 1 &&
+          worldEventById(w, eventId)?.pages[f.pageIndex]?.trigger === "playerTouch";
         f.mode = "external";
         s.pendingTransfer = {
           fiber: f.key,
           ...transfer,
+          ...(ins.handoff && directPlayerTouch ? { playerTouch: true as const } : {}),
         };
         return;
       }
@@ -5173,6 +5192,7 @@ export function continueBattle(
         y: transfer.y,
         dir: transfer.dir,
         fadeFrames: transfer.fadeFrames,
+        ...(transfer.handoff ? { handoff: { ...transfer.handoff } } : {}),
         completion: true,
       });
     }
@@ -5217,6 +5237,7 @@ export function continueScene(
         y: transfer.y,
         dir: transfer.dir,
         fadeFrames: transfer.fadeFrames,
+        ...(transfer.handoff ? { handoff: { ...transfer.handoff } } : {}),
         completion: true,
       });
     }

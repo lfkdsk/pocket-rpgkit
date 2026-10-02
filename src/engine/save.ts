@@ -90,7 +90,12 @@ export interface SaveMapRuntime {
  *  parked on `screenWait` is safe because both its clock and presentation
  *  descriptor are reducer state; every other blocking mode remains barred.
  *  Parallel fibers serialize in their running state. */
-export function canSave(player: MovementState, interp: InterpState, scene: unknown = null): boolean {
+export function canSave(
+  player: MovementState,
+  interp: InterpState,
+  scene: unknown = null,
+  handoff: unknown = null,
+): boolean {
   return (
     !player.moving &&
     player.phase === 0 &&
@@ -103,7 +108,8 @@ export function canSave(player: MovementState, interp: InterpState, scene: unkno
     interp.abortedRoutes.length === 0 &&
     interp.pendingBattles.length === 0 &&
     (interp.pendingScenes?.length ?? 0) === 0 &&
-    scene === null
+    scene === null &&
+    handoff == null
   );
 }
 
@@ -189,8 +195,9 @@ export function createSnapshot(
   ext: JsonValue = null,
   scene: unknown = null,
   mapRuntime?: SaveMapRuntime,
+  handoff: unknown = null,
 ): SaveSnapshot {
-  if (!canSave(player, interp, scene)) {
+  if (!canSave(player, interp, scene, handoff)) {
     throw new Error("save: snapshot is only valid at a tile boundary with no modal or scene open and no external work pending");
   }
   assertJsonValue(ext, "save extension state");
@@ -212,6 +219,7 @@ export function createSessionSnapshot(
     encodeExtension(session.extensions, state.ext),
     state.scene,
     { chars: state.chars, playerRoute: state.playerRoute, fade: state.fade },
+    state.handoff,
   );
 }
 
@@ -344,7 +352,13 @@ export function sessionStateFingerprint(state: SessionState): string {
   const interp: InterpState = { ...state.interp };
   normalizeInterpInPlace(interp);
   stripPlaybackClocksInPlace(interp);
-  return fnv1aText(canonicalJson({ map: state.mapId, player: tileLevelMovement(state.move), interp, ext: state.ext }));
+  return fnv1aText(canonicalJson({
+    map: state.mapId,
+    player: tileLevelMovement(state.move),
+    interp,
+    ext: state.ext,
+    ...(state.handoff ? { handoff: state.handoff } : {}),
+  }));
 }
 
 // --- envelope ---------------------------------------------------------------

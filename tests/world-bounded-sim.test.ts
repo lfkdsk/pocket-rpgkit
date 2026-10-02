@@ -9,9 +9,15 @@
 
 import { describe, expect, test } from "bun:test";
 import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
+import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
+import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 import { bootGameWorld, installGameSimIsolation } from "./helpers/sim-session.ts";
-import { MAP_IDS } from "./fixtures/world-bounded/fixture-data.ts";
+import {
+  GROUND_COLOUR_BYTES,
+  MAP_IDS,
+  MAP_SIZE,
+} from "./fixtures/world-bounded/fixture-data.ts";
 import { validateWorldLayout } from "../src/engine/world-layout.ts";
 import { WORLD_BOUNDED_PROJECT } from "./fixtures/world-bounded/fixture-data.ts";
 import type { WorldCacheStats } from "../src/ui/world-cache-driver.ts";
@@ -33,6 +39,7 @@ const readStats = (): FixtureStats =>
 
 interface ResidencySnapshot {
   mapId: string;
+  handoffPhase: number | null;
   // Session layers (driver stats).
   maps: number;
   worlds: number;
@@ -58,10 +65,11 @@ interface ResidencySnapshot {
   driverVisible: number;
 }
 
-const snapshot = (mapId: string): ResidencySnapshot => {
+const snapshot = (mapId: string, handoffPhase: number | null): ResidencySnapshot => {
   const s = readStats();
   return {
     mapId,
+    handoffPhase,
     maps: s.driver?.maps ?? 0,
     worlds: s.driver?.worlds ?? 0,
     tables: s.driver?.tables ?? 0,
@@ -86,6 +94,21 @@ const snapshot = (mapId: string): ResidencySnapshot => {
 };
 
 const max = (values: readonly number[]): number => values.reduce((a, b) => Math.max(a, b), 0);
+
+const rgbaAt = (frame: Uint8Array, width: number, x: number, y: number): number[] => {
+  const offset = (Math.floor(y) * width + Math.floor(x)) * 4;
+  return [...frame.subarray(offset, offset + 4)];
+};
+
+async function handoffGolden(name: string, frame: Uint8Array): Promise<void> {
+  const url = new URL(`./goldens/seamless-handoff.${name}.480x272.png`, import.meta.url);
+  if (process.env.SEAMLESS_HANDOFF_UPDATE_GOLDENS) {
+    await Bun.write(url, encodePNG(frame, 480, 272));
+  }
+  const expected = decodePng(new Uint8Array(await Bun.file(url).arrayBuffer()));
+  expect({ width: expected.width, height: expected.height }).toEqual({ width: 480, height: 272 });
+  expect(frame).toEqual(expected.rgba);
+}
 
 /** Layers whose residency the revisit pass must not grow. `created` is a
  *  cumulative counter, so it is bounded by a constant cap instead. */
@@ -128,23 +151,36 @@ simDescribe("connected world + cache driver bounded residency", () => {
       const frames: ResidencySnapshot[] = [];
       for (let f = 0; f < budget; f++) {
         step(direction);
-        frames.push(snapshot(world.probes().state.mapId));
-        if (world.probes().state.mapId !== fromMap) return frames;
+        const state = world.probes().state;
+        frames.push(snapshot(state.mapId, state.handoff?.phase ?? null));
+        if (state.mapId !== fromMap) return frames;
       }
       throw new Error(`walkUntilMapChange: never left ${fromMap}`);
     };
 
-    // Eastbound: walk the whole line. Each crossing is ~16 frames.
+    // Eastbound: walk the whole line. Every portal performs an eight-tick
+    // seamless crossing after the ordinary movement into its edge tile.
     const eastbound: ResidencySnapshot[] = [];
     for (let i = 0; i < MAP_IDS.length - 1; i++) {
-      eastbound.push(...walkUntilMapChange(BTN.RIGHT, MAP_IDS[i]!));
+      const crossing = walkUntilMapChange(BTN.RIGHT, MAP_IDS[i]!);
+      expect(crossing.flatMap((frame) => frame.handoffPhase === null ? [] : [frame.handoffPhase]))
+        .toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+      eastbound.push(...crossing);
     }
     expect(world.probes().state.mapId).toBe(MAP_IDS[MAP_IDS.length - 1]!);
+
+    // A seamless arrival occupies the target edge cell. Step inward once
+    // before reversing, just as a player must leave a doorway before walking
+    // back onto its playerTouch page.
+    for (let frame = 0; frame < 8; frame++) step(BTN.RIGHT);
 
     // Westbound: walk all the way back.
     const westbound: ResidencySnapshot[] = [];
     for (let i = MAP_IDS.length - 1; i > 0; i--) {
-      westbound.push(...walkUntilMapChange(BTN.LEFT, MAP_IDS[i]!));
+      const crossing = walkUntilMapChange(BTN.LEFT, MAP_IDS[i]!);
+      expect(crossing.flatMap((frame) => frame.handoffPhase === null ? [] : [frame.handoffPhase]))
+        .toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+      westbound.push(...crossing);
     }
     expect(world.probes().state.mapId).toBe(MAP_IDS[0]!);
 
@@ -175,16 +211,15 @@ simDescribe("connected world + cache driver bounded residency", () => {
 
     // --- Bounded by a constant, not by the visit count ---
     // Twelve maps are visited (22 crossings with the return), yet the
-    // session layers stay at the compiled keep-set capacity (active + the
-    // one imminent neighbour) instead of growing with the visit count. The
-    // line is wider than the 480px viewport, so maps behind the player
-    // are evicted.
-    expect(max(all.map((s) => s.maps))).toBeLessThanOrEqual(3);
-    expect(max(all.map((s) => s.repoCached))).toBeLessThanOrEqual(4);
-    expect(max(all.map((s) => s.worlds))).toBeLessThanOrEqual(2); // active + ≤1 imminent
-    expect(max(all.map((s) => s.tables))).toBeLessThanOrEqual(2);
-    expect(max(all.map((s) => s.staged))).toBeLessThanOrEqual(2);
-    expect(max(all.map((s) => s.pending))).toBeLessThanOrEqual(2);
+    // parsed layers retain the viewport (at most eight tiny maps) plus its
+    // directed neighbours, while compiled layers retain only active plus
+    // those neighbours. Neither grows with the twelve-map visit count.
+    expect(max(all.map((s) => s.maps))).toBeLessThanOrEqual(10);
+    expect(max(all.map((s) => s.repoCached))).toBeLessThanOrEqual(10);
+    expect(max(all.map((s) => s.worlds))).toBeLessThanOrEqual(3); // active + ≤2 directed neighbours
+    expect(max(all.map((s) => s.tables))).toBeLessThanOrEqual(3);
+    expect(max(all.map((s) => s.staged))).toBeLessThanOrEqual(3);
+    expect(max(all.map((s) => s.pending))).toBeLessThanOrEqual(3);
     expect(max(all.map((s) => s.preparing))).toBeLessThanOrEqual(10); // ≤ visible set
     expect(max(all.map((s) => s.runtime))).toBeLessThanOrEqual(1);
 
@@ -238,5 +273,88 @@ simDescribe("connected world + cache driver bounded residency", () => {
       expect(s.driverVisible).toBeGreaterThan(0);
       expect(s.parsedKeep).toBeGreaterThanOrEqual(s.driverVisible);
     }
+  }, 60_000);
+
+  test("a real handoff keeps world pixels, camera and terrain continuous on every tick", async () => {
+    const viewport = { width: 480, height: 272 } as const;
+    const world = await bootGameWorld(appBundle("world-bounded"), 60, undefined, undefined, viewport);
+    const step = (buttons: number): void => {
+      world.frame(buttons, 0x8080);
+      world.tick();
+    };
+
+    step(0); // Fill the visible terrain ring and publish cache stats.
+    for (let frame = 0; frame < 400 && world.probes().state.mapId !== MAP_IDS[4]; frame++) {
+      step(BTN.RIGHT);
+    }
+    expect(world.probes().state.mapId).toBe(MAP_IDS[4]);
+    for (let frame = 0; frame < 80 && !world.probes().state.handoff; frame++) step(BTN.RIGHT);
+    expect(world.probes().state.handoff?.phase).toBe(0);
+
+    const crossing: Array<{
+      mapId: string;
+      phase: number;
+      worldX: number;
+      cameraX: number;
+      frame: Uint8Array;
+      ground: WorldStreamedTerrainStats;
+    }> = [];
+    const capture = (phase: number): void => {
+      const probes = world.probes();
+      const mapIndex = MAP_IDS.indexOf(probes.state.mapId);
+      const stats = readStats().ground;
+      expect(stats).toBeDefined();
+      crossing.push({
+        mapId: probes.state.mapId,
+        phase,
+        worldX: mapIndex * MAP_SIZE * 16 + probes.state.move.px,
+        cameraX: probes.camera.x,
+        frame: world.render().slice(),
+        ground: stats!,
+      });
+    };
+
+    capture(0);
+    for (let phase = 1; phase <= 8; phase++) {
+      step(0);
+      capture(phase);
+    }
+
+    expect(crossing.map((sample) => sample.worldX)).toEqual(
+      Array.from({ length: 9 }, (_, phase) => 304 + phase * 2),
+    );
+    expect(crossing.slice(0, 8).every((sample) => sample.mapId === MAP_IDS[4])).toBe(true);
+    expect(crossing[8]!.mapId).toBe(MAP_IDS[5]);
+    for (let phase = 1; phase < crossing.length; phase++) {
+      expect(crossing[phase]!.cameraX - crossing[phase - 1]!.cameraX, `camera phase ${phase}`).toBe(2);
+    }
+
+    const created = crossing[0]!.ground.created;
+    for (const sample of crossing) {
+      expect(sample.ground.resident, `resident phase ${sample.phase}`).toBeGreaterThan(0);
+      expect(sample.ground.pending, `pending phase ${sample.phase}`).toBe(0);
+      expect(sample.ground.created, `pool phase ${sample.phase}`).toBe(created);
+
+      // The central terrain row spans the whole viewport throughout this
+      // middle-of-component crossing: a cleared pool or black frame is
+      // visible as either transparent or RGB(0,0,0).
+      for (let x = 0; x < viewport.width; x++) {
+        const pixel = rgbaAt(sample.frame, viewport.width, x, 160);
+        expect(pixel[3], `alpha phase ${sample.phase} x ${x}`).toBe(255);
+        expect(pixel.slice(0, 3), `black phase ${sample.phase} x ${x}`).not.toEqual([0, 0, 0]);
+      }
+
+      const seamX = 5 * MAP_SIZE * 16 - sample.cameraX;
+      expect(rgbaAt(sample.frame, viewport.width, seamX - 1, 160))
+        .toEqual([...GROUND_COLOUR_BYTES[4]!]);
+      expect(rgbaAt(sample.frame, viewport.width, seamX, 160))
+        .toEqual([...GROUND_COLOUR_BYTES[5]!]);
+      const playerX = sample.worldX - sample.cameraX + 8;
+      expect(rgbaAt(sample.frame, viewport.width, playerX, 128)).toEqual([250, 244, 248, 255]);
+    }
+
+    await handoffGolden("source", crossing[0]!.frame);
+    await handoffGolden("midpoint", crossing[4]!.frame);
+    await handoffGolden("landed", crossing[8]!.frame);
   }, 60_000);
 });

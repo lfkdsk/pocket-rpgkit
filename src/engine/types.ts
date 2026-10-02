@@ -291,6 +291,18 @@ export interface ChoiceIcon {
   frame?: 0 | 1 | 2;
 }
 
+/** Project/tape identity for map traversal timing. Missing means the legacy
+ * transfer timeline, so content authored before seamless worlds is never
+ * reinterpreted merely because it also has a WorldLayout. */
+export type WorldTraversalMode = "legacy-transfer" | "seamless-v1";
+
+/** Stable importer provenance for one transfer that may use an authored
+ * world opening. Both the project mode and this marker must opt in. */
+export interface TransferHandoff {
+  mode: "seamless-v1";
+  portalId: string;
+}
+
 export type Command =
   /** Lines may hold `{name}` (the player's name) and, when the project sets
    *  `system.textVariables`, `{v:<id>}` (variable `id`'s value). Tokens are
@@ -313,6 +325,7 @@ export type Command =
       y: TransferCoordinate;
       dir?: TransferDirection;
       fade?: number;
+      handoff?: TransferHandoff;
     }
   | { op: "moveRoute"; target: RouteTarget; wait?: boolean; route: MoveRoute }
   | { op: "moveControl"; target: RouteTarget; control: MoveControl }
@@ -844,6 +857,8 @@ export interface Project {
   start: { map: string; x: number; y: number; dir: Dir };
   /** Runtime options; see ProjectSystem. */
   system?: ProjectSystem;
+  /** Map-transfer timeline identity. Missing means legacy-transfer. */
+  worldTraversal?: WorldTraversalMode;
   initialGold?: number;
   /** Default name substituted for the {name} text token in a fresh
    *  playthrough. Stored in the switch bank after that, so a rename (a future

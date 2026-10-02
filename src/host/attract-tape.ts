@@ -9,24 +9,30 @@
 // without fs (web-app, sim) the built-in tape is always used.
 
 import { file, fsHost } from "@pocketjs/framework/fs";
-import { expandTapeRuns, parseTapeDocument } from "../engine/tape.ts";
+import type { WorldTraversalMode } from "../engine/types.ts";
+import { expandTapeRuns, parseTapeDocumentWithIdentity } from "../engine/tape.ts";
 
 /** The tape attract mode plays: the fs override when present and valid,
  *  otherwise the built-in runs. */
 export function loadAttractTape(
   builtin: readonly (readonly [number, number])[],
   overrideName = "attract-tape.json",
-): { masks: number[]; external: boolean } {
+  builtinWorldTraversal: WorldTraversalMode = "legacy-transfer",
+): { masks: number[]; external: boolean; worldTraversal: WorldTraversalMode } {
   if (fsHost()) {
     try {
       const f = file(overrideName);
       if (f.exists()) {
-        const external = parseTapeDocument(f.text());
-        if (external) return { masks: external, external: true };
+        const external = parseTapeDocumentWithIdentity(f.text());
+        if (external) return { ...external, external: true };
       }
     } catch {
       // Host error (missing file etc.): built-in tape.
     }
   }
-  return { masks: expandTapeRuns(builtin), external: false };
+  return {
+    masks: expandTapeRuns(builtin),
+    external: false,
+    worldTraversal: builtinWorldTraversal,
+  };
 }

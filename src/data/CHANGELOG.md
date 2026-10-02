@@ -39,6 +39,7 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8ba161586f4c0149a1` | optional project `worldTraversal` identity and optional transfer `handoff` opening provenance; absent fields retain the legacy transfer timeline | additive |
 | `bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906` | optional root `uiText` (the kit's interface words, including the demo error sentence templates) | additive |
 | `4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1` | `scrollMap`; `showPicture` / `movePicture` / `rotatePicture` / `tintPicture` / `erasePicture`; `timer`; `inputNumber`; `openMenu` / `openSave` / `gameOver` / `returnTitle`; `changeName`; `mapNameDisplay`; `timer` condition; optional `system.mapNameDisplay` | additive |
 | `ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611` | `loop` / `break` commands, `eventTouch` trigger, `system.textVariables` | additive |

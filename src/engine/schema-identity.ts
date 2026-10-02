@@ -24,14 +24,16 @@
 /** SHA-256 of canonical src/data/schema.json. A test derives it from the file
  * so schema edits cannot leave it stale; keeping the literal avoids hashing
  * the schema at startup. */
-export const MAP_SCHEMA_HASH = "bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906";
+export const MAP_SCHEMA_HASH = "49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8ba161586f4c0149a1";
 
 /** Earlier schema identities whose shells and saves remain loadable, newest
  * first. Each entry names the change that superseded it.
  *
  * History of cleared lists (each break refuses every identity before it):
- * - `4a9a8310…` → current only added the optional root `uiText` table, so it
- *   is listed.
+ * - `bc4e7242…` → current only added the optional project `worldTraversal`
+ *   identity and the optional transfer `handoff` provenance, so it is listed.
+ * - `4a9a8310…` → `bc4e7242…` only added the optional root `uiText` table, so
+ *   it is listed.
  * - `ff6b9237…` → `4a9a8310…` only added RPG Maker-compatible picture, timer,
  *   map-scroll, number-input, scene-host, name and map-name-display commands,
  *   a timer condition, and the optional `system.mapNameDisplay` field, so it
@@ -55,6 +57,8 @@ export const MAP_SCHEMA_HASH = "bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad
  * tests/fixtures/schema-compat keeps a refused fixture and a recorded
  * counterexample for each of these. */
 export const MAP_SCHEMA_COMPATIBLE_HASHES: readonly string[] = Object.freeze([
+  // superseded by: optional project traversal identity and transfer handoff provenance
+  "bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906",
   // superseded by: optional root `uiText`
   "4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1",
   // superseded by: KRM2 picture/timer/system commands and optional system.mapNameDisplay

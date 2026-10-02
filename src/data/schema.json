@@ -35,6 +35,10 @@
         }
       }
     },
+    "worldTraversal": {
+      "enum": ["legacy-transfer", "seamless-v1"],
+      "description": "Map-transfer timeline identity. Missing means legacy-transfer; seamless-v1 still requires a matching per-transfer handoff marker and coordinate-preserving WorldLayout opening."
+    },
     "initialGold": { "type": "integer", "minimum": 0 },
     "playerName": { "type": "string", "minLength": 1, "maxLength": 24, "description": "Default name substituted for the {name} text token in a new playthrough." },
     "uiText": {
@@ -674,7 +678,17 @@
             "x": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "$ref": "#/$defs/variableRef" }] },
             "y": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "$ref": "#/$defs/variableRef" }] },
             "dir": { "oneOf": [{ "enum": ["down", "left", "right", "up", "keep"] }, { "$ref": "#/$defs/variableRef" }] },
-            "fade": { "type": "number", "minimum": 0, "maximum": 2 }
+            "fade": { "type": "number", "minimum": 0, "maximum": 2 },
+            "handoff": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "portalId"],
+              "properties": {
+                "mode": { "const": "seamless-v1" },
+                "portalId": { "type": "string", "minLength": 1 }
+              },
+              "description": "Stable opening provenance. The runtime fails closed to legacy transfer unless this marker matches a safe WorldLayout opening and the project traversal identity."
+            }
           }
         },
         {

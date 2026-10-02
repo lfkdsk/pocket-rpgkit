@@ -1,7 +1,8 @@
 // tests/fixtures/world-bounded/fixture-data.ts — a line of small placed
 // maps for the W2+W3 bounded-residency sim. Twelve 4x4 maps sit in one
-// component; playerTouch events on the east/west edges transfer the player
-// to the neighbour, so a sim can walk the whole line and back. The maps
+// component; playerTouch events on the east/west edges perform proven
+// seamless handoffs to the neighbour, so a sim can walk the whole line and
+// back. The maps
 // are intentionally tiny so a full there-and-back traversal is a few
 // hundred frames, while the line is wider than the viewport so the
 // working set evicts maps behind the player.
@@ -38,11 +39,13 @@ export const MAP_WORLD: Readonly<Record<string, { w: number; h: number }>> = Obj
 );
 
 const groundTile = (index: number): TileId => `tiles.${index}`;
+const eastPortal = (index: number): string => `wb-opening-${String(index).padStart(2, "0")}-east`;
+const westPortal = (index: number): string => `wb-opening-${String(index).padStart(2, "0")}-west`;
 
 function mapDef(index: number): MapDef {
   const id = MAP_IDS[index]!;
   const events: MapDef["events"] = [];
-  // East edge: transfer to the next map, landing one tile in.
+  // East edge: a one-tile crossing lands on the next map's west edge.
   if (index + 1 < MAP_COUNT) {
     events.push({
       id: "east",
@@ -53,15 +56,17 @@ function mapDef(index: number): MapDef {
         commands: [{
           op: "transfer",
           map: MAP_IDS[index + 1]!,
-          x: 1,
+          x: 0,
           y: 1,
           dir: "right",
           fade: 0,
+          handoff: { mode: "seamless-v1", portalId: eastPortal(index) },
         }],
       }],
     });
   }
-  // West edge: transfer to the previous map, landing one tile in.
+  // West edge: the independently proven reverse opening lands on the
+  // previous map's east edge.
   if (index > 0) {
     events.push({
       id: "west",
@@ -72,10 +77,11 @@ function mapDef(index: number): MapDef {
         commands: [{
           op: "transfer",
           map: MAP_IDS[index - 1]!,
-          x: MAP_SIZE - 2,
+          x: MAP_SIZE - 1,
           y: 1,
           dir: "left",
           fade: 0,
+          handoff: { mode: "seamless-v1", portalId: westPortal(index - 1) },
         }],
       }],
     });
@@ -118,20 +124,34 @@ export const WORLD_LAYOUT: WorldLayout = {
       spanB: { start: 0, end: MAP_SIZE },
       axis: "y" as const,
       offsetAtoB: 0,
-      openingIds: [`wb-opening-${String(i).padStart(2, "0")}`],
+      openingIds: [eastPortal(i), westPortal(i)],
     })),
-    openings: MAP_IDS.slice(0, -1).map((id, i) => ({
-      portalId: `wb-opening-${String(i).padStart(2, "0")}`,
-      source: { mapId: id, side: "east" as const, span: { start: 0, end: MAP_SIZE } },
-      target: {
-        mapId: MAP_IDS[i + 1]!,
-        side: "west" as const,
-        span: { start: 0, end: MAP_SIZE },
+    openings: MAP_IDS.slice(0, -1).flatMap((id, i) => ([
+      {
+        portalId: eastPortal(i),
+        source: { mapId: id, side: "east" as const, span: { start: 1, end: 2 } },
+        target: {
+          mapId: MAP_IDS[i + 1]!,
+          side: "west" as const,
+          span: { start: 1, end: 2 },
+        },
+        axis: "y" as const,
+        offset: 0,
+        compatibility: "coordinate-preserving" as const,
       },
-      axis: "y" as const,
-      offset: 0,
-      compatibility: "coordinate-preserving" as const,
-    })),
+      {
+        portalId: westPortal(i),
+        source: { mapId: MAP_IDS[i + 1]!, side: "west" as const, span: { start: 1, end: 2 } },
+        target: {
+          mapId: id,
+          side: "east" as const,
+          span: { start: 1, end: 2 },
+        },
+        axis: "y" as const,
+        offset: 0,
+        compatibility: "coordinate-preserving" as const,
+      },
+    ])),
   }],
 };
 
@@ -140,6 +160,7 @@ export const WORLD_BOUNDED_PROJECT: Project = {
   title: "World bounded residency fixture",
   tileSize: TILE,
   start: { map: MAP_IDS[0]!, x: 1, y: 1, dir: "right" },
+  worldTraversal: "seamless-v1",
   sheets: [{
     id: "tiles",
     pak: "tiles",

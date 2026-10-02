@@ -36,7 +36,8 @@
 // Either way the budget charges each keyframe its full serialized size, an
 // upper bound on what a shared keyframe actually retains.
 
-import type { MapRepository, ProjectSource } from "./types.ts";
+import type { MapRepository, ProjectSource, WorldTraversalMode } from "./types.ts";
+import type { WorldHandoffResolver } from "./world-handoff-contract.ts";
 import { textModalPage, type Modal, type TextPaginator } from "./interpreter.ts";
 import type { ExtensionOptions } from "./extensions.ts";
 import type { BattleRules } from "./battle.ts";
@@ -169,6 +170,10 @@ export interface AttractOptions {
   /** Message pagination, forwarded to createSession (pure, like the
    *  registrations above). */
   paginateText?: TextPaginator;
+  /** Replay identity. Missing on a non-empty tape means legacy-transfer. */
+  worldTraversal?: WorldTraversalMode;
+  /** Optional connected-world opening resolver forwarded to Session. */
+  handoff?: WorldHandoffResolver;
 }
 
 /** Rewind history knobs a game may tune (DemoOptions.rewind forwards them). */
@@ -403,6 +408,8 @@ export class AttractController {
       scene: opts.scene,
       immutableState: opts.immutableState,
       paginateText: opts.paginateText,
+      worldTraversal: opts.worldTraversal ?? (tape.length > 0 ? "legacy-transfer" : project.worldTraversal),
+      handoff: opts.handoff,
     });
     this.idleFrames = opts.idleFrames ?? this.hz * 10;
     this.endHoldFrames = opts.endHoldFrames ?? this.timelineHz * 2;

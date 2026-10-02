@@ -20,12 +20,14 @@ import { SUNSTONE_DEMO } from "./demo-chapters.ts";
 
 const game = buildGame();
 const AudioEffects = createAudioEffects(game.project.audio!);
+const attractTape = loadAttractTape(DEMO_TAPE_RUNS);
 
 mount(() => (
   <GameView
     project={game.project}
     assets={GAME_ASSETS}
-    attractTape={loadAttractTape(DEMO_TAPE_RUNS).masks}
+    attractTape={attractTape.masks}
+    attractTapeWorldTraversal={attractTape.worldTraversal}
     demo={createDemo(SUNSTONE_DEMO)}
     effects={AudioEffects}
   />

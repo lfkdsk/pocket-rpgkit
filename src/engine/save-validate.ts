@@ -726,6 +726,15 @@ function validateProg(prog: unknown, path: string): string | null {
           if (e) return e;
         }
         if (!isFiniteNumber(ins.fadeFrames)) return fail(`${here}.fadeFrames`, "number required");
+        if (ins.handoff !== undefined) {
+          if (!isRecord(ins.handoff)) return fail(`${here}.handoff`, "object required");
+          if (ins.handoff.mode !== "seamless-v1") {
+            return fail(`${here}.handoff.mode`, '"seamless-v1" required');
+          }
+          if (typeof ins.handoff.portalId !== "string" || ins.handoff.portalId.length === 0) {
+            return fail(`${here}.handoff.portalId`, "non-empty string required");
+          }
+        }
         if (ins.completion !== undefined && ins.completion !== true) {
           return fail(`${here}.completion`, "true or absent required");
         }

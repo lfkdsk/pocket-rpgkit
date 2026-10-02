@@ -751,6 +751,39 @@ describe("transfer and move routes park the fiber for P1④", () => {
     expect(s.sw.switches["arrived"]).toBe(true);
   });
 
+  test("transfer preserves explicit seamless opening provenance without changing legacy request shape", () => {
+    const marked = createWorld(map([event("gate", 10, 9, [{
+      op: "transfer",
+      map: "other",
+      x: 0,
+      y: 4,
+      handoff: { mode: "seamless-v1", portalId: "west:east:4" },
+    }], "playerTouch")]));
+    const markedState = stepInterp(
+      marked,
+      createInterpState(),
+      input({ playerCell: { x: 10, y: 9 }, prevCell: { x: 10, y: 10 } }),
+    );
+    expect(markedState.pendingTransfer).toMatchObject({
+      map: "other",
+      x: 0,
+      y: 4,
+      handoff: { mode: "seamless-v1", portalId: "west:east:4" },
+      playerTouch: true,
+    });
+
+    const legacy = createWorld(map([event("gate", 10, 9, [
+      { op: "transfer", map: "other", x: 0, y: 4 },
+    ], "playerTouch")]));
+    const legacyState = stepInterp(
+      legacy,
+      createInterpState(),
+      input({ playerCell: { x: 10, y: 9 }, prevCell: { x: 10, y: 10 } }),
+    );
+    expect(Object.prototype.hasOwnProperty.call(legacyState.pendingTransfer, "handoff")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(legacyState.pendingTransfer, "playerTouch")).toBe(false);
+  });
+
   test("a waiting moveRoute parks; a non-waiting route only publishes", () => {
     const w = createWorld(map([event("guard", 10, 9, [
       { op: "moveRoute", target: "this", wait: true, route: { repeat: false, skippable: false, steps: ["moveRight", "moveUp"] } },

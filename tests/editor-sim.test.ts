@@ -754,8 +754,10 @@ simDescribe("editor budget", () => {
     // The W3 cache driver's editor-visible types and the world-bounded
     // fixture's shared paths: measured 1,498,456 B. The interface-text merge
     // adds the bundled schema's uiText keys, BoundedLine and the bounded
-    // editor paths: the merged editor measures 1,522,089 B. Keep a narrow
-    // margin.
-    expect(js).toBeLessThan(1_525_000);
+    // editor paths: the merged editor measures 1,522,089 B. Seamless-v1's
+    // schema/editor preservation, traversal identity, transfer provenance and
+    // sparse reducer state bring it to 1,528,850 B; the editor still does not
+    // opt into the concrete world handoff resolver. Keep a narrow margin.
+    expect(js).toBeLessThan(1_532_000);
   });
 });

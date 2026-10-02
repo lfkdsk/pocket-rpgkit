@@ -120,11 +120,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Merging the interface-text branch (the uiText table, BoundedLine and the
 // bounded SaveMenu/DialogBox/demo paths) adds the kit's replaceable words
 // and the bounded-line machinery: the merged product measures 555,516,
-// 898,897 and 708,561 bytes.
+// 898,897 and 708,561 bytes. Merging seamless-v1 (traversal identity,
+// transfer provenance, sparse reducer state and the optional GameView
+// resolver seam) brings them to 561,053, 905,748 and 714,453.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 555_516;
-const EXPECTED_SUNSTONE_QOA_BYTES = 898_897;
-const EXPECTED_WAV_FIXTURE_BYTES = 708_561;
+const EXPECTED_MEADOW_BYTES = 561_053;
+const EXPECTED_SUNSTONE_QOA_BYTES = 905_748;
+const EXPECTED_WAV_FIXTURE_BYTES = 714_453;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

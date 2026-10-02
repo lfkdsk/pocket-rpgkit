@@ -762,9 +762,8 @@ checks the relational contract that JSON Schema cannot express: exact bounds,
 non-overlapping placements, connected components, touching seam geometry,
 span/offset consistency, unique references, and opening ownership.
 
-The transfer interpreter does not consume the layout yet. Rendering it is an
-explicit opt-in so ordinary `GameView` bundles do not include the connected-
-world path:
+Rendering and opening handoff are explicit opt-ins, so ordinary `GameView`
+bundles do not include the connected-world resolver:
 
 ```tsx
 import { createWorldRenderer } from "pocket-rpgkit/ui/world";
@@ -779,10 +778,39 @@ import { createWorldRenderer } from "pocket-rpgkit/ui/world";
 With streamed assets, that renderer clamps the camera to the connected
 component and draws the viewport-resident ground, upper and animated tiles of
 every visible placement. Actors, events and other dynamic map bands remain
-owned by the active map. The renderer does not itself authorize seam crossing;
-movement handoff still belongs to the simulation. The upper layer is currently
-one component-wide band above actors rather than row-interleaved outdoor
-canopies.
+owned by the active map. The upper layer is currently one component-wide band
+above actors rather than row-interleaved outdoor canopies.
+
+A project opts into opening handoff with `worldTraversal: "seamless-v1"` and
+marks an eligible player transfer with stable provenance:
+
+```json
+{
+  "op": "transfer",
+  "map": "east-field",
+  "x": 0,
+  "y": 7,
+  "dir": "right",
+  "handoff": { "mode": "seamless-v1", "portalId": "west:east:7" }
+}
+```
+
+The new path is fail-closed. It runs only for a transfer directly published by
+a `playerTouch` page when the project mode, renderer topology hash, portal id,
+source edge, mapped landing, direction, dimensions and authored source/target
+passage all agree with a `coordinate-preserving` opening. Every omitted or
+mismatched part uses the ordinary transfer, including action/common/autorun/
+parallel transfers, portal-only openings, indoor maps and story warps.
+
+An accepted handoff performs one normal tile-length crossing over eight 60 Hz
+reference ticks. The source map remains the only simulation owner during the
+crossing; at the boundary the reducer atomically rebuilds the target map using
+normal transfer entry semantics, and target pages begin on the next reference
+tick. Facing and transfer-safe screen/audio state survive, while `local.*`
+state, characters, the map interpreter and the player's forced route reset.
+The in-flight phase is reducer state for rewind but is not saveable; saved data
+keeps the existing map/local v1 shape. A headless session can opt in by passing
+`createWorldHandoffResolver(project.worldLayout)` as `SessionOptions.handoff`.
 
 When present in a sharded project, the layout is kept in the shell, so both the
 layout and its `topologyHash` are covered by `mapManifestHash` and therefore by
@@ -811,7 +839,7 @@ conversion point are documented in `src/ui/world-contract.ts`.
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
 | `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, current `bgmPlaying`, the global timer, or a registered `ext` predicate, with `else` |
-| `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }` |
+| `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }`; a direct `playerTouch` transfer may carry a `seamless-v1` opening marker when the project opts into [world-layout handoff](#world-layout-data) |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
 | `moveControl` | change a target's autonomous mode, stop it, start bounded wandering, or override speed/run/frequency/collision/facing settings |
 | `appearance` | change a player's/event's walking sprite, opacity, or visibility; optionally save a new player reset baseline |
@@ -1660,7 +1688,18 @@ write a deterministic journey driver (`examples/sunstone/journey.ts`;
 `searchWalk` in `src/engine/journey-search.ts` plans the walks on hosts
 slower than 60 Hz), freeze its 60 Hz masks as an RLE tape, and pass the
 tape to `GameView`. On a host with `data.fs`, an `attract-tape.json` at
-the app's data root replaces the built-in tape without a rebuild.
+the app's data root replaces the built-in tape without a rebuild. Tape files
+may carry `worldTraversal: "seamless-v1"`; a tape without that field is always
+interpreted on the legacy-transfer timeline. Pass both values returned by the
+loader so the input masks and their timing identity stay together:
+
+```tsx
+const attract = loadAttractTape(DEMO_TAPE_RUNS);
+<GameView
+  attractTape={attract.masks}
+  attractTapeWorldTraversal={attract.worldTraversal}
+/>
+```
 
 ### Attract rewind keyframes
 

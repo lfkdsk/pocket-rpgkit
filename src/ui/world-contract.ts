@@ -30,6 +30,7 @@ import type { Accessor, Component, JSX } from "solid-js";
 import type { NodeMirror } from "@pocketjs/framework/renderer";
 import type { SessionState } from "../engine/session.ts";
 import type { CameraState, WorldLayout } from "../engine/types.ts";
+import type { WorldHandoffResolver } from "../engine/world-handoff-contract.ts";
 import type { AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import type { StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import type { AnimatedTile, StreamedGameAssets } from "./game-assets.ts";
@@ -79,6 +80,8 @@ export interface GameViewWorldFrame {
 /** One GameView-local renderer instance created by an opt-in factory. */
 export interface GameViewWorldRuntime {
   readonly View: Component<GameViewWorldRenderProps>;
+  /** Pure opening resolver paired with this renderer's immutable layout. */
+  readonly handoff: WorldHandoffResolver;
   hasMap(mapId: string): boolean;
   frameFor(mapId: string, viewport: Readonly<GameViewWorldViewport>): GameViewWorldFrame | undefined;
   cameraFor(

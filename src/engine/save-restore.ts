@@ -258,12 +258,12 @@ export type SessionLoadResult =
 /** Snapshot a live session, or explain why this frame is not a save point.
  *  Never throws for a state the reducer produced. */
 export function saveSession(session: Session, state: SessionState, held: number): SessionSaveResult {
-  if (!canSave(state.move, state.interp, state.scene)) {
+  if (!canSave(state.move, state.interp, state.scene, state.handoff)) {
     return {
       ok: false,
       error: {
         code: "not-safe-point",
-        message: "not a save point: the player is mid-step, a message, menu or scene is open, or event work is pending",
+        message: "not a save point: the player is mid-step or handoff, a message, menu or scene is open, or event work is pending",
       },
     };
   }

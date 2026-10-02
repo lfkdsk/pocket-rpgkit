@@ -40,6 +40,7 @@ function worldModules(file: string): string[] {
     path.includes("/src/ui/world/") ||
     path.endsWith("/src/ui/WorldStreamedTerrain.tsx") ||
     path.endsWith("/src/ui/WorldAnimatedTiles.tsx") ||
+    path.endsWith("/src/engine/world-handoff.ts") ||
     path.endsWith("/src/engine/world-layout.ts")
   );
 }
@@ -70,6 +71,7 @@ describe("ui/world bundle isolation", () => {
       "WorldStreamedTerrain.tsx",
       "index.ts",
       "renderer.tsx",
+      "world-handoff.ts",
       "world-layout.ts",
     ]);
     expect(readFileSync(WORLD_JS, "utf8")).toContain("rpgkit-world-terrain");

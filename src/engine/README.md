@@ -408,9 +408,11 @@ state = stepSession(session, state, {          // once per virtual frame
 3. **characters.stepChars** — patrol / random / approach / forced motion.
 4. **interpreter.stepInterp** — fed the live NPC cells for trigger scans.
 5. **external requests** — a `transfer` swaps map/fresh-interp/characters
-   while keeping `state.sw`; `moveRoute` installs on an NPC (or the
-   player) and resumes its fiber when the route lands; `battle` derives one
-   seed from `state.sw.rng` and parks its fiber in `state.scene`.
+   while keeping `state.sw`; an eligible connected-world transfer instead
+   starts a source-owned one-tile handoff and performs that same swap
+   atomically at its boundary; `moveRoute` installs on an NPC (or the player)
+   and resumes its fiber when the route lands; `battle` derives one seed from
+   `state.sw.rng` and parks its fiber in `state.scene`.
 
 Same-tick `place` / `moveRoute` / `moveControl` order:
 
@@ -452,6 +454,14 @@ Transfer semantics:
 - `fade > 0` freezes gameplay for the fade: fade-out half, swap on the
   first fully-black frame, fade-in half (`fadeOpacity(state.fade)` is the
   overlay alpha the UI binds).
+- `worldTraversal: "seamless-v1"` plus a marked direct `playerTouch`
+  transfer may replace that instant swap with one eight-reference-tick
+  crossing, but only when the injected immutable-layout resolver proves the
+  exact coordinate-preserving opening and the base passage tables admit it.
+  The source remains the sole page/NPC/collision owner until the final tick;
+  target pages start one tick after atomic entry. Any failed proof uses the
+  legacy transfer. The in-flight state participates in attract rewind and
+  blocks saves; it is removed by `enterMap`, so v1 snapshots remain unchanged.
 - The render structure that makes a transfer cheap is one ground and one
   upper `Image` per **current** map plus per-map NPC containers: a swap is
   an `Image` src change and a container `display` toggle — O(maps), not the

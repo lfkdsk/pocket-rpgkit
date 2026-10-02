@@ -8,6 +8,7 @@ import { clampCamera, followCamera } from "../../engine/camera.ts";
 import { cameraFocusAt, screenShakeOffset } from "../../engine/screen.ts";
 import { TILE } from "../../engine/tiles.ts";
 import type { CameraState, WorldComponent, WorldPlacement } from "../../engine/types.ts";
+import { createWorldHandoffResolver } from "../../engine/world-handoff.ts";
 import {
   createVisibleWorldMapsReader,
   type VisibleWorldMapsReader,
@@ -148,6 +149,7 @@ function createRuntime(host: GameViewWorldFactoryHost): GameViewWorldRuntime {
 
   return {
     View: WorldView,
+    handoff: createWorldHandoffResolver(host.layout),
     hasMap: (mapId) => index.has(mapId),
     frameFor(mapId, viewport) {
       const binding = bindingFor(mapId);

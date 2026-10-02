@@ -1,6 +1,7 @@
 // Separate opt-in entry. Deliberately not re-exported as runtime values from
 // ../index.ts, so ordinary GameView bundles cannot reach connected-world code.
 export { createWorldRenderer } from "./renderer.tsx";
+export { createWorldHandoffResolver } from "../../engine/world-handoff.ts";
 export {
   WorldStreamedTerrain,
   type WorldStreamedTerrainBand,

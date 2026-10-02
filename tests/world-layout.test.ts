@@ -192,6 +192,36 @@ describe("WorldLayout coordinate contract", () => {
     )).toBeTrue();
   });
 
+  test("seamless traversal and transfer provenance are explicit optional contract fields", () => {
+    const enabled = project();
+    enabled.worldTraversal = "seamless-v1";
+    enabled.maps[0]!.events = [{
+      id: "safe-opening",
+      x: 1,
+      y: 1,
+      pages: [{
+        trigger: "playerTouch",
+        commands: [{
+          op: "transfer",
+          map: "east",
+          x: 0,
+          y: 2,
+          handoff: { mode: "seamless-v1", portalId: "west:east:safe" },
+        }],
+      }],
+    }];
+    expect(validateSchema(schema, enabled)).toEqual([]);
+
+    const missingPortal = structuredClone(enabled) as unknown as Record<string, unknown>;
+    const transfer = ((missingPortal.maps as Project["maps"])[0]!.events![0]!.pages[0]!.commands[0] as unknown) as Record<string, unknown>;
+    transfer.handoff = { mode: "seamless-v1" };
+    expect(validateSchema(schema, missingPortal).length).toBeGreaterThan(0);
+
+    const legacy = project();
+    expect(legacy.worldTraversal).toBeUndefined();
+    expect(validateSchema(schema, legacy)).toEqual([]);
+  });
+
   test("semantic validation rejects drifted bounds, overlap and opening mappings", () => {
     const driftedBounds = structuredClone(LAYOUT);
     driftedBounds.components[0]!.bounds.minTileX++;
