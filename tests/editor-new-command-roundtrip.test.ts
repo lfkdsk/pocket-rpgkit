@@ -27,8 +27,22 @@ const NEWER_COMMAND_CASES: readonly {
   { op: "screenFlash", edits: [["intensity", "128"], ["duration", "0.1"]] },
   { op: "screenShake", edits: [["strength", "4"], ["speed", "2.5"], ["duration", "0.1"]] },
   { op: "camera", edits: [["target", "tile:2,2"], ["duration", "0.1"]] },
+  { op: "scrollMap", edits: [["direction", "right"], ["distance", "2.5"], ["speed", "5"]] },
   { op: "balloon", edits: [["target", "player"], ["icon", "spark"], ["duration", "0.1"], ["wait", "true"]] },
   { op: "screenBackdrop", edits: [["layer", "cutscene"], ["variant", "dusk"]] },
+  { op: "showPicture", edits: [["id", "2"], ["layer", "pictures"], ["variant", "portrait"], ["x", "$picture-x"], ["scaleX", "-100"], ["opacity", "128.5"]] },
+  { op: "movePicture", edits: [["id", "2"], ["x", "12.5"], ["y", "$picture-y"], ["duration", "0.1"], ["easing", "easeOut"]] },
+  { op: "rotatePicture", edits: [["id", "2"], ["speed", "-1.5"]] },
+  { op: "tintPicture", edits: [["id", "2"], ["tone.r", "-64"], ["tone.gray", "32"], ["duration", "0.1"]] },
+  { op: "erasePicture", edits: [["id", "2"]] },
+  { op: "timer", edits: [["seconds", "12.5"]] },
+  { op: "inputNumber", edits: [["variable", "answer"], ["digits", "4"]] },
+  { op: "openMenu", edits: [] },
+  { op: "openSave", edits: [] },
+  { op: "gameOver", edits: [] },
+  { op: "returnTitle", edits: [] },
+  { op: "changeName", edits: [["name", "Terra"]] },
+  { op: "mapNameDisplay", edits: [["visible", "false"]] },
   { op: "mapAnim", edits: [["id", "spark-1"], ["anim", "spark"], ["placement", "target"], ["target", "player"], ["follow", "false"], ["layer", "below"]] },
   { op: "stopAnim", edits: [["selector", "anim"], ["anim", "spark"]] },
   { op: "shop", edits: [["id", "field-shop"], ["goods", '[{"item":"potion","price":7}]'], ["sellList", "hide"]] },
@@ -106,7 +120,9 @@ describe("newer editor commands roundtrip through the runtime", () => {
   test("the coverage table names each formerly read-only command exactly once", () => {
     expect(NEWER_COMMAND_CASES.map(({ op }) => op)).toEqual([
       "moveControl", "appearance", "layer", "tileProperty",
-      "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon", "screenBackdrop",
+      "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "scrollMap", "balloon", "screenBackdrop",
+      "showPicture", "movePicture", "rotatePicture", "tintPicture", "erasePicture", "timer", "inputNumber",
+      "openMenu", "openSave", "gameOver", "returnTitle", "changeName", "mapNameDisplay",
       "mapAnim", "stopAnim", "shop", "battle", "ext", "extChoice",
       "playBgm", "fadeoutBgm", "stopBgm", "pauseBgm", "resumeBgm",
       "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm",
@@ -123,7 +139,12 @@ describe("newer editor commands roundtrip through the runtime", () => {
 
       const command = loaded.project.maps[0]!.events![0]!.pages[0]!.commands[0]!;
       expect(command).toEqual(authored);
-      expect<string | undefined>(compile([command])[0]?.op).toBe(entry.op);
+      const compiledOp = entry.op === "inputNumber"
+        ? "scene"
+        : ["openMenu", "openSave", "gameOver", "returnTitle"].includes(entry.op)
+          ? "hostAction"
+          : entry.op;
+      expect<string | undefined>(compile([command])[0]?.op).toBe(compiledOp);
 
       let started = false;
       let extensionCalls = 0;
@@ -153,7 +174,10 @@ describe("newer editor commands roundtrip through the runtime", () => {
           },
         },
       );
-      const state = stepInterp(world, createInterpState(), INPUT);
+      const initialState = createInterpState();
+      initialState.sw.variables["picture-x"] = 3;
+      initialState.sw.variables["picture-y"] = 4;
+      const state = stepInterp(world, initialState, INPUT);
       expect(started, entry.op).toBe(true);
       expect(state.error, entry.op).toBeUndefined();
       expect(state.frame, entry.op).toBe(1);
@@ -161,6 +185,14 @@ describe("newer editor commands roundtrip through the runtime", () => {
       if (entry.op === "extChoice") expect(state.modal?.kind).toBe("choices");
       if (entry.op === "shop") expect(state.modal?.kind).toBe("shop");
       if (entry.op === "battle") expect(state.pendingBattles).toHaveLength(1);
+      if (entry.op === "inputNumber") expect(state.pendingScenes?.[0]?.id).toBe("rpgkit.numberInput");
+      if (entry.op === "timer") expect(state.sw.timer?.running).toBe(true);
+      if (entry.op === "openMenu") expect(state.hostActions).toEqual(["menu"]);
+      if (entry.op === "openSave") expect(state.hostActions).toEqual(["save"]);
+      if (entry.op === "gameOver") expect(state.hostActions).toEqual(["gameOver"]);
+      if (entry.op === "returnTitle") expect(state.hostActions).toEqual(["title"]);
+      if (entry.op === "changeName") expect(state.sw.playerName).toBe("Terra");
+      if (entry.op === "mapNameDisplay") expect(state.sw.mapNameDisplay).toBeUndefined();
     });
   }
 });

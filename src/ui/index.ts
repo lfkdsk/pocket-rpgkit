@@ -35,6 +35,10 @@ export {
   type ScreenEffectsLayerProps,
 } from "./ScreenEffectsLayer.tsx";
 export {
+  dispatchGameViewHostActions,
+  type GameViewHostCallbacks,
+} from "./game-host-actions.ts";
+export {
   GameView,
   type ActorRenderStats,
   type ActorPoolStats,
@@ -42,6 +46,9 @@ export {
   type BattleSceneViewProps,
   type GameEffectsComponent,
   type GameEffectsProps,
+  type GameScreenPresentation,
+  type GameScreenPresentationComponent,
+  type GameScreenPresentationProps,
   type GameViewProps,
   type SceneComponent,
 } from "./GameView.tsx";
@@ -62,6 +69,7 @@ export type {
   GameViewSessionHost,
 } from "./demo-contract.ts";
 export { NameInputScene, type NameInputSceneProps } from "./name-input/NameInputScene.tsx";
+export { NumberInputScene, type NumberInputSceneProps } from "./number-input/NumberInputScene.tsx";
 export type {
   AnimatedTile,
   CharacterFrames,

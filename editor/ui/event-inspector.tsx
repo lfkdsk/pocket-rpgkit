@@ -57,8 +57,15 @@ const SCREEN_COMMAND_LABELS: Readonly<Record<string, string>> = Object.freeze({
   screenFlash: "screen flash",
   screenShake: "screen shake",
   camera: "camera",
+  scrollMap: "scroll map",
   balloon: "balloon",
   screenBackdrop: "screen backdrop",
+  showPicture: "show picture",
+  movePicture: "move picture",
+  rotatePicture: "rotate picture",
+  tintPicture: "tint picture",
+  erasePicture: "erase picture",
+  mapNameDisplay: "map name display",
 });
 
 function commandLabel(row: InspectorCommandRow): string {
@@ -194,6 +201,7 @@ function conditionSummary(condition: Condition): string {
       const target = condition.id === undefined ? "Any BGM" : `BGM ${condition.id}`;
       return `${target} is ${condition.negate ? "not " : ""}playing`;
     }
+    case "timer": return `timer ${condition.op} ${condition.seconds}s`;
     case "ext": return condition.call;
     case "appearance": return `appearance ${condition.sprite ?? "default"}`;
     case "tileProperty": return `tile (${condition.x}, ${condition.y})`;

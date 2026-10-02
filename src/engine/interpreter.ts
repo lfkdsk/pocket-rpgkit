@@ -56,12 +56,17 @@ import {
   balloonTargetKey,
   cameraFocusAt,
   cloneScreenEffects,
+  erasePicture,
+  movePicture,
+  rotatePicture,
   screenEffectsEmpty,
+  showPicture,
   startCameraEffect,
   startScreenFade,
   startScreenFlash,
   startScreenShake,
   startScreenTint,
+  tintPicture,
   OPAQUE_BLACK,
   type ScreenEffectsState,
 } from "./screen.ts";
@@ -83,6 +88,10 @@ import type {
   MoveRoute,
   Page,
   PageCondition,
+  PictureBlendMode,
+  PictureCoordinate,
+  PictureOrigin,
+  PictureTone,
   RouteTarget,
   ScreenColor,
   ShopGood,
@@ -95,6 +104,29 @@ import type {
 } from "./types.ts";
 
 export const TICK_HZ = 60;
+
+export type HostAction = "menu" | "save" | "gameOver" | "title";
+
+export interface TimerState {
+  /** Fixed 60 Hz reference ticks remaining. */
+  remaining: number;
+  /** Kept true at zero until an explicit stop, matching Game_Timer. */
+  running: true;
+  expired: boolean;
+}
+
+export function timerSeconds(timer: Readonly<TimerState> | undefined): number {
+  return timer?.running ? Math.max(0, Math.floor(timer.remaining / TICK_HZ)) : 0;
+}
+
+/** Advance the global timer once. The state is replaced rather than edited
+ * in place because switch banks may be shared by immutable folds. */
+export function advanceTimer(sw: SwitchState): void {
+  const timer = sw.timer;
+  if (!timer || timer.remaining <= 0) return;
+  const remaining = timer.remaining - 1;
+  sw.timer = { remaining, running: true, expired: remaining === 0 };
+}
 
 /** Maximum number of interpreter steps shared by every fiber in one
  *  stepInterp call. Forward-only local bytecode can still exceed a frame's
@@ -123,6 +155,12 @@ export const MAX_FIBER_STACK_DEPTH = 100;
 
 export function secondsToFrames(seconds: number, hz = TICK_HZ): number {
   return Math.max(0, Math.round(seconds * hz));
+}
+
+/** RPG Maker scrolls 2^speed / 256 tiles per 60 Hz frame. */
+export function scrollMapFrames(distance: number, speed: number, hz = TICK_HZ): number {
+  const at60 = Math.max(0, distance) * 256 / (2 ** speed);
+  return Math.max(0, Math.round(at60 * hz / TICK_HZ));
 }
 
 /** Characters revealed by frame `frame` (frames since revealStart) for a
@@ -208,6 +246,12 @@ export interface SwitchState {
   /** The player's name, substituted for the {name} text token. Part of the
    *  save snapshot; a fresh session seeds it from Project.playerName. */
   playerName: string;
+  /** Global countdown. Omitted while stopped so games that never use the
+   * timer keep their prior reducer/save shape. */
+  timer?: TimerState;
+  /** Automatic map-name banner flag. Omitted/false keeps legacy projects
+   * pixel-identical; importers opt in explicitly. */
+  mapNameDisplay?: boolean;
   /** Project-wide player walking appearance. Absent is the baked player
    *  art at full opacity. `defaultSprite` is the reset baseline while
    *  `sprite` is the current MV-style Change Image override. */
@@ -234,6 +278,14 @@ export function createSwitchState(init?: Partial<SwitchState>): SwitchState {
     rng: init?.rng ?? 0x12345678,
   };
   if (init?.playerAppearance) state.playerAppearance = { ...init.playerAppearance };
+  if (init?.timer?.running) {
+    state.timer = {
+      remaining: Math.max(0, Math.floor(init.timer.remaining)),
+      running: true,
+      expired: init.timer.expired === true || init.timer.remaining <= 0,
+    };
+  }
+  if (init?.mapNameDisplay === true) state.mapNameDisplay = true;
   return state;
 }
 
@@ -380,6 +432,11 @@ export function evalCondition(
       const playing = bgm !== undefined && bgm.paused !== true && context?.audio?.me === undefined &&
         (c.id === undefined || bgm.id === c.id);
       return c.negate === true ? !playing : playing;
+    }
+    case "timer": {
+      if (!s.timer?.running) return false;
+      const seconds = timerSeconds(s.timer);
+      return c.op === ">=" ? seconds >= c.seconds : seconds <= c.seconds;
     }
     case "ext": {
       // Map acquisition validates registration. Missing handlers and
@@ -615,6 +672,7 @@ export type Instr =
   | { op: "screenFlash"; color: ScreenColor; intensity: number; frames: number; wait: boolean }
   | { op: "screenShake"; strength: number; speed: number; frames: number; wait: boolean }
   | { op: "camera"; target: CameraTarget; frames: number; wait: boolean }
+  | { op: "scrollMap"; direction: Dir; distance: number; frames: number; wait: boolean }
   | {
       op: "balloon";
       target: RouteTarget;
@@ -623,6 +681,42 @@ export type Instr =
       wait: boolean;
     }
   | { op: "screenBackdrop"; layer: string; variant: string | null }
+  | {
+      op: "showPicture";
+      id: number;
+      layer: string;
+      variant: string;
+      origin: PictureOrigin;
+      x: PictureCoordinate;
+      y: PictureCoordinate;
+      scaleX: number;
+      scaleY: number;
+      opacity: number;
+      blend: PictureBlendMode;
+    }
+  | {
+      op: "movePicture";
+      id: number;
+      origin: PictureOrigin | null;
+      x: PictureCoordinate;
+      y: PictureCoordinate;
+      scaleX: number;
+      scaleY: number;
+      opacity: number;
+      blend: PictureBlendMode | null;
+      frames: number;
+      wait: boolean;
+      easing: "linear" | "easeIn" | "easeOut" | "easeInOut";
+    }
+  | { op: "rotatePicture"; id: number; speed: number }
+  | { op: "tintPicture"; id: number; tone: PictureTone; frames: number; wait: boolean }
+  | { op: "erasePicture"; id: number }
+  | { op: "timer"; action: "start"; frames: number }
+  | { op: "timer"; action: "stop" }
+  | { op: "timer"; action: "read"; variable: string }
+  | { op: "hostAction"; action: HostAction }
+  | { op: "changeName"; name: string }
+  | { op: "mapNameDisplay"; visible: boolean }
   | { op: "common"; id: string }
   | { op: "shop"; id: string; goods: readonly ShopGood[]; sell: boolean; sellList: "disable" | "hide" }
   | {
@@ -930,6 +1024,15 @@ function compileScoped(
             wait: c.wait ?? false,
           });
           break;
+        case "scrollMap":
+          emit({
+            op: "scrollMap",
+            direction: c.direction,
+            distance: c.distance,
+            frames: scrollMapFrames(c.distance, c.speed, hz),
+            wait: c.wait ?? false,
+          });
+          break;
         case "balloon":
           emit({
             op: "balloon",
@@ -941,6 +1044,88 @@ function compileScoped(
           break;
         case "screenBackdrop":
           emit({ op: "screenBackdrop", layer: c.layer, variant: c.variant ?? null });
+          break;
+        case "showPicture":
+          emit({
+            op: "showPicture",
+            id: c.id,
+            layer: c.layer,
+            variant: c.variant,
+            origin: c.origin ?? "topLeft",
+            x: typeof c.x === "object" ? { ...c.x } : c.x,
+            y: typeof c.y === "object" ? { ...c.y } : c.y,
+            scaleX: c.scaleX ?? 100,
+            scaleY: c.scaleY ?? 100,
+            opacity: c.opacity ?? 255,
+            blend: c.blend ?? "normal",
+          });
+          break;
+        case "movePicture":
+          emit({
+            op: "movePicture",
+            id: c.id,
+            origin: c.origin ?? null,
+            x: typeof c.x === "object" ? { ...c.x } : c.x,
+            y: typeof c.y === "object" ? { ...c.y } : c.y,
+            scaleX: c.scaleX,
+            scaleY: c.scaleY,
+            opacity: c.opacity,
+            blend: c.blend ?? null,
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+            easing: c.easing ?? "linear",
+          });
+          break;
+        case "rotatePicture":
+          emit({ op: "rotatePicture", id: c.id, speed: c.speed });
+          break;
+        case "tintPicture":
+          emit({
+            op: "tintPicture",
+            id: c.id,
+            tone: { ...c.tone },
+            frames: secondsToFrames(c.duration, hz),
+            wait: c.wait ?? false,
+          });
+          break;
+        case "erasePicture":
+          emit({ op: "erasePicture", id: c.id });
+          break;
+        case "timer":
+          if (c.action === "start") {
+            emit({ op: "timer", action: "start", frames: secondsToFrames(c.seconds, hz) });
+          } else if (c.action === "read") {
+            emit({ op: "timer", action: "read", variable: c.variable });
+          } else {
+            emit({ op: "timer", action: "stop" });
+          }
+          break;
+        case "inputNumber":
+          emit({
+            op: "scene",
+            id: "rpgkit.numberInput",
+            args: { variable: c.variable, digits: c.digits },
+            onDone: null,
+            onCancel: null,
+          });
+          break;
+        case "openMenu":
+          emit({ op: "hostAction", action: "menu" });
+          break;
+        case "openSave":
+          emit({ op: "hostAction", action: "save" });
+          break;
+        case "gameOver":
+          emit({ op: "hostAction", action: "gameOver" });
+          break;
+        case "returnTitle":
+          emit({ op: "hostAction", action: "title" });
+          break;
+        case "changeName":
+          emit({ op: "changeName", name: c.name });
+          break;
+        case "mapNameDisplay":
+          emit({ op: "mapNameDisplay", visible: c.visible });
           break;
         case "common":
           emit({ op: "common", id: c.id });
@@ -1592,6 +1777,9 @@ export interface InterpState {
   screen?: ScreenEffectsState;
   /** Sound cues emitted on this frame; the host drains them after step. */
   cues: SoundCue[];
+  /** One host-frame's ordered menu/title lifecycle requests. Session folds
+   * reference ticks into this sparse list; snapshots always drain it. */
+  hostActions?: HostAction[];
   /** Persistent, host-independent playback intent. Allocated only after an
    * audio command executes and carried across maps, saves and rewinds. */
   audio?: AudioState;
@@ -1974,6 +2162,8 @@ export function cloneInterp(s0: InterpState): InterpState {
   // Conditional assignment (not a conditional spread) so a project without
   // playerAppearance allocates no empty-object literal on the clone path.
   if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
+  if (s0.sw.timer) sw.timer = { ...s0.sw.timer };
+  if (s0.sw.mapNameDisplay === true) sw.mapNameDisplay = true;
   return copyInterp(s0, sw, false, false);
 }
 
@@ -1995,6 +2185,8 @@ export function shareInterp(s0: InterpState, immutable = false): InterpState {
   // working copy allocates no empty-object literal when playerAppearance
   // is absent.
   if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
+  if (s0.sw.timer) sw.timer = { ...s0.sw.timer };
+  if (s0.sw.mapNameDisplay === true) sw.mapNameDisplay = true;
   SHARED_RECORDS.set(sw, new Set<SwitchRecord>(["switches", "self", "items", "variables", "shopStock"]));
   if (immutable) trackStateMetadata(SHARED_RECORDS, sw);
   return copyInterp(s0, sw, true, immutable);
@@ -2087,6 +2279,7 @@ function copyInterp(
     } : {}),
     ...(s0.screen ? { screen: cloneScreenEffects(s0.screen) } : {}),
     cues: s0.cues.map((cue) => ({ ...cue })),
+    ...(s0.hostActions && s0.hostActions.length > 0 ? { hostActions: [...s0.hostActions] } : {}),
     pendingTransfer: s0.pendingTransfer ? { ...s0.pendingTransfer } : null,
     pendingMoveRoutes: s0.pendingMoveRoutes.map((r) => "control" in r
       ? { ...r, control: deepClone(r.control) as MoveControl }
@@ -2694,6 +2887,7 @@ function guardMask(c: Condition, runtime: ExtensionRuntime): number {
     case "appearance":
     case "tileProperty":
     case "bgmPlaying":
+    case "timer":
       return -1;
   }
 }
@@ -2757,6 +2951,7 @@ interface IdleScanMemo {
   ext: JsonValue;
   gold: number;
   playerName: string;
+  timer: number | undefined;
   locked: boolean;
   idle: boolean;
   x: number;
@@ -2799,6 +2994,7 @@ function sameIdleScan(
   ext: JsonValue,
 ): boolean {
   return memo.ext === ext && Object.is(memo.gold, s.sw.gold) && memo.playerName === s.sw.playerName &&
+    memo.timer === (s.sw.timer === undefined ? undefined : timerSeconds(s.sw.timer)) &&
     memo.locked === s.inputLocked &&
     memo.main === s.main?.key && memo.mainPage === s.main?.pageIndex &&
     memo.modal === s.modal?.fiber && memo.modalKind === s.modal?.kind &&
@@ -2835,6 +3031,7 @@ function idleScanSnapshot(
     ext,
     gold: s.sw.gold,
     playerName: s.sw.playerName,
+    timer: s.sw.timer === undefined ? undefined : timerSeconds(s.sw.timer),
     locked: s.inputLocked,
     idle: isWorldIdle(s, input.worldIdleBlockers),
     x: input.playerCell.x,
@@ -3531,6 +3728,23 @@ function variableRef(value: unknown): value is VariableRef {
     typeof (value as VariableRef).variable === "string";
 }
 
+function resolvePictureCoordinate(
+  s: InterpState,
+  value: PictureCoordinate,
+  fiber: string,
+  field: "x" | "y",
+): number | null {
+  const resolved = variableRef(value) ? s.sw.variables[value.variable] : value;
+  if (typeof resolved !== "number" || !Number.isFinite(resolved)) {
+    s.error = {
+      kind: "content",
+      message: `picture in ${fiber}: ${field} variable must hold a finite number`,
+    };
+    return null;
+  }
+  return resolved;
+}
+
 function resolveTransfer(
   s: InterpState,
   ins: Extract<Instr, { op: "transfer" }>,
@@ -3747,7 +3961,8 @@ function liveTargetCell(
 }
 
 type TimedScreenInstr = Extract<Instr, {
-  op: "screenFade" | "screenTint" | "screenFlash" | "screenShake" | "camera" | "balloon";
+  op: "screenFade" | "screenTint" | "screenFlash" | "screenShake" | "camera" |
+    "scrollMap" | "movePicture" | "tintPicture" | "balloon";
 }>;
 
 function screenInstructionFrames(ins: TimedScreenInstr): number {
@@ -4251,6 +4466,30 @@ function runFiber(
         top.pc++;
         break;
       }
+      case "scrollMap": {
+        // RPG Maker treats a zero-distance scroll as an immediate no-op. In
+        // particular, do not replace live player follow with a fixed camera.
+        if (ins.distance === 0) {
+          top.pc++;
+          break;
+        }
+        const player = {
+          x: input.playerCell.x * TILE + TILE / 2,
+          y: input.playerCell.y * TILE + TILE / 2,
+        };
+        const current = cameraFocusAt(s.screen?.camera, player);
+        const delta = ins.distance * TILE;
+        const destination = {
+          x: current.x + (ins.direction === "left" ? -delta : ins.direction === "right" ? delta : 0),
+          y: current.y + (ins.direction === "up" ? -delta : ins.direction === "down" ? delta : 0),
+        };
+        const screen = ensureScreen(s);
+        startCameraEffect(screen, "fixed", current, destination, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
       case "balloon": {
         const resolved = liveTargetCell(s, f, input, ins.target, "balloon");
         if (!resolved) return;
@@ -4303,6 +4542,101 @@ function runFiber(
         top.pc++;
         break;
       }
+      case "showPicture": {
+        const x = resolvePictureCoordinate(s, ins.x, f.key, "x");
+        const y = resolvePictureCoordinate(s, ins.y, f.key, "y");
+        if (x === null || y === null) return;
+        showPicture(ensureScreen(s), {
+          id: ins.id,
+          layer: ins.layer,
+          variant: ins.variant,
+          origin: ins.origin,
+          blend: ins.blend,
+          x,
+          y,
+          scaleX: ins.scaleX,
+          scaleY: ins.scaleY,
+          opacity: ins.opacity,
+        });
+        top.pc++;
+        break;
+      }
+      case "movePicture": {
+        const x = resolvePictureCoordinate(s, ins.x, f.key, "x");
+        const y = resolvePictureCoordinate(s, ins.y, f.key, "y");
+        if (x === null || y === null) return;
+        const screen = ensureScreen(s);
+        movePicture(
+          screen,
+          ins.id,
+          { x, y, scaleX: ins.scaleX, scaleY: ins.scaleY, opacity: ins.opacity },
+          ins.frames,
+          ins.origin ?? undefined,
+          ins.blend ?? undefined,
+          ins.easing,
+        );
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "rotatePicture": {
+        const screen = ensureScreen(s);
+        rotatePicture(screen, ins.id, ins.speed);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        top.pc++;
+        break;
+      }
+      case "tintPicture": {
+        const screen = ensureScreen(s);
+        tintPicture(screen, ins.id, ins.tone, ins.frames);
+        if (screenEffectsEmpty(screen)) delete s.screen;
+        if (finishOrWaitScreen(s, f, ins)) return;
+        top.pc++;
+        break;
+      }
+      case "erasePicture": {
+        if (s.screen) {
+          erasePicture(s.screen, ins.id);
+          if (screenEffectsEmpty(s.screen)) delete s.screen;
+        }
+        top.pc++;
+        break;
+      }
+      case "timer": {
+        if (ins.action === "start") {
+          s.sw.timer = { remaining: ins.frames, running: true, expired: ins.frames === 0 };
+        } else if (ins.action === "stop") {
+          delete s.sw.timer;
+        } else {
+          writeVariable(s.sw, ins.variable, timerSeconds(s.sw.timer));
+        }
+        top.pc++;
+        break;
+      }
+      case "hostAction":
+        (s.hostActions ??= []).push(ins.action);
+        top.pc++;
+        break;
+      case "changeName":
+        if (ins.name.length < 1 || ins.name.length > 24) {
+          s.error = { kind: "content", message: `changeName in ${f.key}: name must contain 1..24 characters` };
+          return;
+        }
+        s.sw.playerName = ins.name;
+        top.pc++;
+        break;
+      case "mapNameDisplay":
+        if (ins.visible) s.sw.mapNameDisplay = true;
+        else {
+          delete s.sw.mapNameDisplay;
+          if (s.screen?.mapNameBanner) {
+            delete s.screen.mapNameBanner;
+            if (screenEffectsEmpty(s.screen)) delete s.screen;
+          }
+        }
+        top.pc++;
+        break;
       case "place": {
         const p = { x: ins.x, y: ins.y, dir: ins.dir };
         const order = s.pendingMoveRoutes.length > 0 ? { afterRoutes: s.pendingMoveRoutes.length } : undefined;
@@ -4614,10 +4948,12 @@ export function stepInterpWithExtensionsInPlace(
   if (s.error) {
     s.frame++;
     s.cues = [];
+    delete s.hostActions;
     return extension.ext;
   }
   s.frame++;
   s.cues = [];
+  delete s.hostActions;
   // Transfer/route/place requests live only on the step that issued them:
   // P1④ reads them off that step, performs the work, then resumes the fiber.
   // Battle requests are different: they remain FIFO-queued until the scene

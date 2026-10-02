@@ -103,10 +103,10 @@ const PAGE_OWNER: Owner = {
   eventIds: new Map([[1, "ev001"], [2, "ev002"]]),
 };
 
-function makeCtx(opts: { placeholders?: "visible" | "silent"; owner?: Owner; balloon?: boolean } = {}): EventContext {
+function makeCtx(opts: { placeholders?: "visible" | "silent"; owner?: Owner; balloon?: boolean; flavor?: "MV" | "MZ" } = {}): EventContext {
   let shop = 0;
   return {
-    rm: RM,
+    rm: opts.flavor ? { ...RM, flavor: opts.flavor } : RM,
     cov: new Coverage(),
     placeholders: opts.placeholders ?? "visible",
     maps: MAPS,
@@ -487,7 +487,8 @@ describe("conditional branch", () => {
       { op: "if", if: { kind: "variable", id: tmp, op: ">=", value: 1 }, then: [THEN], else: [ELSE] },
     ], "variable", "Native"],
     ["self switch", [2, "B", 0], [{ op: "if", if: { kind: "selfSwitch", key: "B" }, then: [THEN], else: [ELSE] }], "selfSwitch", "Native"],
-    ["timer", [3, 60, 0], [ELSE], "timer", "Degraded"],
+    ["timer >=", [3, 60, 0], [{ op: "if", if: { kind: "timer", op: ">=", seconds: 60 }, then: [THEN], else: [ELSE] }], "timer", "Native"],
+    ["timer <=", [3, 30, 1], [{ op: "if", if: { kind: "timer", op: "<=", seconds: 30 }, then: [THEN], else: [ELSE] }], "timer", "Native"],
     ["actor in party", [4, 2, 0], [{ op: "if", if: { kind: "switch", id: "party-actor002" }, then: [THEN], else: [ELSE] }], "actor", "Native"],
     ["actor name", [4, 2, 1, "Bob"], [ELSE], "actor", "Degraded"],
     ["enemy", [5, 0, 0], [ELSE], "enemy", "Degraded"],
@@ -602,6 +603,15 @@ describe("control variables", () => {
     }
   });
 
+  test("timer game data reads into scratch before applying the operation", () => {
+    const { cmds, cov } = conv([C(122, 0, [4, 4, 1, 3, 7, 5, 0])]);
+    expect(cmds).toEqual([
+      { op: "timer", action: "read", variable: "rmi-tmp1" },
+      { op: "variable", id: "v004", set: { op: "add", from: "rmi-tmp1" } },
+    ]);
+    expect(only(cov, 122)).toBe("Native");
+  });
+
   test("unsupported game data is dropped; script is a placeholder", () => {
     let r = conv([C(122, 0, [4, 4, 0, 3, 5, -1, 0])]);
     expect(r.cmds).toEqual([]);
@@ -613,6 +623,21 @@ describe("control variables", () => {
 });
 
 describe("switches, self switches, party", () => {
+  test("number input clamps digits and timer commands retain their parameters", () => {
+    const { cmds, cov } = conv([
+      C(103, 0, [7, 12]), C(103, 0, [8, 0]),
+      C(124, 0, [0, 90]), C(124, 0, [1, 0]),
+    ]);
+    expect(cmds).toEqual([
+      { op: "inputNumber", variable: "v007", digits: 8 },
+      { op: "inputNumber", variable: "v008", digits: 1 },
+      { op: "timer", action: "start", seconds: 90 },
+      { op: "timer", action: "stop" },
+    ]);
+    expect(counts(cov, "command", "103")).toMatchObject({ Native: 2 });
+    expect(counts(cov, "command", "124")).toMatchObject({ Native: 2 });
+  });
+
   test("switch range and party member", () => {
     const r = conv([C(121, 0, [1, 2, 1]), C(129, 0, [3, 0, false]), C(129, 0, [3, 1, false])]);
     expect(r.cmds).toEqual([
@@ -691,6 +716,12 @@ describe("transfer", () => {
       }]);
     }
     expect(transfersFor(cmds, { v010: 5 })).toEqual([]);
+  });
+
+  test("scroll map retains direction, distance, speed and wait", () => {
+    const { cmds, cov } = conv([C(204, 0, [8, 6, 5, true])]);
+    expect(cmds).toEqual([{ op: "scrollMap", direction: "up", distance: 6, speed: 5, wait: true }]);
+    expect(only(cov, 204)).toBe("Native");
   });
 });
 
@@ -801,15 +832,44 @@ describe("screen and audio", () => {
     expect(only(tint.cov, 223)).toBe("Degraded");
   });
 
-  test("pictures", () => {
-    let r = conv([C(231, 0, [1, "Title", 0, 0, 0, 0, 100, 100, 255, 0]), C(235, 0, [1])]);
-    expect(r.cmds).toEqual([
-      { op: "screenBackdrop", layer: "picture", variant: "pic-title" },
-      { op: "screenBackdrop", layer: "picture", variant: null },
+  test("numbered pictures preserve transforms, timing and MV/MZ easing", () => {
+    let r = conv([
+      C(231, 0, [7, "Hud", 1, 1, 2, 3, 150, 75, 128, 2]),
+      C(232, 0, [7, "", 0, 0, 40, 50, 80, 90, 64, 3, 30, true]),
+      C(233, 0, [7, -10]),
+      C(234, 0, [7, [-300, 34, 999, 300], 90, false]),
+      C(235, 0, [7]),
     ]);
-    expect(only(r.cov, 231)).toBe("Native");
-    r = conv([C(231, 0, [2, "Hud", 1, 0, 40, 40, 50, 50, 255, 0])]);
-    expect(only(r.cov, 231)).toBe("Degraded");
+    expect(r.cmds).toEqual([
+      {
+        op: "showPicture", id: 7, layer: "picture", variant: "pic-hud", origin: "center",
+        x: { variable: "v002" }, y: { variable: "v003" }, scaleX: 150, scaleY: 75, opacity: 128, blend: "multiply",
+      },
+      {
+        op: "movePicture", id: 7, origin: "topLeft", x: 40, y: 50,
+        scaleX: 80, scaleY: 90, opacity: 64, blend: "screen", duration: 0.5, wait: true,
+      },
+      { op: "rotatePicture", id: 7, speed: -5 },
+      { op: "tintPicture", id: 7, tone: { r: -255, g: 34, b: 255, gray: 255 }, duration: 1.5, wait: false },
+      { op: "erasePicture", id: 7 },
+    ]);
+    for (const code of [231, 232, 233, 234, 235]) expect(only(r.cov, code)).toBe("Native");
+
+    r = conv([C(232, 0, [4, "", 1, 1, 8, 9, 125, 110, 200, 1, 120, false, 3])], { flavor: "MZ" });
+    expect(r.cmds).toEqual([{
+      op: "movePicture", id: 4, origin: "center", x: { variable: "v008" }, y: { variable: "v009" },
+      scaleX: 125, scaleY: 110, opacity: 200, blend: "add", duration: 2, wait: false, easing: "easeInOut",
+    }]);
+    expect(only(r.cov, 232)).toBe("Native");
+  });
+
+  test("map name display toggles both ways", () => {
+    const { cmds, cov } = conv([C(281, 0, [0]), C(281, 0, [1])]);
+    expect(cmds).toEqual([
+      { op: "mapNameDisplay", visible: true },
+      { op: "mapNameDisplay", visible: false },
+    ]);
+    expect(counts(cov, "command", "281")).toMatchObject({ Native: 2 });
   });
 
   test("audio", () => {
@@ -877,6 +937,41 @@ describe("battle, shop, name input", () => {
     r = conv([C(303, 0, [2, 8])]);
     expect(r.cmds).toEqual([{ op: "scene", id: "rpgkit.nameInput", args: { maxLength: 8, swallowCancel: true, variable: "actor002-name", title: "Therese" } }]);
     expect(only(r.cov, 303)).toBe("Degraded");
+  });
+
+  test("change name maps actor 1 and reports unsupported actor names", () => {
+    let r = conv([C(320, 0, [1, "Wren"])]);
+    expect(r.cmds).toEqual([{ op: "changeName", name: "Wren" }]);
+    expect(only(r.cov, 320)).toBe("Native");
+
+    r = conv([C(320, 0, [2, "Therese"])]);
+    expect(r.cmds).toEqual([]);
+    expect(only(r.cov, 320)).toBe("Degraded");
+
+    r = conv([C(320, 0, [1, "abcdefghijklmnopqrstuvwxyz"])]);
+    expect(r.cmds).toEqual([{ op: "changeName", name: "abcdefghijklmnopqrstuvwx" }]);
+    expect(only(r.cov, 320)).toBe("Degraded");
+  });
+
+  test("host actions map directly and terminal actions exit before later commands", () => {
+    let r = conv([C(351, 0), C(352, 0)]);
+    expect(r.cmds).toEqual([{ op: "openMenu" }, { op: "openSave" }]);
+    expect(only(r.cov, 351)).toBe("Native");
+    expect(only(r.cov, 352)).toBe("Native");
+
+    r = conv([C(353, 0), C(121, 0, [1, 1, 0])]);
+    expect(r.cmds).toEqual([
+      { op: "gameOver" }, { op: "exit" },
+      { op: "switch", id: "s001", value: true },
+    ]);
+    expect(only(r.cov, 353)).toBe("Native");
+
+    r = conv([C(354, 0), C(121, 0, [2, 2, 0])]);
+    expect(r.cmds).toEqual([
+      { op: "returnTitle" }, { op: "exit" },
+      { op: "switch", id: "s002", value: true },
+    ]);
+    expect(only(r.cov, 354)).toBe("Native");
   });
 
   test.each([

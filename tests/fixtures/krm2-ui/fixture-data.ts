@@ -1,0 +1,77 @@
+// KRM2 visual fixture: one long-lived map banner/timer/picture frame followed
+// by the built-in eight-digit number editor.
+
+import type { GameEvent, MapDef } from "../../../src/engine/types.ts";
+
+export const MAP_ID = "krm2-clockwork-observatory";
+export const MAP_SIZE = { width: 60, height: 36 } as const;
+
+const DIRECTOR: GameEvent = {
+  id: "director",
+  x: 1,
+  y: 1,
+  pages: [
+    {
+      trigger: "autorun",
+      commands: [
+        { op: "variable", id: "access-code", set: { op: "set", value: 12_345_678 } },
+        { op: "timer", action: "start", seconds: 7_407 },
+        {
+          op: "showPicture",
+          id: 7,
+          layer: "pictures",
+          variant: "clockwork-card",
+          origin: "center",
+          x: 120,
+          y: 170,
+          scaleX: 100,
+          scaleY: 100,
+          opacity: 255,
+          blend: "normal",
+        },
+        {
+          op: "movePicture",
+          id: 7,
+          origin: "center",
+          x: 240,
+          y: 170,
+          scaleX: 125,
+          scaleY: 85,
+          opacity: 224,
+          blend: "normal",
+          duration: 2,
+          easing: "easeInOut",
+        },
+        { op: "rotatePicture", id: 7, speed: 0.5 },
+        {
+          op: "tintPicture",
+          id: 7,
+          tone: { r: 80, g: -40, b: 16, gray: 64 },
+          duration: 2,
+        },
+        { op: "wait", seconds: 1 },
+        { op: "inputNumber", variable: "access-code", digits: 8 },
+        { op: "switch", id: "done", value: true },
+      ],
+      blocks: false,
+      sprite: null,
+    },
+    {
+      condition: { switch: "done" },
+      trigger: "action",
+      commands: [],
+      blocks: false,
+      sprite: null,
+    },
+  ],
+};
+
+export const MAP: MapDef = {
+  id: MAP_ID,
+  name: "The Observatory of Clockwork Tides and Unbroken Lanterns",
+  width: MAP_SIZE.width,
+  height: MAP_SIZE.height,
+  sheets: ["plain"],
+  ground: new Array(MAP_SIZE.width * MAP_SIZE.height).fill("plain.0"),
+  events: [DIRECTOR],
+};

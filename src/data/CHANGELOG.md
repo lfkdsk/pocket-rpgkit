@@ -39,6 +39,7 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1` | `scrollMap`; `showPicture` / `movePicture` / `rotatePicture` / `tintPicture` / `erasePicture`; `timer`; `inputNumber`; `openMenu` / `openSave` / `gameOver` / `returnTitle`; `changeName`; `mapNameDisplay`; `timer` condition; optional `system.mapNameDisplay` | additive |
 | `ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611` | `loop` / `break` commands, `eventTouch` trigger, `system.textVariables` | additive |
 | `ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2` | optional `worldLayout` with topology identity, connected components, placements, seams and per-portal opening compatibility | additive |
 | `c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06` | optional `icon` on `choices` options | additive |

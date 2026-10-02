@@ -70,8 +70,22 @@ const NEWER_COMMAND_FIELDS = [
   ["screenFlash", ["color.r", "color.g", "color.b", "color.a", "intensity", "duration", "wait"]],
   ["screenShake", ["strength", "speed", "duration", "wait"]],
   ["camera", ["target", "duration", "wait"]],
+  ["scrollMap", ["direction", "distance", "speed", "wait"]],
   ["balloon", ["target", "icon", "duration", "wait"]],
   ["screenBackdrop", ["layer", "variant"]],
+  ["showPicture", ["id", "layer", "variant", "origin", "x", "y", "scaleX", "scaleY", "opacity", "blend"]],
+  ["movePicture", ["id", "origin", "x", "y", "scaleX", "scaleY", "opacity", "blend", "duration", "wait", "easing"]],
+  ["rotatePicture", ["id", "speed"]],
+  ["tintPicture", ["id", "tone.r", "tone.g", "tone.b", "tone.gray", "duration", "wait"]],
+  ["erasePicture", ["id"]],
+  ["timer", ["action", "seconds"]],
+  ["inputNumber", ["variable", "digits"]],
+  ["openMenu", []],
+  ["openSave", []],
+  ["gameOver", []],
+  ["returnTitle", []],
+  ["changeName", ["name"]],
+  ["mapNameDisplay", ["visible"]],
   ["mapAnim", ["id", "anim", "placement", "x", "y", "follow", "layer", "loop", "wait"]],
   ["stopAnim", ["selector"]],
   ["shop", ["id", "goods", "sell", "sellList"]],
@@ -92,8 +106,8 @@ const NEWER_COMMAND_FIELDS = [
 ] as const;
 
 describe("event inspector command fields", () => {
-  test("describes every owned command, including all 28 newer operations", () => {
-    expect(NEWER_COMMAND_FIELDS).toHaveLength(28);
+  test("describes every owned command, including all 42 newer operations", () => {
+    expect(NEWER_COMMAND_FIELDS).toHaveLength(42);
     for (const [op, keys] of NEWER_COMMAND_FIELDS) {
       const command = defaultCommand(op);
       expect(commandFields(command).map((entry) => entry.key), op).toEqual([...keys]);
@@ -198,8 +212,18 @@ describe("event inspector command fields", () => {
       { op: "screenFlash", field: "intensity", raw: "128", expected: { intensity: 128 } },
       { op: "screenShake", field: "speed", raw: "2.5", expected: { speed: 2.5 } },
       { op: "camera", field: "target", raw: "tile:1,2", expected: { target: { x: 1, y: 2 } } },
+      { op: "scrollMap", field: "speed", raw: "6", expected: { speed: 6 } },
       { op: "balloon", field: "icon", raw: "spark", expected: { icon: "spark" } },
       { op: "screenBackdrop", field: "variant", raw: "night", expected: { variant: "night" } },
+      { op: "showPicture", field: "x", raw: "$picture-x", expected: { x: { variable: "picture-x" } } },
+      { op: "movePicture", field: "scaleX", raw: "-50", expected: { scaleX: -50 } },
+      { op: "rotatePicture", field: "speed", raw: "-1.5", expected: { speed: -1.5 } },
+      { op: "tintPicture", field: "tone.r", raw: "-128", expected: { tone: { r: -128 } } },
+      { op: "erasePicture", field: "id", raw: "100", expected: { id: 100 } },
+      { op: "timer", field: "action", raw: "read", expected: { action: "read", variable: "variable" } },
+      { op: "inputNumber", field: "digits", raw: "8", expected: { digits: 8 } },
+      { op: "changeName", field: "name", raw: "Terra", expected: { name: "Terra" } },
+      { op: "mapNameDisplay", field: "visible", raw: "false", expected: { visible: false } },
       { op: "mapAnim", field: "placement", raw: "target", expected: { target: "player" } },
       { op: "stopAnim", field: "selector", raw: "id", expected: { id: "animation" } },
       { op: "shop", field: "goods", raw: '[{"item":"potion","price":7}]', expected: { goods: [{ item: "potion", price: 7 }] } },
@@ -224,9 +248,22 @@ describe("event inspector command fields", () => {
     }
     edited.push(
       defaultCommand("stopBgm"), defaultCommand("pauseBgm"), defaultCommand("resumeBgm"),
-      defaultCommand("saveBgm"), defaultCommand("replayBgm"),
+      defaultCommand("saveBgm"), defaultCommand("replayBgm"), defaultCommand("openMenu"),
+      defaultCommand("openSave"), defaultCommand("gameOver"), defaultCommand("returnTitle"),
     );
     expect(validateProject(projectWith(edited))).toEqual([]);
+  });
+
+  test("timer action changes rebuild the discriminated payload and its fields", () => {
+    let timer: Command = defaultCommand("timer");
+    expect(commandFields(timer).map((entry) => entry.key)).toEqual(["action", "seconds"]);
+    timer = edit(timer, "action", "stop");
+    expect(timer).toEqual({ op: "timer", action: "stop" });
+    expect(commandFields(timer).map((entry) => entry.key)).toEqual(["action"]);
+    timer = edit(timer, "action", "read");
+    expect(timer).toEqual({ op: "timer", action: "read", variable: "variable" });
+    expect(commandFields(timer).map((entry) => entry.key)).toEqual(["action", "variable"]);
+    expect(edit(timer, "variable", "timer-left")).toEqual({ op: "timer", action: "read", variable: "timer-left" });
   });
 
   test("rejects invalid JSON, ranges, enums, and schema-breaking edits", () => {
@@ -242,8 +279,19 @@ describe("event inspector command fields", () => {
       { name: "flash intensity", command: defaultCommand("screenFlash"), field: "intensity", raw: "256" },
       { name: "shake strength", command: defaultCommand("screenShake"), field: "strength", raw: "-1" },
       { name: "camera target", command: defaultCommand("camera"), field: "target", raw: "tile:-1,2" },
+      { name: "scroll speed", command: defaultCommand("scrollMap"), field: "speed", raw: "7" },
       { name: "waited balloon invariant", command: defaultCommand("balloon"), field: "wait", raw: "true" },
       { name: "backdrop layer", command: defaultCommand("screenBackdrop"), field: "layer", raw: "" },
+      { name: "show picture id", command: defaultCommand("showPicture"), field: "id", raw: "101" },
+      { name: "show picture scale", command: defaultCommand("showPicture"), field: "scaleX", raw: "-2001" },
+      { name: "move picture opacity", command: defaultCommand("movePicture"), field: "opacity", raw: "256" },
+      { name: "move picture easing", command: defaultCommand("movePicture"), field: "easing", raw: "bounce" },
+      { name: "picture tone RGB", command: defaultCommand("tintPicture"), field: "tone.r", raw: "-256" },
+      { name: "picture tone gray", command: defaultCommand("tintPicture"), field: "tone.gray", raw: "256" },
+      { name: "timer seconds", command: defaultCommand("timer"), field: "seconds", raw: "-1" },
+      { name: "input digits", command: defaultCommand("inputNumber"), field: "digits", raw: "9" },
+      { name: "empty player name", command: defaultCommand("changeName"), field: "name", raw: "" },
+      { name: "map name display boolean", command: defaultCommand("mapNameDisplay"), field: "visible", raw: "maybe" },
       { name: "shop JSON", command: defaultCommand("shop"), field: "goods", raw: "{" },
       { name: "shop nonempty goods", command: defaultCommand("shop"), field: "goods", raw: "[]" },
       { name: "map animation coordinate", command: defaultCommand("mapAnim"), field: "x", raw: "-1" },
@@ -264,7 +312,10 @@ describe("event inspector command fields", () => {
     for (const entry of cases) {
       expect(editCommandField(entry.command, entry.field, entry.raw).ok, entry.name).toBe(false);
     }
-    for (const op of ["stopBgm", "pauseBgm", "resumeBgm", "saveBgm", "replayBgm"] as const) {
+    for (const op of [
+      "stopBgm", "pauseBgm", "resumeBgm", "saveBgm", "replayBgm",
+      "openMenu", "openSave", "gameOver", "returnTitle",
+    ] as const) {
       expect(commandFields(defaultCommand(op))).toEqual([]);
       expect(editCommandField(defaultCommand(op), "unknown", "x").ok, op).toBe(false);
     }
@@ -472,6 +523,7 @@ describe("event inspector page and condition fields", () => {
       ["appearance", ["target", "sprite"]],
       ["tileProperty", ["x", "y", "passage", "enter", "exit"]],
       ["worldIdle", ["negate"]],
+      ["timer", ["op", "seconds"]],
       ["ext", ["call", "args"]],
     ] as const;
     for (const [kind, keys] of descriptors) {
@@ -490,7 +542,8 @@ describe("event inspector page and condition fields", () => {
       [1, "target", "event:event"],
       [2, "enter", "left,up"],
       [3, "negate", "true"],
-      [4, "args", '{"chapter":2}'],
+      [4, "op", "<="],
+      [5, "args", '{"chapter":2}'],
     ] as const;
     for (const [index, fieldName, raw] of edits) {
       const result = editPageConditionField(page, { kind: "all", index }, fieldName, raw);
@@ -502,6 +555,7 @@ describe("event inspector page and condition fields", () => {
       { kind: "appearance", target: { event: "event" }, sprite: null },
       { kind: "tileProperty", x: 0, y: 0, passage: null, enter: ["left", "up"] },
       { kind: "worldIdle", negate: true },
+      { kind: "timer", op: "<=", seconds: 0 },
       { kind: "ext", call: "game.condition", args: { chapter: 2 } },
     ]);
     expect(validateProject(projectWith([], page))).toEqual([]);
@@ -523,6 +577,8 @@ describe("event inspector page and condition fields", () => {
       { name: "tile duplicate directions", condition: defaultCondition("tileProperty"), field: "exit", raw: "up,up" },
       { name: "tile required comparison", condition: defaultCondition("tileProperty"), field: "passage", raw: "(unset)" },
       { name: "world boolean", condition: defaultCondition("worldIdle"), field: "negate", raw: "maybe" },
+      { name: "timer operator", condition: defaultCondition("timer"), field: "op", raw: "==" },
+      { name: "timer seconds", condition: defaultCondition("timer"), field: "seconds", raw: "-1" },
       { name: "extension call", condition: defaultCondition("ext"), field: "call", raw: "unnamespaced" },
       { name: "extension JSON", condition: defaultCondition("ext"), field: "args", raw: "{" },
     ];
@@ -583,6 +639,7 @@ describe("event editor resource catalogs", () => {
       { op: "layer", layer: "weather", variant: "rain" },
       { op: "screenTint", layer: "overlay", color: { r: 0, g: 0, b: 0, a: 64 }, duration: 0 },
       { op: "screenBackdrop", layer: "cutscene", variant: "night" },
+      { op: "showPicture", id: 1, layer: "pictures", variant: "portrait", x: 0, y: 0 },
       { op: "mapAnim", id: "spark-instance", anim: "spark", x: 0, y: 0 },
       { op: "ext", call: "quest.run", args: null },
       { op: "extChoice", call: "party.pick", args: null, prompt: "Choose" },
@@ -610,8 +667,8 @@ describe("event editor resource catalogs", () => {
       audio: ["audio", "door", "field", "rain", "sound", "victory"],
       commonEvents: ["ce"],
       events: ["event", "guard"],
-      layers: ["cutscene", "overlay", "weather"],
-      layerVariants: { cutscene: ["night"], weather: ["rain"] },
+      layers: ["cutscene", "overlay", "pictures", "weather"],
+      layerVariants: { cutscene: ["night"], pictures: ["portrait"], weather: ["rain"] },
       animationInstances: ["spark-instance"],
       extensionCalls: ["battle.win", "common.tick", "page.ready", "party.pick", "quest.ready", "quest.run", "shop.available"],
     });
@@ -624,6 +681,7 @@ describe("event editor resource catalogs", () => {
       { command: { op: "layer", layer: "weather", variant: "rain" }, key: "layer", options: resources.layers },
       { command: { op: "layer", layer: "weather", variant: "rain" }, key: "variant", options: ["rain"] },
       { command: defaultCommand("screenTint"), key: "layer", options: resources.layers },
+      { command: { op: "showPicture", id: 1, layer: "pictures", variant: "portrait", x: 0, y: 0 }, key: "variant", options: ["portrait"] },
       { command: defaultCommand("mapAnim"), key: "anim", options: resources.animations },
       { command: { op: "stopAnim", id: "spark-instance" }, key: "id", options: resources.animationInstances },
       { command: defaultCommand("ext"), key: "call", options: resources.extensionCalls },

@@ -164,7 +164,11 @@ for (const source of RMI_SOURCES) {
   for (const [variant, rel] of Object.entries(assets.pictures)) {
     const img = await readPng(join(out, rel));
     const file = writeAsset(`${prefix}/picture-${variant}.png`, encodePNG(resample(img, PICTURE_W, PICTURE_H), PICTURE_W, PICTURE_H));
-    pictureVariants.push(`${q(variant)}: { image: ${q(file)} }`);
+    // The cooked texture is power-of-two for the host, but RPG Maker's
+    // picture coordinates and percentage scale use the source PNG's natural
+    // logical size. Preserve that size in GameAssets so presentation does
+    // not stretch every imported picture to the viewport.
+    pictureVariants.push(`${q(variant)}: { image: ${q(file)}, w: ${img.width}, h: ${img.height} }`);
   }
 
   const player = assets.player ? `WALKERS_${source.id}[${q(assets.player)}]!` : "undefined!";

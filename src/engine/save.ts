@@ -236,6 +236,10 @@ function normalizeInterpInPlace(interp: InterpState): void {
   // passes canSave always encodes into an envelope the decoder accepts.
   interp.sw = createSwitchState(interp.sw);
   interp.cues = [];
+  // Host lifecycle callbacks are one-frame presentation outputs just like
+  // sound cues. They are consumed by GameView and never replayed by a save,
+  // rewind identity or restored reducer state.
+  delete interp.hostActions;
   interp.pendingTransfer = null;
   interp.pendingMoveRoutes = [];
   interp.pendingBattles = [];

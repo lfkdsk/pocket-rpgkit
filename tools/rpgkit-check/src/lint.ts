@@ -323,6 +323,19 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           note(variables, command.id, "writes", cloc);
           if ("from" in command.set) note(variables, command.set.from, "reads", cloc);
           break;
+        case "showPicture":
+        case "movePicture":
+          if (typeof command.x === "object") note(variables, command.x.variable, "reads", cloc);
+          if (typeof command.y === "object") note(variables, command.y.variable, "reads", cloc);
+          break;
+        case "timer":
+          if (command.action === "read") note(variables, command.variable, "writes", cloc);
+          break;
+        case "inputNumber":
+          // The scene prefills from the current value and replaces it on OK.
+          note(variables, command.variable, "reads", cloc);
+          note(variables, command.variable, "writes", cloc);
+          break;
         case "selfSwitch":
           // Writes are collected per event with walkProjectCommands (common
           // event writes run on the caller's fiber), not here.

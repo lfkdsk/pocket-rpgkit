@@ -134,8 +134,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Reusing integer chunk windows and the generic opt-in connected-world
 // factory seam bring it to 840,064 bytes. The concrete renderer remains
 // absent, as verified by world-ui-bundle-isolation.test.ts.
-// The demo warp-toast fixes add 173 bytes to Sunstone's opted-in demo: 840,237.
-const EXPECTED_BYTES = 840_237;
+// KRM2's shared commands/state/compiler/save paths plus GameView's small
+// optional screen-presentation and host-action seams bring Sunstone to
+// 871,523 bytes. Its numbered-picture, timer/banner and number-input JSX is
+// still absent; krm2-ui-bundle-isolation.test.ts checks those identifiers.
+// Timer-aware immutable page and trigger-scan keys add 317 shared bytes, and
+// the demo warp-toast fixes add 173 bytes: 872,013 total.
+const EXPECTED_BYTES = 872_013;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

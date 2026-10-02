@@ -87,8 +87,8 @@ describe("rpgmaker-import: output", () => {
   });
 
   test("variable text tokens opt the generated project in only when used", async () => {
-    expect(hollow.project.system).toMatchObject({ messageBlocksPlayer: true, textVariables: true });
-    expect(stage.project.system).toMatchObject({ messageBlocksPlayer: true, textVariables: true });
+    expect(hollow.project.system).toMatchObject({ messageBlocksPlayer: true, mapNameDisplay: true, textVariables: true });
+    expect(stage.project.system).toMatchObject({ messageBlocksPlayer: true, mapNameDisplay: true, textVariables: true });
     const messages = allCommands(hollow.project).filter((c) => c.op === "text") as unknown as { lines: string[] }[];
     expect(messages.some((m) => m.lines.some((line) => line.includes("{v:v002}")))).toBe(true);
 
@@ -103,7 +103,7 @@ describe("rpgmaker-import: output", () => {
       }
     }
     const imported = await importRmProject(noTokens);
-    expect(imported.project.system).toEqual({ messageBlocksPlayer: true });
+    expect(imported.project.system).toEqual({ messageBlocksPlayer: true, mapNameDisplay: true });
   });
 
   test("plugin and script commands are visible placeholders, battles a battle op", () => {
@@ -190,8 +190,8 @@ describe("rpgmaker-import: output", () => {
   test("coverage counts every command the fixtures use, by code", () => {
     const used = new Set<string>();
     for (const r of [hollow, stage]) for (const row of r.cov.list("command")) used.add(row.key);
-    for (const code of ["101", "102", "111", "112", "117", "121", "122", "123", "125", "126", "129", "201", "203", "205",
-      "211", "213", "214", "221", "222", "223", "224", "225", "230", "231", "235", "241", "250", "301", "302", "355", "356", "357"]) {
+    for (const code of ["101", "102", "111", "112", "117", "121", "122", "123", "124", "125", "126", "129", "201", "203", "205",
+      "211", "213", "214", "221", "222", "223", "224", "225", "230", "231", "232", "235", "241", "250", "301", "302", "355", "356", "357"]) {
       expect(used.has(code)).toBe(true);
     }
     // Tile constructs are counted too.
@@ -210,6 +210,14 @@ describe("rpgmaker-import: output", () => {
     expect(by.get(101)!.disposition).toBe("Native");
     expect(by.get(112)!.disposition).toBe("Native");
     expect(by.get(113)!.disposition).toBe("Native");
+    for (const code of [103, 124, 204, 231, 232, 233, 234, 235, 281, 351, 352, 353, 354]) {
+      expect(by.get(code)!.disposition).toBe("Native");
+      expect(by.get(code)!.needsKit).toBe("");
+    }
+    expect(by.get(320)!.disposition).toBe("Native");
+    expect(by.get(320)!.needsKit).toContain("actors other than actor 1");
+    expect(by.get(111)!.needsKit).not.toContain("timer");
+    expect(by.get(122)!.needsKit).not.toContain("timer");
     expect(by.get(118)!.disposition).toBe("Dropped");
     expect(by.get(119)!.disposition).toBe("Dropped");
     expect(by.get(355)!.disposition).toBe("Placeholder");

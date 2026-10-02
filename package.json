@@ -16,6 +16,7 @@
     "./ui/world": "./src/ui/world/index.ts",
     "./ui/saves": "./src/ui/session-saves.ts",
     "./ui/audio": "./src/ui/audio/index.ts",
+    "./ui/krm2": "./src/ui/krm2/index.ts",
     "./host": "./src/host/index.ts",
     "./editor-api": "./editor/api/index.ts",
     "./schema": "./src/data/schema.json"

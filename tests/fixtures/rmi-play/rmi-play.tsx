@@ -10,6 +10,7 @@
 
 import { mount } from "@pocketjs/framework";
 import { GameView } from "../../../src/ui/GameView.tsx";
+import { krm2ScreenPresentation } from "../../../src/ui/krm2/index.ts";
 import { NAME_INPUT_SCENE_ID, nameInputRules } from "../../../src/engine/name-input.ts";
 import { NameInputScene } from "../../../src/ui/name-input/NameInputScene.tsx";
 import { RMI_GAMES, type RmiGameId } from "./games.ts";
@@ -28,6 +29,7 @@ mount(() => (
   <GameView
     project={game.project}
     assets={game.assets}
+    screenPresentation={krm2ScreenPresentation}
     battle={placeholderBattleRules}
     battleScene={PlaceholderBattleScene}
     scenes={{ [NAME_INPUT_SCENE_ID]: nameInputRules }}

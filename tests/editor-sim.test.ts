@@ -746,6 +746,11 @@ simDescribe("editor budget", () => {
     // chunk-window reuse plus GameView's generic factory seam bring the
     // measured bundle to 1,436,638 B; the 30,507 B concrete renderer portion
     // formerly pulled through the preview is absent. Keep a narrow margin.
-    expect(js).toBeLessThan(1_442_000);
+    // KRM2 engine/schema/editor support and the editor's intentional
+    // krm2ScreenPresentation registration measure 1,492,592 bytes. Ordinary
+    // GameView apps keep the picture/HUD implementation isolated. The merged
+    // Studio command palette, minimap, layers and canvas polish add 3,595 B;
+    // timer-aware immutable cache keys add 317 B: measured 1,496,504 B.
+    expect(js).toBeLessThan(1_500_000);
   });
 });

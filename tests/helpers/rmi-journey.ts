@@ -293,7 +293,7 @@ export function playHollow(project: Project): RmiDriver {
  *  polling loop waits for the Stagehand's three claps before continuing. */
 export function playStage(project: Project): RmiDriver {
   const d = new RmiDriver(project);
-  d.watch("curtain", (s) => s.interp.screen?.backdrop !== undefined && s.interp.modal?.kind === "text");
+  d.watch("curtain", (s) => s.interp.screen?.pictures?.["1"] !== undefined && s.interp.modal?.kind === "text");
   d.watch("tint", (s) => Object.keys(s.interp.screen?.tints ?? {}).length > 0 && s.interp.modal?.kind === "text");
   d.watch("balloon", (s) => Object.keys(s.interp.screen?.balloons ?? {}).length > 0);
   d.settle({ maxFrames: 20000 });

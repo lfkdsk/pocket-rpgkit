@@ -383,6 +383,7 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     start: { map: mapId(rm.system.startMapId), x: rm.system.startX, y: rm.system.startY, dir: "down" },
     system: {
       messageBlocksPlayer: true,
+      mapNameDisplay: true,
       ...(cov.list("escape").some((row) => row.key === "\\V" && row.counts.Native > 0)
         ? { textVariables: true }
         : {}),

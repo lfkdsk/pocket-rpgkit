@@ -67,6 +67,10 @@ export interface ScreenLayerVariant {
   color?: string;
   image?: string;
   opacity?: number;
+  /** Natural picture width/height in logical pixels. Numbered pictures use
+   * the containing viewport dimensions when either value is omitted. */
+  w?: number;
+  h?: number;
 }
 
 export interface GameScreenLayerAssets {

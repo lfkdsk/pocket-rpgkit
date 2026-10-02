@@ -69,6 +69,9 @@ Messages from other origins are dropped without a reply.
   4,096 px a side). Animated tiles, map animations, backdrops and battle art
   are not supplied. Unregistered extensions, battles and screen backdrops
   use the same visible stand-ins as the editor playtest.
+- The preview host does not register game scenes, including
+  `rpgkit.numberInput`; exercise those in a built game or fixture that passes
+  the matching rules and view to `GameView`.
 - The host page is a normal player page: keyboard and the on-screen pad also
   reach the loaded project when the iframe has focus.
 - Chinese text draws from the budget above. A character outside it (a rare

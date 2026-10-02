@@ -29,6 +29,10 @@ import type {
   MoveStep,
   Page,
   PageCondition,
+  PictureBlendMode,
+  PictureCoordinate,
+  PictureOrigin,
+  PictureTone,
   RouteTarget,
   ScreenColor,
   ShopGood,
@@ -127,6 +131,8 @@ export const PICTURE_LAYER = "picture";
 
 const DIR_OF: Readonly<Record<number, Dir>> = { 2: "down", 4: "left", 6: "right", 8: "up" };
 const ITEM_KIND = ["item", "weapon", "armor"] as const;
+const PICTURE_BLEND: readonly PictureBlendMode[] = ["normal", "add", "multiply", "screen"];
+const PICTURE_EASING = ["linear", "easeIn", "easeOut", "easeInOut"] as const;
 
 // --- tree ------------------------------------------------------------------
 
@@ -450,8 +456,10 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
     case 102:
       return emitChoices(nd, st, scope, "");
     case 103:
+      rec(st, 103, "Native");
+      return [{ op: "inputNumber", variable: variableId(int(p[0])), digits: clamp(int(p[1], 1), 1, 8) }];
     case 104:
-      rec(st, code, "Dropped", needs(code));
+      rec(st, 104, "Dropped", needs(104));
       return [];
     case 105: {
       const lines = wrap(convertMessage(nd.lines.map((l) => String(l.parameters?.[0] ?? "")), ctx));
@@ -522,8 +530,10 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
       return [{ op: "selfSwitch", key, value: int(p[1]) === 0 }];
     }
     case 124:
-      rec(st, 124, "Dropped", needs(124));
-      return [];
+      rec(st, 124, "Native");
+      return int(p[0]) === 0
+        ? [{ op: "timer", action: "start", seconds: Math.max(0, int(p[1])) }]
+        : [{ op: "timer", action: "stop" }];
     case 125:
       return emitGold(p, st, scope);
     case 126:
@@ -537,6 +547,8 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
       return [{ op: "switch", id: partySwitchId(int(p[0])), value: int(p[1]) === 0 }];
     case 201:
       return emitTransfer(p, st);
+    case 204:
+      return emitScrollMap(p, st);
     case 203:
       return emitPlace(p, st);
     case 205:
@@ -585,10 +597,16 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
       return waitCommands(seconds(p[0]));
     case 231:
       return emitShowPicture(p, st);
+    case 232:
+      return emitMovePicture(p, st);
+    case 233:
+      rec(st, 233, "Native");
+      return [{ op: "rotatePicture", id: int(p[0]), speed: num(p[1]) / 2 }];
+    case 234:
+      return emitTintPicture(p, st);
     case 235:
-      // The backdrop is one slot: erasing any picture closes it.
       rec(st, 235, "Native");
-      return [{ op: "screenBackdrop", layer: PICTURE_LAYER, variant: null }];
+      return [{ op: "erasePicture", id: int(p[0]) }];
     case 241:
     case 245:
     case 249:
@@ -606,12 +624,42 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
     case 246:
       rec(st, 246, "Native");
       return [{ op: "fadeoutBgs", duration: Math.max(0, num(p[0])) }];
+    case 281:
+      rec(st, 281, "Native");
+      return [{ op: "mapNameDisplay", visible: int(p[0]) === 0 }];
     case 301:
       return emitBattle(nd, p, st, scope);
     case 302:
       return emitShop(nd, p, st);
     case 303:
       return emitNameInput(p, st);
+    case 320: {
+      const actor = int(p[0]);
+      if (actor !== 1) {
+        rec(st, 320, "Degraded", "only actor 1 maps to the kit player name; other actor names are not modelled");
+        return [];
+      }
+      const name = String(p[1] ?? "");
+      if (name.length < 1) {
+        rec(st, 320, "Degraded", "the kit player name cannot be empty; change ignored");
+        return [];
+      }
+      const clipped = name.slice(0, 24);
+      rec(st, 320, clipped === name ? "Native" : "Degraded", clipped === name ? undefined : "player name truncated to 24 characters");
+      return [{ op: "changeName", name: clipped }];
+    }
+    case 351:
+      rec(st, 351, "Native");
+      return [{ op: "openMenu" }];
+    case 352:
+      rec(st, 352, "Native");
+      return [{ op: "openSave" }];
+    case 353:
+      rec(st, 353, "Native");
+      return [{ op: "gameOver" }, { op: "exit" }];
+    case 354:
+      rec(st, 354, "Native");
+      return [{ op: "returnTitle" }, { op: "exit" }];
     case 355:
     case 356:
     case 357:
@@ -837,7 +885,11 @@ function convertCondition(p: readonly unknown[], st: State): CondResult {
       return ok(int(p[2]) === 1 ? { kind: "selfSwitch", key, value: false } : { kind: "selfSwitch", key });
     }
     case 3:
-      return unknown("Degraded", "timer not modelled");
+      return ok({
+        kind: "timer",
+        op: int(p[2]) === 0 ? ">=" : "<=",
+        seconds: Math.max(0, int(p[1])),
+      });
     case 4:
       if (int(p[2]) === 0) return ok({ kind: "switch", id: partySwitchId(int(p[1])) });
       return unknown("Degraded", "actor name/class/skill/equipment/state not modelled");
@@ -1013,8 +1065,8 @@ const GAME_DATA_NAMES = ["item", "weapon", "armor", "actor", "enemy", "character
 const OTHER_NAMES = ["map id", "party size", "gold", "steps", "play time", "timer", "save count", "battle count", "win count", "escape count"];
 
 /** Control Variables' Game Data operand. Item counts and gold are read
- *  exactly with condition trees; the current map id is a constant for a
- *  page. Everything else has no kit source. */
+ *  exactly with condition trees, timer uses the native timer read, and the
+ *  current map id is a constant for a page. Everything else has no kit source. */
 function gameData(type: number, a: number, b: number, st: State): GameData {
   if (type >= 0 && type <= 2) {
     // Binary search over 0..99 with `item >= n` tests (MV caps counts at 99).
@@ -1049,6 +1101,10 @@ function gameData(type: number, a: number, b: number, st: State): GameData {
     drain.push({ op: "variable", id: t2, set: { op: "copy", from: t1 } });
     drain.push(...bitsDown(t2, GOLD_BITS, (k) => [{ op: "gold", set: "add", amount: k }]));
     return { compute: drain, from: t1 };
+  }
+  if (type === 7 && a === 5) {
+    const tmp = tempVariableId(1);
+    return { compute: [{ op: "timer", action: "read", variable: tmp }], from: tmp };
   }
   const name = type === 7 ? OTHER_NAMES[a] ?? "other" : GAME_DATA_NAMES[type] ?? "unknown";
   return { dropped: `game data: ${name} has no kit source` };
@@ -1212,6 +1268,25 @@ function emitTransfer(p: readonly unknown[], st: State): Command[] {
   return build(0, entries.length - 1);
 }
 
+/** Scroll Map stores a relative tile distance and the editor's exponential
+ * speed level. The runtime derives an exact reference-frame duration, so the
+ * importer must not flatten speed into a linear seconds estimate here. */
+function emitScrollMap(p: readonly unknown[], st: State): Command[] {
+  const direction = DIR_OF[int(p[0])];
+  if (!direction) {
+    rec(st, 204, "Dropped", "unknown scroll direction");
+    return [];
+  }
+  rec(st, 204, "Native");
+  return [{
+    op: "scrollMap",
+    direction,
+    distance: Math.max(0, int(p[1])),
+    speed: clamp(int(p[2], 4), 1, 6) as MoveSpeed,
+    wait: !!p[3],
+  }];
+}
+
 /** Set Event Location: direct placement only. */
 function emitPlace(p: readonly unknown[], st: State): Command[] {
   if (thisWithoutEvent(203, p, st)) return [];
@@ -1372,22 +1447,81 @@ function waitCommands(total: number): Command[] {
   return out;
 }
 
-/** Show Picture becomes the full-screen backdrop slot. A picture at the
- *  top-left, 100% scale, opaque, normal blend is a full-screen still and maps
- *  as is; any other placement still shows full-screen. The backdrop blocks
- *  player movement while it is up. */
+const pictureOrigin = (v: unknown): PictureOrigin => int(v) === 1 ? "center" : "topLeft";
+const pictureBlend = (v: unknown): PictureBlendMode => PICTURE_BLEND[int(v)] ?? "normal";
+
+/** Picture x/y are either literal viewport pixels or variable ids sampled
+ * when the command executes. `designation` is parameter 3 for both Show and
+ * Move Picture; x/y are parameters 4/5. */
+function pictureCoordinates(p: readonly unknown[]): [PictureCoordinate, PictureCoordinate] {
+  if (int(p[3]) === 1) {
+    return [{ variable: variableId(int(p[4])) }, { variable: variableId(int(p[5])) }];
+  }
+  return [int(p[4]), int(p[5])];
+}
+
+function pictureTone(v: unknown): PictureTone {
+  const tone = Array.isArray(v) ? v : [];
+  return {
+    r: clamp(int(tone[0]), -255, 255),
+    g: clamp(int(tone[1]), -255, 255),
+    b: clamp(int(tone[2]), -255, 255),
+    gray: clamp(int(tone[3]), 0, 255),
+  };
+}
+
 function emitShowPicture(p: readonly unknown[], st: State): Command[] {
   const name = String(p[1] ?? "");
   if (name === "") {
     rec(st, 231, "Dropped", "picture without an image");
     return [];
   }
-  const plain =
-    int(p[2]) === 0 && int(p[3]) === 0 && int(p[4]) === 0 && int(p[5]) === 0 &&
-    num(p[6], 100) === 100 && num(p[7], 100) === 100 && num(p[8], 255) === 255 && int(p[9]) === 0;
-  if (plain) rec(st, 231, "Native");
-  else rec(st, 231, "Degraded", "shown as a full-screen backdrop; position/scale/opacity/blend dropped");
-  return [{ op: "screenBackdrop", layer: PICTURE_LAYER, variant: st.ctx.picture(name) }];
+  const [x, y] = pictureCoordinates(p);
+  rec(st, 231, "Native");
+  return [{
+    op: "showPicture",
+    id: int(p[0]),
+    layer: PICTURE_LAYER,
+    variant: st.ctx.picture(name),
+    origin: pictureOrigin(p[2]),
+    x,
+    y,
+    scaleX: num(p[6], 100),
+    scaleY: num(p[7], 100),
+    opacity: clamp(int(p[8], 255), 0, 255),
+    blend: pictureBlend(p[9]),
+  }];
+}
+
+function emitMovePicture(p: readonly unknown[], st: State): Command[] {
+  const [x, y] = pictureCoordinates(p);
+  const easing = PICTURE_EASING[int(p[12])] ?? "linear";
+  rec(st, 232, "Native");
+  return [{
+    op: "movePicture",
+    id: int(p[0]),
+    origin: pictureOrigin(p[2]),
+    x,
+    y,
+    scaleX: num(p[6], 100),
+    scaleY: num(p[7], 100),
+    opacity: clamp(int(p[8], 255), 0, 255),
+    blend: pictureBlend(p[9]),
+    duration: seconds(p[10]),
+    wait: !!p[11],
+    ...(st.ctx.rm.flavor === "MZ" ? { easing } : {}),
+  }];
+}
+
+function emitTintPicture(p: readonly unknown[], st: State): Command[] {
+  rec(st, 234, "Native");
+  return [{
+    op: "tintPicture",
+    id: int(p[0]),
+    tone: pictureTone(p[1]),
+    duration: seconds(p[2]),
+    wait: !!p[3],
+  }];
 }
 
 function emitAudio(code: number, a: RmAudio | undefined, st: State): Command[] {

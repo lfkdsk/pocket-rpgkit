@@ -211,10 +211,11 @@ Conventions:
   confirm that advances the box never also starts the faced event.
   `autorun`/`parallel` pages keep running. Off by default (v1).
 - **Screen presentation:** `screenFade`, `screenTint`, `screenFlash`,
-  `screenShake`, `camera`, `balloon`, and `screenBackdrop` write sparse state
-  in `InterpState.screen`. All durations are authored in virtual seconds and
-  compile to the fixed 60 Hz reference clock; optional `wait:true` parks only
-  the issuing fiber. A completed fade-out stays opaque until a fade-in;
+  `screenShake`, `camera`, `scrollMap`, `balloon`, `screenBackdrop`, and the
+  numbered-picture commands write sparse state in `InterpState.screen`. All
+  durations are authored in virtual seconds and compile to the fixed 60 Hz
+  reference clock; optional `wait:true` parks only the issuing fiber. A
+  completed fade-out stays opaque until a fade-in;
   tint layers are keyed by stable game-chosen ids and composited in sorted-id
   order, so daylight/weather/custom layers can be driven independently.
   Flash decays to transparent. Shake is a deterministic horizontal triangle
@@ -226,6 +227,23 @@ Conventions:
   and names a `project.animations` entry; it loops above the live character
   anchor for a finite duration or until a command with no `icon` clears it.
   A waited balloon must name an icon and a positive finite duration.
+- **Relative map scroll:** `scrollMap` starts from the current player/fixed
+  focus and moves by `distance` tiles. Speed grade `n` takes
+  `distance × 256 / 2^n` reference ticks, matching MV/MZ; projection uses the
+  existing viewport clamp. A zero distance is an immediate no-op and does not
+  replace player follow with a fixed camera. Its endpoint remains a fixed
+  camera. A subsequent `{op:"camera", target:"player"}` returns to live
+  follow.
+- **Numbered pictures:** ids 1..100 are sparse and paint in numeric order.
+  Coordinates may be literals or variables sampled at command execution.
+  A coordinate variable that does not hold a finite number is a fatal content
+  error rather than RPG Maker's implicit zero, following the kit's strict
+  operand contract.
+  Move/tint tween state, easing, continuous rotation, origin, scale, opacity,
+  retained blend intent and tone all save and rewind; pictures survive map
+  transfer. The PocketJS view currently renders blend as normal source-over
+  and uses a deterministic overlay approximation for RPG Maker tone because
+  the host has no portable per-image blend/colour-matrix primitive.
 - **Backdrop, layering, and lifetime:** `screenBackdrop` selects a
   `GameAssets.layers` entry with `placement:"screen"`; omitting/nulling its
   variant closes it. Backdrop, tint, and flash render over the map but below
@@ -247,9 +265,34 @@ Conventions:
   BGM (or silence), and restore the exact map mix in the completion fold;
   omitting it preserves the legacy continue-through behavior.
 - **Persistence:** in-flight tween endpoints and remaining reference ticks,
-  camera focus, balloon frame age, and persistent layers all round-trip in
-  saves and attract rewind. Older saves omit `screen` and retain the zero-cost
-  path: `session.ts` skips screen advancement entirely while it is absent.
+  camera focus, balloon frame age, numbered pictures, map-name banner phase,
+  and persistent layers all round-trip in saves and attract rewind. Older
+  saves omit `screen` and retain the zero-cost path: `session.ts` skips screen
+  advancement entirely while it is absent.
+- **Global timer:** `timer start` installs one fixed-60-Hz countdown,
+  `timer read` writes floored whole seconds, and `timer stop` removes it. It
+  keeps advancing during transfer fades, fatal interpreter state and a
+  default-frozen battle/game scene. A timer guard is false when stopped and
+  can observe the retained running `00:00` state after expiry. RPG Maker's
+  battle-abort `onExpire` hook is deliberately not implicit; an event guard
+  or game extension chooses the consequence. Its HUD, numbered pictures and
+  map-name banner paint only when a game passes the explicit
+  `pocket-rpgkit/ui/krm2` presentation to `GameView`; reducer-only projects
+  carry no KRM2 presentation nodes.
+- **Number input and host lifecycle:** `inputNumber` compiles to the explicit
+  `rpgkit.numberInput` scene and therefore requires games to register both
+  `numberInputRules` and `NumberInputScene`; it never registers UI through the
+  base session or `GameView`. `openMenu`, `openSave`, `gameOver` and
+  `returnTitle` emit ordered one-frame `hostActions`; `GameView` dispatches
+  them to optional callbacks after the reducer frame, and absent callbacks do
+  nothing. Unlike RPG Maker 351/352, menu/save requests do not park their
+  event fiber; the game-owned host screen must provide any pause. Host actions
+  are drained before a save and never enter snapshot or
+  replay hashes.
+- **Names and map banners:** `changeName` writes the saved player name used by
+  later `{name}` expansion. `system.mapNameDisplay:true` seeds a persistent
+  flag; each map entry starts a saved 180-tick banner from `MapDef.name`.
+  `mapNameDisplay:false` clears the flag and dismisses the current banner.
 - `isBusy(state)` is true while a blocking (action / playerTouch / eventTouch / autorun)
   fiber runs. The mover freezes for its whole duration. PARALLEL pages run
   concurrently and never set busy (only the message hold above can make

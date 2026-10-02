@@ -10,8 +10,11 @@ import type {
   Dir,
   JsonValue,
   MoveRoute,
+  MoveSpeed,
   Page,
   PageCondition,
+  PictureCoordinate,
+  PictureTone,
   ScreenColor,
   TransferCoordinate,
   TransferDirection,
@@ -71,6 +74,10 @@ const OPTIONAL_BOOLEAN = [OMIT, "true", "false"] as const;
 const NULLABLE_BOOLEAN = [OMIT, "true", "false", NULL] as const;
 const OPTIONAL_PASSAGE = [OMIT, "pass", "block", NULL] as const;
 const ICON_FRAMES = ["0", "1", "2"] as const;
+const PICTURE_ORIGINS = ["topLeft", "center"] as const;
+const PICTURE_BLENDS = ["normal", "add", "multiply", "screen"] as const;
+const PICTURE_EASINGS = ["linear", "easeIn", "easeOut", "easeInOut"] as const;
+const TIMER_ACTIONS = ["start", "stop", "read"] as const;
 const CHOICE_OPTION_KEY = /^option:(\d+)(?:\.(icon|icon\.dir|icon\.frame))?$/;
 const COMMAND_SCHEMA = (PROJECT_SCHEMA as { $defs: { command: Schema } }).$defs.command;
 const CONDITION_SCHEMA = (PROJECT_SCHEMA as { $defs: { condition: Schema } }).$defs.condition;
@@ -256,6 +263,17 @@ function editColor(color: ScreenColor, key: string, raw: string): FieldEdit<Scre
   return value.ok ? good({ ...color, [key]: value.value }) : value;
 }
 
+function pictureToneFields(tone: PictureTone): EditableField[] {
+  return (["r", "g", "b", "gray"] as const).map((channel) =>
+    field(`tone.${channel}`, channel.toUpperCase(), tone[channel], "integer"));
+}
+
+function editPictureTone(tone: PictureTone, key: string, raw: string): FieldEdit<PictureTone> {
+  if (!(key === "r" || key === "g" || key === "b" || key === "gray")) return bad(`unknown picture tone channel ${key}`);
+  const value = integer(raw, key, key === "gray" ? 0 : -255, 255);
+  return value.ok ? good({ ...tone, [key]: value.value }) : value;
+}
+
 function cameraTarget(value: Extract<Command, { op: "camera" }>["target"]): string {
   if (typeof value === "object" && "x" in value) return `tile:${value.x},${value.y}`;
   return target(value);
@@ -374,6 +392,11 @@ export function conditionFields(
         resourceField(p("id"), "BGM", condition.id ?? "(any)", resources.audio, "Project audio ids; use (any) for any BGM"),
         field(p("negate"), "NEGATE", condition.negate ?? false, "boolean", BOOLS),
       ];
+    case "timer":
+      return [
+        field(p("op"), "OP", condition.op, "enum", [">=", "<="]),
+        field(p("seconds"), "SECONDS", condition.seconds, "number"),
+      ];
     case "ext":
       return [
         resourceField(p("call"), "CALL", condition.call, resources.extensionCalls, "Authored extension calls"),
@@ -470,6 +493,10 @@ export function commandFields(
     case "place": return [field("target", "TARGET", target(command.target)), field("x", "X", command.x, "integer"), field("y", "Y", command.y, "integer"), field("dir", "DIR", command.dir ?? "down", "enum", DIRS)];
     case "erase":
     case "exit":
+    case "openMenu":
+    case "openSave":
+    case "gameOver":
+    case "returnTitle":
     case "lockInput":
     case "unlockInput":
     case "break":
@@ -566,6 +593,13 @@ export function commandFields(
         field("duration", "DURATION", command.duration, "number"),
         field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
       ];
+    case "scrollMap":
+      return [
+        field("direction", "DIRECTION", command.direction, "enum", DIRS),
+        field("distance", "DISTANCE", command.distance, "number"),
+        field("speed", "SPEED", String(command.speed), "enum", ["1", "2", "3", "4", "5", "6"]),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
     case "balloon":
       return [
         field("target", "TARGET", target(command.target)),
@@ -578,6 +612,59 @@ export function commandFields(
         resourceField("layer", "LAYER", command.layer, resources.layers, "Authored backdrop layers"),
         resourceField("variant", "BACKGROUND", optionValue(command.variant), resources.layerVariants[command.layer] ?? [], `Authored backgrounds for ${command.layer}; use ${NULL} or ${OMIT} to close`),
       ];
+    case "showPicture":
+      return [
+        field("id", "PICTURE", command.id, "integer"),
+        resourceField("layer", "LAYER", command.layer, resources.layers, "Authored picture layers"),
+        resourceField("variant", "IMAGE", command.variant, resources.layerVariants[command.layer] ?? [], `Authored variants for ${command.layer}`),
+        field("origin", "ORIGIN", command.origin ?? "topLeft", "enum", PICTURE_ORIGINS),
+        field("x", "X", operand(command.x)),
+        field("y", "Y", operand(command.y)),
+        field("scaleX", "SCALE X", command.scaleX ?? 100, "number"),
+        field("scaleY", "SCALE Y", command.scaleY ?? 100, "number"),
+        field("opacity", "OPACITY", command.opacity ?? 255, "number"),
+        field("blend", "BLEND", command.blend ?? "normal", "enum", PICTURE_BLENDS),
+      ];
+    case "movePicture":
+      return [
+        field("id", "PICTURE", command.id, "integer"),
+        field("origin", "ORIGIN", command.origin ?? "topLeft", "enum", PICTURE_ORIGINS),
+        field("x", "X", operand(command.x)),
+        field("y", "Y", operand(command.y)),
+        field("scaleX", "SCALE X", command.scaleX, "number"),
+        field("scaleY", "SCALE Y", command.scaleY, "number"),
+        field("opacity", "OPACITY", command.opacity, "number"),
+        field("blend", "BLEND", command.blend ?? "normal", "enum", PICTURE_BLENDS),
+        field("duration", "DURATION", command.duration, "number"),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+        field("easing", "EASING", command.easing ?? "linear", "enum", PICTURE_EASINGS),
+      ];
+    case "rotatePicture":
+      return [field("id", "PICTURE", command.id, "integer"), field("speed", "SPEED", command.speed, "number")];
+    case "tintPicture":
+      return [
+        field("id", "PICTURE", command.id, "integer"),
+        ...pictureToneFields(command.tone),
+        field("duration", "DURATION", command.duration, "number"),
+        field("wait", "WAIT", command.wait ?? false, "boolean", BOOLS),
+      ];
+    case "erasePicture":
+      return [field("id", "PICTURE", command.id, "integer")];
+    case "timer":
+      return [
+        field("action", "ACTION", command.action, "enum", TIMER_ACTIONS),
+        ...(command.action === "start"
+          ? [field("seconds", "SECONDS", command.seconds, "number")]
+          : command.action === "read"
+            ? [field("variable", "VARIABLE", command.variable)]
+            : []),
+      ];
+    case "inputNumber":
+      return [field("variable", "VARIABLE", command.variable), field("digits", "DIGITS", command.digits, "integer")];
+    case "changeName":
+      return [field("name", "NAME", command.name)];
+    case "mapNameDisplay":
+      return [field("visible", "VISIBLE", command.visible, "boolean", BOOLS)];
     case "shop":
       return [
         field("id", "ID", command.id),
@@ -679,6 +766,15 @@ function editConditionUnchecked(condition: Condition, key: string, raw: string):
     if (key === "negate") {
       const value = bool(raw); return value === null ? bad("negate must be true or false") : good({ ...condition, negate: value });
     }
+  } else if (condition.kind === "timer") {
+    if (key === "op") {
+      const value = enumValue(raw, [">=", "<="] as const, "timer operator");
+      return value.ok ? good({ ...condition, op: value.value }) : value;
+    }
+    if (key === "seconds") {
+      const value = finite(raw, "timer seconds", 0);
+      return value.ok ? good({ ...condition, seconds: value.value }) : value;
+    }
   } else if (condition.kind === "ext") {
     if (key === "call") {
       const value = identifier(raw, "extension call", EXTENSION_CALL);
@@ -733,6 +829,11 @@ function parseOperand(raw: string, label: string, numeric: boolean): FieldEdit<s
   if (raw.startsWith("$") && raw.length > 1) return good({ variable: raw.slice(1) });
   if (!numeric) return raw ? good(raw) : bad(`${label} is required`);
   return integer(raw, label, 0);
+}
+
+function parsePictureCoordinate(raw: string, label: string): FieldEdit<PictureCoordinate> {
+  if (raw.startsWith("$") && raw.length > 1) return good({ variable: raw.slice(1) });
+  return finite(raw, label);
 }
 
 function parseSteps(raw: string, requireOne: boolean): FieldEdit<BasicMoveStep[]> {
@@ -1073,6 +1174,25 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
       }
       break;
     }
+    case "scrollMap": {
+      if (key === "direction") {
+        const value = enumValue(raw, DIRS, "direction");
+        return value.ok ? good({ ...command, direction: value.value }) : value;
+      }
+      if (key === "distance") {
+        const value = finite(raw, "distance", 0);
+        return value.ok ? good({ ...command, distance: value.value }) : value;
+      }
+      if (key === "speed") {
+        const value = integer(raw, "speed", 1, 6);
+        return value.ok ? good({ ...command, speed: value.value as MoveSpeed }) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      break;
+    }
     case "balloon": {
       if (key === "target") {
         const value = parseTarget(raw, true);
@@ -1097,6 +1217,154 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
       if (key === "variant") {
         const value = optionalString(raw, "variant", true);
         return value.ok ? good(setOptional(command, "variant", value.value)) : value;
+      }
+      break;
+    }
+    case "showPicture": {
+      if (key === "id") {
+        const value = integer(raw, "picture id", 1, 100);
+        return value.ok ? good({ ...command, id: value.value }) : value;
+      }
+      if (key === "layer" || key === "variant") {
+        return raw.length > 0 ? good({ ...command, [key]: raw }) : bad(`${key} is required`);
+      }
+      if (key === "origin") {
+        const value = enumValue(raw, PICTURE_ORIGINS, "picture origin");
+        return value.ok ? good({ ...command, origin: value.value }) : value;
+      }
+      if (key === "x" || key === "y") {
+        const value = parsePictureCoordinate(raw, key);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "scaleX" || key === "scaleY") {
+        const value = finite(raw, key, -2000, 2000);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "opacity") {
+        const value = finite(raw, "opacity", 0, 255);
+        return value.ok ? good({ ...command, opacity: value.value }) : value;
+      }
+      if (key === "blend") {
+        const value = enumValue(raw, PICTURE_BLENDS, "picture blend");
+        return value.ok ? good({ ...command, blend: value.value }) : value;
+      }
+      break;
+    }
+    case "movePicture": {
+      if (key === "id") {
+        const value = integer(raw, "picture id", 1, 100);
+        return value.ok ? good({ ...command, id: value.value }) : value;
+      }
+      if (key === "origin") {
+        const value = enumValue(raw, PICTURE_ORIGINS, "picture origin");
+        return value.ok ? good({ ...command, origin: value.value }) : value;
+      }
+      if (key === "x" || key === "y") {
+        const value = parsePictureCoordinate(raw, key);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "scaleX" || key === "scaleY") {
+        const value = finite(raw, key, -2000, 2000);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "opacity") {
+        const value = finite(raw, "opacity", 0, 255);
+        return value.ok ? good({ ...command, opacity: value.value }) : value;
+      }
+      if (key === "blend") {
+        const value = enumValue(raw, PICTURE_BLENDS, "picture blend");
+        return value.ok ? good({ ...command, blend: value.value }) : value;
+      }
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      if (key === "easing") {
+        const value = enumValue(raw, PICTURE_EASINGS, "picture easing");
+        return value.ok ? good({ ...command, easing: value.value }) : value;
+      }
+      break;
+    }
+    case "rotatePicture": {
+      if (key === "id") {
+        const value = integer(raw, "picture id", 1, 100);
+        return value.ok ? good({ ...command, id: value.value }) : value;
+      }
+      if (key === "speed") {
+        const value = finite(raw, "speed");
+        return value.ok ? good({ ...command, speed: value.value }) : value;
+      }
+      break;
+    }
+    case "tintPicture": {
+      if (key === "id") {
+        const value = integer(raw, "picture id", 1, 100);
+        return value.ok ? good({ ...command, id: value.value }) : value;
+      }
+      if (key.startsWith("tone.")) {
+        const value = editPictureTone(command.tone, key.slice(5), raw);
+        return value.ok ? good({ ...command, tone: value.value }) : value;
+      }
+      if (key === "duration") {
+        const value = finite(raw, "duration", 0);
+        return value.ok ? good({ ...command, duration: value.value }) : value;
+      }
+      if (key === "wait") {
+        const value = bool(raw);
+        return value === null ? bad("wait must be true or false") : good({ ...command, wait: value });
+      }
+      break;
+    }
+    case "erasePicture": {
+      if (key === "id") {
+        const value = integer(raw, "picture id", 1, 100);
+        return value.ok ? good({ ...command, id: value.value }) : value;
+      }
+      break;
+    }
+    case "timer": {
+      if (key === "action") {
+        const action = enumValue(raw, TIMER_ACTIONS, "timer action");
+        if (!action.ok) return action;
+        if (action.value === "start") return good({ op: "timer", action: "start", seconds: 60 });
+        if (action.value === "read") return good({ op: "timer", action: "read", variable: "variable" });
+        return good({ op: "timer", action: "stop" });
+      }
+      if (command.action === "start" && key === "seconds") {
+        const value = finite(raw, "timer seconds", 0);
+        return value.ok ? good({ ...command, seconds: value.value }) : value;
+      }
+      if (command.action === "read" && key === "variable") {
+        const value = identifier(raw, "variable id");
+        return value.ok ? good({ ...command, variable: value.value }) : value;
+      }
+      break;
+    }
+    case "inputNumber": {
+      if (key === "variable") {
+        const value = identifier(raw, "variable id");
+        return value.ok ? good({ ...command, variable: value.value }) : value;
+      }
+      if (key === "digits") {
+        const value = integer(raw, "digits", 1, 8);
+        return value.ok ? good({ ...command, digits: value.value }) : value;
+      }
+      break;
+    }
+    case "changeName": {
+      if (key === "name") return raw.length >= 1 && raw.length <= 24
+        ? good({ ...command, name: raw })
+        : bad("name needs 1-24 characters");
+      break;
+    }
+    case "mapNameDisplay": {
+      if (key === "visible") {
+        const value = bool(raw);
+        return value === null ? bad("visible must be true or false") : good({ ...command, visible: value });
       }
       break;
     }
@@ -1295,6 +1563,10 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
     }
     case "erase":
     case "exit":
+    case "openMenu":
+    case "openSave":
+    case "gameOver":
+    case "returnTitle":
     case "lockInput":
     case "unlockInput":
     case "stopBgm":

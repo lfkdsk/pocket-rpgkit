@@ -109,8 +109,22 @@ export const EDITABLE_COMMAND_OPS = [
   "screenFlash",
   "screenShake",
   "camera",
+  "scrollMap",
   "balloon",
   "screenBackdrop",
+  "showPicture",
+  "movePicture",
+  "rotatePicture",
+  "tintPicture",
+  "erasePicture",
+  "timer",
+  "inputNumber",
+  "openMenu",
+  "openSave",
+  "gameOver",
+  "returnTitle",
+  "changeName",
+  "mapNameDisplay",
   "wait",
   "gold",
   "item",
@@ -223,11 +237,47 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
     case "camera":
       command = { op, target: "player", duration: 0 };
       break;
+    case "scrollMap":
+      command = { op, direction: "down", distance: 1, speed: 4, wait: true };
+      break;
     case "balloon":
       command = { op, target: "this" };
       break;
     case "screenBackdrop":
       command = { op, layer: "backdrop" };
+      break;
+    case "showPicture":
+      command = { op, id: 1, layer: "picture", variant: "picture", x: 0, y: 0 };
+      break;
+    case "movePicture":
+      command = { op, id: 1, x: 0, y: 0, scaleX: 100, scaleY: 100, opacity: 255, duration: 0 };
+      break;
+    case "rotatePicture":
+      command = { op, id: 1, speed: 0 };
+      break;
+    case "tintPicture":
+      command = { op, id: 1, tone: { r: 0, g: 0, b: 0, gray: 0 }, duration: 0 };
+      break;
+    case "erasePicture":
+      command = { op, id: 1 };
+      break;
+    case "timer":
+      command = { op, action: "start", seconds: 60 };
+      break;
+    case "inputNumber":
+      command = { op, variable: "variable", digits: 1 };
+      break;
+    case "openMenu":
+    case "openSave":
+    case "gameOver":
+    case "returnTitle":
+      command = { op };
+      break;
+    case "changeName":
+      command = { op, name: "Player" };
+      break;
+    case "mapNameDisplay":
+      command = { op, visible: true };
       break;
     case "wait":
       command = { op, seconds: 1 };
@@ -463,6 +513,8 @@ export function commandSummary(command: unknown): string {
       return `Screen shake ${numberText(command.strength)}px @ ${numberText(command.speed)}Hz for ${numberText(command.duration)}s`;
     case "camera":
       return `Camera ${cameraTargetSummary(command.target)} ${numberText(command.duration)}s`;
+    case "scrollMap":
+      return `Scroll map ${text(command.direction)} ${numberText(command.distance)} tiles at speed ${numberText(command.speed)}`;
     case "balloon":
       return command.icon === undefined
         ? `Clear balloon on ${targetSummary(command.target)}`
@@ -471,6 +523,34 @@ export function commandSummary(command: unknown): string {
       return command.variant === undefined || command.variant === null
         ? `Close backdrop ${text(command.layer)}`
         : `Backdrop ${text(command.layer)} = ${text(command.variant)}`;
+    case "showPicture":
+      return `Show picture ${numberText(command.id)}: ${text(command.variant)} at (${operandSummary(command.x)}, ${operandSummary(command.y)})`;
+    case "movePicture":
+      return `Move picture ${numberText(command.id)} to (${operandSummary(command.x)}, ${operandSummary(command.y)}) over ${numberText(command.duration)}s`;
+    case "rotatePicture":
+      return `Rotate picture ${numberText(command.id)} at ${numberText(command.speed)}`;
+    case "tintPicture":
+      return `Tint picture ${numberText(command.id)} ${jsonPreview(command.tone)} over ${numberText(command.duration)}s`;
+    case "erasePicture":
+      return `Erase picture ${numberText(command.id)}`;
+    case "timer":
+      if (command.action === "start") return `Start timer at ${numberText(command.seconds)}s`;
+      if (command.action === "read") return `Read timer into ${text(command.variable)}`;
+      return "Stop timer";
+    case "inputNumber":
+      return `Input ${numberText(command.digits)} digit number into ${text(command.variable)}`;
+    case "openMenu":
+      return "Open menu";
+    case "openSave":
+      return "Open save screen";
+    case "gameOver":
+      return "Game over";
+    case "returnTitle":
+      return "Return to title";
+    case "changeName":
+      return `Change player name to ${text(command.name)}`;
+    case "mapNameDisplay":
+      return `Map name display ${boolText(command.visible)}`;
     case "mapAnim": {
       const at = command.target === undefined
         ? `tile (${numberText(command.x)}, ${numberText(command.y)})`
@@ -876,6 +956,7 @@ export const CONDITION_KINDS = [
   "tileProperty",
   "worldIdle",
   "bgmPlaying",
+  "timer",
   "ext",
 ] as const;
 
@@ -915,6 +996,9 @@ export function defaultCondition<Kind extends ConditionKind>(kind: Kind): Condit
       break;
     case "bgmPlaying":
       condition = { kind, negate: false };
+      break;
+    case "timer":
+      condition = { kind, op: ">=", seconds: 0 };
       break;
     case "ext":
       condition = { kind, call: "game.condition", args: null };
@@ -956,6 +1040,8 @@ export function conditionSummary(condition: unknown): string {
         : "Any BGM";
       return condition.negate === true ? `${target} is not playing` : `${target} is playing`;
     }
+    case "timer":
+      return `Timer ${text(condition.op)} ${numberText(condition.seconds)}s`;
     case "ext":
       return `Extension ${text(condition.call)} ${jsonPreview(condition.args)}`;
     default:

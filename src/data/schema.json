@@ -23,6 +23,7 @@
       "properties": {
         "messageBlocksPlayer": { "type": "boolean", "description": "While any fiber's text or choices box is open (a parallel page's included), the player cannot move and no action, playerTouch or eventTouch page starts; autorun and parallel pages keep running. Default false." },
         "textVariables": { "type": "boolean", "description": "Expand {v:<id>} tokens in text lines and choice prompts/rows with the live value of variable id (0 when unset). Default false: braces show verbatim." },
+        "mapNameDisplay": { "type": "boolean", "description": "Show MapDef.name in the built-in banner on map entry. Default false." },
         "inventory": {
           "type": "object",
           "additionalProperties": false,
@@ -766,6 +767,19 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "direction", "distance", "speed"],
+          "properties": {
+            "op": { "const": "scrollMap" },
+            "direction": { "enum": ["down", "left", "right", "up"] },
+            "distance": { "type": "number", "minimum": 0 },
+            "speed": { "type": "integer", "minimum": 1, "maximum": 6 },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Move the current camera focus by a non-negative distance in tiles at an RPG Maker speed grade."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "target"],
           "properties": {
             "op": { "const": "balloon" },
@@ -795,6 +809,138 @@
             "variant": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
           },
           "description": "Select a persistent full-screen cutscene backdrop. Omitting or nulling variant closes it."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id", "layer", "variant", "x", "y"],
+          "properties": {
+            "op": { "const": "showPicture" },
+            "id": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "layer": { "type": "string", "minLength": 1 },
+            "variant": { "type": "string", "minLength": 1 },
+            "origin": { "enum": ["topLeft", "center"] },
+            "x": { "$ref": "#/$defs/pictureCoordinate" },
+            "y": { "$ref": "#/$defs/pictureCoordinate" },
+            "scaleX": { "type": "number", "minimum": -2000, "maximum": 2000 },
+            "scaleY": { "type": "number", "minimum": -2000, "maximum": 2000 },
+            "opacity": { "type": "number", "minimum": 0, "maximum": 255 },
+            "blend": { "enum": ["normal", "add", "multiply", "screen"] }
+          },
+          "description": "Show or replace one numbered viewport picture; coordinates may read event variables at execution time."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id", "x", "y", "scaleX", "scaleY", "opacity", "duration"],
+          "properties": {
+            "op": { "const": "movePicture" },
+            "id": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "origin": { "enum": ["topLeft", "center"] },
+            "x": { "$ref": "#/$defs/pictureCoordinate" },
+            "y": { "$ref": "#/$defs/pictureCoordinate" },
+            "scaleX": { "type": "number", "minimum": -2000, "maximum": 2000 },
+            "scaleY": { "type": "number", "minimum": -2000, "maximum": 2000 },
+            "opacity": { "type": "number", "minimum": 0, "maximum": 255 },
+            "blend": { "enum": ["normal", "add", "multiply", "screen"] },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" },
+            "easing": { "enum": ["linear", "easeIn", "easeOut", "easeInOut"] }
+          },
+          "description": "Tween a numbered picture's position, scale and opacity in virtual seconds."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id", "speed"],
+          "properties": {
+            "op": { "const": "rotatePicture" },
+            "id": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "speed": { "type": "number" }
+          },
+          "description": "Set a numbered picture's continuous clockwise rotation speed in degrees per reference tick."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id", "tone", "duration"],
+          "properties": {
+            "op": { "const": "tintPicture" },
+            "id": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "tone": { "$ref": "#/$defs/pictureTone" },
+            "duration": { "type": "number", "minimum": 0 },
+            "wait": { "type": "boolean" }
+          },
+          "description": "Tween a numbered picture's signed RGB offsets and gray amount in virtual seconds."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "id"],
+          "properties": {
+            "op": { "const": "erasePicture" },
+            "id": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "action"],
+          "oneOf": [
+            {
+              "required": ["seconds"],
+              "not": { "required": ["variable"] },
+              "properties": { "action": { "const": "start" } }
+            },
+            {
+              "not": { "anyOf": [{ "required": ["seconds"] }, { "required": ["variable"] }] },
+              "properties": { "action": { "const": "stop" } }
+            },
+            {
+              "required": ["variable"],
+              "not": { "required": ["seconds"] },
+              "properties": { "action": { "const": "read" } }
+            }
+          ],
+          "properties": {
+            "op": { "const": "timer" },
+            "action": { "enum": ["start", "stop", "read"] },
+            "seconds": { "type": "number", "minimum": 0 },
+            "variable": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "variable", "digits"],
+          "properties": {
+            "op": { "const": "inputNumber" },
+            "variable": { "type": "string", "minLength": 1 },
+            "digits": { "type": "integer", "minimum": 1, "maximum": 8 }
+          },
+          "description": "Open the built-in digit editor and write its committed value to an event variable."
+        },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "openMenu" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "openSave" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "gameOver" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "returnTitle" } } },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "name"],
+          "properties": {
+            "op": { "const": "changeName" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 24 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "visible"],
+          "properties": {
+            "op": { "const": "mapNameDisplay" },
+            "visible": { "type": "boolean" }
+          }
         },
         {
           "type": "object",
@@ -1146,6 +1292,25 @@
       },
       "description": "Unpremultiplied 8-bit RGBA used by full-screen presentation effects."
     },
+    "pictureCoordinate": {
+      "oneOf": [
+        { "type": "number" },
+        { "$ref": "#/$defs/variableRef" }
+      ],
+      "description": "Viewport-pixel coordinate authored directly or read from an event variable when the command executes."
+    },
+    "pictureTone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r", "g", "b", "gray"],
+      "properties": {
+        "r": { "type": "integer", "minimum": -255, "maximum": 255 },
+        "g": { "type": "integer", "minimum": -255, "maximum": 255 },
+        "b": { "type": "integer", "minimum": -255, "maximum": 255 },
+        "gray": { "type": "integer", "minimum": 0, "maximum": 255 }
+      },
+      "description": "RPG Maker picture tone: signed RGB offsets and an unsigned desaturation amount."
+    },
     "cameraTarget": {
       "oneOf": [
         { "enum": ["player", "this"] },
@@ -1437,6 +1602,17 @@
             "negate": { "type": "boolean" }
           },
           "description": "True while any BGM, or the specified logical BGM id, is audibly advancing; negate inverts the result."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "op", "seconds"],
+          "properties": {
+            "kind": { "const": "timer" },
+            "op": { "enum": [">=", "<="] },
+            "seconds": { "type": "number", "minimum": 0 }
+          },
+          "description": "Compare the whole remaining seconds of the running global timer; a stopped timer never matches."
         },
         {
           "type": "object",

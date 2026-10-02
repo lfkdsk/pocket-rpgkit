@@ -21,6 +21,7 @@ import { Text, View } from "@pocketjs/framework/components";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { GameView, type BattleSceneViewProps } from "../../src/ui/GameView.tsx";
 import { ChoiceIconBox } from "../../src/ui/ChoiceIconBox.tsx";
+import { krm2ScreenPresentation } from "../../src/ui/krm2/index.ts";
 import type { GameAssets } from "../../src/ui/game-assets.ts";
 import type { GameViewDemoHost } from "../../src/ui/demo-contract.ts";
 import { createWarpState, loadDemoChapter } from "../../src/ui/demo/runtime.ts";
@@ -341,6 +342,7 @@ export function PreviewApp() {
           <GameView
             project={loaded.project}
             assets={loaded.assets}
+            screenPresentation={krm2ScreenPresentation}
             extensions={{ allowUnknown: true }}
             battle={PLAYTEST_BATTLE_RULES}
             battleScene={PreviewBattleScene}

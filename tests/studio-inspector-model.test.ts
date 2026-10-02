@@ -87,11 +87,11 @@ describe("command categories and picker", () => {
   });
 
   test("category groups", () => {
-    expect(["if", "battle", "scene", "wait", "exit", "common"].map(commandCategory)).toEqual(Array(6).fill("flow"));
-    expect(["text", "choices", "balloon"].map(commandCategory)).toEqual(Array(3).fill("message"));
-    expect(["switch", "variable", "selfSwitch", "item", "gold"].map(commandCategory)).toEqual(Array(5).fill("state"));
+    expect(["if", "battle", "scene", "wait", "exit", "common", "openMenu", "openSave", "gameOver", "returnTitle"].map(commandCategory)).toEqual(Array(10).fill("flow"));
+    expect(["text", "choices", "balloon", "inputNumber"].map(commandCategory)).toEqual(Array(4).fill("message"));
+    expect(["switch", "variable", "selfSwitch", "item", "gold", "timer", "changeName"].map(commandCategory)).toEqual(Array(7).fill("state"));
     expect(["moveRoute", "transfer", "moveControl", "place"].map(commandCategory)).toEqual(Array(4).fill("move"));
-    expect(["screenFade", "camera", "mapAnim", "appearance", "layer"].map(commandCategory)).toEqual(Array(5).fill("present"));
+    expect(["screenFade", "camera", "scrollMap", "showPicture", "movePicture", "rotatePicture", "tintPicture", "erasePicture", "mapNameDisplay", "mapAnim", "appearance", "layer"].map(commandCategory)).toEqual(Array(12).fill("present"));
     expect(["se", "playBgm", "fadeoutBgs", "playMe"].map(commandCategory)).toEqual(Array(4).fill("audio"));
     expect(commandCategory("ext")).toBe("other");
     expect(commandCategory("somethingNew")).toBe("other");
@@ -101,6 +101,8 @@ describe("command categories and picker", () => {
   test("labels", () => {
     expect(opLabel("screenFade")).toBe("Screen fade");
     expect(opLabel("playBgm")).toBe("Play BGM");
+    expect(opLabel("openSave")).toBe("Open save screen");
+    expect(opLabel("mapNameDisplay")).toBe("Map name display");
     expect(fieldLabel("MOVE TYPE")).toBe("Move type");
   });
 
@@ -112,6 +114,7 @@ describe("command categories and picker", () => {
     expect(fade).toContain("fadeoutBgm");
     expect(fade.indexOf("fadeoutBgm")).toBeLessThan(fade.indexOf("screenFade"));
     expect(filterPickerEntries("audio").map((entry) => entry.op)).toContain("playSe");
+    expect(filterPickerEntries("picture").map((entry) => entry.op)).toContain("showPicture");
     expect(filterPickerEntries("zzz-no-such")).toEqual([]);
   });
 });

@@ -96,12 +96,20 @@ const maybeTest = preflight.ok ? test : test.skip;
 // concrete modules are absent here, while GameView's generic factory seam
 // adds about 4.6 KB to Sunstone and the WAV fixture. Merged, the three
 // measure 525,365, 840,064 and 672,828.
-// Keeping the demo's warp toast inside the viewport and dismissing it
-// before a modal add 173 bytes to Sunstone's opted-in demo: 840,237.
+// KRM2's additive event instructions, screen/timer state, compiler paths,
+// save checks and schema identity add shared engine bytes. The generic
+// GameView screen-presentation seam and host-action dispatcher add only to
+// GameView apps. Numbered-picture/HUD JSX is isolated behind
+// `pocket-rpgkit/ui/krm2` and is absent from all three bundles here (pinned
+// separately by krm2-ui-bundle-isolation.test.ts). Together the measured
+// sizes are 542,876, 871,523 and 691,900 bytes. Timer-aware immutable page
+// and trigger-scan keys add 317 shared bytes to each bundle; keeping the demo
+// warp toast inside the viewport and dismissing it before a modal then adds
+// 173 bytes only to Sunstone: 543,193, 872,013 and 692,217 bytes.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 525_365;
-const EXPECTED_SUNSTONE_QOA_BYTES = 840_237;
-const EXPECTED_WAV_FIXTURE_BYTES = 672_828;
+const EXPECTED_MEADOW_BYTES = 543_193;
+const EXPECTED_SUNSTONE_QOA_BYTES = 872_013;
+const EXPECTED_WAV_FIXTURE_BYTES = 692_217;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

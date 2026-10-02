@@ -36,14 +36,14 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 402, name: "When [Choice]", flavor: "MV/MZ", continuation: true },
   { code: 403, name: "When Cancel", flavor: "MV/MZ", continuation: true },
   { code: 404, name: "Choices End", flavor: "MV/MZ", continuation: true },
-  { code: 103, name: "Input Number", flavor: "MV/MZ", needsKit: "a number-input scene writing a numeric variable" },
+  { code: 103, name: "Input Number", flavor: "MV/MZ" },
   { code: 104, name: "Select Item", flavor: "MV/MZ", needsKit: "an item picker writing the chosen item id to a variable" },
   { code: 105, name: "Show Scrolling Text", flavor: "MV/MZ", needsKit: "a scrolling credits-style text box" },
   { code: 405, name: "Show Scrolling Text (line)", flavor: "MV/MZ", continuation: true },
   { code: 108, name: "Comment", flavor: "MV/MZ" },
   { code: 408, name: "Comment (line)", flavor: "MV/MZ", continuation: true },
   { code: 109, name: "Skip", flavor: "MZ" },
-  { code: 111, name: "Conditional Branch", flavor: "MV/MZ", needsKit: "conditions over timer, actor stats, enemies, event facing, buttons, vehicles" },
+  { code: 111, name: "Conditional Branch", flavor: "MV/MZ", needsKit: "conditions over actor stats, enemies, event facing, buttons, vehicles" },
   { code: 411, name: "Else", flavor: "MV/MZ", continuation: true },
   { code: 412, name: "Branch End", flavor: "MV/MZ", continuation: true },
   { code: 112, name: "Loop", flavor: "MV/MZ" },
@@ -54,9 +54,9 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 118, name: "Label", flavor: "MV/MZ", needsKit: "labels and goto" },
   { code: 119, name: "Jump to Label", flavor: "MV/MZ", needsKit: "labels and goto" },
   { code: 121, name: "Control Switches", flavor: "MV/MZ" },
-  { code: 122, name: "Control Variables", flavor: "MV/MZ", needsKit: "variable sources for item/gold/actor/character/party/timer game data" },
+  { code: 122, name: "Control Variables", flavor: "MV/MZ", needsKit: "variable sources for actor, character, party and remaining game data" },
   { code: 123, name: "Control Self Switch", flavor: "MV/MZ", needsKit: "four independent self switches per event (the kit keeps one slot)" },
-  { code: 124, name: "Control Timer", flavor: "MV/MZ", needsKit: "a countdown timer with an on-screen display" },
+  { code: 124, name: "Control Timer", flavor: "MV/MZ" },
   { code: 125, name: "Change Gold", flavor: "MV/MZ", needsKit: "gold changes by variable and a 0 floor on losses" },
   { code: 126, name: "Change Items", flavor: "MV/MZ", needsKit: "item changes by variable and a 0 floor on losses" },
   { code: 127, name: "Change Weapons", flavor: "MV/MZ", needsKit: "equipment (equipped copies) and item changes by variable" },
@@ -74,7 +74,7 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 201, name: "Transfer Player", flavor: "MV/MZ", needsKit: "a white transfer fade colour" },
   { code: 202, name: "Set Vehicle Location", flavor: "MV/MZ", needsKit: "vehicles" },
   { code: 203, name: "Set Event Location", flavor: "MV/MZ", needsKit: "place by variable coordinates and character exchange" },
-  { code: 204, name: "Scroll Map", flavor: "MV/MZ", needsKit: "a relative camera scroll (direction, distance, speed)" },
+  { code: 204, name: "Scroll Map", flavor: "MV/MZ" },
   { code: 205, name: "Set Movement Route", flavor: "MV/MZ", needsKit: "diagonal, jump, backward/away moves, relative turns, in-route switches/SE/image" },
   { code: 505, name: "Set Movement Route (line)", flavor: "MV/MZ", continuation: true },
   { code: 206, name: "Get on/off Vehicle", flavor: "MV/MZ", needsKit: "vehicles" },
@@ -90,11 +90,11 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 224, name: "Flash Screen", flavor: "MV/MZ" },
   { code: 225, name: "Shake Screen", flavor: "MV/MZ" },
   { code: 230, name: "Wait", flavor: "MV/MZ" },
-  { code: 231, name: "Show Picture", flavor: "MV/MZ", needsKit: "numbered pictures with position, origin, scale, opacity and blend" },
-  { code: 232, name: "Move Picture", flavor: "MV/MZ", needsKit: "tweened picture position/scale/opacity" },
-  { code: 233, name: "Rotate Picture", flavor: "MV/MZ", needsKit: "picture rotation" },
-  { code: 234, name: "Tint Picture", flavor: "MV/MZ", needsKit: "per-picture colour tone" },
-  { code: 235, name: "Erase Picture", flavor: "MV/MZ", needsKit: "numbered pictures (the backdrop is a single slot)" },
+  { code: 231, name: "Show Picture", flavor: "MV/MZ" },
+  { code: 232, name: "Move Picture", flavor: "MV/MZ" },
+  { code: 233, name: "Rotate Picture", flavor: "MV/MZ" },
+  { code: 234, name: "Tint Picture", flavor: "MV/MZ" },
+  { code: 235, name: "Erase Picture", flavor: "MV/MZ" },
   { code: 236, name: "Set Weather Effect", flavor: "MV/MZ", needsKit: "rain/storm/snow weather particles" },
   { code: 241, name: "Play BGM", flavor: "MV/MZ", needsKit: "audio pan" },
   { code: 242, name: "Fadeout BGM", flavor: "MV/MZ" },
@@ -106,7 +106,7 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 250, name: "Play SE", flavor: "MV/MZ", needsKit: "audio pan" },
   { code: 251, name: "Stop SE", flavor: "MV/MZ", needsKit: "a stop-all-SE command" },
   { code: 261, name: "Play Movie", flavor: "MV/MZ", needsKit: "video playback" },
-  { code: 281, name: "Change Map Name Display", flavor: "MV/MZ", needsKit: "a map name banner" },
+  { code: 281, name: "Change Map Name Display", flavor: "MV/MZ" },
   { code: 282, name: "Change Tileset", flavor: "MV/MZ", needsKit: "runtime tileset swaps (a ground/upper layer variant per tileset)" },
   { code: 283, name: "Change Battle Background", flavor: "MV/MZ", needsKit: "battle backgrounds in the battle setup" },
   { code: 284, name: "Change Parallax", flavor: "MV/MZ", needsKit: "scrolling parallax backgrounds" },
@@ -129,7 +129,7 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 317, name: "Change Parameter", flavor: "MV/MZ", needsKit: "actor parameters" },
   { code: 318, name: "Change Skill", flavor: "MV/MZ", needsKit: "actor skills" },
   { code: 319, name: "Change Equipment", flavor: "MV/MZ", needsKit: "equipment slots" },
-  { code: 320, name: "Change Name", flavor: "MV/MZ", needsKit: "a set-player-name command (and per-actor names)" },
+  { code: 320, name: "Change Name", flavor: "MV/MZ", needsKit: "runtime names for actors other than actor 1" },
   { code: 321, name: "Change Class", flavor: "MV/MZ", needsKit: "actor classes" },
   { code: 322, name: "Change Actor Images", flavor: "MV/MZ", needsKit: "per-actor walking/face/battler images (the player sprite can change via appearance)" },
   { code: 323, name: "Change Vehicle Image", flavor: "MV/MZ", needsKit: "vehicles" },
@@ -145,10 +145,10 @@ export const RM_COMMANDS: readonly CommandInfo[] = [
   { code: 337, name: "Show Battle Animation", flavor: "MV/MZ", needsKit: "an RPG Maker battle system" },
   { code: 339, name: "Force Action", flavor: "MV/MZ", needsKit: "an RPG Maker battle system" },
   { code: 340, name: "Abort Battle", flavor: "MV/MZ", needsKit: "an RPG Maker battle system" },
-  { code: 351, name: "Open Menu Screen", flavor: "MV/MZ", needsKit: "a command that opens the host menu" },
-  { code: 352, name: "Open Save Screen", flavor: "MV/MZ", needsKit: "a command that opens the host save menu" },
-  { code: 353, name: "Game Over", flavor: "MV/MZ", needsKit: "a game-over command" },
-  { code: 354, name: "Return to Title Screen", flavor: "MV/MZ", needsKit: "a return-to-title command" },
+  { code: 351, name: "Open Menu Screen", flavor: "MV/MZ" },
+  { code: 352, name: "Open Save Screen", flavor: "MV/MZ" },
+  { code: 353, name: "Game Over", flavor: "MV/MZ" },
+  { code: 354, name: "Return to Title Screen", flavor: "MV/MZ" },
   { code: 355, name: "Script", flavor: "MV/MZ", needsKit: "hand-porting: arbitrary JavaScript has no kit equivalent" },
   { code: 655, name: "Script (line)", flavor: "MV/MZ", continuation: true },
   { code: 356, name: "Plugin Command (MV)", flavor: "MV", needsKit: "a per-plugin port (an ext handler)" },
@@ -290,7 +290,7 @@ function sampleBody(code: number): RmCommand[] {
     case 201: return [cmd(201, 0, [0, 1, 5, 5, 2, 0])];
     case 202: return [cmd(202, 0, [0, 0, 1, 5, 5])];
     case 203: return [cmd(203, 0, [0, 0, 5, 5, 2])];
-    case 204: return [cmd(204, 0, [2, 3, 4])];
+    case 204: return [cmd(204, 0, [2, 3, 4, true])];
     case 205: {
       const route = { list: [{ code: 1, indent: null }, { code: 0 }], repeat: false, skippable: false, wait: true };
       return [cmd(205, 0, [-1, route]), cmd(505, 0, [{ code: 1, indent: null }])];
@@ -308,10 +308,10 @@ function sampleBody(code: number): RmCommand[] {
     case 224: return [cmd(224, 0, [[255, 255, 255, 170], 60, true])];
     case 225: return [cmd(225, 0, [5, 5, 60, true])];
     case 230: return [cmd(230, 0, [60])];
-    case 231: return [cmd(231, 0, [1, "Sample", 0, 0, 0, 0, 100, 100, 255, 0])];
-    case 232: return [cmd(232, 0, [1, "", 0, 0, 0, 0, 100, 100, 255, 0, 60, true])];
-    case 233: return [cmd(233, 0, [1, 10])];
-    case 234: return [cmd(234, 0, [1, [0, 0, 0, 0], 60, true])];
+    case 231: return [cmd(231, 0, [1, "Sample", 1, 1, 2, 3, 150, 75, 128, 2])];
+    case 232: return [cmd(232, 0, [1, 0, 1, 1, 2, 3, 150, 75, 128, 2, 60, true, 3])];
+    case 233: return [cmd(233, 0, [1, -10])];
+    case 234: return [cmd(234, 0, [1, [-68, 34, 0, 128], 60, true])];
     case 235: return [cmd(235, 0, [1])];
     case 236: return [cmd(236, 0, ["rain", 5, 60, false])];
     case 241: return [cmd(241, 0, [AUDIO])];

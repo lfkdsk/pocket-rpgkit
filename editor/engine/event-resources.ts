@@ -76,6 +76,7 @@ export function eventEditorResources(project: Project, map?: MapDef): EventEdito
     switch (command.op) {
       case "layer":
       case "screenBackdrop":
+      case "showPicture":
         addVariant(command.layer, command.variant);
         break;
       case "screenTint":

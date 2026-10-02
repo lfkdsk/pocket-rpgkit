@@ -121,9 +121,9 @@ In short:
 ## Command table
 
 Every MV/MZ event command code and what the importer does with a minimal
-use of it: 39 of the 107 commands map natively, 3 run degraded, 4 become
+use of it: 51 of the 107 commands map natively, 3 run degraded, 4 become
 placeholders (Battle Processing, Script and the two plugin commands) and
-61 are dropped, half of them actor, enemy and battle-only commands. "Needs
+49 are dropped, many of them actor, enemy and battle-only commands. "Needs
 kit" names the runtime capability a native mapping would take; it is the
 list of what the kit would need to import an RPG Maker game completely.
 `tests/rpgmaker-import.test.ts` keeps this table in step with the
@@ -135,12 +135,12 @@ for that project, to `coverage.md`.
 |---:|---|---|---|---|---|
 | 101 | Show Text | MV/MZ | Native |  | face graphics per message (portrait keyed by file/index, not speaker) |
 | 102 | Show Choices | MV/MZ | Native |  | single-option lists and a default cursor row |
-| 103 | Input Number | MV/MZ | Dropped |  | a number-input scene writing a numeric variable |
+| 103 | Input Number | MV/MZ | Native |  |  |
 | 104 | Select Item | MV/MZ | Dropped |  | an item picker writing the chosen item id to a variable |
 | 105 | Show Scrolling Text | MV/MZ | Degraded | scrolling text shown as message pages | a scrolling credits-style text box |
 | 108 | Comment | MV/MZ | Native |  |  |
 | 109 | Skip | MZ | Native |  |  |
-| 111 | Conditional Branch | MV/MZ | Native |  | conditions over timer, actor stats, enemies, event facing, buttons, vehicles |
+| 111 | Conditional Branch | MV/MZ | Native |  | conditions over actor stats, enemies, event facing, buttons, vehicles |
 | 112 | Loop | MV/MZ | Native |  |  |
 | 113 | Break Loop | MV/MZ | Native |  |  |
 | 115 | Exit Event Processing | MV/MZ | Native |  | a return-from-common-event command (exit ends the calling fiber) |
@@ -148,9 +148,9 @@ for that project, to `coverage.md`.
 | 118 | Label | MV/MZ | Dropped |  | labels and goto |
 | 119 | Jump to Label | MV/MZ | Dropped |  | labels and goto |
 | 121 | Control Switches | MV/MZ | Native |  |  |
-| 122 | Control Variables | MV/MZ | Native |  | variable sources for item/gold/actor/character/party/timer game data |
+| 122 | Control Variables | MV/MZ | Native |  | variable sources for actor, character, party and remaining game data |
 | 123 | Control Self Switch | MV/MZ | Native |  | four independent self switches per event (the kit keeps one slot) |
-| 124 | Control Timer | MV/MZ | Dropped |  | a countdown timer with an on-screen display |
+| 124 | Control Timer | MV/MZ | Native |  |  |
 | 125 | Change Gold | MV/MZ | Native |  | gold changes by variable and a 0 floor on losses |
 | 126 | Change Items | MV/MZ | Native |  | item changes by variable and a 0 floor on losses |
 | 127 | Change Weapons | MV/MZ | Native |  | equipment (equipped copies) and item changes by variable |
@@ -168,7 +168,7 @@ for that project, to `coverage.md`.
 | 201 | Transfer Player | MV/MZ | Native |  | a white transfer fade colour |
 | 202 | Set Vehicle Location | MV/MZ | Dropped |  | vehicles |
 | 203 | Set Event Location | MV/MZ | Native |  | place by variable coordinates and character exchange |
-| 204 | Scroll Map | MV/MZ | Dropped |  | a relative camera scroll (direction, distance, speed) |
+| 204 | Scroll Map | MV/MZ | Native |  |  |
 | 205 | Set Movement Route | MV/MZ | Native |  | diagonal, jump, backward/away moves, relative turns, in-route switches/SE/image |
 | 206 | Get on/off Vehicle | MV/MZ | Dropped |  | vehicles |
 | 211 | Change Transparency | MV/MZ | Native |  |  |
@@ -183,11 +183,11 @@ for that project, to `coverage.md`.
 | 224 | Flash Screen | MV/MZ | Native |  |  |
 | 225 | Shake Screen | MV/MZ | Native |  |  |
 | 230 | Wait | MV/MZ | Native |  |  |
-| 231 | Show Picture | MV/MZ | Native |  | numbered pictures with position, origin, scale, opacity and blend |
-| 232 | Move Picture | MV/MZ | Dropped |  | tweened picture position/scale/opacity |
-| 233 | Rotate Picture | MV/MZ | Dropped |  | picture rotation |
-| 234 | Tint Picture | MV/MZ | Dropped |  | per-picture colour tone |
-| 235 | Erase Picture | MV/MZ | Native |  | numbered pictures (the backdrop is a single slot) |
+| 231 | Show Picture | MV/MZ | Native |  |  |
+| 232 | Move Picture | MV/MZ | Native |  |  |
+| 233 | Rotate Picture | MV/MZ | Native |  |  |
+| 234 | Tint Picture | MV/MZ | Native |  |  |
+| 235 | Erase Picture | MV/MZ | Native |  |  |
 | 236 | Set Weather Effect | MV/MZ | Dropped |  | rain/storm/snow weather particles |
 | 241 | Play BGM | MV/MZ | Native |  | audio pan |
 | 242 | Fadeout BGM | MV/MZ | Native |  |  |
@@ -199,7 +199,7 @@ for that project, to `coverage.md`.
 | 250 | Play SE | MV/MZ | Native |  | audio pan |
 | 251 | Stop SE | MV/MZ | Dropped |  | a stop-all-SE command |
 | 261 | Play Movie | MV/MZ | Dropped |  | video playback |
-| 281 | Change Map Name Display | MV/MZ | Dropped |  | a map name banner |
+| 281 | Change Map Name Display | MV/MZ | Native |  |  |
 | 282 | Change Tileset | MV/MZ | Dropped |  | runtime tileset swaps (a ground/upper layer variant per tileset) |
 | 283 | Change Battle Background | MV/MZ | Dropped |  | battle backgrounds in the battle setup |
 | 284 | Change Parallax | MV/MZ | Dropped |  | scrolling parallax backgrounds |
@@ -217,7 +217,7 @@ for that project, to `coverage.md`.
 | 317 | Change Parameter | MV/MZ | Dropped |  | actor parameters |
 | 318 | Change Skill | MV/MZ | Dropped |  | actor skills |
 | 319 | Change Equipment | MV/MZ | Dropped |  | equipment slots |
-| 320 | Change Name | MV/MZ | Dropped |  | a set-player-name command (and per-actor names) |
+| 320 | Change Name | MV/MZ | Native |  | runtime names for actors other than actor 1 |
 | 321 | Change Class | MV/MZ | Dropped |  | actor classes |
 | 322 | Change Actor Images | MV/MZ | Dropped |  | per-actor walking/face/battler images (the player sprite can change via appearance) |
 | 323 | Change Vehicle Image | MV/MZ | Dropped |  | vehicles |
@@ -233,10 +233,10 @@ for that project, to `coverage.md`.
 | 337 | Show Battle Animation | MV/MZ | Dropped |  | an RPG Maker battle system |
 | 339 | Force Action | MV/MZ | Dropped |  | an RPG Maker battle system |
 | 340 | Abort Battle | MV/MZ | Dropped |  | an RPG Maker battle system |
-| 351 | Open Menu Screen | MV/MZ | Dropped |  | a command that opens the host menu |
-| 352 | Open Save Screen | MV/MZ | Dropped |  | a command that opens the host save menu |
-| 353 | Game Over | MV/MZ | Dropped |  | a game-over command |
-| 354 | Return to Title Screen | MV/MZ | Dropped |  | a return-to-title command |
+| 351 | Open Menu Screen | MV/MZ | Native |  |  |
+| 352 | Open Save Screen | MV/MZ | Native |  |  |
+| 353 | Game Over | MV/MZ | Native |  |  |
+| 354 | Return to Title Screen | MV/MZ | Native |  |  |
 | 355 | Script | MV/MZ | Placeholder | script not ported | hand-porting: arbitrary JavaScript has no kit equivalent |
 | 356 | Plugin Command (MV) | MV | Placeholder | plugin command not ported | a per-plugin port (an ext handler) |
 | 357 | Plugin Command (MZ) | MZ | Placeholder | plugin command not ported | a per-plugin port (an ext handler) |

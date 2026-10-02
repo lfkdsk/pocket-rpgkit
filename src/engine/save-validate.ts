@@ -25,7 +25,9 @@ const INTEGER_OPS = new Set([
   "erase", "exit", "transfer",
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
   "mapAnim", "stopAnim", "appearance", "layer", "tileProperty",
-  "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon", "screenBackdrop",
+  "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "scrollMap", "balloon", "screenBackdrop",
+  "showPicture", "movePicture", "rotatePicture", "tintPicture", "erasePicture",
+  "timer", "hostAction", "changeName", "mapNameDisplay",
   "ext", "extChoice", "battle", "scene",
 ]);
 
@@ -103,6 +105,44 @@ function validateColor(v: unknown, path: string): string | null {
     if (!isNonNegInt(v[channel]) || v[channel] > 255) {
       return fail(`${path}.${channel}`, "integer 0..255 required");
     }
+  }
+  return null;
+}
+
+function validatePictureId(v: unknown, path: string): string | null {
+  return Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 100
+    ? null
+    : fail(path, "integer 1..100 required");
+}
+
+function validatePictureCoordinate(v: unknown, path: string): string | null {
+  return isFiniteNumber(v) ? null : validateVariableRef(v, path);
+}
+
+function validatePictureTransform(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "picture transform object required");
+  if (!isFiniteNumber(v.x)) return fail(`${path}.x`, "number required");
+  if (!isFiniteNumber(v.y)) return fail(`${path}.y`, "number required");
+  for (const key of ["scaleX", "scaleY"] as const) {
+    if (!isFiniteNumber(v[key]) || v[key] < -2000 || v[key] > 2000) {
+      return fail(`${path}.${key}`, "number -2000..2000 required");
+    }
+  }
+  if (!isFiniteNumber(v.opacity) || v.opacity < 0 || v.opacity > 255) {
+    return fail(`${path}.opacity`, "number 0..255 required");
+  }
+  return null;
+}
+
+function validatePictureTone(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "picture tone object required");
+  for (const key of ["r", "g", "b"] as const) {
+    if (!Number.isInteger(v[key]) || (v[key] as number) < -255 || (v[key] as number) > 255) {
+      return fail(`${path}.${key}`, "integer -255..255 required");
+    }
+  }
+  if (!isNonNegInt(v.gray) || v.gray > 255) {
+    return fail(`${path}.gray`, "integer 0..255 required");
   }
   return null;
 }
@@ -200,6 +240,14 @@ function validateCondition(v: unknown, path: string): string | null {
       }
       if (v.negate !== undefined && typeof v.negate !== "boolean") {
         return fail(`${path}.negate`, "boolean required");
+      }
+      return null;
+    case "timer":
+      if (v.op !== ">=" && v.op !== "<=") {
+        return fail(`${path}.op`, ">=|<= required");
+      }
+      if (!isFiniteNumber(v.seconds) || v.seconds < 0) {
+        return fail(`${path}.seconds`, "non-negative number required");
       }
       return null;
     case "ext":
@@ -805,6 +853,16 @@ function validateProg(prog: unknown, path: string): string | null {
         if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
         break;
       }
+      case "scrollMap":
+        if (!["down", "left", "right", "up"].includes(ins.direction as string)) {
+          return fail(`${here}.direction`, "bad direction");
+        }
+        if (!isFiniteNumber(ins.distance) || ins.distance < 0) {
+          return fail(`${here}.distance`, "non-negative number required");
+        }
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
       case "balloon": {
         const target = validateAppearanceTarget(ins.target, `${here}.target`);
         if (target) return target;
@@ -827,6 +885,109 @@ function validateProg(prog: unknown, path: string): string | null {
         if (ins.variant !== null && (typeof ins.variant !== "string" || ins.variant.length === 0)) {
           return fail(`${here}.variant`, "non-empty string or null required");
         }
+        break;
+      case "showPicture": {
+        const id = validatePictureId(ins.id, `${here}.id`);
+        if (id) return id;
+        if (typeof ins.layer !== "string" || ins.layer.length === 0) {
+          return fail(`${here}.layer`, "non-empty string required");
+        }
+        if (typeof ins.variant !== "string" || ins.variant.length === 0) {
+          return fail(`${here}.variant`, "non-empty string required");
+        }
+        if (ins.origin !== "topLeft" && ins.origin !== "center") {
+          return fail(`${here}.origin`, "topLeft|center required");
+        }
+        const x = validatePictureCoordinate(ins.x, `${here}.x`);
+        if (x) return x;
+        const y = validatePictureCoordinate(ins.y, `${here}.y`);
+        if (y) return y;
+        for (const key of ["scaleX", "scaleY"] as const) {
+          const value = ins[key];
+          if (!isFiniteNumber(value) || value < -2000 || value > 2000) {
+            return fail(`${here}.${key}`, "number -2000..2000 required");
+          }
+        }
+        if (!isFiniteNumber(ins.opacity) || ins.opacity < 0 || ins.opacity > 255) {
+          return fail(`${here}.opacity`, "number 0..255 required");
+        }
+        if (!["normal", "add", "multiply", "screen"].includes(ins.blend as string)) {
+          return fail(`${here}.blend`, "normal|add|multiply|screen required");
+        }
+        break;
+      }
+      case "movePicture": {
+        const id = validatePictureId(ins.id, `${here}.id`);
+        if (id) return id;
+        if (ins.origin !== null && ins.origin !== "topLeft" && ins.origin !== "center") {
+          return fail(`${here}.origin`, "topLeft|center|null required");
+        }
+        const x = validatePictureCoordinate(ins.x, `${here}.x`);
+        if (x) return x;
+        const y = validatePictureCoordinate(ins.y, `${here}.y`);
+        if (y) return y;
+        for (const key of ["scaleX", "scaleY"] as const) {
+          const value = ins[key];
+          if (!isFiniteNumber(value) || value < -2000 || value > 2000) {
+            return fail(`${here}.${key}`, "number -2000..2000 required");
+          }
+        }
+        if (!isFiniteNumber(ins.opacity) || ins.opacity < 0 || ins.opacity > 255) {
+          return fail(`${here}.opacity`, "number 0..255 required");
+        }
+        if (ins.blend !== null && !["normal", "add", "multiply", "screen"].includes(ins.blend as string)) {
+          return fail(`${here}.blend`, "normal|add|multiply|screen|null required");
+        }
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        if (!["linear", "easeIn", "easeOut", "easeInOut"].includes(ins.easing as string)) {
+          return fail(`${here}.easing`, "known easing required");
+        }
+        break;
+      }
+      case "rotatePicture": {
+        const id = validatePictureId(ins.id, `${here}.id`);
+        if (id) return id;
+        if (!isFiniteNumber(ins.speed)) return fail(`${here}.speed`, "number required");
+        break;
+      }
+      case "tintPicture": {
+        const id = validatePictureId(ins.id, `${here}.id`);
+        if (id) return id;
+        const tone = validatePictureTone(ins.tone, `${here}.tone`);
+        if (tone) return tone;
+        if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        if (typeof ins.wait !== "boolean") return fail(`${here}.wait`, "boolean required");
+        break;
+      }
+      case "erasePicture": {
+        const id = validatePictureId(ins.id, `${here}.id`);
+        if (id) return id;
+        break;
+      }
+      case "timer":
+        if (ins.action === "start") {
+          if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
+        } else if (ins.action === "read") {
+          if (typeof ins.variable !== "string" || ins.variable.length === 0) {
+            return fail(`${here}.variable`, "non-empty string required");
+          }
+        } else if (ins.action !== "stop") {
+          return fail(`${here}.action`, "start|stop|read required");
+        }
+        break;
+      case "hostAction":
+        if (!["menu", "save", "gameOver", "title"].includes(ins.action as string)) {
+          return fail(`${here}.action`, "menu|save|gameOver|title required");
+        }
+        break;
+      case "changeName":
+        if (typeof ins.name !== "string" || ins.name.length < 1 || ins.name.length > 24) {
+          return fail(`${here}.name`, "string of length 1..24 required");
+        }
+        break;
+      case "mapNameDisplay":
+        if (typeof ins.visible !== "boolean") return fail(`${here}.visible`, "boolean required");
         break;
       case "common":
         if (needStr("id")) return fail(`${here}.id`, "string required");
@@ -1036,7 +1197,8 @@ function validateFiber(
     case "screenWait": {
       const ins = top.pc < top.prog.length ? top.prog[top.pc] : undefined;
       if (!isRecord(ins) || ![
-        "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "balloon",
+        "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "scrollMap",
+        "movePicture", "tintPicture", "balloon",
       ].includes(ins.op as string) || ins.wait !== true) {
         return fail(`${path}.mode`, "a screenWait fiber must park on a waited screen instruction");
       }
@@ -1077,9 +1239,78 @@ function validateColorTween(v: unknown, path: string): string | null {
   return null;
 }
 
+function validatePictureMove(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "picture move tween object required");
+  const from = validatePictureTransform(v.from, `${path}.from`);
+  if (from) return from;
+  const to = validatePictureTransform(v.to, `${path}.to`);
+  if (to) return to;
+  if (!isNonNegInt(v.total) || v.total === 0 ||
+      !isNonNegInt(v.left) || v.left === 0 || v.left > v.total) {
+    return fail(path, "live move needs positive total/left with left <= total");
+  }
+  if (!["linear", "easeIn", "easeOut", "easeInOut"].includes(v.easing as string)) {
+    return fail(`${path}.easing`, "known easing required");
+  }
+  return null;
+}
+
+function validatePictureTint(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "picture tint tween object required");
+  const from = validatePictureTone(v.from, `${path}.from`);
+  if (from) return from;
+  const to = validatePictureTone(v.to, `${path}.to`);
+  if (to) return to;
+  if (!isNonNegInt(v.total) || v.total === 0 ||
+      !isNonNegInt(v.left) || v.left === 0 || v.left > v.total) {
+    return fail(path, "live tint needs positive total/left with left <= total");
+  }
+  return null;
+}
+
+function validatePicture(v: unknown, key: string, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "picture object required");
+  const id = validatePictureId(v.id, `${path}.id`);
+  if (id) return id;
+  if (key !== String(v.id)) return fail(path, "picture key must match its id");
+  if (typeof v.layer !== "string" || v.layer.length === 0) {
+    return fail(`${path}.layer`, "non-empty string required");
+  }
+  if (typeof v.variant !== "string" || v.variant.length === 0) {
+    return fail(`${path}.variant`, "non-empty string required");
+  }
+  if (v.origin !== "topLeft" && v.origin !== "center") {
+    return fail(`${path}.origin`, "topLeft|center required");
+  }
+  if (!["normal", "add", "multiply", "screen"].includes(v.blend as string)) {
+    return fail(`${path}.blend`, "normal|add|multiply|screen required");
+  }
+  const transform = validatePictureTransform(v.transform, `${path}.transform`);
+  if (transform) return transform;
+  const tone = validatePictureTone(v.tone, `${path}.tone`);
+  if (tone) return tone;
+  if (!isFiniteNumber(v.rotation) || v.rotation < 0 || v.rotation >= 360) {
+    return fail(`${path}.rotation`, "number in [0,360) required");
+  }
+  if (!isFiniteNumber(v.rotationSpeed)) {
+    return fail(`${path}.rotationSpeed`, "number required");
+  }
+  if (v.move !== undefined) {
+    const move = validatePictureMove(v.move, `${path}.move`);
+    if (move) return move;
+  }
+  if (v.tint !== undefined) {
+    const tint = validatePictureTint(v.tint, `${path}.tint`);
+    if (tint) return tint;
+  }
+  return null;
+}
+
 function validateScreenEffects(v: unknown, path: string): string | null {
   if (!isRecord(v)) return fail(path, "screen effects object required");
-  const known = new Set(["fade", "tints", "flash", "shake", "camera", "balloons", "backdrop"]);
+  const known = new Set([
+    "fade", "tints", "flash", "shake", "camera", "balloons", "backdrop", "pictures", "mapNameBanner",
+  ]);
   for (const key of Object.keys(v)) {
     if (!known.has(key)) return fail(`${path}.${key}`, "unknown screen effect field");
   }
@@ -1169,6 +1400,26 @@ function validateScreenEffects(v: unknown, path: string): string | null {
       return fail(`${path}.backdrop`, "non-empty layer and variant strings required");
     }
   }
+  if (v.pictures !== undefined) {
+    if (!isRecord(v.pictures) || Object.keys(v.pictures).length === 0) {
+      return fail(`${path}.pictures`, "non-empty record required");
+    }
+    for (const [id, picture] of Object.entries(v.pictures)) {
+      const e = validatePicture(picture, id, `${path}.pictures.${id}`);
+      if (e) return e;
+    }
+  }
+  if (v.mapNameBanner !== undefined) {
+    const banner = v.mapNameBanner;
+    if (!isRecord(banner)) return fail(`${path}.mapNameBanner`, "map-name banner object required");
+    if (typeof banner.text !== "string" || banner.text.length === 0) {
+      return fail(`${path}.mapNameBanner.text`, "non-empty string required");
+    }
+    if (!isNonNegInt(banner.total) || banner.total === 0 ||
+        !isNonNegInt(banner.left) || banner.left === 0 || banner.left > banner.total) {
+      return fail(`${path}.mapNameBanner`, "live banner needs positive total/left with left <= total");
+    }
+  }
   return null;
 }
 
@@ -1232,6 +1483,23 @@ function validateSwitchState(v: unknown, path: string): string | null {
     if (typeof v.playerName !== "string" || v.playerName.length < 1 || v.playerName.length > 24) {
       return fail(`${path}.playerName`, "string of length 1..24 required");
     }
+  }
+  if (v.timer !== undefined) {
+    const timer = v.timer;
+    if (!isRecord(timer)) return fail(`${path}.timer`, "timer object required");
+    if (!isNonNegInt(timer.remaining)) {
+      return fail(`${path}.timer.remaining`, "non-negative integer required");
+    }
+    if (timer.running !== true) return fail(`${path}.timer.running`, "true required");
+    if (typeof timer.expired !== "boolean") {
+      return fail(`${path}.timer.expired`, "boolean required");
+    }
+    if (timer.expired !== (timer.remaining === 0)) {
+      return fail(`${path}.timer.expired`, "must be true exactly when remaining is zero");
+    }
+  }
+  if (v.mapNameDisplay !== undefined && v.mapNameDisplay !== true) {
+    return fail(`${path}.mapNameDisplay`, "true or absent required");
   }
   if (v.playerAppearance !== undefined) {
     if (!isRecord(v.playerAppearance)) return fail(`${path}.playerAppearance`, "object required");
@@ -1884,6 +2152,12 @@ export function validateSnapshot(snap: unknown): string | null {
   }
   if (!Array.isArray(it.cues)) return "state.interp.cues: array required";
   if (it.cues.length !== 0) return "state.interp.cues: cues must drain before save";
+  if (it.hostActions !== undefined) {
+    if (!Array.isArray(it.hostActions)) return "state.interp.hostActions: array required";
+    if (it.hostActions.length !== 0) {
+      return "state.interp.hostActions: host actions must drain before save";
+    }
+  }
   if (it.pendingTransfer !== null) {
     return "state.interp.pendingTransfer: no parked transfer at a save point";
   }

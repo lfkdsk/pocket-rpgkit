@@ -389,7 +389,7 @@ describe("rpgkit edit command operations and patches", () => {
     expect(bad.response).toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
   });
 
-  test("AI read and validation operations expose every screen command for field editing", () => {
+  test("AI read and validation operations expose screen and KRM2 commands for field editing", () => {
     const project = fixture();
     const screen: Command[] = [
       { op: "screenFade", direction: "out", duration: 0.5, wait: true },
@@ -397,8 +397,22 @@ describe("rpgkit edit command operations and patches", () => {
       { op: "screenFlash", color: { r: 255, g: 255, b: 255, a: 255 }, intensity: 160, duration: 0.2 },
       { op: "screenShake", strength: 5, speed: 3, duration: 0.4 },
       { op: "camera", target: { event: "npc" }, duration: 1 },
+      { op: "scrollMap", direction: "right", distance: 2, speed: 4, wait: true },
       { op: "balloon", target: "player" },
       { op: "screenBackdrop", layer: "cutscene", variant: "blue" },
+      { op: "showPicture", id: 1, layer: "pictures", variant: "portrait", x: 0, y: 0 },
+      { op: "movePicture", id: 1, x: 10, y: 20, scaleX: 100, scaleY: 100, opacity: 255, duration: 0.5 },
+      { op: "rotatePicture", id: 1, speed: -1 },
+      { op: "tintPicture", id: 1, tone: { r: -32, g: 0, b: 16, gray: 8 }, duration: 0.5 },
+      { op: "erasePicture", id: 1 },
+      { op: "timer", action: "start", seconds: 60 },
+      { op: "inputNumber", variable: "answer", digits: 4 },
+      { op: "openMenu" },
+      { op: "openSave" },
+      { op: "gameOver" },
+      { op: "returnTitle" },
+      { op: "changeName", name: "Terra" },
+      { op: "mapNameDisplay", visible: true },
     ];
     project.maps[0]!.events![0]!.pages[0]!.commands = screen;
     const source = serializeProject(project);

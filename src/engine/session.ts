@@ -39,6 +39,7 @@ import { cloneAudioState, type AudioState } from "./audio.ts";
 import {
   activeIndexAt,
   activePage,
+  advanceTimer,
   advanceInterpAudioInPlace,
   clearStaleEventAppearances,
   clampFiniteVar,
@@ -62,11 +63,13 @@ import {
   secondsToFrames,
   shareInterp,
   stepInterpWithExtensionsInPlace,
+  timerSeconds,
   type ExtensionScope,
   type ConditionContext,
   type EventPageAppearance,
   type InterpInput,
   type InterpState,
+  type HostAction,
   type SoundCue,
   type PendingBattle,
   type PendingMoveOperation,
@@ -150,7 +153,11 @@ import {
   type ResolvedMoveSettings,
 } from "./move-control.ts";
 import { MOTION_HZ, motionTicksPerFrame } from "./motion-clock.ts";
-import { advanceScreenEffects, screenEffectsAfterTransfer } from "./screen.ts";
+import {
+  advanceScreenEffects,
+  screenEffectsAfterTransfer,
+  startMapNameBanner,
+} from "./screen.ts";
 import { BTN_BITS } from "./camera.ts";
 import type { Dir4, PassageTable } from "./passability.ts";
 import { buildPassage, canStepFrom, stampBlockedCells, withTilePropertyOverrides } from "./passability.ts";
@@ -754,6 +761,7 @@ export function startSession(
       ext: cloneExtension(session.extensions, ext0 === undefined ? session.extensions.initial : ext0),
       scene: null,
     };
+    showMapNameBanner(state, session.maps.get(start.map)!);
     startupProfileMark("session-start:end");
     return state;
   }
@@ -763,6 +771,7 @@ export function startSession(
   const interp = createInterpState();
   interp.sw.gold = clampFiniteVar(project.initialGold ?? 0);
   if (project.playerName) interp.sw.playerName = project.playerName;
+  if (project.system?.mapNameDisplay === true) interp.sw.mapNameDisplay = true;
   const state: SessionState = {
     frame: 0,
     mapId: start.map,
@@ -775,8 +784,17 @@ export function startSession(
     ext: cloneExtension(session.extensions, ext0 === undefined ? session.extensions.initial : ext0),
     scene: null,
   };
+  showMapNameBanner(state, session.maps.get(start.map)!);
   startupProfileMark("session-start:end");
   return state;
+}
+
+/** Start the automatic entry banner only when the persistent project flag
+ * is enabled. The sparse screen object remains absent in legacy projects. */
+function showMapNameBanner(s: SessionState, map: Readonly<MapDef>): void {
+  if (s.sw.mapNameDisplay !== true || map.name.length === 0) return;
+  const screen = s.interp.screen ?? (s.interp.screen = {});
+  startMapNameBanner(screen, map.name);
 }
 
 /** Drop per-visit switch/variable ids. Any switch or variable
@@ -1682,8 +1700,18 @@ function foldSession(
   // place; characters and switch records stay shared with s0 until written.
   const frozen = s0.scene !== null && !sess.sceneOptions.worldContinues;
   const interp = frozen
-    ? { ...s0.interp, ...(s0.interp.audio ? { audio: cloneAudioState(s0.interp.audio) } : {}) }
+    ? {
+        ...s0.interp,
+        // Frozen scenes still advance the global timer. Give that sparse
+        // top-level field a private bank shell while retaining the large
+        // immutable records by identity.
+        sw: { ...s0.interp.sw },
+        ...(s0.interp.audio ? { audio: cloneAudioState(s0.interp.audio) } : {}),
+      }
     : shareInterp(s0.interp, sess.immutableState);
+  // Host requests are one-frame outputs. A frozen scene or transfer fade
+  // may not enter the interpreter path that normally clears them.
+  delete interp.hostActions;
   const s: SessionState = {
     frame: s0.frame,
     mapId: s0.mapId,
@@ -1716,6 +1744,7 @@ function foldSession(
   const sceneAtFrameStart = s.scene !== null;
   let sceneStartedAt = sceneAtFrameStart ? 0 : -1;
   let frameCues: SoundCue[] | undefined;
+  let frameHostActions: HostAction[] | undefined;
 
   let prevCell = { x: s.move.tx, y: s.move.ty };
   for (let tick = 0; tick < ticks; tick++) {
@@ -1730,6 +1759,10 @@ function foldSession(
     if (sess.audioCues && tickResult.cues) {
       if (frameCues === undefined) frameCues = tickResult.cues;
       else frameCues.push(...tickResult.cues);
+    }
+    if (tickResult.hostActions) {
+      if (frameHostActions === undefined) frameHostActions = tickResult.hostActions;
+      else frameHostActions.push(...tickResult.hostActions);
     }
     if (!hadScene && s.scene !== null && sceneStartedAt < 0) sceneStartedAt = tick + 1;
     // A fatalized interpreter freezes the playfield for the rest of the
@@ -1758,6 +1791,8 @@ function foldSession(
     }
   }
   if (sess.audioCues && frameCues !== undefined) s.interp.cues = frameCues;
+  if (frameHostActions !== undefined) s.interp.hostActions = frameHostActions;
+  else delete s.interp.hostActions;
   return s;
 }
 
@@ -1807,6 +1842,7 @@ function pageSyncSignature(s: SessionState, worldIdle: boolean): readonly unknow
     recordRevision(s.sw.items),
     s.sw.gold,
     s.sw.playerName,
+    s.sw.timer === undefined ? undefined : timerSeconds(s.sw.timer),
     s.ext,
     recordRevision(s.interp.erased),
     recordRevision(s.interp.placements),
@@ -1859,8 +1895,13 @@ function stepReferenceTick(
   s: SessionState,
   input: SessionInput,
   prevCellIn: { x: number; y: number },
-): { x: number; y: number; cues?: SoundCue[] } {
+): { x: number; y: number; cues?: SoundCue[]; hostActions?: HostAction[] } {
   const map = sess.maps.get(s.mapId)!;
+
+  // RPG Maker's game timer is global: map fades, full-screen scenes and a
+  // fatalized map interpreter do not pause it. Omitted state keeps the
+  // unused hot path to one predictable branch.
+  if (s.sw.timer !== undefined) advanceTimer(s.sw);
 
   // A completion is observed after the previous host frame's reference-tick
   // batch. Its successor therefore starts on this next reference tick, never
@@ -2184,6 +2225,9 @@ function stepReferenceTick(
   // frame may fold several reference ticks, so stepSession aggregates every
   // non-empty list in command order instead of exposing only the final tick.
   const tickCues = sess.audioCues && s.interp.cues.length > 0 ? s.interp.cues : undefined;
+  const tickHostActions = s.interp.hostActions && s.interp.hostActions.length > 0
+    ? s.interp.hostActions
+    : undefined;
   // continueExternal above may have replaced s.interp with a copy whose
   // switch bank is a new object; re-alias the session's top-level bank to it
   // so the values chars/motion read next tick are the ones commands just
@@ -2196,8 +2240,14 @@ function stepReferenceTick(
       kind: "content",
       message: `transfer in ${transfer.fiber}: unknown map ${JSON.stringify(transfer.map)}`,
     };
-    const result: { x: number; y: number; cues?: SoundCue[] } = { x: s.move.tx, y: s.move.ty };
+    const result: {
+      x: number;
+      y: number;
+      cues?: SoundCue[];
+      hostActions?: HostAction[];
+    } = { x: s.move.tx, y: s.move.ty };
     if (tickCues) result.cues = tickCues;
+    if (tickHostActions) result.hostActions = tickHostActions;
     return result;
   }
 
@@ -2254,8 +2304,14 @@ function stepReferenceTick(
       applyTransfer(sess, s, t.map, t.x, t.y, t.dir);
     }
   }
-  const result: { x: number; y: number; cues?: SoundCue[] } = { x: s.move.tx, y: s.move.ty };
+  const result: {
+    x: number;
+    y: number;
+    cues?: SoundCue[];
+    hostActions?: HostAction[];
+  } = { x: s.move.tx, y: s.move.ty };
   if (tickCues) result.cues = tickCues;
+  if (tickHostActions) result.hostActions = tickHostActions;
   return result;
 }
 
@@ -2383,9 +2439,10 @@ function applyTransfer(
   y: number,
   dir: Dir | "keep",
 ): void {
-  acquireSessionMap(sess, mapId);
+  const map = acquireSessionMap(sess, mapId);
   const facing: Facing = dir === "keep" ? s.move.facing : DIR_INDEX[dir];
   enterMap(s, mapId, x, y, facing, sess.cfg);
+  showMapNameBanner(s, map);
   releaseSessionMapsExcept(sess, [mapId]);
 }
 

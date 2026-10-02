@@ -2,7 +2,7 @@
 // tint and flash sit below dialogs (matching RPG Maker's spriteset effects);
 // the independent fade is mounted separately above dialogs by GameView.
 
-import { createMemo, type Accessor } from "solid-js";
+import { createMemo, type Accessor, type JSX } from "solid-js";
 import { Image, View } from "@pocketjs/framework/components";
 import {
   colorAt,
@@ -15,6 +15,9 @@ import type { GameScreenLayerAssets, ScreenLayerVariant } from "./game-assets.ts
 export interface ScreenEffectsLayerProps {
   screen: Accessor<ScreenEffectsState | undefined>;
   layers: Readonly<Record<string, GameScreenLayerAssets>>;
+  /** Optional opt-in screen content (for example RPG Maker numbered
+   * pictures). It paints above the backdrop and below tint/flash. */
+  children?: JSX.Element;
 }
 
 function channelHex(value: number): string {
@@ -76,6 +79,7 @@ export function ScreenEffectsLayer(props: ScreenEffectsLayerProps) {
           style={{ posType: 1, display: backdrop()?.image ? 0 : 1 }}
         />
       </View>
+      {props.children}
       <View
         class="absolute w-full h-full"
         style={{ posType: 1, bgColor: tint().color, opacity: tint().opacity, display: tint().display }}

@@ -357,6 +357,11 @@ it starts): arrow keys walk, Enter, Z or A confirms, B or Backspace cancels.
 **Esc** gives the keyboard back to the editor. (On the standalone player
 page Esc also cancels; in Studio it is reserved for leaving the game.)
 
+The preview host does not install game-specific scenes or the built-in
+`rpgkit.numberInput` rules/view pair. Use a built game or fixture with the
+matching `GameView.scenes` and `sceneViews` registrations to exercise those
+screens; Studio's generic placeholder covers explicit `scene` commands only.
+
 ![The play-test panel, dark theme](screenshots/studio/studio-playtest-dark.png)
 
 **Art.** The game draws the project's own art where Studio has it: the

@@ -42,6 +42,21 @@ export interface ScreenColor {
   a: number;
 }
 
+/** RPG Maker picture colour tone. RGB channels are signed offsets
+ * (-255..255); gray is a 0..255 desaturation amount. Keeping the authored
+ * integers in reducer state makes picture tweens portable across hosts even
+ * when a renderer has to approximate the tone operation. */
+export interface PictureTone {
+  r: number;
+  g: number;
+  b: number;
+  gray: number;
+}
+
+export type PictureBlendMode = "normal" | "add" | "multiply" | "screen";
+export type PictureOrigin = "topLeft" | "center";
+export type PictureCoordinate = number | VariableRef;
+
 /** Facing as an engine index: 0 down, 1 left, 2 up, 3 right. Matches the
  *  BTN-driven order the camera reducer emits and the hero atlas file order. */
 export type Facing = 0 | 1 | 2 | 3;
@@ -202,6 +217,9 @@ export type Condition =
   /** True while a BGM is audibly advancing. A paused BGM or one suspended
    *  behind an ME is not playing. `id` omitted matches any BGM. */
   | { kind: "bgmPlaying"; id?: string; negate?: boolean }
+  /** RPG Maker's timer branch. A stopped timer never matches; a running
+   * timer compares its whole remaining seconds (floor(referenceTicks / 60)). */
+  | { kind: "timer"; op: ">=" | "<="; seconds: number }
   /** Game-owned pure condition handler, registered on createSession(). */
   | { kind: "ext"; call: string; args: JsonValue };
 
@@ -340,6 +358,11 @@ export type Command =
   /** Scroll the viewport focus to a tile/character, or return to live player
    * follow. The reducer stores world focus, never resolution-specific clamp. */
   | { op: "camera"; target: CameraTarget; duration: number; wait?: boolean }
+  /** RPG Maker Scroll Map: move the current camera focus by `distance`
+   * tiles. `speed` is the MV/MZ 1..6 exponential scroll level. Camera
+   * projection remains clamped by the active map/viewport; use the existing
+   * `{op:"camera", target:"player"}` command to return to live follow. */
+  | { op: "scrollMap"; direction: Dir; distance: number; speed: MoveSpeed; wait?: boolean }
   /** Show one project animation above a character, replacing that target's
    * previous balloon. Omit `icon` to clear it. With duration omitted it
    * persists (and loops) until cleared; a waited balloon needs a duration. */
@@ -348,6 +371,61 @@ export type Command =
    * retained across transfers. The named asset must be a screen layer;
    * omitting/nulling variant closes the backdrop. */
   | { op: "screenBackdrop"; layer: string; variant?: string | null }
+  /** Numbered viewport pictures. Coordinates are viewport pixels and can be
+   * read from variables when the command executes. Percent scales use 100 as
+   * identity; opacity is 0..255. */
+  | {
+      op: "showPicture";
+      id: number;
+      layer: string;
+      variant: string;
+      origin?: PictureOrigin;
+      x: PictureCoordinate;
+      y: PictureCoordinate;
+      scaleX?: number;
+      scaleY?: number;
+      opacity?: number;
+      blend?: PictureBlendMode;
+    }
+  /** Tween position/scale/opacity (and, on MZ imports, blend selection).
+   * Duration is virtual seconds and therefore Hz-portable. */
+  | {
+      op: "movePicture";
+      id: number;
+      origin?: PictureOrigin;
+      x: PictureCoordinate;
+      y: PictureCoordinate;
+      scaleX: number;
+      scaleY: number;
+      opacity: number;
+      blend?: PictureBlendMode;
+      duration: number;
+      wait?: boolean;
+      easing?: "linear" | "easeIn" | "easeOut" | "easeInOut";
+    }
+  /** Set continuous clockwise rotation in degrees per reference tick.
+   * RPG Maker's Rotate Picture speed maps exactly to speed / 2. */
+  | { op: "rotatePicture"; id: number; speed: number }
+  | { op: "tintPicture"; id: number; tone: PictureTone; duration: number; wait?: boolean }
+  | { op: "erasePicture"; id: number }
+  /** One global RPG Maker-style countdown. `read` writes whole remaining
+   * seconds to a normal event variable (0 when stopped). */
+  | { op: "timer"; action: "start"; seconds: number }
+  | { op: "timer"; action: "stop" }
+  | { op: "timer"; action: "read"; variable: string }
+  /** Built-in digit editor. The scene host writes the committed non-negative
+   * integer to `variable` and parks this event until confirmation. */
+  | { op: "inputNumber"; variable: string; digits: number }
+  /** Host-owned scene transitions. They publish a one-frame callback request;
+   * without a registered host callback they are deterministic no-ops. */
+  | { op: "openMenu" }
+  | { op: "openSave" }
+  | { op: "gameOver" }
+  | { op: "returnTitle" }
+  /** Change the player name used by the `{name}` text token. */
+  | { op: "changeName"; name: string }
+  /** Enable/disable automatic map-name banners on subsequent map entries. */
+  | { op: "mapNameDisplay"; visible: boolean }
   | { op: "wait"; seconds: number }
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }
@@ -742,6 +820,9 @@ export interface ProjectSystem {
    *  live value of variable `id` (0 when unset). Off by default, so text
    *  authored before the token existed keeps showing its braces verbatim. */
   textVariables?: boolean;
+  /** Show MapDef.name in the built-in banner on map entry. Default false so
+   * projects authored before the banner keep byte/pixel-identical output. */
+  mapNameDisplay?: boolean;
   /** Engine-level backpack tunables (T2-10/B1). */
   inventory?: {
     /** Max count of a single item id the backpack holds; default 99

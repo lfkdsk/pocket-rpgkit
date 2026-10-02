@@ -460,6 +460,7 @@ describe("editor condition and route helpers", () => {
       'Tile property (0, 0) {"passage":null}',
       "World is idle",
       "Any BGM is playing",
+      "Timer >= 0s",
       "Extension game.condition null",
     ]);
     expect(CONDITION_KINDS.map((kind) => defaultPageCondition(kind))).toEqual([
@@ -473,6 +474,7 @@ describe("editor condition and route helpers", () => {
       { all: [{ kind: "tileProperty", x: 0, y: 0, passage: null }] },
       { all: [{ kind: "worldIdle", negate: false }] },
       { all: [{ kind: "bgmPlaying", negate: false }] },
+      { all: [{ kind: "timer", op: ">=", seconds: 0 }] },
       { all: [{ kind: "ext", call: "game.condition", args: null }] },
     ]);
   });

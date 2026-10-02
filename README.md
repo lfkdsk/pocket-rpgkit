@@ -5,15 +5,16 @@ built on [PocketJS](https://github.com/pocket-nexus/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 49 commands), map-character motion,
+  event interpreter (pages, triggers, 63 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
   frame, so a button tape replays byte-for-byte on every host;
 - **Solid UI components** (`src/ui/`) — `GameView`, a complete game screen
   for a project (chunked maps, scripted/follow camera, NPCs, dialog, screen
-  fades/tints/flashes/shakes, character balloons, cutscene backdrops, and
-  optional attract mode), plus the blocks it is made of: `DialogBox`,
+  fades/tints/flashes/shakes, opt-in numbered pictures and timer/map-name HUD,
+  character balloons, cutscene backdrops, and optional attract mode), plus
+  the blocks it is made of: `DialogBox`,
   `PlayerSprite`, `ChunkLayer`, `StreamedChunkLayer`, `AnimatedTiles`,
   `SaveMenu`, `Panel`.
   The framed ones take a
@@ -725,7 +726,8 @@ different content build before acquiring the saved map, or reacquires that
 map if it was evicted. Shells and saves from an earlier schema whose changes
 since were purely additive still load (`MAP_SCHEMA_COMPATIBLE_HASHES`; see
 [Schema identities](src/data/CHANGELOG.md#schema-identities); today that is
-the two additive schemas before world layouts and optional choice icons, and older ones are refused
+the four additive predecessors before KRM2 commands, loops/event touch,
+world layouts, and optional choice icons; older ones are refused
 with an error naming the accepted identities), and the next save is stamped
 with the current identity. A non-zero transfer fade lets the standard synchronous
 repository prepare one fixed unit per reference tick (read/optional byte decode/parse,
@@ -786,7 +788,7 @@ When present in a sharded project, the layout is kept in the shell, so both the
 layout and its `topologyHash` are covered by `mapManifestHash` and therefore by
 save/content identity.
 
-### The 49 commands
+### The 63 commands
 
 | op | purpose |
 | --- | --- |
@@ -795,7 +797,7 @@ save/content identity.
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
-| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, current `bgmPlaying`, or a registered `ext` predicate, with `else` |
+| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, current `bgmPlaying`, the global timer, or a registered `ext` predicate, with `else` |
 | `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }` |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
 | `moveControl` | change a target's autonomous mode, stop it, start bounded wandering, or override speed/run/frequency/collision/facing settings |
@@ -807,8 +809,20 @@ save/content identity.
 | `screenFlash` | flash an RGBA colour at 0..255 intensity, then decay to transparent |
 | `screenShake` | deterministic horizontal shake with pixel strength, cycles/second speed, and duration |
 | `camera` | scroll focus to an absolute tile, the player, this event, or a named event; targeting the player restores live follow |
+| `scrollMap` | move the current camera focus by a relative tile distance at an RPG Maker 1–6 speed grade; optionally wait for completion |
 | `balloon` | show a project animation above the player/event for a duration or until explicitly cleared |
 | `screenBackdrop` | show or close a named full-screen layer variant for cutscenes and menus |
+| `showPicture` | show or replace a numbered viewport picture with origin, variable/literal position, scale, opacity and retained blend intent |
+| `movePicture` | tween a numbered picture's position, scale and opacity with optional wait and linear/ease-in/ease-out/ease-in-out interpolation |
+| `rotatePicture` | set a numbered picture's continuous deterministic rotation speed |
+| `tintPicture` | tween a numbered picture's RGB/gray tone |
+| `erasePicture` | remove one numbered picture |
+| `timer` | start, stop, or read the global countdown; a timer condition reads its remaining whole seconds |
+| `inputNumber` | open the built-in 1–8 digit editor and write the confirmed non-negative integer to a variable |
+| `openMenu` / `openSave` | request a game-owned menu or save screen through `GameView.hostActions` |
+| `gameOver` / `returnTitle` | request a game-owned game-over or title transition through `GameView.hostActions` |
+| `changeName` | replace the player name used by the `{name}` text token |
+| `mapNameDisplay` | enable or disable the automatic three-second banner on subsequent map entries |
 | `wait` | virtual-time pause (seconds, compiled against `simulationHz`) |
 | `gold` | add/sub gold |
 | `item` | add/remove an item count |
@@ -891,6 +905,94 @@ battle pauses map presentation clocks and owns the visible scene; with
 focus is saved in world pixels, clamped against the current viewport at
 render time, then shake offsets only the map/world plane, never HUD/dialogs or
 screen overlays.
+
+#### Relative map scroll and numbered pictures
+
+`scrollMap` starts from the current camera focus, including a previous fixed
+camera or relative scroll. RPG Maker speed grade `n` moves `2^n / 256` tiles
+per 60 Hz reference tick; the kit compiles the resulting duration for the
+session rate, so `wait:true` resumes at the same virtual instant at every host
+rate. A zero-tile scroll is an immediate no-op and leaves live player follow
+unchanged. Projection uses the normal viewport/map clamp. The fixed focus remains
+after the scroll; `{ "op":"camera", "target":"player", "duration":0 }`
+returns to live player follow.
+
+Pictures use ids 1 through 100 and screen-layer assets. `showPicture` replaces
+one id; `movePicture` interpolates position, percent scale and opacity;
+`rotatePicture` sets a continuous degrees-per-reference-tick speed;
+`tintPicture` interpolates `{r,g,b,gray}`; `erasePicture` removes only that id.
+Literal coordinates are viewport pixels, while `{ "variable":"id" }`
+coordinates are sampled when the command runs. Unlike RPG Maker's implicit
+zero for an unset variable, a picture-coordinate variable that does not hold
+a finite number is a fatal content error, matching the kit's strict
+variable-operand contract. A screen variant can declare
+its natural `w`/`h`; an omitted size retains the older viewport-sized layer
+behavior. Pictures paint in numeric id order and survive map transfers.
+In-flight endpoints, easing phase, rotation and tone live in reducer state,
+so saves and rewind resume them exactly.
+
+Numbered-picture nodes, the timer HUD and the map-name banner are an explicit
+presentation entry. Import `krm2ScreenPresentation` from
+`pocket-rpgkit/ui/krm2` and pass it as `GameView.screenPresentation`; projects
+that omit it still run and save the commands but keep this UI out of their
+bundle and node tree. The editor and preview host register it themselves.
+
+PocketJS currently has no portable per-image colour matrix or blend-mode
+primitive. The reducer and RPG Maker importer retain `blend` and the complete
+tone, but the KRM2 presentation draws every blend as normal source-over and
+approximates tone deterministically with gray/darken/brighten overlays. Position, origin,
+scale, opacity and rotation are rendered directly; exact RPG Maker colour
+math awaits a host primitive.
+
+#### Timer, number input and map lifecycle commands
+
+The global countdown is sparse state. Start it with
+`{ "op":"timer", "action":"start", "seconds":90 }`, remove it with
+`action:"stop"`, or use `action:"read"` plus `variable` to write the floored
+whole seconds. With the KRM2 presentation registered, it draws an untruncated
+`MM:SS` HUD. It continues through transfer fades, frozen scenes and a stopped
+event interpreter. A timer
+condition is false while stopped; while running, including at `00:00`,
+`{ "kind":"timer", "op":"<=", "seconds":0 }` can drive an autorun or
+parallel event. Unlike RPG Maker's battle-only expiry hook, reaching zero does
+not itself call host code or abort a battle.
+
+`inputNumber` is an explicit built-in scene registration, just like name
+input. It edits 1–8 digits, clamps the variable's initial value to the unsigned
+range, consumes cancel, and commits only on confirm:
+
+```tsx
+import { NUMBER_INPUT_SCENE_ID, numberInputRules } from "pocket-rpgkit";
+import { GameView, NumberInputScene } from "pocket-rpgkit/ui";
+import { krm2ScreenPresentation } from "pocket-rpgkit/ui/krm2";
+
+<GameView
+  project={project}
+  assets={assets}
+  screenPresentation={krm2ScreenPresentation}
+  scenes={{ [NUMBER_INPUT_SCENE_ID]: numberInputRules }}
+  sceneViews={{ [NUMBER_INPUT_SCENE_ID]: NumberInputScene }}
+/>
+```
+
+`openMenu`, `openSave`, `gameOver` and `returnTitle` publish ordered,
+one-frame requests to `GameView.hostActions`. Each optional callback receives
+the same live-session host used by an `overlay`; a save callback can therefore
+open a game overlay built from the kit's `SaveMenu` and
+`pocket-rpgkit/ui/saves`. Missing callbacks are deterministic no-ops, and the
+issuing fiber continues; later authored commands can run in the same reducer
+frame before host callbacks are dispatched. Unlike RPG Maker commands 351/352,
+`openMenu` and `openSave` do not park the fiber while a host screen is open;
+the host owns any input or scene pause.
+The RPG Maker importer adds `exit` after its terminal game-over/title commands.
+
+`changeName` immediately changes subsequent `{name}` expansion.
+`project.system.mapNameDisplay:true` opts into a three-second banner on each
+map entry. `mapNameDisplay` changes that persistent flag for later entries;
+turning it off also dismisses the current banner. Banner text comes from the
+map's `name`, wraps instead of clipping, and its fade phase is saved and
+rewound. Painting the banner requires the same explicit KRM2 presentation
+registration shown above.
 
 `moveControl` takes the same `"player"` / `"this"` / `{event:id}` target as
 `moveRoute`; a route can apply the same `MoveControl` inline with a
@@ -1255,9 +1357,10 @@ mount(() => <GameView
 />);
 ```
 
-The kit ships one built-in scene: **name input**, a generic MV-style name
-entry (not a byte-for-byte port of MV or Tuxemon — see the differences
-below). `{ op:"scene", id:"rpgkit.nameInput", args:{...} }` with args
+The kit ships two built-in scene pairs: the fixed-width
+`rpgkit.numberInput` editor described above, and **name input**, a generic
+MV-style name entry (not a byte-for-byte port of MV or Tuxemon — see the
+differences below). `{ op:"scene", id:"rpgkit.nameInput", args:{...} }` with args
 `{ variable?, maxLength?, default?, title?, charset?, columns?, allowEmpty?,
 swallowCancel? }`: without `variable` the committed name replaces the player
 name (the `{name}` text token); with one it writes that variable. The buffer

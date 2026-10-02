@@ -198,6 +198,28 @@ describe("rpgkit-check lint: switch/variable usage", () => {
     expect(findingsOf(lint(p), "lint/variable-read-never-set")).toEqual([]);
     expect(findingsOf(lint(p), "lint/variable-set-never-read")).toHaveLength(1);
   });
+
+  test("KRM2 picture, timer and number-input operands count as live variable use", () => {
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands.push(
+      { op: "variable", id: "picture.x", set: { op: "set", value: 12 } },
+      { op: "variable", id: "picture.y", set: { op: "set", value: 34 } },
+      {
+        op: "showPicture",
+        id: 1,
+        layer: "picture",
+        variant: "portrait",
+        x: { variable: "picture.x" },
+        y: { variable: "picture.y" },
+      },
+      { op: "timer", action: "read", variable: "remaining" },
+      { op: "if", if: { kind: "variable", id: "remaining", op: "<=", value: 0 }, then: [] },
+      { op: "inputNumber", variable: "answer", digits: 4 },
+    );
+    const report = lint(p);
+    expect(findingsOf(report, "lint/variable-read-never-set")).toEqual([]);
+    expect(findingsOf(report, "lint/variable-set-never-read")).toEqual([]);
+  });
 });
 
 describe("rpgkit-check lint: pages", () => {

@@ -66,6 +66,7 @@ import {
   type CompiledAnim,
   type EventAppearanceState,
   type Modal,
+  type TimerState,
 } from "../engine/interpreter.ts";
 import type {
   CameraState,
@@ -84,6 +85,7 @@ import {
   cameraFocusAt,
   screenShakeOffset,
   type BalloonEffectState,
+  type ScreenEffectsState,
 } from "../engine/screen.ts";
 import { DialogBox } from "./DialogBox.tsx";
 import { createDialogPaginator } from "./dialog-pages.ts";
@@ -101,7 +103,14 @@ import type {
 import { AnimatedTiles, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import { MapAnimLayer, type MapAnimStats } from "./MapAnimLayer.tsx";
 import { BalloonLayer, type BalloonAnchor } from "./BalloonLayer.tsx";
-import { ScreenEffectsLayer, ScreenFadeLayer } from "./ScreenEffectsLayer.tsx";
+import {
+  ScreenEffectsLayer,
+  ScreenFadeLayer,
+} from "./ScreenEffectsLayer.tsx";
+import {
+  dispatchGameViewHostActions,
+  type GameViewHostCallbacks,
+} from "./game-host-actions.ts";
 import { ChunkLayer } from "./ChunkLayer.tsx";
 import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChunkLayer.tsx";
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
@@ -782,6 +791,32 @@ export interface GameEffectsProps {
 
 export type GameEffectsComponent = Component<GameEffectsProps>;
 
+/** Read-only inputs shared by optional screen-presentation layers. Reducer
+ * state remains the only animation clock; presentation components cannot
+ * mutate the session. */
+export interface GameScreenPresentationProps {
+  screen: Accessor<ScreenEffectsState | undefined>;
+  timer: Accessor<TimerState | undefined>;
+  layers: Readonly<Record<string, GameScreenLayerAssets>>;
+  width: Accessor<number>;
+  height: Accessor<number>;
+}
+
+export type GameScreenPresentationComponent = Component<GameScreenPresentationProps>;
+
+/** Explicit screen-presentation seam. `effects` paints between the base
+ * backdrop and tint/flash; `hud` paints above them but below dialogs. */
+export interface GameScreenPresentation {
+  fingerprint: (
+    screen: Readonly<ScreenEffectsState> | undefined,
+    timer: Readonly<TimerState> | undefined,
+  ) => string;
+  effects?: GameScreenPresentationComponent;
+  hud?: GameScreenPresentationComponent;
+}
+
+export { dispatchGameViewHostActions, type GameViewHostCallbacks } from "./game-host-actions.ts";
+
 export interface GameViewProps {
   /** Enable identity-based reducer and actor caches. Published snapshots
    *  must be treated as read-only while this option is enabled. */
@@ -819,6 +854,13 @@ export interface GameViewProps {
    * `attractTape`/`demo`, L rewind and idle attract stay off. Load a save
    * through `loadIntoView` from `pocket-rpgkit/ui/saves`. */
   overlay?: GameViewOverlayConfig;
+  /** Optional handlers for openMenu/openSave/gameOver/returnTitle commands.
+   * Requests are delivered once, in command order, after their reducer frame. */
+  hostActions?: Readonly<GameViewHostCallbacks>;
+  /** Optional reducer-backed screen presentation. Import the RPG Maker
+   * numbered-picture/timer/banner implementation from
+   * `pocket-rpgkit/ui/krm2`; omitting it keeps that UI out of the bundle. */
+  screenPresentation?: Readonly<GameScreenPresentation>;
   /** DialogBox colours (ui/theme.ts); missing keys keep the kit default. */
   theme?: Partial<UiTheme>;
   /** DialogBox speaker portraits: NAME -> 64x64 image src. */
@@ -874,6 +916,8 @@ export function GameView(props: GameViewProps) {
   startupProfileMark("game-view:start");
   const { project, assets } = props;
   const Effects = props.effects;
+  const ScreenPresentationEffects = props.screenPresentation?.effects;
+  const ScreenPresentationHud = props.screenPresentation?.hud;
   // Shop box item display names, keyed by id (DialogBox falls back to the
   // raw id for anything absent). Derived once from the project's own item
   // catalog: the same source shop goods and inventory ids resolve against.
@@ -1175,17 +1219,27 @@ export function GameView(props: GameViewProps) {
     value.interp.layers ? JSON.stringify(value.interp.layers) : "";
   let paintedLayers = layerFingerprint(state);
   const [layerRevision, setLayerRevision] = createSignal(0);
-  const screenFingerprint = (value: SessionState): string => {
-    const screen = value.interp.screen;
-    return screen && (screen.fade || screen.tints || screen.flash || screen.backdrop)
+  const baseScreenFingerprint = (screen: Readonly<ScreenEffectsState> | undefined): string =>
+    screen && (screen.fade || screen.tints || screen.flash || screen.backdrop)
       ? JSON.stringify([screen.fade, screen.tints, screen.flash, screen.backdrop])
       : "";
-  };
+  const presentationFingerprint = props.screenPresentation?.fingerprint;
+  const screenFingerprint: (value: SessionState) => string = presentationFingerprint
+    ? (value) => {
+        const base = baseScreenFingerprint(value.interp.screen);
+        const extra = presentationFingerprint(value.interp.screen, value.interp.sw.timer);
+        return extra ? `${base}\u0000${extra}` : base;
+      }
+    : (value) => baseScreenFingerprint(value.interp.screen);
   let paintedScreen = screenFingerprint(state);
   const [screenRevision, setScreenRevision] = createSignal(0);
   const presentedScreen = () => {
     screenRevision();
     return state.interp.screen;
+  };
+  const presentedTimer = () => {
+    screenRevision();
+    return state.interp.sw.timer;
   };
   const builtInLayer = (
     id: "ground" | "upper",
@@ -1415,6 +1469,7 @@ export function GameView(props: GameViewProps) {
         state = stepSession(session, state, input);
       }
       frameProfileMark("reducer:end");
+      dispatchGameViewHostActions(state.interp.hostActions, props.hostActions, sessionHost);
       prevButtons = frameButtons;
       if (blocked) props.onMapLoading?.(null);
       blocked = null;
@@ -1730,7 +1785,29 @@ export function GameView(props: GameViewProps) {
           outside the kept-alive world so they keep their place above the
           map and around the dialog; the battle scene below draws over them
           while it is active. */}
-      <ScreenEffectsLayer screen={presentedScreen} layers={screenLayerAssets} />
+      <ScreenEffectsLayer
+        screen={presentedScreen}
+        layers={screenLayerAssets}
+      >
+        {ScreenPresentationEffects ? (
+          <ScreenPresentationEffects
+            screen={presentedScreen}
+            timer={presentedTimer}
+            layers={screenLayerAssets}
+            width={() => viewport().w}
+            height={() => viewport().h}
+          />
+        ) : null}
+      </ScreenEffectsLayer>
+      {ScreenPresentationHud ? (
+        <ScreenPresentationHud
+          screen={presentedScreen}
+          timer={presentedTimer}
+          layers={screenLayerAssets}
+          width={() => viewport().w}
+          height={() => viewport().h}
+        />
+      ) : null}
 
       {/* The dialog box is persistent by design (b778aa0): it stays mounted
           for the whole session and hides its own boxes while unused, so it

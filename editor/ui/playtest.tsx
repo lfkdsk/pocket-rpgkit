@@ -8,6 +8,7 @@ import type { SessionState } from "../../src/engine/session.ts";
 import type { JsonValue, Project } from "../../src/engine/types.ts";
 import { GameView, type BattleSceneViewProps, type SceneComponent } from "../../src/ui/GameView.tsx";
 import { ChoiceIconBox } from "../../src/ui/ChoiceIconBox.tsx";
+import { krm2ScreenPresentation } from "../../src/ui/krm2/index.ts";
 import type { GameAssets } from "../../src/ui/game-assets.ts";
 import {
   applyPlaytestCarry,
@@ -178,6 +179,7 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
       <GameView
         project={props.project}
         assets={props.assets}
+        screenPresentation={krm2ScreenPresentation}
         extensions={{ allowUnknown: true }}
         battle={PLAYTEST_BATTLE_RULES}
         battleScene={EditorBattleScene}

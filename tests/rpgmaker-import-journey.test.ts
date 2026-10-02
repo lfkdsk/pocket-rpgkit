@@ -220,9 +220,18 @@ describe("rpgmaker-import journey: stage-mv (cutscene)", () => {
     // Erase Event hides the smoke puff (6,5) for good: the cell shows the
     // stage floor again (the 17x13 map is centred: origin (104,32)).
     const end = shots.get("end")!;
-    const at = (x: number, y: number) => [...end.subarray((y * W + x) * 4, (y * W + x) * 4 + 3)];
-    const [r, , b] = at(104 + 6 * 16 + 8, 32 + 5 * 16 + 8);
-    expect(r! - b!).toBeGreaterThan(60); // warm floor boards, not the grey puff
+    // A wandering actor can cross this cell by the time the longer native
+    // picture tween finishes, so inspect the whole tile rather than one
+    // centre pixel. The grey puff has 143 opaque pixels; after erase, over
+    // 160 pixels retain the warm floor even with a walker crossing it.
+    expect(censusRect(
+      end,
+      104 + 6 * 16,
+      32 + 5 * 16,
+      104 + 7 * 16,
+      32 + 6 * 16,
+      (r, _g, b) => r > 80 && r - b > 40,
+    )).toBeGreaterThan(160);
     // The dusk tint darkens the stage compared with after the cutscene.
     expect(stageBrightness(shots.get("tint")!)).toBeLessThan(stageBrightness(shots.get("cutscene-done")!) * 0.97);
   }, 60_000);

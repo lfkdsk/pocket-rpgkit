@@ -367,7 +367,7 @@ prerequisite is a thrown error (exit 2).
 | `lint/choices-empty` | error or warning | a choices modal with no options and no cancel (error), or empty branches (warning) | add an option or a cancel branch; give branches commands or remove them |
 | `lint/text-variable-token-off` | warning | a `text` line, `choices` prompt/option, or `extChoice` prompt holds a `{v:<id>}` token but `system.textVariables` is off, so the braces print verbatim | set `project.system.textVariables` to `true`, or remove the token |
 | `lint/break-outside-loop` | info | a `break` is not inside any `loop` body (a `break` does not cross a `common` call) | legal (RPG Maker parity): it ends the current page or common event; keep it as an early exit or wrap the commands it should leave in a `loop` |
-| `lint/scene-id` | info | a scene id is used by the document but has no registration in it | scene rules are code-side (`SessionOptions.scenes`); register `SceneRules` for it (the kit ships `nameInputRules` for `rpgkit.nameInput`) or fix the id — an unregistered id throws at session startup |
+| `lint/scene-id` | info | a scene id is used by the document but has no registration in it | scene rules are code-side (`SessionOptions.scenes`); register `SceneRules` for it (the kit ships `nameInputRules` / `rpgkit.nameInput` and `numberInputRules` / `rpgkit.numberInput`) or fix the id — an unregistered explicit `scene` id throws at session startup, while `inputNumber` likewise requires its pair before execution reaches it |
 
 ### `locks`
 

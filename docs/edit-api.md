@@ -664,8 +664,18 @@ The movement, presentation, modal, extension, and battle forms use:
 | `screenFlash` | `color.r`, `color.g`, `color.b`, `color.a`, `intensity`, `duration`, `wait` |
 | `screenShake` | `strength`, `speed`, `duration`, `wait` |
 | `camera` | `target`, `duration`, `wait`; target is `player`, `this`, `event:<id>`, or `tile:<x>,<y>` |
+| `scrollMap` | `direction`, `distance`, `speed` (RPG Maker grade 1–6), `wait` |
 | `balloon` | `target`, `icon`, `duration`, `wait` |
 | `screenBackdrop` | `layer`, `variant` |
+| `showPicture` | `id`, `layer`, `variant`, `origin`, `x`, `y`, `scaleX`, `scaleY`, `opacity`, `blend`; variable coordinates use `$<variable-id>` |
+| `movePicture` | `id`, `origin`, `x`, `y`, `scaleX`, `scaleY`, `opacity`, `blend`, `duration`, `wait`, `easing`; variable coordinates use `$<variable-id>` |
+| `rotatePicture` | `id`, `speed` |
+| `tintPicture` | `id`, `tone.r`, `tone.g`, `tone.b`, `tone.gray`, `duration`, `wait` |
+| `erasePicture` | `id` |
+| `timer` | `action`, then `seconds` for `start` or `variable` for `read`; `stop` has no other field |
+| `inputNumber` | `variable`, `digits` (1–8) |
+| `changeName` | `name` |
+| `mapNameDisplay` | `visible` |
 | `shop` | `id`, `goods` (JSON array), `sell`, `sellList` |
 | `mapAnim` | `id`, `anim`, `placement`; then `x`/`y` for `tile` or `target` for `target`; also `follow`, `layer`, `loop`, `wait` |
 | `stopAnim` | `selector` (`all`, `id`, or `anim`), then the selected `id` or `anim` |
@@ -674,11 +684,16 @@ The movement, presentation, modal, extension, and battle forms use:
 | `battle` | `setup` (JSON) |
 | `scene` | `id`, `args` (JSON or `(unset)`) |
 
+Picture-coordinate variables are resolved when the command executes and must
+hold a finite number. An unset or invalid value stops the interpreter with a
+content error rather than falling back to zero.
+
 Audio fields are `id`, `volume`, and `pitch` for `playBgm`, `playBgs`, and
 `playSe`; `playMe` also has `duration`; `fadeoutBgm` and `fadeoutBgs` have
 `duration`. `stopBgm`, `pauseBgm`, `resumeBgm`, `saveBgm`, `replayBgm`,
-`erase`, `exit`, `lockInput`, `unlockInput`, and `break` are supported but
-have no parameter fields. `loop` has no parameter fields either: its only
+`erase`, `exit`, `openMenu`, `openSave`, `gameOver`, `returnTitle`,
+`lockInput`, `unlockInput`, and `break` are supported but have no parameter
+fields. `loop` has no parameter fields either: its only
 payload is its `commands` body, edited with `insert-command`/`delete-command`
 at `loop` body addresses.
 
@@ -688,7 +703,8 @@ project sets `system.textVariables: true`, `{v:<variable-id>}` (that
 variable's live value, 0 when unset); without the flag the braces show
 verbatim. Tokens are expanded only at runtime, so the 52-character limit
 applies to the raw authored text. The edit API has no operation for
-`project.system` fields; set `textVariables` in the project JSON directly.
+`project.system` fields; set `textVariables` or the initial
+`mapNameDisplay` preference in the project JSON directly.
 
 Changing `if.kind` installs a schema-valid default condition. The remaining
 condition fields are prefixed with `if.`:
@@ -705,6 +721,7 @@ condition fields are prefixed with `if.`:
 | `tileProperty` | `x`, `y`, `passage`, `enter`, `exit` |
 | `worldIdle` | `negate` |
 | `bgmPlaying` | `id` (`(any)` or an empty string omits it), `negate` |
+| `timer` | `op` (`>=` or `<=`), `seconds` |
 | `ext` | `call`, `args` (JSON) |
 
 The desktop inspector also edits every one of these condition kinds in a
