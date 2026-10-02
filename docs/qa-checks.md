@@ -4,14 +4,16 @@
 dynamic checks (`locks`, `freeze`, `reach`, `explore`) drive the real engine
 on a copy of the project; `lint` is static; `shot` renders schematic maps.
 Game-owned extension calls, battles and scenes run through noop fallbacks
-(unknown extensions are accepted as no-ops, battles complete instantly,
-scenes complete on their first frame through `onDone`), so the checks
-measure event/lock/world liveness, not game logic.
+(unknown extensions are accepted as no-ops, battles are declined without a
+result branch, and scenes complete on their first frame through `onDone`),
+so the default checks measure event/lock/world liveness, not game logic. A
+trusted game session module can replace those fallbacks for dynamic checks
+and screenshots.
 
 ## Invocation
 
 ```sh
-bun run rpgkit-check <check> --file <doc.json> [--json '<args>'] [--out <dir>]
+bun run rpgkit-check <check> --file <doc.json> [--json '<args>'] [--out <dir>] [--session <module>]
 ```
 
 Checks: `lint`, `locks`, `freeze`, `reach`, `explore`, `shot`. The short
@@ -22,6 +24,56 @@ names above and the full `rpgkit-<check>` forms are both accepted.
 | `--file <path>` | project document (inline `rpgkit-project/v1` JSON). Required. Sharded `ProjectShell` documents are rejected with `doc/shell-unsupported`. |
 | `--json <json>`, `--args <json>` | arguments object for the check. CLI flags win over `--json` keys. |
 | `--out <dir>` | output directory for `shot` (default `.`). |
+| `--session <module>` | trusted TypeScript or JavaScript module providing function-bearing `SessionOptions` for `locks`, `freeze`, `reach`, `explore`, and `shot`. The path is resolved from the current directory. `lint` rejects this flag. |
+
+### Game session modules
+
+JSON cannot carry extension handlers, battle reducers, or scene rules. A
+game can instead default-export a `SessionOptions` object (a named
+`sessionOptions` export is also accepted) from a local `.ts` or `.js` module:
+
+```ts
+import type { BattleRules, SessionOptions } from "pocket-rpgkit/engine";
+
+const qaBattle: BattleRules = {
+  start: (ext) => ({ state: ext, ext }),
+  step: (state) => state,
+  done: (ext) => ({
+    ext,
+    result: "win",
+    // These ids and values are the game's declared result convention.
+    writes: { "story.lastBattleResult": 1 },
+  }),
+};
+
+export default {
+  extensions: {
+    conditions: { "game.hasStarter": () => true },
+  },
+  battle: qaBattle,
+  // scenes: { "game.journal": journalRules },
+} satisfies SessionOptions;
+```
+
+```sh
+bun run rpgkit-check locks --file game/data/project.json --session ./tools/qa-session.ts
+bun run rpgkit-check shot --file game/data/project.json --session ./tools/qa-session.ts \
+  --json '{"map":"village","x":4,"y":6,"out":"shots"}'
+```
+
+The checker retains its fallbacks for registrations the module omits:
+unknown extensions remain allowed unless the module sets
+`allowUnknown: false`, unregistered scene ids still get the one-frame
+`onDone` rule, and an omitted battle adapter still declines encounters. The
+checker never guesses a game's battle-result variable names or enum values;
+the module must publish them through its `BattleCompletion`. `reach` sends
+zero input to a session module's battle reducer, so use deterministic QA
+rules when a real battle needs player input.
+
+`--session` executes the module as local code and is therefore for trusted
+modules only. It is deliberately CLI-only: it is not part of any JSON schema
+and is not available through the MCP tools. With no flag, behavior is
+unchanged.
 
 Every check prints one pretty-printed JSON report on stdout. The shared
 envelope is:
@@ -53,9 +105,13 @@ field ends in a field tag after the option index (`[2, "options", 1, "icon"]`).
 ## `lint` — static health check
 
 Args: `file` only. Pure function of the document: switch/variable use,
-provably-dead pages, missing references (including declared audio ids), empty choices, and static map
-reachability. `summary` adds `maps`, `events`, `pages`, `commands`, and
-per-severity counts.
+provably-dead pages, missing references (including declared audio ids),
+empty choices, and static map reachability. `summary` adds `maps`, `events`,
+`pages`, `commands`, and per-severity counts. A missing id in a declared
+`project.audio` table is retained as an `audio-missing` warning with its
+exact command location. It is not an error because a project may
+intentionally package only part of its host audio; the warning still keeps
+typos and accidentally omitted ids visible.
 
 ```sh
 $ bun run rpgkit-check lint --file examples/sunstone/data/sunstone.json
@@ -75,6 +131,15 @@ page: `{ map, event, name, page, trigger, locks, outcome, lockedAt,
 resolvedAt, error? }` with `outcome` one of `unlocked`, `transferred`,
 `unresolved`, `error`. Each `unresolved`/`error` row emits a
 `locks/permanent-lock` error.
+
+When a local run stays locked, the checker makes up to 16 bounded retries
+for causally linked `parallel` or `autorun` release pages on the same map. It
+may seed their other historical page/branch prerequisites, but leaves at
+least one fact written by the lock page live. A retry only succeeds when the
+real engine observes the target lock first and then an unlock or transfer;
+static matching alone never clears a finding. A loaded session module can
+also publish the game's declared battle-result variables and switches before
+such a release page runs.
 
 ```sh
 $ bun run rpgkit-check locks --file examples/sunstone/data/sunstone.json --json '{"frames":1200}'
@@ -127,10 +192,12 @@ makes no claim about other host frame rates: a witness is verified at
 Args: `file`, `start` (optional object: `{ map?, x?, y?, dir?, switches?,
 variables?, items?, gold? }`; defaults to the project start with a fresh
 bank), and the budgets `maxFrames` / `maxStates` / `maxSeconds`.
-`battle` (registered `BattleRules`) is available on the TypeScript API
-only — battle rules are functions and cannot be passed through the CLI or
-MCP JSON; those entry points always run the default `encounters-declined`
-policy, so a map gated on a battle outcome is notFound there.
+`battle` (registered `BattleRules` plus an optional auto-input callback) is
+available on the TypeScript API. The CLI can load function-bearing battle
+rules through `--session`; MCP JSON cannot. Without either form the search
+uses the default `encounters-declined` policy, so a map gated on a battle
+outcome is notFound. A `--session` battle uses zero input; the TypeScript API
+is the route when a reducer needs custom auto-input.
 
 **Budgets are execution limits, not hints.** The frame budget counts the
 ticks the search really executes: a choices fan-out's shared walk/dialog
@@ -271,9 +338,9 @@ prerequisite is a thrown error (exit 2).
 | `lint/appearance-target-missing` | error | an `appearance` command or condition names an event not on the host map | fix the event id or remove the clause |
 | `lint/common-event-missing` | error | a `common` op calls an unknown common event | add the common event or fix the id |
 | `lint/item-missing` | error | an item/shop/condition references an item not in the catalog | add the item to the catalog or fix the id |
-| `lint/audio-missing` | error | an audio command or `bgmPlaying` condition references an id absent from a declared `project.audio` table | add the logical id to `project.audio` or fix the reference; projects without an audio table remain valid for state-only use |
+| `lint/audio-missing` | warning | an audio command or `bgmPlaying` condition references an id absent from a declared `project.audio` table | add the logical id to `project.audio` or fix the reference; partial host-audio packages are allowed, so the precise diagnostic remains visible without failing the check |
 | `lint/sprite-missing` | error | a page sprite, `appearance` sprite, appearance-condition sprite, or choices option `icon.sprite` key is not in `project.sprites` | add the sprite or fix the key |
-| `lint/sheet-missing` | error | a map sheet, tile id prefix, walker sheet, or item sprite references an unknown sheet | add the sheet or fix the id |
+| `lint/sheet-missing` | error | a map sheet, tile id prefix, or item sprite references an unknown runtime tile sheet | add the sheet or fix the id; `walker.sheet` is a build-time source path, not a `project.sheets` id |
 | `lint/tileproperty-out-of-bounds` | error | a `tileProperty` command (throws at runtime) or condition (always false) addresses a cell outside the host map | move the cell inside the map or remove the clause |
 | `lint/map-unreachable` | warning | no sequence of literal-id transfers reaches the map from the start map | dynamic transfers can still reach it; add a transfer path or remove the map |
 | `lint/choices-empty` | error or warning | a choices modal with no options and no cancel (error), or empty branches (warning) | add an option or a cancel branch; give branches commands or remove them |
@@ -319,4 +386,5 @@ six checks as MCP tools (see [edit-api.md](edit-api.md)). The tool names are
 `rpgkit-lint`, `rpgkit-locks`, `rpgkit-freeze`, `rpgkit-reach`,
 `rpgkit-explore`, and `rpgkit-shot`, each taking the same arguments as the
 CLI `--json` object plus `file`. Only `rpgkit-shot` writes files; the rest
-are read-only.
+are read-only. MCP inputs are JSON-only and therefore use the default session
+fallbacks; `--session` is a CLI-only trusted-code facility.

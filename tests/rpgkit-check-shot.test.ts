@@ -75,4 +75,46 @@ simDescribe("rpgkit-check shot", () => {
     const blue = countColors(rgba, (r, g, b) => b > 150 && r < 100 && g < 160);
     expect(blue).toBeGreaterThan(100);
   });
+
+  test("registers noop rules for every scene id in the project", async () => {
+    const project = structuredClone(meadow);
+    project.maps[0]!.events![0]!.pages[0]!.commands.push({
+      op: "scene",
+      id: "fixture.journal",
+      args: null,
+    });
+    const outputs = await renderShots(
+      project,
+      { map: "meadow", x: 10, y: 7, resolutions: [{ width: 160, height: 96 }] },
+      OUT,
+    );
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]!.bytes).toBeGreaterThan(100);
+  });
+
+  test("uses function-bearing session options when selecting active pages", async () => {
+    const project = (await Bun.file(join(
+      import.meta.dir,
+      "fixtures",
+      "rpgkit-check",
+      "session-project.json",
+    )).json()) as Project;
+    const render = async (enabled: boolean): Promise<number> => {
+      const [out] = await renderShots(project, {
+        map: "m1",
+        x: 1,
+        y: 1,
+        resolutions: [{ width: 160, height: 96 }],
+        ...(enabled
+          ? { sessionOptions: { extensions: { conditions: { "fixture.open": () => true } } } }
+          : {}),
+      }, OUT);
+      const { decodePng } = await import("../vendor/pocketjs/framework/compiler/pak.ts");
+      const png = new Uint8Array(await Bun.file(out.file).arrayBuffer());
+      const { rgba } = decodePng(png);
+      return countColors(rgba, (r, g, b) => r > 200 && g > 120 && g < 190 && b < 60);
+    };
+    expect(await render(false)).toBe(0);
+    expect(await render(true)).toBeGreaterThan(0);
+  });
 });

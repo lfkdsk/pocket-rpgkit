@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { bootWorld } from "../../../../vendor/pocketjs/hosts/sim/sim.ts";
 import { encodePNG } from "../../../../vendor/pocketjs/tests/png.ts";
+import type { SessionOptions } from "../../../../src/engine/session.ts";
 import type { Dir, Project } from "../../../../src/engine/types.ts";
 import type { ShotConfig, ShotSwitchBank } from "../../../../tests/fixtures/rpgkit-shot/rpgkit-shot.tsx";
 
@@ -33,6 +34,8 @@ export interface RenderShotsOptions {
   /** "map@x,y" node keys to tint as reachable (e.g. from the reach check). */
   reach?: readonly string[];
   resolutions?: readonly ShotResolution[];
+  /** Game-owned registrations loaded by the CLI's --session module. */
+  sessionOptions?: SessionOptions;
 }
 
 export interface ShotOutput {
@@ -81,6 +84,7 @@ export async function renderShots(
       dir: options.dir,
       sw: options.sw,
       reach: options.reach,
+      sessionOptions: options.sessionOptions,
       resolution,
     };
     const world = await bootWorld(

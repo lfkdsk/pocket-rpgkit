@@ -12,6 +12,7 @@
 // logic.
 
 import { BTN_BITS } from "../../../../src/engine/camera.ts";
+import type { SessionOptions } from "../../../../src/engine/session.ts";
 import type { Command, Project } from "../../../../src/engine/types.ts";
 import { makeFinding, type Finding } from "../finding.ts";
 import { walkProjectCommands } from "../walk.ts";
@@ -31,6 +32,8 @@ export interface FreezeOptions {
   windowFrames?: number;
   /** Session tick rate. Default CHECK_HZ (60). */
   hz?: number;
+  /** Game-owned registrations loaded by the CLI's --session module. */
+  sessionOptions?: SessionOptions;
 }
 
 export interface FrozenRow {
@@ -125,7 +128,7 @@ export function checkFreeze(project: Project, options: FreezeOptions = {}): Free
   for (const map of project.maps) {
     const start = landing.get(map.id) ?? [Math.floor(map.width / 2), Math.floor(map.height / 2)];
     const localProject = projectWithStart(project, map.id, start[0]!, start[1]!);
-    const session = makeCheckSession(localProject, hz);
+    const session = makeCheckSession(localProject, hz, options.sessionOptions);
     let state = startFresh(localProject, session);
     const cells = new Set<string>();
     let error: string | undefined;

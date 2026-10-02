@@ -28,16 +28,13 @@ import {
   startSession,
   stepSession,
   tableWithBodies,
+  type SessionOptions,
 } from "../../../src/engine/session.ts";
-import type { BattleRules } from "../../../src/engine/battle.ts";
 import type { Dir, Project } from "../../../src/engine/types.ts";
-import { checkConditionContext } from "../../../tools/rpgkit-check/src/dynamic/sim.ts";
-
-const NOOP_BATTLE_RULES: BattleRules = {
-  start: () => null,
-  step: (state) => state,
-  done: () => null,
-};
+import {
+  checkConditionContext,
+  checkSessionOptions,
+} from "../../../tools/rpgkit-check/src/dynamic/sim.ts";
 
 export interface ShotSwitchBank {
   switches?: Record<string, boolean>;
@@ -54,6 +51,7 @@ export interface ShotConfig {
   dir?: Dir;
   sw?: ShotSwitchBank;
   reach?: readonly string[];
+  sessionOptions?: SessionOptions;
   resolution: { width: number; height: number };
 }
 
@@ -119,10 +117,7 @@ export function paintSchematic(cfg: ShotConfig): SchematicPaint {
     ...project,
     start: { map: cfg.map, x: cfg.x, y: cfg.y, dir: cfg.dir ?? "down" },
   };
-  const session = createSession(startProject, 60, {
-    extensions: { allowUnknown: true },
-    battle: NOOP_BATTLE_RULES,
-  });
+  const session = createSession(startProject, 60, checkSessionOptions(startProject, cfg.sessionOptions));
   const sw0 = cfg.sw
     ? createSwitchState({
         switches: cfg.sw.switches ?? {},

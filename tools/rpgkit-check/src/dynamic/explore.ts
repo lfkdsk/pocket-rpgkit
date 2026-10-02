@@ -35,11 +35,12 @@ import {
   tableWithBodies,
   type Session,
   type SessionState,
+  type SessionOptions,
 } from "../../../../src/engine/session.ts";
 import type { Command, Dir, GameEvent, Project } from "../../../../src/engine/types.ts";
 import { makeFinding, type CheckReport, type Finding, type FindingLocation } from "../finding.ts";
 import { anyProjectCommand, collectProjectOp } from "../walk.ts";
-import { CHECK_HZ, NOOP_BATTLE_RULES, checkConditionContext, checkSceneRules } from "./sim.ts";
+import { CHECK_HZ, checkConditionContext, checkSessionOptions } from "./sim.ts";
 
 // Dir4/Facing order: 0 down, 1 left, 2 up, 3 right.
 const DIRS: readonly Dir[] = ["down", "left", "up", "right"];
@@ -103,6 +104,8 @@ export interface ExploreOptions {
   /** Frames without progress (new trigger / new tile / map change) before
    *  the run gives up (default 600). */
   stuckFrames?: number;
+  /** Game-owned registrations loaded by the CLI's --session module. */
+  sessionOptions?: SessionOptions;
 }
 
 export interface ExploreEventStat {
@@ -241,11 +244,14 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
     fiberStarts++;
   };
 
+  const sessionDefaults = checkSessionOptions(project, options.sessionOptions);
+  const externalFiberStart = sessionDefaults.onFiberStart;
   const session: Session = createSession(project, options.hz ?? CHECK_HZ, {
-    extensions: { allowUnknown: true },
-    battle: NOOP_BATTLE_RULES,
-    scenes: checkSceneRules(project),
-    onFiberStart,
+    ...sessionDefaults,
+    onFiberStart: (key, pageIndex, parallel) => {
+      externalFiberStart?.(key, pageIndex, parallel);
+      onFiberStart(key, pageIndex);
+    },
   });
   let state: SessionState = startSession(project, session);
 

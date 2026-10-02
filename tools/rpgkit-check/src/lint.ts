@@ -25,12 +25,13 @@
 //   lint/item-missing               item/shop/condition reference to an item
 //                                   not in the catalog
 //   lint/audio-missing              audio command/condition id absent from a
-//                                   declared project.audio table
+//                                   declared project.audio table (warning:
+//                                   partial tables and typos are both shown)
 //   lint/sprite-missing             page.sprite / appearance.sprite /
 //                                   choices option icon.sprite key not in
 //                                   project.sprites
-//   lint/sheet-missing              map.sheets / tile id / walker sheet / item
-//                                   sprite referencing an unknown sheet
+//   lint/sheet-missing              map.sheets / tile id / item sprite
+//                                   referencing an unknown tile sheet
 //   lint/tileproperty-out-of-bounds  tileProperty command outside the host
 //                                   map's bounds (the runtime throws)
 //   lint/map-unreachable            map not reachable from the start map by
@@ -192,9 +193,13 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
   };
   const missingAudio = (id: string, loc: FindingLocation): void => {
     if (audioIds === null || audioIds.has(id)) return;
+    // The document only exposes the logical-id table, not whether a missing
+    // entry is supplied by a partial/host audio setup or is an authored typo.
+    // Keep the precise finding so the reference is reviewable, but do not
+    // make that ambiguity fail lint.
     findings.push(makeFinding(
       "lint/audio-missing",
-      "error",
+      "warning",
       `audio reference uses undeclared id ${JSON.stringify(id)}`,
       "add the logical id to project.audio or fix the reference",
       loc,
@@ -674,7 +679,7 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
   usageFindings(switches, "lint/switch-read-never-set", "lint/switch-set-never-read", "warning", "switch");
   usageFindings(variables, "lint/variable-read-never-set", "lint/variable-set-never-read", "info", "variable");
 
-  // ---- item sprites / walker sheets reference sheets ----------------------
+  // ---- item sprites reference tile sheets ---------------------------------
 
   for (const item of project.items) {
     const sheet = tileSheet(item.sprite);
@@ -685,17 +690,6 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
         `item ${JSON.stringify(item.id)} sprite ${JSON.stringify(item.sprite)} references unknown sheet ${JSON.stringify(sheet)}`,
         "add the sheet or fix the sprite cell",
         { pointer: "/items" },
-      ));
-    }
-  }
-  for (const [key, sprite] of Object.entries(project.sprites ?? {})) {
-    if (sprite.kind === "walker" && "sheet" in sprite && !sheetIds.has(sprite.sheet)) {
-      findings.push(makeFinding(
-        "lint/sheet-missing",
-        "error",
-        `sprite ${JSON.stringify(key)} walks unknown sheet ${JSON.stringify(sprite.sheet)}`,
-        "add the sheet or fix the walker sheet id",
-        { pointer: `/sprites/${key}` },
       ));
     }
   }

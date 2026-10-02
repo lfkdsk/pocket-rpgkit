@@ -41,6 +41,7 @@ import {
   tableWithBodies,
   type Session,
   type SessionInput,
+  type SessionOptions,
   type SessionState,
 } from "../../../../src/engine/session.ts";
 import type { Dir, Project } from "../../../../src/engine/types.ts";
@@ -82,6 +83,13 @@ const REACH_ASSUMPTIONS: readonly string[] = [
   "moving characters step under the real engine during a macro; a path blocked by a wandering body aborts that macro (the search may retry from another state)",
 ];
 
+function reachAssumptions(sessionOptions?: SessionOptions): string[] {
+  if (!sessionOptions?.extensions) return [...REACH_ASSUMPTIONS];
+  return REACH_ASSUMPTIONS.map((assumption) => assumption.startsWith("extension (ext)")
+    ? "registered extension commands and conditions run under the loaded session module; unknown extensions follow its allowUnknown policy (true by default); extension choice options are not branched"
+    : assumption);
+}
+
 const ZERO_INPUT: SessionInput = {
   buttons: 0,
   confirmEdge: false,
@@ -118,6 +126,8 @@ export interface ReachOptions {
     rules: BattleRules;
     input?: (state: unknown) => BattleInput;
   };
+  /** Game-owned registrations loaded by the CLI's --session module. */
+  sessionOptions?: SessionOptions;
 }
 
 export interface ReachInboundRef {
@@ -256,8 +266,11 @@ export function checkReach(project: Project, options: ReachOptions = {}): ReachR
   const maxFrames = options.maxFrames ?? DEFAULT_MAX_FRAMES;
   const maxStates = options.maxStates ?? DEFAULT_MAX_STATES;
   const maxSeconds = options.maxSeconds ?? DEFAULT_MAX_SECONDS;
-  const battleRules = options.battle?.rules ?? NOOP_BATTLE_RULES;
-  const battlePolicy: ReachReport["battlePolicy"] = options.battle ? "registered-rules" : "encounters-declined";
+  const sessionDefaults = checkSessionOptions(project, options.sessionOptions);
+  const battleRules = options.battle?.rules ?? sessionDefaults.battle ?? NOOP_BATTLE_RULES;
+  const battlePolicy: ReachReport["battlePolicy"] = options.battle || options.sessionOptions?.battle
+    ? "registered-rules"
+    : "encounters-declined";
 
   const start = options.start ?? {
     map: project.start.map,
@@ -276,10 +289,13 @@ export function checkReach(project: Project, options: ReachOptions = {}): ReachR
   // The search records and verifies witnesses at the 60 Hz reference: the
   // engine folds MOTION_HZ/hz ticks per host frame, and the tool makes no
   // claim about other host frame rates.
+  const projectSessionOptions = checkSessionOptions(proj, options.sessionOptions);
+  const externalFiberStart = projectSessionOptions.onFiberStart;
   const session: Session = createSession(proj, CHECK_HZ, {
-    ...checkSessionOptions(proj),
+    ...projectSessionOptions,
     battle: battleRules,
-    onFiberStart: (key: string, pageIndex: number): void => {
+    onFiberStart: (key: string, pageIndex: number, parallel: boolean): void => {
+      externalFiberStart?.(key, pageIndex, parallel);
       triggeredPages.add(`${key}#${pageIndex}`);
     },
   });
@@ -305,7 +321,16 @@ export function checkReach(project: Project, options: ReachOptions = {}): ReachR
       "fix start.map",
       { map: start.map },
     ));
-    return emptyReport(proj, findings, start, battlePolicy, maxFrames, maxStates, maxSeconds);
+    return emptyReport(
+      proj,
+      findings,
+      start,
+      battlePolicy,
+      maxFrames,
+      maxStates,
+      maxSeconds,
+      options.sessionOptions,
+    );
   }
 
   // --- BFS over real engine states ---------------------------------------
@@ -509,7 +534,7 @@ export function checkReach(project: Project, options: ReachOptions = {}): ReachR
   // other host frame rates.
 
   const verifySession: Session = createSession(proj, CHECK_HZ, {
-    ...checkSessionOptions(proj),
+    ...projectSessionOptions,
     battle: battleRules,
   });
   const materialize = (node: SearchNode): ReachWitness => {
@@ -587,7 +612,7 @@ export function checkReach(project: Project, options: ReachOptions = {}): ReachR
     maps,
     reachableMaps,
     notFoundMaps,
-    assumptions: [...REACH_ASSUMPTIONS],
+    assumptions: reachAssumptions(options.sessionOptions),
   };
 }
 
@@ -686,6 +711,7 @@ function emptyReport(
   maxFrames: number,
   maxStates: number,
   maxSeconds: number,
+  sessionOptions?: SessionOptions,
 ): ReachReport {
   return {
     check: "reach",
@@ -698,6 +724,6 @@ function emptyReport(
     maps: project.maps.map((m) => ({ map: m.id, status: "notFound" as const, frontier: { inbound: [] } })),
     reachableMaps: [],
     notFoundMaps: project.maps.map((m) => m.id),
-    assumptions: [...REACH_ASSUMPTIONS],
+    assumptions: reachAssumptions(sessionOptions),
   };
 }

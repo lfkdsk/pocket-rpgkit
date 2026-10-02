@@ -8,6 +8,8 @@ import { CHECK_TOOLS, checkTool } from "../tools/rpgkit-check/src/registry.ts";
 const CLI = join(import.meta.dir, "..", "tools", "rpgkit-check", "cli.ts");
 const SUNSTONE = join(import.meta.dir, "..", "examples", "sunstone", "data", "sunstone.json");
 const MEADOW = join(import.meta.dir, "..", "examples", "meadow", "data", "meadow.json");
+const SESSION_PROJECT = join(import.meta.dir, "fixtures", "rpgkit-check", "session-project.json");
+const SESSION_OPTIONS = join(import.meta.dir, "fixtures", "rpgkit-check", "session-options.ts");
 
 async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn({
@@ -136,6 +138,54 @@ describe("rpgkit-check CLI", () => {
     const { code, stderr } = await runCli(["lint", "--file", SUNSTONE, "--out", ""]);
     expect(code).toBe(2);
     expect(stderr).toContain("--out requires a value");
+  });
+
+  test("--session loads function-bearing TypeScript options for a dynamic check", async () => {
+    const without = await runCli([
+      "reach", "--file", SESSION_PROJECT,
+      "--max-frames", "600", "--max-states", "30", "--max-seconds", "5",
+    ]);
+    const withSession = await runCli([
+      "reach", "--file", SESSION_PROJECT,
+      `--session=${SESSION_OPTIONS}`,
+      "--max-frames", "600", "--max-states", "30", "--max-seconds", "5",
+    ]);
+    expect(without.code).toBe(0);
+    expect(withSession.code).toBe(0);
+    expect(JSON.parse(without.stdout).notFoundMaps).toContain("m2");
+    const withReport = JSON.parse(withSession.stdout);
+    expect(withReport.reachableMaps).toContain("m2");
+    expect(withReport.assumptions.join("\n")).toContain("loaded session module");
+  });
+
+  test("--session without a value exits 2", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", SESSION_PROJECT, "--session"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("--session requires a value");
+  });
+
+  test("--session= with an empty value exits 2", async () => {
+    const { code, stderr } = await runCli(["reach", "--file", SESSION_PROJECT, "--session="]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("--session requires a value");
+  });
+
+  test("a missing --session module exits 2", async () => {
+    const { code, stderr } = await runCli([
+      "reach",
+      "--file",
+      SESSION_PROJECT,
+      "--session",
+      join(import.meta.dir, "fixtures", "rpgkit-check", "missing-session.ts"),
+    ]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("Cannot find module");
+  });
+
+  test("lint rejects --session instead of silently ignoring it", async () => {
+    const { code, stderr } = await runCli(["lint", "--file", SESSION_PROJECT, "--session", SESSION_OPTIONS]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("not lint");
   });
 
   test("an unreadable file exits 2 with a JSON report of doc findings", async () => {

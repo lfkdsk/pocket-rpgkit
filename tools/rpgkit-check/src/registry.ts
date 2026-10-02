@@ -16,6 +16,7 @@ import { checkExplore, type ExploreReport } from "./dynamic/explore.ts";
 import { renderShots, type ShotOutput, type RenderShotsOptions } from "./shot/render.ts";
 import type { CheckReport, Finding } from "./finding.ts";
 import type { Dir, Project } from "../../../src/engine/types.ts";
+import type { SessionOptions } from "../../../src/engine/session.ts";
 import { validateSchema, type Schema, type VError } from "../../../src/engine/schema-validate.ts";
 
 export interface CheckTool {
@@ -23,7 +24,13 @@ export interface CheckTool {
   description: string;
   /** JSON Schema (draft 2020-12 subset) for the tool's args object. */
   inputSchema: Record<string, unknown>;
-  run(args: Record<string, unknown>): Promise<unknown>;
+  run(args: Record<string, unknown>, context?: CheckRunContext): Promise<unknown>;
+}
+
+/** Non-JSON execution context. The CLI can load function registries from a
+ *  trusted local module; MCP calls intentionally expose only JSON args. */
+export interface CheckRunContext {
+  sessionOptions?: SessionOptions;
 }
 
 /** Args failed the tool's inputSchema. Entry points (CLI/MCP) report this
@@ -137,9 +144,12 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
       required: ["file"],
       additionalProperties: false,
     },
-    run: async (args) => {
+    run: async (args, context) => {
       const { project } = loadProject(args.file);
-      return checkLocks(project, { frames: numArg(args, "frames") }) satisfies LockReport;
+      return checkLocks(project, {
+        frames: numArg(args, "frames"),
+        sessionOptions: context?.sessionOptions,
+      }) satisfies LockReport;
     },
   },
   {
@@ -157,9 +167,12 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
       required: ["file"],
       additionalProperties: false,
     },
-    run: async (args) => {
+    run: async (args, context) => {
       const { project } = loadProject(args.file);
-      return checkFreeze(project, { windowFrames: numArg(args, "windowFrames") }) satisfies FreezeReport;
+      return checkFreeze(project, {
+        windowFrames: numArg(args, "windowFrames"),
+        sessionOptions: context?.sessionOptions,
+      }) satisfies FreezeReport;
     },
   },
   {
@@ -198,7 +211,7 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
       required: ["file"],
       additionalProperties: false,
     },
-    run: async (args) => {
+    run: async (args, context) => {
       const { project } = loadProject(args.file);
       const start = args.start as Parameters<typeof checkReach>[1] extends { start?: infer S } ? S : never;
       return checkReach(project, {
@@ -206,6 +219,7 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
         maxFrames: budgetArg(args, "maxFrames", true),
         maxStates: budgetArg(args, "maxStates", true),
         maxSeconds: budgetArg(args, "maxSeconds", false),
+        sessionOptions: context?.sessionOptions,
       }) satisfies ReachReport;
     },
   },
@@ -226,11 +240,12 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
       required: ["file"],
       additionalProperties: false,
     },
-    run: async (args) => {
+    run: async (args, context) => {
       const { project } = loadProject(args.file);
       return checkExplore(project, {
         frames: numArg(args, "frames"),
         stuckFrames: numArg(args, "stuckFrames"),
+        sessionOptions: context?.sessionOptions,
       }) satisfies ExploreReport;
     },
   },
@@ -269,7 +284,7 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
       required: ["file", "map", "x", "y"],
       additionalProperties: false,
     },
-    run: async (args) => {
+    run: async (args, context) => {
       const { project } = loadProject(args.file);
       const options: RenderShotsOptions = {
         map: String(args.map ?? ""),
@@ -278,6 +293,7 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
         dir: args.dir as Dir | undefined,
         sw: args.sw as RenderShotsOptions["sw"],
         reach: args.reach as string[] | undefined,
+        sessionOptions: context?.sessionOptions,
       };
       const out = typeof args.out === "string" ? args.out : ".";
       const outputs: ShotOutput[] = await renderShots(project, options, out);
@@ -293,7 +309,8 @@ export const CHECK_TOOLS: CheckTool[] = CHECK_TOOL_DEFS.map((tool) => ({
   ...tool,
   // async so a CheckArgsError thrown by validation surfaces as a rejected
   // promise (what callers awaiting tool.run expect), not a sync throw.
-  run: async (args: Record<string, unknown>) => tool.run(validateCheckArgs(tool, args)),
+  run: async (args: Record<string, unknown>, context?: CheckRunContext) =>
+    tool.run(validateCheckArgs(tool, args), context),
 }));
 
 /** Look up a tool by name (for the CLI). Accepts both the full

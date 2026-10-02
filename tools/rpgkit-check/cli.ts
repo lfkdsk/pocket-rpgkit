@@ -1,7 +1,8 @@
 // tools/rpgkit-check/cli.ts — command-line entry for the rpgkit-check tools.
 //
 //   bun run rpgkit-check <check> --file <doc.json> [--json '<args>'] [--out <dir>]
-//     [--max-frames <n>] [--max-states <n>] [--max-seconds <n>]
+//     [--session <module>] [--max-frames <n>] [--max-states <n>]
+//     [--max-seconds <n>]
 //
 // <check> is one of: lint, locks, freeze, reach, explore, shot (or the full
 // rpgkit-<check> tool name). The report is printed to stdout as JSON. Exit
@@ -12,10 +13,14 @@
 
 import { CHECK_TOOLS, CheckArgsError, CheckLoadError, checkTool } from "./src/registry.ts";
 import { countBySeverity, type CheckReport } from "./src/finding.ts";
+import type { SessionOptions } from "../../src/engine/session.ts";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 function usage(): never {
   console.error(
     `usage: bun run rpgkit-check <check> --file <doc.json> [--json '<args>'] [--out <dir>]\n` +
+      `  [--session <module>]\n` +
       `  [--max-frames <n>] [--max-states <n>] [--max-seconds <n>]\n` +
       `checks: ${CHECK_TOOLS.map((t) => t.name.replace(/^rpgkit-/, "")).join(", ")}\n` +
       `note: reach reports a replayable witness for every reached map; a notFound map is a lead, not a proof.\n` +
@@ -44,6 +49,7 @@ const checkName = argv[0]!;
 let file: string | undefined;
 let argsJson: string | undefined;
 let out: string | undefined;
+let sessionModule: string | undefined;
 let maxFrames: number | undefined;
 let maxStates: number | undefined;
 let maxSeconds: number | undefined;
@@ -73,6 +79,7 @@ for (let i = 1; i < argv.length; i++) {
   if (arg === "--file") file = takeValue("--file");
   else if (arg === "--json" || arg === "--args") argsJson = takeValue(arg);
   else if (arg === "--out") out = takeValue("--out");
+  else if (arg === "--session") sessionModule = takeValue("--session");
   else if (arg === "--max-frames") maxFrames = parseBudget("--max-frames", takeValue("--max-frames"), true);
   else if (arg === "--max-states") maxStates = parseBudget("--max-states", takeValue("--max-states"), true);
   else if (arg === "--max-seconds") maxSeconds = parseBudget("--max-seconds", takeValue("--max-seconds"));
@@ -80,6 +87,7 @@ for (let i = 1; i < argv.length; i++) {
   else if (arg.startsWith("--json=") || arg.startsWith("--args=")) {
     argsJson = takeEquals(arg.startsWith("--json=") ? "--json" : "--args", arg);
   } else if (arg.startsWith("--out=")) out = takeEquals("--out", arg);
+  else if (arg.startsWith("--session=")) sessionModule = takeEquals("--session", arg);
   else if (arg.startsWith("--max-frames=")) maxFrames = parseBudget("--max-frames", takeEquals("--max-frames", arg), true);
   else if (arg.startsWith("--max-states=")) maxStates = parseBudget("--max-states", takeEquals("--max-states", arg), true);
   else if (arg.startsWith("--max-seconds=")) maxSeconds = parseBudget("--max-seconds", takeEquals("--max-seconds", arg));
@@ -126,8 +134,22 @@ const callArgs = {
   file,
 };
 
+async function loadSessionOptions(file: string): Promise<SessionOptions> {
+  const href = pathToFileURL(resolve(process.cwd(), file)).href;
+  const loaded = await import(href) as { default?: unknown; sessionOptions?: unknown };
+  const value = loaded.default ?? loaded.sessionOptions;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`--session module must export a SessionOptions object as default or sessionOptions: ${file}`);
+  }
+  return value as SessionOptions;
+}
+
 try {
-  const result = await tool.run(callArgs);
+  if (sessionModule && tool.name === "rpgkit-lint") {
+    throw new Error("--session applies to dynamic checks and shot, not lint");
+  }
+  const sessionOptions = sessionModule ? await loadSessionOptions(sessionModule) : undefined;
+  const result = await tool.run(callArgs, sessionOptions ? { sessionOptions } : undefined);
   console.log(JSON.stringify(result, null, 2));
   const report = result as Partial<CheckReport>;
   if (Array.isArray(report.findings)) {

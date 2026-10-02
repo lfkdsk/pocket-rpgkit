@@ -448,10 +448,10 @@ describe("rpgkit-check lint: missing references", () => {
     expectError(lint(p), "lint/sheet-missing");
   });
 
-  test("walker sprite sheet missing → error", () => {
+  test("walker source sheet is independent of project tile sheets → silent", () => {
     const p = cleanProject();
-    p.sprites!["walker"] = { kind: "walker", sheet: "nope" };
-    expectError(lint(p), "lint/sheet-missing");
+    p.sprites!["walker"] = { kind: "walker", sheet: "assets/sprites/walker.png" };
+    expect(findingsOf(lint(p), "lint/sheet-missing")).toEqual([]);
   });
 
   test("page condition item unknown → error", () => {
@@ -675,7 +675,7 @@ describe("rpgkit-check lint: declared audio references", () => {
     expect(findingsOf(lint(p), "lint/audio-missing")).toEqual([]);
   });
 
-  test("declared tables reject missing command and condition ids at precise paths", () => {
+  test("declared tables warn once per missing command and condition id at precise paths", () => {
     const p = cleanProject();
     p.audio = { field: "audio:wav.field" };
     const page = p.maps[0]!.events![0]!.pages[0]!;
@@ -703,7 +703,10 @@ describe("rpgkit-check lint: declared audio references", () => {
 
     const findings = findingsOf(lint(p), "lint/audio-missing");
     expect(findings).toHaveLength(6);
-    expect(findings.every((finding) => finding.severity === "error")).toBe(true);
+    // A declared table cannot say whether a missing id is supplied by a
+    // partial host setup or is a typo. Preserve every reference for review,
+    // with its exact location, without turning that ambiguity into an error.
+    expect(findings.every((finding) => finding.severity === "warning")).toBe(true);
     expect(findings.map((finding) => finding.loc)).toContainEqual({
       map: "m1", event: "ev1", page: 0,
     });

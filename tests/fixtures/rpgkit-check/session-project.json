@@ -1,0 +1,40 @@
+{
+  "format": "rpgkit-project/v1",
+  "title": "Session module fixture",
+  "tileSize": 16,
+  "start": { "map": "m1", "x": 1, "y": 1, "dir": "down" },
+  "sheets": [{ "id": "tile", "cols": 1, "rows": 1 }],
+  "items": [],
+  "maps": [
+    {
+      "id": "m1",
+      "name": "M1",
+      "width": 3,
+      "height": 3,
+      "sheets": ["tile"],
+      "ground": ["tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0"],
+      "events": [
+        {
+          "id": "gate",
+          "x": 1,
+          "y": 2,
+          "pages": [
+            {
+              "trigger": "action",
+              "condition": { "all": [{ "kind": "ext", "call": "fixture.open", "args": null }] },
+              "commands": [{ "op": "transfer", "map": "m2", "x": 1, "y": 1 }]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "m2",
+      "name": "M2",
+      "width": 3,
+      "height": 3,
+      "sheets": ["tile"],
+      "ground": ["tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0"]
+    }
+  ]
+}

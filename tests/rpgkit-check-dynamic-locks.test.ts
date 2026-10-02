@@ -4,7 +4,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { checkLocks, type LockReport } from "../tools/rpgkit-check/src/dynamic/locks.ts";
-import { makeCheckSession, startFresh, stepAuto } from "../tools/rpgkit-check/src/dynamic/sim.ts";
+import {
+  makeCheckSession,
+  startFresh,
+  stepAuto,
+  syntheticBattleRules,
+} from "../tools/rpgkit-check/src/dynamic/sim.ts";
 import { loadProjectFile } from "../tools/rpgkit-check/src/doc.ts";
 import type { Command, Project } from "../src/engine/types.ts";
 
@@ -114,6 +119,116 @@ describe("rpgkit-check locks: lock never released", () => {
   });
 });
 
+describe("rpgkit-check locks: game-declared battle result", () => {
+  function battleGateProject(): Project {
+    const project = baseProject([
+      { op: "lockInput" },
+      { op: "battle", setup: { opponent: "fixture" } },
+    ]);
+    project.maps[0]!.events!.push({
+      id: "battle-result",
+      x: 0,
+      y: 0,
+      pages: [{
+        trigger: "parallel",
+        condition: { variable: { id: "battle.result", op: "==", value: 7 } },
+        commands: [{ op: "unlockInput" }],
+      }],
+    });
+    return project;
+  }
+
+  test("a synthetic completion writes the game's declared result variable", () => {
+    const report = checkLocks(battleGateProject(), {
+      ...FAST,
+      sessionOptions: {
+        battle: syntheticBattleRules({ result: "win", writes: { "battle.result": 7 } }),
+      },
+    });
+    expect(report.rows[0]!.outcome).toBe("unlocked");
+    expect(report.rows[0]!.lockedAt).toBeGreaterThanOrEqual(0);
+    expect(report.findings).toEqual([]);
+  });
+
+  test("without an explicit result convention the default declined battle stays unresolved", () => {
+    const report = checkLocks(battleGateProject(), FAST);
+    expect(report.rows[0]!.outcome).toBe("unresolved");
+    expect(report.findings).toHaveLength(1);
+  });
+});
+
+describe("rpgkit-check locks: cross-event release flow", () => {
+  test("seeds historical prerequisites but leaves the source-written causal gate live", () => {
+    const project = baseProject([
+      { op: "lockInput" },
+      { op: "variable", id: "story.ready", set: { op: "set", value: 1 } },
+    ]);
+    project.maps[0]!.events!.push({
+      id: "release",
+      x: 0,
+      y: 0,
+      pages: [{
+        trigger: "parallel",
+        condition: { variable: { id: "story.ready", op: "==", value: 1 } },
+        commands: [{
+          op: "if",
+          if: { kind: "variable", id: "story.history", op: "==", value: 2 },
+          then: [{ op: "unlockInput" }],
+        }],
+      }],
+    });
+    const report = checkLocks(project, FAST);
+    expect(report.rows[0]!.outcome).toBe("unlocked");
+    expect(report.rows[0]!.lockedAt).toBeGreaterThanOrEqual(0);
+    expect(report.summary.dynamicChecks).toBe(2);
+    expect(report.findings).toEqual([]);
+  });
+
+  test("does not seed an unrelated automatic unlock with no causal source write", () => {
+    const project = baseProject([{ op: "lockInput" }]);
+    project.maps[0]!.events!.push({
+      id: "unrelated-release",
+      x: 0,
+      y: 0,
+      pages: [{
+        trigger: "parallel",
+        condition: { variable: { id: "other.story", op: "==", value: 1 } },
+        commands: [{ op: "unlockInput" }],
+      }],
+    });
+    const report = checkLocks(project, FAST);
+    expect(report.rows[0]!.outcome).toBe("unresolved");
+    expect(report.summary.dynamicChecks).toBe(1);
+    expect(report.findings).toHaveLength(1);
+  });
+
+  test("restores a seeded local switch after map entry for an autorun release", () => {
+    const project = baseProject([
+      { op: "lockInput" },
+      { op: "switch", id: "story.ready", value: true },
+    ]);
+    project.maps[0]!.events!.push({
+      id: "release",
+      x: 0,
+      y: 0,
+      pages: [{
+        trigger: "autorun",
+        condition: { switch: "story.ready" },
+        commands: [{
+          op: "if",
+          if: { kind: "switch", id: "local.history", value: true },
+          then: [{ op: "unlockInput" }],
+        }],
+      }],
+    });
+    const report = checkLocks(project, FAST);
+    expect(report.rows[0]!.outcome).toBe("unlocked");
+    expect(report.rows[0]!.lockedAt).toBeGreaterThanOrEqual(0);
+    expect(report.summary.dynamicChecks).toBe(2);
+    expect(report.findings).toEqual([]);
+  });
+});
+
 describe("rpgkit-check locks: lock released by a transfer", () => {
   test("lockInput → transfer to another map proves transferred", () => {
     const report = checkLocks(baseProject(
@@ -128,6 +243,20 @@ describe("rpgkit-check locks: lock released by a transfer", () => {
     expect(report.rows[0]!.outcome).toBe("transferred");
     expect(report.findings).toEqual([]);
     expect(report.summary.transferred).toBe(1);
+  });
+
+  test("a transfer before the target lock is not a successful release", () => {
+    const report = checkLocks(baseProject(
+      [
+        { op: "transfer", map: "m2", x: 0, y: 0 },
+        { op: "lockInput" },
+      ],
+      [map2()],
+    ), FAST);
+    expect(report.rows[0]!.outcome).toBe("unresolved");
+    expect(report.rows[0]!.lockedAt).toBe(-1);
+    expect(report.rows[0]!.error).toContain("transferred before");
+    expect(report.findings).toHaveLength(1);
   });
 });
 

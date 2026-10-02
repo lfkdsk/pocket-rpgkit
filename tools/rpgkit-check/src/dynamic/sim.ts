@@ -4,11 +4,11 @@
 // Every dynamic check drives the REAL engine (createSession/startSession/
 // stepSession) on a copy of the project under test. Game-owned extension
 // calls and battles are outside a generic QA tool's reach, so by default
-// unknown extensions are accepted as no-ops and battles complete instantly
+// unknown extensions are accepted as no-ops and battles are declined
 // (the same isolation the Tuxemon corpus probes used): the checks measure
 // event/lock/world liveness, not game logic.
 
-import type { BattleRules } from "../../../../src/engine/battle.ts";
+import type { BattleCompletion, BattleRules } from "../../../../src/engine/battle.ts";
 import type { SceneRules } from "../../../../src/engine/scene.ts";
 import type { Command, Dir, MapDef, Project } from "../../../../src/engine/types.ts";
 import {
@@ -31,13 +31,26 @@ import { walkCommands } from "../walk.ts";
 
 export const CHECK_HZ = 60;
 
-/** Battle completes immediately with no result writes: the parked fiber
- *  resumes on the same frame the scene would open. */
+/** Default battle isolation declines the encounter. This preserves the
+ *  generic checker's historical behavior when no game contract is loaded. */
 export const NOOP_BATTLE_RULES: BattleRules = {
   start: () => null,
   step: (state) => state,
   done: () => null,
 };
+
+export type SyntheticBattleCompletion = Omit<BattleCompletion, "ext">;
+
+/** Build an immediate deterministic battle adapter for a game's QA session
+ *  module. The caller declares its own result-variable/switch convention in
+ *  `completion`; the checker must not guess game-specific ids or enum codes. */
+export function syntheticBattleRules(completion: SyntheticBattleCompletion): BattleRules {
+  return {
+    start: (ext) => ({ state: ext, ext }),
+    step: (state) => state,
+    done: (ext) => ({ ...completion, ext }),
+  };
+}
 
 /** Scene completes on its first frame with a normal (non-cancelled)
  *  completion: the parked fiber runs the scene's onDone branch, so the
@@ -72,18 +85,28 @@ export function checkSceneRules(project: Project): Record<string, SceneRules> {
 }
 
 /** The session options every dynamic check shares: unknown extensions are
- *  tolerated, battles end at once, and every scene id the document uses gets
- *  the noop scene rules. Callers may override `battle` or add hooks. */
-export function checkSessionOptions(project: Project): SessionOptions {
+ *  tolerated, battles are declined, and every scene id the document uses
+ *  gets the noop scene rules. Game registrations override the fallbacks
+ *  while unregistered scene ids retain a noop, which keeps partial QA
+ *  profiles usable. */
+export function checkSessionOptions(
+  project: Project,
+  overrides: SessionOptions = {},
+): SessionOptions {
   return {
-    extensions: { allowUnknown: true },
-    battle: NOOP_BATTLE_RULES,
-    scenes: checkSceneRules(project),
+    ...overrides,
+    extensions: { allowUnknown: true, ...overrides.extensions },
+    battle: overrides.battle ?? NOOP_BATTLE_RULES,
+    scenes: { ...checkSceneRules(project), ...overrides.scenes },
   };
 }
 
-export function makeCheckSession(project: Project, hz: number = CHECK_HZ): Session {
-  return createSession(project, hz, checkSessionOptions(project));
+export function makeCheckSession(
+  project: Project,
+  hz: number = CHECK_HZ,
+  overrides?: SessionOptions,
+): Session {
+  return createSession(project, hz, checkSessionOptions(project, overrides));
 }
 
 export function startFresh(
