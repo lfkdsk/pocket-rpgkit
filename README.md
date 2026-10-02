@@ -1525,21 +1525,49 @@ slower than 60 Hz), freeze its 60 Hz masks as an RLE tape, and pass the
 tape to `GameView`. On a host with `data.fs`, an `attract-tape.json` at
 the app's data root replaces the built-in tape without a rebuild.
 
+### Attract rewind keyframes
+
 `AttractController` captures a complete runtime keyframe every 3,600 reducer
 inputs by default, and immediately after map changes and battle entry/exit.
 Display-only pacing ticks do not advance that interval, so one tape produces
 the same capture frames at 60/30/20/4 Hz. Rewind restores the nearest retained
 keyframe and folds only the suffix through the ordinary reducer. Configure the
-policy with `keyframeIntervalFrames` and `keyframeMaxBytes`; zero bytes disables
-keyframes and uses the exact from-frame-zero fallback.
+policy with `keyframeIntervalFrames`, `keyframeMaxBytes` and
+`keyframeMaxCount`; zero bytes or zero count disables keyframes and uses the
+exact from-frame-zero fallback.
 
-The default 8 MiB cap applies to the deterministic serialized-payload estimate
-reported by `keyframeEstimatedBytes` and `keyframeStats()`. Oldest snapshots are
-evicted first; a target older than the oldest retained snapshot falls back to
-frame zero. `rewindHistoryEstimatedBytes` adds that payload to the u16 input and
-u8 controller-timeline allocations. JS-engine object overhead is host-specific
+Retention is capped twice: by the deterministic serialized-payload estimate
+reported by `keyframeEstimatedBytes` and `keyframeStats()` (default 2 MiB), and
+by count (default 64). Oldest snapshots are evicted first; a target older than
+the oldest retained snapshot falls back to frame zero.
+`rewindHistoryEstimatedBytes` adds that payload to the u16 input and u8
+controller-timeline allocations. JS-engine object overhead is host-specific
 and intentionally excluded. Keyframes are process-local acceleration data:
 they never enter the `rpgkit-save/v1` envelope, so the save format is unchanged.
+
+**Memory and frame cost.** With [`immutableState`](#opt-in-immutable-state-fast-path)
+a published state is never written again, so a keyframe keeps that state by
+reference instead of deep-copying it. Taking one allocates almost nothing, and
+consecutive keyframes share every subtree the reducer did not rebuild in
+between, so the real retained heap is far below the byte estimate (which
+charges every keyframe its full serialized size). Without `immutableState`
+each keyframe is a deep copy: capturing one runs `deepClone` on the state in
+addition to the estimate's `JSON.stringify`. With `immutableState` the only
+per-capture work is that one `JSON.stringify` of the state for the estimate;
+in both modes the controller allocates nothing per frame for its own
+bookkeeping. On a large game (about 34 KB of
+serialized state, a 110,866-frame mainline with 366 captures) in PocketJS's
+desktop QuickJS guest, the end-of-run heap is 10.7 MiB with the demo
+controller against 9.3 MiB without it (26.7 MiB when keyframes were deep
+copies), and a capture costs about 0.7 ms of CPU.
+
+A game tunes these limits through `DemoOptions.rewind` (`rewindSeconds`,
+`keyframeIntervalFrames`, `keyframeMaxBytes`, `keyframeMaxCount`), which
+`GameView` forwards to the controller it creates for the demo. Lower limits trade
+rewind reach for memory: a rewind target before the oldest retained keyframe
+still lands exactly, but refolds from frame zero, which after a long session
+costs a full replay.
+
 Run `tools/kr2-quickjs-bench.sh` to measure short/100k-frame rewind latency and
 the periodic-capture spike in PocketJS's desktop QuickJS guest; scratch files
 default to `${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/kr2-quickjs`.
@@ -1582,6 +1610,7 @@ const demoOptions: DemoOptions = {
     },
   },
   // openButton: BTN.SELECT,
+  // rewind: { keyframeMaxCount: 32 }, // see "Attract rewind keyframes"
 };
 
 mount(() => <GameView

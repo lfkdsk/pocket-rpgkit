@@ -11,9 +11,54 @@ import { acquireSessionMap, startSession, type SessionState } from "../../engine
 import type { Dir, Facing, MapDef, ProjectSource } from "../../engine/types.ts";
 import { isProjectShell } from "../../engine/map-repository.ts";
 import type { GameViewDemoHost } from "../demo-contract.ts";
-import type { DemoChapter, DemoOptions, DemoSpawn, DemoTapeFrames, DemoTapeProvider } from "./types.ts";
+import type { DemoChapter, DemoOptions, DemoRewindOptions, DemoSpawn, DemoTapeFrames, DemoTapeProvider } from "./types.ts";
 
 export const DEMO_ID = /^[a-z0-9][a-z0-9._-]*$/i;
+
+/** The only rewind knobs a DemoOptions.rewind record may carry. GameView
+ *  forwards them to AttractController; anything else (hz, maps,
+ *  immutableState, ...) would overwrite a trusted host setting. */
+const REWIND_FIELDS = [
+  "rewindSeconds",
+  "keyframeIntervalFrames",
+  "keyframeMaxBytes",
+  "keyframeMaxCount",
+] as const;
+
+/** Validate a DemoOptions.rewind record and return a fresh object holding
+ *  only the four documented fields. Arrays and unknown own keys are rejected
+ *  with a clear error, so a structurally assignable record cannot smuggle
+ *  trusted AttractOptions into the controller GameView builds. */
+export function validatedDemoRewind(rewind: unknown): DemoRewindOptions | undefined {
+  if (rewind === undefined) return undefined;
+  if (Array.isArray(rewind) || rewind === null || typeof rewind !== "object") {
+    throw new TypeError("demo: rewind must be an object");
+  }
+  for (const key of Object.keys(rewind)) {
+    if (!(REWIND_FIELDS as readonly string[]).includes(key)) {
+      throw new TypeError(`demo: rewind.${key} is not a known rewind option`);
+    }
+  }
+  const record = rewind as Record<string, unknown>;
+  const out: DemoRewindOptions = {};
+  const seconds = record.rewindSeconds;
+  if (seconds !== undefined) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+      throw new RangeError("demo: rewind.rewindSeconds must be a positive number");
+    }
+    out.rewindSeconds = seconds;
+  }
+  for (const field of ["keyframeIntervalFrames", "keyframeMaxBytes", "keyframeMaxCount"] as const) {
+    const value = record[field];
+    if (value !== undefined) {
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+        throw new RangeError(`demo: rewind.${field} must be a non-negative safe integer`);
+      }
+      out[field] = value;
+    }
+  }
+  return out;
+}
 
 const DIR_FOR_FACING: Readonly<Record<Facing, Dir>> = {
   0: "down",
@@ -59,6 +104,7 @@ export function validateDemoOptions(options: DemoOptions): void {
       throw new RangeError(`demo: chapters[${index}].timelineFrame must be a non-negative safe integer`);
     }
   }
+  validatedDemoRewind(options.rewind);
   const open = options.openButton ?? BTN.SELECT;
   if (!Number.isInteger(open) || open <= 0 || open > 0xffff || (open & (open - 1)) !== 0) {
     throw new RangeError("demo: openButton must be one u16 button bit");

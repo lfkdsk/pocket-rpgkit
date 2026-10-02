@@ -28,6 +28,13 @@
 // then run the ordinary reducer over only the suffix. Keyframes contain the
 // complete JSON-shaped SessionState plus the controller's source/display
 // cursors. A no-keyframe replay remains the reference path used by tests.
+//
+// Under SessionOptions.immutableState a published state is never written
+// again, so a keyframe keeps the state itself instead of a deep copy: taking
+// one allocates almost nothing and consecutive keyframes share every
+// unchanged subtree. Without that contract keyframes stay deep copies.
+// Either way the budget charges each keyframe its full serialized size, an
+// upper bound on what a shared keyframe actually retains.
 
 import type { MapRepository, ProjectSource } from "./types.ts";
 import { textModalPage, type Modal, type TextPaginator } from "./interpreter.ts";
@@ -83,8 +90,13 @@ export const ATTRACT_INPUT_LOG_FRAMES = ATTRACT_TAPE_HZ * 60 * 10;
 export const ATTRACT_KEYFRAME_INTERVAL_FRAMES = ATTRACT_TAPE_HZ * 60;
 
 /** Default cap for the deterministic serialized-payload estimate retained by
- * rewind keyframes. Oldest keyframes are evicted first. */
-export const ATTRACT_KEYFRAME_MAX_BYTES = 8 * 1024 * 1024;
+ * rewind keyframes. Oldest keyframes are evicted first. A large game's state
+ * serializes to tens of KiB, so this keeps a few minutes of keyframes while
+ * the retained heap stays a small fraction of the game's own. */
+export const ATTRACT_KEYFRAME_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Default cap on the number of retained rewind keyframes. */
+export const ATTRACT_KEYFRAME_MAX_COUNT = 64;
 
 const ALL_BUTTONS =
   BTN_SELECT | BTN_START | BTN_UP | BTN_RIGHT | BTN_DOWN | BTN_LEFT |
@@ -134,8 +146,11 @@ export interface AttractOptions {
    *  battle boundaries are still captured when the byte budget is nonzero. */
   keyframeIntervalFrames?: number;
   /** Maximum estimated payload bytes retained by rewind keyframes. Defaults
-   *  to 8 MiB. Zero disables all keyframes and keeps the from-zero fallback. */
+   *  to 2 MiB. Zero disables all keyframes and keeps the from-zero fallback. */
   keyframeMaxBytes?: number;
+  /** Maximum number of retained keyframes, oldest evicted first. Defaults to
+   *  64. Zero disables all keyframes. */
+  keyframeMaxCount?: number;
   /** Grown-world play (examples/grow): never auto-enter attract from
    *  idle (the world was the demo itself; there is no tape to play).
    *  SELECT then invokes onSelect instead of handing control to a tape. */
@@ -155,6 +170,12 @@ export interface AttractOptions {
    *  registrations above). */
   paginateText?: TextPaginator;
 }
+
+/** Rewind history knobs a game may tune (DemoOptions.rewind forwards them). */
+export type AttractRewindOptions = Pick<
+  AttractOptions,
+  "rewindSeconds" | "keyframeIntervalFrames" | "keyframeMaxBytes" | "keyframeMaxCount"
+>;
 
 export interface AttractStatus {
   phase: AttractPhase;
@@ -200,6 +221,9 @@ export interface AttractKeyframeStats {
   count: number;
   estimatedBytes: number;
   maxBytes: number;
+  maxCount: number;
+  /** True when keyframes keep shared immutable states instead of copies. */
+  shared: boolean;
   intervalFrames: number;
   evicted: number;
   /** Reducer inputs evaluated by the most recent rewind refold. */
@@ -222,6 +246,38 @@ interface AttractKeyframe extends AttractKeyframeEntry {
   stage: PresentationStage;
 }
 
+/** Controller fields a failed step restores (see AttractController.step). */
+interface AttractCheckpoint {
+  state: SessionState;
+  phase: AttractPhase;
+  logBuf: Uint16Array;
+  timelineBuf: Uint8Array;
+  logLength: number;
+  firstDivergence: number;
+  demoFrame: number;
+  endHold: number;
+  readHold: number;
+  displayTicks: number;
+  stage: PresentationStage;
+  carry: number;
+  controlNotice: number;
+  rewindNotice: number;
+  idle: number;
+  lastFolded: number;
+  lastLive: number;
+  sourceFrame: number;
+  worldAnimationTickValue: number;
+  pacingTicks: number;
+  keyframes: AttractKeyframe[];
+  keyframeBytes: number;
+  keyframeEvictions: number;
+  lastRefoldFrames: number;
+  lastRefoldStart: number;
+  loopReset: boolean;
+  rewound: boolean;
+  residentMaps: string[];
+}
+
 function optionInteger(name: string, value: number | undefined, fallback: number): number {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved < 0) {
@@ -230,19 +286,29 @@ function optionInteger(name: string, value: number | undefined, fallback: number
   return resolved;
 }
 
-/** QuickJS has no TextEncoder. Count UTF-8 bytes without allocating a second
- * byte array; keyframe payload accounting is therefore host-independent. */
-function utf8ByteLength(text: string): number {
+const ASCII_ONLY = /^[\x00-\x7f]*$/;
+
+/** UTF-8 length of JSON.stringify(value). QuickJS has no TextEncoder, and a
+ * per-character loop over a large state's JSON costs milliseconds there, so
+ * ASCII text (the usual case) is recognised by one native regex test and only
+ * other text is counted unit by unit. */
+function jsonUtf8Length(value: unknown): number {
+  const text = JSON.stringify(value);
+  if (ASCII_ONLY.test(text)) return text.length;
   let bytes = 0;
   for (let i = 0; i < text.length; i++) {
-    const code = text.codePointAt(i)!;
+    const code = text.charCodeAt(i);
     if (code < 0x80) bytes++;
     else if (code < 0x800) bytes += 2;
-    else if (code < 0x10000) bytes += 3;
-    else {
-      bytes += 4;
-      i++;
-    }
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const low = text.charCodeAt(i + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        bytes += 4;
+        i++;
+      } else {
+        bytes += 3;
+      }
+    } else bytes += 3;
   }
   return bytes;
 }
@@ -257,6 +323,9 @@ export class AttractController {
   private readonly rewindFrames: number;
   private readonly keyframeIntervalFrames: number;
   private readonly keyframeMaxBytes: number;
+  private readonly keyframeMaxCount: number;
+  /** Keyframes and the clean origin keep immutable states by reference. */
+  private readonly sharedStates: boolean;
   private attractEnabled: boolean;
   private readonly onSelect?: () => void;
   private tape: readonly number[];
@@ -312,6 +381,7 @@ export class AttractController {
   private keyframeEvictions = 0;
   private lastRefoldFrames = 0;
   private lastRefoldStart = 0;
+  private checkpoint: AttractCheckpoint | null = null;
   loopReset = false;
   rewound = false;
 
@@ -343,6 +413,12 @@ export class AttractController {
       opts.keyframeMaxBytes,
       ATTRACT_KEYFRAME_MAX_BYTES,
     );
+    this.keyframeMaxCount = optionInteger(
+      "keyframeMaxCount",
+      opts.keyframeMaxCount,
+      ATTRACT_KEYFRAME_MAX_COUNT,
+    );
+    this.sharedStates = opts.immutableState === true;
     const initialFrames = this.attractEnabled
       ? ATTRACT_INPUT_LOG_FRAMES
       : Math.max(1, this.timelineHz * 60 * 10);
@@ -397,6 +473,8 @@ export class AttractController {
       count: this.keyframes.length,
       estimatedBytes: this.keyframeBytes,
       maxBytes: this.keyframeMaxBytes,
+      maxCount: this.keyframeMaxCount,
+      shared: this.sharedStates,
       intervalFrames: this.keyframeIntervalFrames,
       evicted: this.keyframeEvictions,
       lastRefoldFrames: this.lastRefoldFrames,
@@ -482,7 +560,7 @@ export class AttractController {
     this.attractEnabled = this.tape.length > 0;
     this.resetTimeline(
       autoplay && this.attractEnabled ? "attract" : "play",
-      deepClone(nextOrigin),
+      this.sharedStates ? nextOrigin : deepClone(nextOrigin),
       false,
     );
     return this.state;
@@ -528,7 +606,7 @@ export class AttractController {
     if (!this.originState) return startSession(this.project, this.session);
     acquireSessionMap(this.session, this.originState.mapId);
     releaseSessionMapsExcept(this.session, [this.originState.mapId]);
-    return deepClone(this.originState);
+    return this.sharedStates ? this.originState : deepClone(this.originState);
   }
 
   private resetTimeline(phase: AttractPhase, origin: SessionState, loopReset: boolean): void {
@@ -640,9 +718,10 @@ export class AttractController {
   private captureKeyframe(mapBoundary: boolean, sceneBoundary: boolean): void {
     const interval = this.keyframeIntervalFrames > 0 &&
       this.sourceFrame % this.keyframeIntervalFrames === 0;
-    if ((!interval && !mapBoundary && !sceneBoundary) || this.keyframeMaxBytes === 0) return;
+    if ((!interval && !mapBoundary && !sceneBoundary) || this.keyframeMaxBytes === 0 ||
+      this.keyframeMaxCount === 0) return;
 
-    const state = deepClone(this.state);
+    const state = this.sharedStates ? this.state : deepClone(this.state);
     const payload = {
       state,
       worldAnimationTick: this.worldAnimationTickValue,
@@ -660,14 +739,15 @@ export class AttractController {
       mapBoundary,
       sceneBoundary,
     };
-    const estimatedBytes = utf8ByteLength(JSON.stringify(payload));
+    const estimatedBytes = jsonUtf8Length(payload);
     if (estimatedBytes > this.keyframeMaxBytes) return;
 
     const keyframe: AttractKeyframe = { ...payload, estimatedBytes };
     let next = [...this.keyframes, keyframe];
     let bytes = this.keyframeBytes + estimatedBytes;
     let evicted = 0;
-    while (bytes > this.keyframeMaxBytes && evicted < next.length) {
+    while ((bytes > this.keyframeMaxBytes || next.length - evicted > this.keyframeMaxCount) &&
+      evicted < next.length) {
       bytes -= next[evicted]!.estimatedBytes;
       evicted++;
     }
@@ -702,7 +782,7 @@ export class AttractController {
     if (keyframe) {
       acquireSessionMap(this.session, keyframe.state.mapId);
       releaseSessionMapsExcept(this.session, [keyframe.state.mapId]);
-      state = deepClone(keyframe.state);
+      state = this.sharedStates ? keyframe.state : deepClone(keyframe.state);
       worldAnimationTick = keyframe.worldAnimationTick;
       previous = keyframe.lastFolded;
       start = keyframe.timelineFrame;
@@ -824,71 +904,85 @@ export class AttractController {
    *  multi-fold bookkeeping, so a caller can prepare bytes and retry it. */
   step(liveButtons: number): FoldResult {
     if (!this.session.repository?.prepare) return this.stepUnchecked(liveButtons);
-    const checkpoint = {
-      state: this.state,
-      phase: this.phase,
-      logBuf: this.logBuf,
-      timelineBuf: this.timelineBuf,
-      logLength: this.logLength,
-      firstDivergence: this.firstDivergence,
-      demoFrame: this.demoFrame,
-      endHold: this.endHold,
-      readHold: this.readHold,
-      displayTicks: this.displayTicks,
-      stage: this.stage,
-      carry: this.carry,
-      controlNotice: this.controlNotice,
-      rewindNotice: this.rewindNotice,
-      idle: this.idle,
-      lastFolded: this.lastFolded,
-      lastLive: this.lastLive,
-      sourceFrame: this.sourceFrame,
-      worldAnimationTickValue: this.worldAnimationTickValue,
-      pacingTicks: this.pacingTicks,
-      keyframes: this.keyframes,
-      keyframeBytes: this.keyframeBytes,
-      keyframeEvictions: this.keyframeEvictions,
-      lastRefoldFrames: this.lastRefoldFrames,
-      lastRefoldStart: this.lastRefoldStart,
-      loopReset: this.loopReset,
-      rewound: this.rewound,
-      residentMaps: [...this.session.maps.keys()],
-    };
+    // A repository miss rolls the whole controller back. The checkpoint is
+    // one reused record, every field rewritten here, so a demo-enabled game
+    // allocates nothing per frame for it.
+    const cp = this.checkpoint ??= { residentMaps: [] as string[] } as AttractCheckpoint;
+    cp.state = this.state;
+    cp.phase = this.phase;
+    cp.logBuf = this.logBuf;
+    cp.timelineBuf = this.timelineBuf;
+    cp.logLength = this.logLength;
+    cp.firstDivergence = this.firstDivergence;
+    cp.demoFrame = this.demoFrame;
+    cp.endHold = this.endHold;
+    cp.readHold = this.readHold;
+    cp.displayTicks = this.displayTicks;
+    cp.stage = this.stage;
+    cp.carry = this.carry;
+    cp.controlNotice = this.controlNotice;
+    cp.rewindNotice = this.rewindNotice;
+    cp.idle = this.idle;
+    cp.lastFolded = this.lastFolded;
+    cp.lastLive = this.lastLive;
+    cp.sourceFrame = this.sourceFrame;
+    cp.worldAnimationTickValue = this.worldAnimationTickValue;
+    cp.pacingTicks = this.pacingTicks;
+    cp.keyframes = this.keyframes;
+    cp.keyframeBytes = this.keyframeBytes;
+    cp.keyframeEvictions = this.keyframeEvictions;
+    cp.lastRefoldFrames = this.lastRefoldFrames;
+    cp.lastRefoldStart = this.lastRefoldStart;
+    cp.loopReset = this.loopReset;
+    cp.rewound = this.rewound;
+    cp.residentMaps.length = 0;
+    for (const id of this.session.maps.keys()) cp.residentMaps.push(id);
     try {
-      return this.stepUnchecked(liveButtons);
+      const result = this.stepUnchecked(liveButtons);
+      // The step succeeded, so the rollback snapshot is stale. Resync its
+      // heavy references onto the live objects: a keyframe generation this
+      // step evicted (or a published state it retired) must not stay alive
+      // just because the checkpoint still names it, until the next step
+      // rewrites these fields.
+      cp.state = this.state;
+      cp.keyframes = this.keyframes;
+      cp.logBuf = this.logBuf;
+      cp.timelineBuf = this.timelineBuf;
+      return result;
     } catch (error) {
-      this.state = checkpoint.state;
-      this.phase = checkpoint.phase;
-      this.logBuf = checkpoint.logBuf;
-      this.timelineBuf = checkpoint.timelineBuf;
-      this.logLength = checkpoint.logLength;
-      this.firstDivergence = checkpoint.firstDivergence;
-      this.demoFrame = checkpoint.demoFrame;
-      this.endHold = checkpoint.endHold;
-      this.readHold = checkpoint.readHold;
-      this.displayTicks = checkpoint.displayTicks;
-      this.stage = checkpoint.stage;
-      this.carry = checkpoint.carry;
-      this.controlNotice = checkpoint.controlNotice;
-      this.rewindNotice = checkpoint.rewindNotice;
-      this.idle = checkpoint.idle;
-      this.lastFolded = checkpoint.lastFolded;
-      this.lastLive = checkpoint.lastLive;
-      this.sourceFrame = checkpoint.sourceFrame;
-      this.worldAnimationTickValue = checkpoint.worldAnimationTickValue;
-      this.pacingTicks = checkpoint.pacingTicks;
-      this.keyframes = checkpoint.keyframes;
-      this.keyframeBytes = checkpoint.keyframeBytes;
-      this.keyframeEvictions = checkpoint.keyframeEvictions;
-      this.lastRefoldFrames = checkpoint.lastRefoldFrames;
-      this.lastRefoldStart = checkpoint.lastRefoldStart;
-      this.loopReset = checkpoint.loopReset;
-      this.rewound = checkpoint.rewound;
-      for (const id of checkpoint.residentMaps) acquireSessionMap(this.session, id);
-      releaseSessionMapsExcept(this.session, checkpoint.residentMaps);
+      this.state = cp.state;
+      this.phase = cp.phase;
+      this.logBuf = cp.logBuf;
+      this.timelineBuf = cp.timelineBuf;
+      this.logLength = cp.logLength;
+      this.firstDivergence = cp.firstDivergence;
+      this.demoFrame = cp.demoFrame;
+      this.endHold = cp.endHold;
+      this.readHold = cp.readHold;
+      this.displayTicks = cp.displayTicks;
+      this.stage = cp.stage;
+      this.carry = cp.carry;
+      this.controlNotice = cp.controlNotice;
+      this.rewindNotice = cp.rewindNotice;
+      this.idle = cp.idle;
+      this.lastFolded = cp.lastFolded;
+      this.lastLive = cp.lastLive;
+      this.sourceFrame = cp.sourceFrame;
+      this.worldAnimationTickValue = cp.worldAnimationTickValue;
+      this.pacingTicks = cp.pacingTicks;
+      this.keyframes = cp.keyframes;
+      this.keyframeBytes = cp.keyframeBytes;
+      this.keyframeEvictions = cp.keyframeEvictions;
+      this.lastRefoldFrames = cp.lastRefoldFrames;
+      this.lastRefoldStart = cp.lastRefoldStart;
+      this.loopReset = cp.loopReset;
+      this.rewound = cp.rewound;
+      for (const id of cp.residentMaps) acquireSessionMap(this.session, id);
+      releaseSessionMapsExcept(this.session, cp.residentMaps);
       throw error;
     }
   }
+
 
   private stepUnchecked(liveButtons: number): FoldResult {
     this.loopReset = false;

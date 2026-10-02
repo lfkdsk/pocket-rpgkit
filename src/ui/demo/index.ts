@@ -5,6 +5,7 @@ export type {
   DemoChapter,
   DemoCurrent,
   DemoOptions,
+  DemoRewindOptions,
   DemoSpawn,
   DemoTapeFrames,
   DemoTapeProvider,

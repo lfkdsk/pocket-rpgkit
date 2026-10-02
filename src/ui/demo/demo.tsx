@@ -23,6 +23,7 @@ import {
   parseDemoCoordinate,
   parseDemoSpeed,
   validateDemoOptions,
+  validatedDemoRewind,
 } from "./runtime.ts";
 import type {
   DemoBootRequest,
@@ -456,5 +457,8 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
  * sharded map that is not resident until selection. */
 export function createDemo(options: DemoOptions): GameViewDemoConfig {
   validateDemoOptions(options);
-  return { create: (host) => makeRuntime(options, host) };
+  // Rebuild the rewind record from its four documented fields; an input
+  // record's extra own keys never reach GameView's AttractController.
+  const rewind = validatedDemoRewind(options.rewind);
+  return { create: (host) => makeRuntime(options, host), rewind };
 }

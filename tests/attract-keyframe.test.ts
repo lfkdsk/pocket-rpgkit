@@ -8,9 +8,12 @@ import {
   type AttractOptions,
 } from "../src/engine/attract.ts";
 import type { BattleRules } from "../src/engine/battle.ts";
+import { createJsonMapRepository } from "../src/engine/map-repository.ts";
 import { canonicalJson } from "../src/engine/save.ts";
+import { releaseSessionMapsExcept } from "../src/engine/session.ts";
 import { expandTapeRuns } from "../src/engine/tape.ts";
-import type { GameEvent, JsonValue, MapDef, Project } from "../src/engine/types.ts";
+import { splitProjectMaps } from "../tools/lib/map-project.ts";
+import type { GameEvent, JsonValue, MapDef, MapRepository, Project } from "../src/engine/types.ts";
 
 const BTN_SELECT = 0x0001;
 const BTN_UP = 0x0010;
@@ -558,5 +561,275 @@ describe("KR2 rewind keyframes", () => {
       }
     }
     expect(new Set(signatures).size).toBe(1);
+  });
+});
+
+function deepFreeze(value: unknown, seen = new Set<object>()): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  Object.freeze(value);
+  for (const key of Object.keys(value)) deepFreeze((value as Record<string, unknown>)[key], seen);
+}
+
+interface KeyframeInternals {
+  keyframes: { state: object; timelineFrame: number }[];
+}
+
+describe("shared immutable keyframes", () => {
+  test("keyframes keep the published state itself and rewind matches copying refolds at every host rate", () => {
+    const tape = expandTapeRuns(DEMO_TAPE_RUNS);
+    const project = buildGame().project;
+    for (const hz of [60, 30, 20, 4] as const) {
+      const shared = create(project, tape, hz, {
+        immutableState: true,
+        keyframeIntervalFrames: 29,
+        rewindSeconds: 1,
+      });
+      const copying = create(project, tape, hz, { keyframeIntervalFrames: 29, rewindSeconds: 1 });
+      const fromZero = create(project, tape, hz, { keyframeMaxBytes: 0, rewindSeconds: 1 });
+      expect(shared.keyframeStats().shared).toBe(true);
+      expect(copying.keyframeStats().shared).toBe(false);
+      for (const controller of [shared, copying, fromZero]) controller.startAttract();
+      const internals = shared as unknown as KeyframeInternals;
+      const seen = new Set<object>();
+      const snapshots = new Map<object, string>();
+      let identical = 0;
+
+      for (const sourceTarget of [90, 180, 300, 430, 530]) {
+        while (shared.status().demoFrame < sourceTarget) {
+          const before = internals.keyframes;
+          for (const controller of [shared, copying, fromZero]) controller.step(0);
+          if (internals.keyframes !== before) {
+            const latest = internals.keyframes[internals.keyframes.length - 1]!;
+            if (!seen.has(latest.state)) {
+              // A keyframe taken on this host frame's last fold is the state
+              // the controller just published, not a copy of it.
+              const published = shared.state as unknown as { frame: number };
+              if ((latest.state as { frame: number }).frame === published.frame) {
+                expect(latest.state).toBe(shared.state);
+                identical++;
+              }
+              seen.add(latest.state);
+              snapshots.set(latest.state, canonicalJson(latest.state as JsonValue));
+              // Any later write into a retained keyframe now throws.
+              deepFreeze(latest.state);
+            }
+          }
+        }
+        for (const controller of [shared, copying, fromZero]) controller.step(BTN_LTRIGGER);
+        expectEquivalent(shared, fromZero, `shared rewind ${sourceTarget} @${hz} Hz`);
+        expectEquivalent(copying, fromZero, `copying rewind ${sourceTarget} @${hz} Hz`);
+        for (const controller of [shared, copying, fromZero]) controller.step(0);
+      }
+      expect(seen.size).toBeGreaterThan(3);
+      expect(identical).toBeGreaterThan(0);
+      for (const [state, json] of snapshots) expect(canonicalJson(state as JsonValue)).toBe(json);
+    }
+  });
+
+  test("consecutive shared keyframes share unchanged subtrees", () => {
+    const tape = expandTapeRuns(DEMO_TAPE_RUNS);
+    const controller = create(buildGame().project, tape, 60, {
+      immutableState: true,
+      keyframeIntervalFrames: 31,
+    });
+    controller.startAttract();
+    while (controller.status().demoFrame < 400) controller.step(0);
+    const keyframes = (controller as unknown as KeyframeInternals).keyframes;
+    expect(keyframes.length).toBeGreaterThan(3);
+    let sharedFields = 0;
+    for (let i = 1; i < keyframes.length; i++) {
+      const previous = keyframes[i - 1]!.state as Record<string, unknown>;
+      const current = keyframes[i]!.state as Record<string, unknown>;
+      expect(current).not.toBe(previous);
+      // Each fold rebuilds the path to what it changed; the subtrees it did
+      // not touch (switch tables, interpreter records) stay the same objects.
+      for (const key of Object.keys(current)) {
+        const value = current[key];
+        const before = previous[key];
+        if (value === null || typeof value !== "object" || before === null || typeof before !== "object") continue;
+        for (const inner of Object.keys(value)) {
+          const child = (value as Record<string, unknown>)[inner];
+          if (child !== null && typeof child === "object" && child === (before as Record<string, unknown>)[inner]) {
+            sharedFields++;
+          }
+        }
+      }
+    }
+    expect(sharedFields).toBeGreaterThan(keyframes.length);
+  });
+
+  test("the count cap evicts oldest keyframes and zero disables them", () => {
+    const project = emptyProject();
+    const tape = randomTape(600);
+    const capped = create(project, tape, 60, {
+      immutableState: true,
+      keyframeIntervalFrames: 10,
+      keyframeMaxCount: 3,
+      rewindSeconds: 15 / 60,
+    });
+    const fromZero = create(project, tape, 60, { keyframeMaxBytes: 0, rewindSeconds: 15 / 60 });
+    capped.startAttract();
+    fromZero.startAttract();
+    while (capped.length < 200) stepPair(capped, fromZero, 0);
+    const stats = capped.keyframeStats();
+    expect(stats.maxCount).toBe(3);
+    expect(stats.count).toBe(3);
+    expect(stats.entries.map((entry) => entry.sourceFrame)).toEqual([180, 190, 200]);
+    expect(stats.evicted).toBe(17);
+    stepPair(capped, fromZero, BTN_LTRIGGER); // target 185 refolds from keyframe 180
+    expectEquivalent(capped, fromZero, "count-capped rewind");
+    expect(capped.keyframeStats().lastRefoldStart).toBe(180);
+    stepPair(capped, fromZero, 0);
+
+    const disabled = create(project, tape, 60, { keyframeIntervalFrames: 1, keyframeMaxCount: 0 });
+    disabled.startAttract();
+    for (let frame = 0; frame < 20; frame++) disabled.step(0);
+    expect(disabled.keyframeStats()).toMatchObject({ count: 0, estimatedBytes: 0, maxCount: 0 });
+    expect(() => create(project, [0], 60, { keyframeMaxCount: -1 })).toThrow(/non-negative/);
+  });
+});
+
+describe("rollback checkpoint does not retain evicted keyframes", () => {
+  interface CheckpointInternals {
+    checkpoint: {
+      state: object;
+      keyframes: { state: object; timelineFrame: number }[];
+    } | null;
+    keyframes: { state: object; timelineFrame: number }[];
+  }
+
+  /** A controller whose session repository exposes prepare(), which is what
+   *  switches AttractController.step onto the checkpoint/rollback path. */
+  function repositoryController(immutableState: boolean): AttractController {
+    const split = splitProjectMaps(emptyProject());
+    const files = new Map(split.entries.map((entry) => [entry.path, entry.text]));
+    const repository = createJsonMapRepository(split.shell.mapIndex, {
+      read: (entry) => files.get(entry),
+      prepare: async () => {},
+    });
+    for (const entry of split.shell.mapIndex) repository.acquire(entry.id);
+    return new AttractController(split.shell, [0, 0, 0, 0], {
+      hz: 60,
+      tapeHz: 60,
+      idleFrames: 60_000,
+      endHoldFrames: 60_000,
+      rewindSeconds: 1 / 60,
+      maps: repository,
+      immutableState,
+      keyframeIntervalFrames: 1,
+      keyframeMaxCount: 1,
+    });
+  }
+
+  for (const immutableState of [true, false]) {
+    const mode = immutableState ? "immutable" : "mutable";
+    test(`a successful fold resyncs the checkpoint's heavy references (${mode} mode)`, () => {
+      const controller = repositoryController(immutableState);
+      controller.startAttract();
+      const internals = controller as unknown as CheckpointInternals;
+      expect(internals.checkpoint).toBeNull(); // lazy: no checkpoint before the first step
+
+      controller.step(0); // source frame 1: captures keyframe 1
+      const cp1 = internals.checkpoint!;
+      expect(cp1).not.toBeNull();
+      expect(cp1.keyframes).toBe(internals.keyframes);
+      expect(cp1.state).toBe(controller.state);
+      const firstKeyframe = internals.keyframes[0]!;
+      expect(internals.keyframes.length).toBe(1);
+
+      controller.step(0); // source frame 2: captures keyframe 2, evicts keyframe 1
+      const cp2 = internals.checkpoint!;
+      expect(cp2).toBe(cp1); // the checkpoint record is reused, not reallocated
+      // The checkpoint names the live keyframe generation and the live
+      // state, not the evicted array/state a stale rollback snapshot would
+      // keep alive (the review's STALE_CHECKPOINT_REFERENCE probe).
+      expect(internals.keyframes.length).toBe(1);
+      expect(internals.keyframes[0]).not.toBe(firstKeyframe);
+      expect(cp2.keyframes).toBe(internals.keyframes);
+      expect(cp2.keyframes[0]).toBe(internals.keyframes[0]);
+      expect(cp2.state).toBe(controller.state);
+      // Reported accounting matches what is actually reachable.
+      const stats = controller.keyframeStats();
+      expect(stats.count).toBe(1);
+      expect(stats.evicted).toBe(1);
+    });
+  }
+
+  test("a failed step still rolls back from the checkpoint", () => {
+    // The success-path resync must not weaken rollback: force a repository
+    // miss during a rewind and confirm the controller restores the pre-step
+    // state, keyframes and timeline.
+    const split = splitProjectMaps(emptyProject());
+    const files = new Map(split.entries.map((entry) => [entry.path, entry.text]));
+    const base = createJsonMapRepository(split.shell.mapIndex, {
+      read: (entry) => files.get(entry),
+      prepare: async () => {},
+    });
+    let failAcquire = false;
+    const repository: MapRepository = {
+      meta: (id) => base.meta(id),
+      acquire: (id) => {
+        if (failAcquire) throw new Error("forced repository miss");
+        return base.acquire(id);
+      },
+      releaseExcept: (ids) => base.releaseExcept(ids),
+      prepare: base.prepare,
+    };
+    for (const entry of split.shell.mapIndex) repository.acquire(entry.id);
+    const controller = new AttractController(split.shell, [0, 0, 0, 0], {
+      hz: 60,
+      tapeHz: 60,
+      idleFrames: 60_000,
+      endHoldFrames: 60_000,
+      rewindSeconds: 1 / 60,
+      maps: repository,
+      keyframeIntervalFrames: 1,
+      keyframeMaxCount: 64,
+    });
+    controller.startAttract();
+    for (let frame = 0; frame < 4; frame++) controller.step(0);
+    const before = canonicalJson(controller.state as unknown as JsonValue);
+    const beforeStats = controller.keyframeStats();
+    // Evict the resident map so the rewind's keyframe acquire misses the
+    // session cache and reaches the (now failing) repository.
+    releaseSessionMapsExcept(controller.getSession(), []);
+    failAcquire = true;
+    expect(() => controller.step(BTN_LTRIGGER)).toThrow("forced repository miss");
+    failAcquire = false;
+    expect(canonicalJson(controller.state as unknown as JsonValue)).toBe(before);
+    expect(controller.keyframeStats()).toMatchObject({
+      count: beforeStats.count,
+      evicted: beforeStats.evicted,
+    });
+    expect(controller.status().rewound).toBe(false);
+  });
+});
+
+describe("keyframe size estimate", () => {
+  test("charges the UTF-8 length of non-ASCII and astral text", () => {
+    const estimate = (id: string) => {
+      const project: Project = {
+        ...emptyProject(),
+        start: { map: id, x: 3, y: 3, dir: "down" },
+        maps: [map(id)],
+      };
+      const controller = create(project, new Array<number>(4).fill(0), 60, { keyframeIntervalFrames: 2 });
+      controller.startAttract();
+      controller.step(0);
+      controller.step(0);
+      const stats = controller.keyframeStats();
+      expect(stats.count).toBe(1);
+      return { bytes: stats.estimatedBytes, json: JSON.stringify(controller.state) };
+    };
+    // Same UTF-16 length: "é" is 2 UTF-8 bytes, "😀" is a surrogate pair of 4.
+    const ascii = estimate("cafe-xx");
+    for (const id of ["café-xx", "cafe-😀"]) {
+      const wide = estimate(id);
+      expect(wide.json.length).toBe(ascii.json.length);
+      const extra = Buffer.byteLength(wide.json) - Buffer.byteLength(ascii.json);
+      expect(extra).toBeGreaterThan(0);
+      expect(wide.bytes - ascii.bytes).toBe(extra);
+    }
   });
 });

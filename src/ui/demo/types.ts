@@ -69,6 +69,20 @@ export interface DemoOptions {
   /** Tests and non-web hosts may supply the same object explicitly. null
    * disables the documented globalThis.__rpgkitBoot lookup. */
   boot?: DemoBootRequest | null;
+  /** Rewind distance and keyframe limits. Every field defaults to the
+   * AttractController default; see the README's demo section. */
+  rewind?: DemoRewindOptions;
+}
+
+export interface DemoRewindOptions {
+  /** Seconds one L press rewinds. Default 3. */
+  rewindSeconds?: number;
+  /** Source frames between periodic keyframes. Default 3,600 (one minute). */
+  keyframeIntervalFrames?: number;
+  /** Serialized-size budget for retained keyframes. Default 2 MiB. */
+  keyframeMaxBytes?: number;
+  /** Retained keyframe count limit. Default 64. */
+  keyframeMaxCount?: number;
 }
 
 /** Read-only state exposed to an embedding web page. `chapter` follows a

@@ -710,5 +710,25 @@ No format change. Behavior fix in the session fold:
   (`MAP_SCHEMA_HASH`) is unchanged and no row is added to
   [Schema identities](#schema-identities).
 
+## v1 amendment — 2026-10-02 (rewind keyframe contract corrected)
+
+- The 2026-09-30 "bounded rewind keyframes" note named an 8 MiB default
+  payload cap and no count cap. The shipped contract is a 2 MiB
+  `keyframeMaxBytes` default and a `keyframeMaxCount` default of 64; the
+  oldest keyframes are evicted first under either limit, and zero bytes or
+  zero count disables keyframes for the from-frame-zero fallback.
+- `DemoOptions.rewind` forwards only `rewindSeconds`,
+  `keyframeIntervalFrames`, `keyframeMaxBytes` and `keyframeMaxCount`;
+  arrays and unknown keys are rejected, and `GameView` forwards those four
+  fields explicitly, so a rewind record cannot overwrite the trusted host
+  options (`hz`, `maps`, `immutableState`, ...).
+- With `immutableState`, a keyframe keeps the published state itself and
+  consecutive keyframes share the subtrees the reducer did not rebuild, so
+  the retained heap is far below the byte estimate. The repository rollback
+  checkpoint is created lazily and reused, and resyncs its heavy references
+  after a successful fold so an evicted keyframe generation is not kept
+  alive by a stale rollback snapshot.
+- The project format and `schema.json` are unchanged.
+
 Breaking changes to any of the above require a new marker
 (`rpgkit-project/v2`) and a new entry here.

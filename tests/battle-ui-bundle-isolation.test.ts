@@ -125,7 +125,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 4,982 for loop/break and the eventTouch scan, 2,887 for contact detection.
 // Merged with everything above, Sunstone measures 831,224.
 // The optional playerStep extension hook adds 1,218 shared bytes: 832,442.
-const EXPECTED_BYTES = 832_442;
+// The attract controller every GameView bundles gains the keyframe count
+// cap, keyframes that keep immutable states by reference, the reused
+// rollback checkpoint and its success-path resync, plus the
+// attractRewindOptions helper; Sunstone's opted-in demo adds
+// DemoOptions.rewind validation and the explicit four-field forwarding:
+// 835,407 measured.
+const EXPECTED_BYTES = 835_407;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

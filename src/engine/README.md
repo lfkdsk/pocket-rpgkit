@@ -635,14 +635,18 @@ host's 60/30/20/4 Hz paint rate.
 Rewind chooses the newest retained keyframe at or before its target and folds
 only subsequent reducer inputs. `keyframeIntervalFrames` changes the interval;
 `0` disables the periodic captures while boundary captures still occur.
-`keyframeMaxBytes` defaults to 8 MiB and evicts oldest snapshots first; a
-single keyframe whose serialized payload exceeds the budget is skipped. A zero
-budget disables snapshots, and a target older than the retained window falls
-back to the clean frame-zero replay. `keyframeStats()`,
-`keyframeEstimatedBytes`, and `rewindHistoryEstimatedBytes` expose the bounded
-serialized-payload estimate and last suffix length for tests/devtools. Actual
-JS object overhead is host-specific. These snapshots are transient controller
-state and are not written to save envelopes.
+`keyframeMaxBytes` defaults to 2 MiB and `keyframeMaxCount` to 64; whichever
+limit is reached first evicts oldest snapshots. A single keyframe whose
+serialized payload exceeds the byte budget is skipped. A zero budget or count
+disables snapshots, and a target older than the retained window falls back to
+the clean frame-zero replay. `keyframeStats()`, `keyframeEstimatedBytes`, and
+`rewindHistoryEstimatedBytes` expose the bounded serialized-payload estimate
+and last suffix length for tests/devtools. Under `immutableState` a keyframe
+and the clean origin hold the published state by reference (consecutive
+keyframes share unchanged subtrees, so the estimate, which charges each one its
+full serialized size, is an upper bound); otherwise they are deep copies.
+Actual JS object overhead is host-specific. These snapshots are transient
+controller state and are not written to save envelopes.
 
 `worldIdle` treats any non-null scene as busy even when
 `scene.worldContinues:true` lets map fibers keep folding. Transfer fades and

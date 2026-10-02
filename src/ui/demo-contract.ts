@@ -1,5 +1,5 @@
 import type { JSX } from "solid-js";
-import type { AttractController } from "../engine/attract.ts";
+import type { AttractController, AttractRewindOptions } from "../engine/attract.ts";
 import type { Session, SessionState } from "../engine/session.ts";
 import type { ProjectSource } from "../engine/types.ts";
 import type { UiTheme } from "./theme.ts";
@@ -32,6 +32,25 @@ export interface GameViewDemoRuntime {
  * demo implementation, even in PocketJS's type-import-following pass. */
 export interface GameViewDemoConfig {
   create(host: GameViewDemoHost): GameViewDemoRuntime;
+  /** Rewind history limits for the attract controller GameView creates. */
+  readonly rewind?: AttractRewindOptions;
+}
+
+/** The rewind knobs GameView forwards to its AttractController, picked
+ *  field-by-field. A hand-built GameViewDemoConfig is only type-checked, so
+ *  spreading it directly would let an extra `hz`, `maps` or `immutableState`
+ *  key overwrite the trusted host options; this pick keeps the forwarding to
+ *  exactly the four documented fields. */
+export function attractRewindOptions(
+  rewind: AttractRewindOptions | undefined,
+): AttractRewindOptions | undefined {
+  if (!rewind) return undefined;
+  const out: AttractRewindOptions = {};
+  if (rewind.rewindSeconds !== undefined) out.rewindSeconds = rewind.rewindSeconds;
+  if (rewind.keyframeIntervalFrames !== undefined) out.keyframeIntervalFrames = rewind.keyframeIntervalFrames;
+  if (rewind.keyframeMaxBytes !== undefined) out.keyframeMaxBytes = rewind.keyframeMaxBytes;
+  if (rewind.keyframeMaxCount !== undefined) out.keyframeMaxCount = rewind.keyframeMaxCount;
+  return out;
 }
 
 /** Live-session access for a game's own overlay (a save/load menu, a debug

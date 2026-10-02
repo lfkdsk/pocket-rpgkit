@@ -449,10 +449,14 @@ simDescribe("sunstone — render budget", () => {
     // The loop/break commands, the eventTouch trigger and the {v:} text
     // token add shared interpreter/session/save-check code: 831,224 B
     // measured. The optional playerStep hook adds 1,218 B: 832,442 B.
+    // The keyframe count cap, shared immutable keyframes and the reused
+    // rollback checkpoint (with its success-path resync), the
+    // attractRewindOptions helper and the opted-in DemoOptions.rewind
+    // validation bring it to 835,407 B measured.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(835_000);
+    expect(jsBytes).toBeLessThan(838_000);
   });
 });
 

@@ -107,7 +107,7 @@ import { StreamedChunkLayer, type StreamedChunkLayerStats } from "./StreamedChun
 import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
 import { startupProfileMark } from "../startup-profile.ts";
 import { frameProfileMark } from "../frame-profile.ts";
-import type { GameViewDemoConfig, GameViewOverlayConfig, GameViewSessionHost } from "./demo-contract.ts";
+import { attractRewindOptions, type GameViewDemoConfig, type GameViewOverlayConfig, type GameViewSessionHost } from "./demo-contract.ts";
 
 type Sprites = Record<string, SpriteDef>;
 
@@ -924,7 +924,10 @@ export function GameView(props: GameViewProps) {
     slotMeasure(),
   );
   // The controller folds the published 60 Hz tape on its source timeline
-  // and maps each host frame onto that timeline.
+  // and maps each host frame onto that timeline. The rewind record is
+  // picked field-by-field (never spread) so a hand-built demo config cannot
+  // overwrite the trusted hz/maps/extensions/battle/scene/immutableState.
+  const demoRewind = attractRewindOptions(props.demo?.rewind);
   const attract = props.attractTape !== undefined || props.demo !== undefined
     ? new AttractController(project, [...(props.attractTape ?? [])], {
         hz,
@@ -935,6 +938,7 @@ export function GameView(props: GameViewProps) {
         scene: props.scene,
         immutableState: props.immutableState,
         paginateText,
+        ...demoRewind,
       })
     : null;
   const session: Session = attract

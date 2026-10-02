@@ -84,10 +84,17 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The optional playerStep extension hook (a null check and two number
 // reads per tick when unused) adds 1,218 shared bytes to each bundle:
 // 525,289, 832,442 and 666,599.
+// The attract controller GameView bundles gains the keyframe count cap,
+// shared immutable keyframes, the reused rollback checkpoint and its
+// success-path resync, plus the attractRewindOptions helper GameView
+// forwards through: shared bytes in Sunstone and the WAV fixture (Meadow
+// does not mount GameView); Sunstone's opted-in demo adds DemoOptions.rewind
+// validation and the explicit four-field forwarding. Merged, the three
+// measure 525,289, 835,407 and 668,171.
 // Re-measure after every shared-path change.
 const EXPECTED_MEADOW_BYTES = 525_289;
-const EXPECTED_SUNSTONE_QOA_BYTES = 832_442;
-const EXPECTED_WAV_FIXTURE_BYTES = 666_599;
+const EXPECTED_SUNSTONE_QOA_BYTES = 835_407;
+const EXPECTED_WAV_FIXTURE_BYTES = 668_171;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",
