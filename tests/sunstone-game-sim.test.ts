@@ -453,10 +453,13 @@ simDescribe("sunstone — render budget", () => {
     // rollback checkpoint (with its success-path resync), the
     // attractRewindOptions helper and the opted-in DemoOptions.rewind
     // validation bring it to 835,407 B measured.
+    // Integer chunk-window reuse and GameView's generic connected-world
+    // factory seam (its concrete implementation is absent by input graph)
+    // bring it to 840,064 B measured.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(838_000);
+    expect(jsBytes).toBeLessThan(843_000);
   });
 });
 

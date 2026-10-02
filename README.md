@@ -760,10 +760,31 @@ checks the relational contract that JSON Schema cannot express: exact bounds,
 non-overlapping placements, connected components, touching seam geometry,
 span/offset consistency, unique references, and opening ownership.
 
-The layout is descriptive data only: the current renderer and transfer
-interpreter do not consume it. When present in a sharded project it is kept in
-the shell, so both the layout and its `topologyHash` are covered by
-`mapManifestHash` and therefore by save/content identity.
+The transfer interpreter does not consume the layout yet. Rendering it is an
+explicit opt-in so ordinary `GameView` bundles do not include the connected-
+world path:
+
+```tsx
+import { createWorldRenderer } from "pocket-rpgkit/ui/world";
+
+<GameView
+  project={project}
+  assets={assets}
+  world={createWorldRenderer()}
+/>
+```
+
+With streamed assets, that renderer clamps the camera to the connected
+component and draws the viewport-resident ground, upper and animated tiles of
+every visible placement. Actors, events and other dynamic map bands remain
+owned by the active map. The renderer does not itself authorize seam crossing;
+movement handoff still belongs to the simulation. The upper layer is currently
+one component-wide band above actors rather than row-interleaved outdoor
+canopies.
+
+When present in a sharded project, the layout is kept in the shell, so both the
+layout and its `topologyHash` are covered by `mapManifestHash` and therefore by
+save/content identity.
 
 ### The 49 commands
 

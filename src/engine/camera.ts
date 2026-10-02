@@ -11,6 +11,9 @@ export const VIEW_H = 272;
 
 /** World size in pixels (everything a position clamp needs). */
 export interface WorldSize {
+  /** Pixel-space component origin. Omitted for the legacy zero-origin map. */
+  worldX?: number;
+  worldY?: number;
   worldW: number;
   worldH: number;
 }
@@ -34,9 +37,13 @@ export function clampCamera(
 ): { x: number; y: number } {
   const viewportW = cfg.viewportW ?? VIEW_W;
   const viewportH = cfg.viewportH ?? VIEW_H;
+  const worldX = cfg.worldX ?? 0;
+  const worldY = cfg.worldY ?? 0;
+  const maxX = worldX + cfg.worldW - viewportW;
+  const maxY = worldY + cfg.worldH - viewportH;
   return {
-    x: Math.max(0, Math.min(cfg.worldW - viewportW, x)),
-    y: Math.max(0, Math.min(cfg.worldH - viewportH, y)),
+    x: maxX <= worldX ? worldX : Math.max(worldX, Math.min(maxX, x)),
+    y: maxY <= worldY ? worldY : Math.max(worldY, Math.min(maxY, y)),
   };
 }
 

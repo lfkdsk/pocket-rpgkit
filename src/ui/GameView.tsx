@@ -108,6 +108,7 @@ import { actorDepth, OccludingUpperLayer } from "./OccludingUpperLayer.tsx";
 import { startupProfileMark } from "../startup-profile.ts";
 import { frameProfileMark } from "../frame-profile.ts";
 import { attractRewindOptions, type GameViewDemoConfig, type GameViewOverlayConfig, type GameViewSessionHost } from "./demo-contract.ts";
+import type { GameViewWorldConfig } from "./world-contract.ts";
 
 type Sprites = Record<string, SpriteDef>;
 
@@ -843,6 +844,14 @@ export interface GameViewProps {
   /** Browser repositories can report their frame barrier without putting
    * network timing into SessionState. null means ticking has resumed. */
   onMapLoading?: (mapId: string | null) => void;
+  /** Opt-in connected-world renderer. Import its factory from
+   * `pocket-rpgkit/ui/world`; omitting this keeps every concrete world
+   * renderer module outside the application's dependency graph. */
+  world?: GameViewWorldConfig;
+  /** Test/debug-only signed world-camera top-left. It is sampled inside the
+   * host frame and clamped to the active component. Production callers should
+   * omit it so the camera follows reducer state. Used only with `world`. */
+  debugWorldCamera?: () => { x: number; y: number } | undefined;
 }
 
 /** KG1: renders whichever scene component the active SceneSlot selects.
@@ -877,6 +886,17 @@ export function GameView(props: GameViewProps) {
   }
   const BattleSceneView = props.battleScene;
   const stream = assets.stream;
+  // The base view knows only this type-only seam. All component indexing,
+  // camera projection and multi-map render modules live behind the explicit
+  // `pocket-rpgkit/ui/world` factory supplied by the game.
+  const worldRenderer = stream && project.worldLayout && props.world
+    ? props.world.create({
+        layout: project.worldLayout,
+        tileSize: project.tileSize,
+        debugCamera: props.debugWorldCamera,
+      })
+    : undefined;
+  const WorldRendererView = worldRenderer?.View;
   const hasAnimatedTiles = assets.animated !== undefined;
   const layerAssets = assets.layers ?? {};
   const groundLayer = layerAssets.ground?.placement === "ground" ? layerAssets.ground : undefined;
@@ -1114,11 +1134,13 @@ export function GameView(props: GameViewProps) {
   };
   const worldFrame = createMemo(() => {
     const vp = viewport();
+    const connected = worldRenderer?.frameFor(mapId(), vp);
+    if (connected) return connected;
     const size = mapSize(mapId());
     const off = centerOffset(size, vp);
     return { x: off.x, y: off.y, w: Math.min(size.w, vp.w), h: Math.min(size.h, vp.h) };
   });
-  const cameraFor = (st: SessionState): CameraState => {
+  const legacyCameraFor = (st: SessionState): CameraState => {
     const vp = viewport();
     const size = mapSize(st.mapId);
     const effect = st.interp.screen;
@@ -1143,6 +1165,9 @@ export function GameView(props: GameViewProps) {
     const shake = screenShakeOffset(effect.shake);
     return { x: clamped.x - shake.x, y: clamped.y - shake.y, facing: st.move.facing };
   };
+  const cameraFor: (st: SessionState) => CameraState = worldRenderer
+    ? (st) => worldRenderer.cameraFor(st, viewport()) ?? legacyCameraFor(st)
+    : legacyCameraFor;
   let camera = cameraFor(state);
   globalThis.__rpgGameCamera = camera;
   const [fade, setFade] = createSignal(0);
@@ -1190,6 +1215,13 @@ export function GameView(props: GameViewProps) {
   const groundEagerVariant = () => {
     const variant = groundSelection().variant;
     return variant && "chunks" in variant ? variant : undefined;
+  };
+  const upperStreamVariant = () => {
+    const variant = upperSelection().variant;
+    return variant && "refs" in variant ? variant : undefined;
+  };
+  const activeMapCamera = (): CameraState => {
+    return worldRenderer?.localCameraFor(mapId(), camera) ?? camera;
   };
   startupProfileMark("game-view:model");
 
@@ -1450,6 +1482,120 @@ export function GameView(props: GameViewProps) {
               }}
               debugName="rpgkit-world"
             >
+          {(() => {
+            const ActiveBelow = () => (
+              <>
+                {extraBelow.map(([id, layer]) => (
+                  <ExtraMapLayer
+                    id={id}
+                    layer={layer}
+                    mapId={mapId}
+                    revision={layerRevision}
+                    state={() => state}
+                    camera={activeMapCamera}
+                    viewport={viewport}
+                    active={() => !sceneActive()}
+                  />
+                ))}
+                {assets.anims ? (
+                  <MapAnimLayer
+                    above={false}
+                    state={() => state}
+                    anims={worldAnims}
+                    assets={assets}
+                    active={() => !sceneActive()}
+                    onSync={() => props.onLayerSync?.("mapAnimBelow")}
+                    debugName="rpgkit-map-anim-below"
+                    onStats={(stats) => props.onMapAnimStats?.("below", stats)}
+                  />
+                ) : null}
+              </>
+            );
+
+            const ActiveActors = () => (
+              <CurrentMapActors
+                immutableState={props.immutableState}
+                slots={currentSlots}
+                slotCount={slotCache.get(state.mapId)!.length}
+                cap={actorSlotCap}
+                host={() => actorHost}
+                worldWidth={worldWidth}
+                sprites={sprites}
+                npcSrc={assets.npcSrc}
+                extensions={session.extensions}
+                player={assets.player}
+                playerHeight={assets.playerHeight ?? 16}
+                pose={pose}
+                facing={facing}
+                state={() => state}
+                worldNode={() => worldNode}
+                camera={() => camera}
+                onStats={props.onActorStats}
+                active={() => !sceneActive()}
+                onSync={() => props.onLayerSync?.("actors")}
+              />
+            );
+
+            const ActiveAbove = () => (
+              <>
+                {extraAbove.map(([id, layer]) => (
+                  <ExtraMapLayer
+                    id={id}
+                    layer={layer}
+                    mapId={mapId}
+                    revision={layerRevision}
+                    state={() => state}
+                    camera={activeMapCamera}
+                    viewport={viewport}
+                    active={() => !sceneActive()}
+                  />
+                ))}
+                {assets.anims ? (
+                  <MapAnimLayer
+                    above
+                    state={() => state}
+                    anims={worldAnims}
+                    assets={assets}
+                    active={() => !sceneActive()}
+                    onSync={() => props.onLayerSync?.("mapAnimAbove")}
+                    debugName="rpgkit-map-anim-above"
+                    onStats={(stats) => props.onMapAnimStats?.("above", stats)}
+                  />
+                ) : null}
+                {assets.anims ? (
+                  <BalloonLayer
+                    state={() => state}
+                    anims={worldAnims}
+                    assets={assets}
+                    active={() => !sceneActive()}
+                    onSync={() => props.onLayerSync?.("balloons")}
+                    anchor={(balloon: Readonly<BalloonEffectState>): BalloonAnchor => {
+                      if (balloon.target === "player") {
+                        const art = playerFrame(
+                          state,
+                          sprites,
+                          assets.npcSrc,
+                          assets.player,
+                          assets.playerHeight ?? 16,
+                        );
+                        return { x: state.move.px, y: state.move.py, height: art.height };
+                      }
+                      const eventId = balloon.target.event;
+                      const ch = state.chars.chars[eventId];
+                      const event = currentSlots().find((candidate) => candidate.id === eventId);
+                      if (!ch || !event) {
+                        return { x: balloon.x * TILE, y: balloon.y * TILE, height: TILE };
+                      }
+                      const frame = npcFrame(state, event, sprites, assets.npcSrc, session.extensions);
+                      return { x: frame[0], y: frame[1], height: frame[3] };
+                    }}
+                  />
+                ) : null}
+              </>
+            );
+
+            const LegacyWorldContent = () => (
+              <>
           {stream ? (
             <StreamedChunkLayer
               mapId={mapId()}
@@ -1500,30 +1646,7 @@ export function GameView(props: GameViewProps) {
             />
           ) : null}
 
-          {extraBelow.map(([id, layer]) => (
-            <ExtraMapLayer
-              id={id}
-              layer={layer}
-              mapId={mapId}
-              revision={layerRevision}
-              state={() => state}
-              camera={() => camera}
-              viewport={() => viewport()}
-              active={() => !sceneActive()}
-            />
-          ))}
-          {assets.anims ? (
-            <MapAnimLayer
-              above={false}
-              state={() => state}
-              anims={worldAnims}
-              assets={assets}
-              active={() => !sceneActive()}
-              onSync={() => props.onLayerSync?.("mapAnimBelow")}
-              debugName="rpgkit-map-anim-below"
-              onStats={(stats) => props.onMapAnimStats?.("below", stats)}
-            />
-          ) : null}
+          <ActiveBelow />
 
           <OccludingUpperLayer
             mapId={mapId()}
@@ -1544,82 +1667,52 @@ export function GameView(props: GameViewProps) {
             onStreamStats={(stats) => props.onStreamStats?.("upper", stats)}
             onAnimatedStats={(stats) => props.onAnimatedStats?.("above", stats)}
           >
-            <CurrentMapActors
-              immutableState={props.immutableState}
-              slots={currentSlots}
-              slotCount={slotCache.get(state.mapId)!.length}
-              cap={actorSlotCap}
-              host={() => actorHost}
-              worldWidth={worldWidth}
-              sprites={sprites}
-              npcSrc={assets.npcSrc}
-              extensions={session.extensions}
-              player={assets.player}
-              playerHeight={assets.playerHeight ?? 16}
-              pose={pose}
-              facing={facing}
-              state={() => state}
-              worldNode={() => worldNode}
-              camera={() => camera}
-              onStats={props.onActorStats}
-              active={() => !sceneActive()}
-              onSync={() => props.onLayerSync?.("actors")}
-            />
+            <ActiveActors />
           </OccludingUpperLayer>
 
-          {extraAbove.map(([id, layer]) => (
-            <ExtraMapLayer
-              id={id}
-              layer={layer}
-              mapId={mapId}
-              revision={layerRevision}
-              state={() => state}
-              camera={() => camera}
-              viewport={() => viewport()}
-              active={() => !sceneActive()}
-            />
-          ))}
-          {assets.anims ? (
-            <MapAnimLayer
-              above
-              state={() => state}
-              anims={worldAnims}
-              assets={assets}
-              active={() => !sceneActive()}
-              onSync={() => props.onLayerSync?.("mapAnimAbove")}
-              debugName="rpgkit-map-anim-above"
-              onStats={(stats) => props.onMapAnimStats?.("above", stats)}
-            />
-          ) : null}
-          {assets.anims ? (
-            <BalloonLayer
-              state={() => state}
-              anims={worldAnims}
-              assets={assets}
-              active={() => !sceneActive()}
-              onSync={() => props.onLayerSync?.("balloons")}
-              anchor={(balloon: Readonly<BalloonEffectState>): BalloonAnchor => {
-                if (balloon.target === "player") {
-                  const art = playerFrame(
-                    state,
-                    sprites,
-                    assets.npcSrc,
-                    assets.player,
-                    assets.playerHeight ?? 16,
-                  );
-                  return { x: state.move.px, y: state.move.py, height: art.height };
-                }
-                const eventId = balloon.target.event;
-                const ch = state.chars.chars[eventId];
-                const event = currentSlots().find((candidate) => candidate.id === eventId);
-                if (!ch || !event) {
-                  return { x: balloon.x * TILE, y: balloon.y * TILE, height: TILE };
-                }
-                const frame = npcFrame(state, event, sprites, assets.npcSrc, session.extensions);
-                return { x: frame[0], y: frame[1], height: frame[3] };
-              }}
-            />
-          ) : null}
+          <ActiveAbove />
+              </>
+            );
+
+            const WorldContent = WorldRendererView ? () => (
+              <WorldRendererView
+                activeMapId={mapId}
+                camera={() => camera}
+                viewport={viewport}
+                stream={stream!}
+                animated={assets.animated}
+                active={() => !sceneActive()}
+                ground={{
+                  refs: () => groundStreamVariant()?.refs ?? stream!.ground,
+                  columns: () => groundStreamVariant()?.columns ?? stream!.columns,
+                  sourceKey: () => `ground:${groundSelection().name ?? ""}`,
+                  visible: () => groundSelection().visible,
+                  margin: () => groundStreamVariant()?.margin ?? stream!.margin,
+                  loadBudget: () => groundStreamVariant()?.loadBudget ?? stream!.loadBudget,
+                }}
+                upper={{
+                  refs: () => upperStreamVariant()?.refs ?? stream!.upper,
+                  columns: () => upperStreamVariant()?.columns ?? stream!.columns,
+                  sourceKey: () => `upper:${upperSelection().name ?? ""}`,
+                  visible: () => upperSelection().visible,
+                  margin: () => upperStreamVariant()?.margin ?? stream!.margin,
+                  loadBudget: () => upperStreamVariant()?.loadBudget ?? stream!.loadBudget,
+                }}
+                below={<ActiveBelow />}
+                actors={<ActiveActors />}
+                above={<ActiveAbove />}
+                actorHost={(node) => { actorHost = node; }}
+                onStreamStats={props.onStreamStats}
+                onAnimatedStats={props.onAnimatedStats}
+              />
+            ) : undefined;
+
+            return WorldContent && worldRenderer ? (
+              <Show when={worldRenderer.hasMap(mapId())} fallback={<LegacyWorldContent />}>
+                <WorldContent />
+              </Show>
+            ) : <LegacyWorldContent />;
+          })()}
             </View>
 
           {screenLayers.map(([id, layer]) => (

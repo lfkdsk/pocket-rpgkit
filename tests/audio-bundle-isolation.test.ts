@@ -91,10 +91,15 @@ const maybeTest = preflight.ok ? test : test.skip;
 // does not mount GameView); Sunstone's opted-in demo adds DemoOptions.rewind
 // validation and the explicit four-field forwarding. Merged, the three
 // measure 525,289, 835,407 and 668,171.
+// Reusing unchanged integer chunk windows adds 76 bytes to Meadow. The
+// connected-world renderer is behind `pocket-rpgkit/ui/world`: its
+// concrete modules are absent here, while GameView's generic factory seam
+// adds about 4.6 KB to Sunstone and the WAV fixture. Merged, the three
+// measure 525,365, 840,064 and 672,828.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 525_289;
-const EXPECTED_SUNSTONE_QOA_BYTES = 835_407;
-const EXPECTED_WAV_FIXTURE_BYTES = 668_171;
+const EXPECTED_MEADOW_BYTES = 525_365;
+const EXPECTED_SUNSTONE_QOA_BYTES = 840_064;
+const EXPECTED_WAV_FIXTURE_BYTES = 672_828;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

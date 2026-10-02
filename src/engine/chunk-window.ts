@@ -20,6 +20,20 @@ export interface ChunkWindow {
   y1: number;
 }
 
+function windowResult(
+  previous: ChunkWindow | undefined,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): ChunkWindow {
+  return previous &&
+    previous.x0 === x0 && previous.y0 === y0 &&
+    previous.x1 === x1 && previous.y1 === y1
+    ? previous
+    : { x0, y0, x1, y1 };
+}
+
 /** Chunks intersecting `[camera - margin, camera + viewport + margin)`. */
 export function chunkWindow(
   camera: ChunkPoint,
@@ -28,6 +42,7 @@ export function chunkWindow(
   columns: number,
   rows: number,
   margin = 0,
+  previous?: ChunkWindow,
 ): ChunkWindow {
   if (
     !Number.isFinite(chunkPx) || chunkPx <= 0 ||
@@ -43,7 +58,7 @@ export function chunkWindow(
     !Number.isFinite(viewport.w) || !Number.isFinite(viewport.h) ||
     viewport.w <= 0 || viewport.h <= 0
   ) {
-    return { x0: 0, y0: 0, x1: -1, y1: -1 };
+    return windowResult(previous, 0, 0, -1, -1);
   }
 
   const rawX0 = Math.floor((camera.x - margin) / chunkPx);
@@ -53,14 +68,15 @@ export function chunkWindow(
   const rawX1 = Math.ceil((camera.x + viewport.w + margin) / chunkPx) - 1;
   const rawY1 = Math.ceil((camera.y + viewport.h + margin) / chunkPx) - 1;
   if (rawX1 < 0 || rawY1 < 0 || rawX0 >= columns || rawY0 >= rows) {
-    return { x0: 0, y0: 0, x1: -1, y1: -1 };
+    return windowResult(previous, 0, 0, -1, -1);
   }
-  return {
-    x0: Math.max(0, rawX0),
-    y0: Math.max(0, rawY0),
-    x1: Math.min(columns - 1, rawX1),
-    y1: Math.min(rows - 1, rawY1),
-  };
+  return windowResult(
+    previous,
+    Math.max(0, rawX0),
+    Math.max(0, rawY0),
+    Math.min(columns - 1, rawX1),
+    Math.min(rows - 1, rawY1),
+  );
 }
 
 /** One layer's last window. Snapshot numbers: hosts may mutate the camera
@@ -72,7 +88,7 @@ export function createChunkWindowReader(): typeof chunkWindow {
   return (camera, viewport, chunkPx, columns, rowCount, extra = 0) => {
     if (previous && x === camera.x && y === camera.y && w === viewport.w && h === viewport.h &&
         size === chunkPx && cols === columns && rows === rowCount && margin === extra) return previous;
-    const next = chunkWindow(camera, viewport, chunkPx, columns, rowCount, extra);
+    const next = chunkWindow(camera, viewport, chunkPx, columns, rowCount, extra, previous);
     x = camera.x; y = camera.y; w = viewport.w; h = viewport.h;
     size = chunkPx; cols = columns; rows = rowCount; margin = extra;
     return previous = next;

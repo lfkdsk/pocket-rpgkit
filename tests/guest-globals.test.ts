@@ -33,6 +33,7 @@ const GUEST_EXPORTS = [
   "src/ui/ChoiceIconBox.tsx",
   "src/ui/battle/index.ts",
   "src/ui/demo/index.ts",
+  "src/ui/world/index.ts",
   "src/ui/session-saves.ts",
   "src/ui/audio/index.ts",
   "src/host/index.ts",

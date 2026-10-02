@@ -15,6 +15,91 @@ import type {
   WorldTileSpan,
 } from "./types.ts";
 
+export interface WorldCameraPoint {
+  x: number;
+  y: number;
+}
+
+export interface WorldViewportSize {
+  w: number;
+  h: number;
+}
+
+/** Allocation-stable visibility query for one connected component. The
+ * component's validated placement order is already `(worldId,mapId)` order,
+ * so consumers can append their layer/chunk keys without another sort. */
+export interface VisibleWorldMapsReader {
+  (
+    camera: Readonly<WorldCameraPoint>,
+    viewport: Readonly<WorldViewportSize>,
+    marginPx?: number,
+  ): readonly WorldPlacement[];
+}
+
+const EMPTY_PLACEMENTS: readonly WorldPlacement[] = Object.freeze([]);
+
+/** Build a visible-map query whose hot path neither scans nor allocates until
+ * a camera/viewport edge crosses a tile boundary. Results use half-open
+ * rectangle intersection, matching placement and chunk-window bounds. */
+export function createVisibleWorldMapsReader(
+  component: Pick<WorldComponent, "placements">,
+  tileSize: number,
+): VisibleWorldMapsReader {
+  if (!Number.isFinite(tileSize) || tileSize <= 0) {
+    throw new Error(`visible world maps: tileSize must be positive, got ${tileSize}`);
+  }
+  let previousX0 = Number.NaN;
+  let previousY0 = Number.NaN;
+  let previousX1 = Number.NaN;
+  let previousY1 = Number.NaN;
+  let previous: readonly WorldPlacement[] = EMPTY_PLACEMENTS;
+  const scratch: WorldPlacement[] = [];
+
+  return (camera, viewport, marginPx = 0) => {
+    if (!Number.isFinite(marginPx) || marginPx < 0) {
+      throw new Error(`visible world maps: margin must be non-negative, got ${marginPx}`);
+    }
+    if (
+      !Number.isFinite(camera.x) || !Number.isFinite(camera.y) ||
+      !Number.isFinite(viewport.w) || !Number.isFinite(viewport.h) ||
+      viewport.w <= 0 || viewport.h <= 0
+    ) {
+      previousX0 = previousY0 = previousX1 = previousY1 = Number.NaN;
+      return previous = EMPTY_PLACEMENTS;
+    }
+
+    const x0 = Math.floor((camera.x - marginPx) / tileSize);
+    const y0 = Math.floor((camera.y - marginPx) / tileSize);
+    const x1 = Math.ceil((camera.x + viewport.w + marginPx) / tileSize);
+    const y1 = Math.ceil((camera.y + viewport.h + marginPx) / tileSize);
+    if (x0 === previousX0 && y0 === previousY0 && x1 === previousX1 && y1 === previousY1) {
+      return previous;
+    }
+    previousX0 = x0;
+    previousY0 = y0;
+    previousX1 = x1;
+    previousY1 = y1;
+
+    scratch.length = 0;
+    for (const placement of component.placements) {
+      if (
+        placement.originTileX < x1 && placement.originTileX + placement.width > x0 &&
+        placement.originTileY < y1 && placement.originTileY + placement.height > y0
+      ) {
+        scratch.push(placement);
+      }
+    }
+    if (scratch.length === 0) return previous = EMPTY_PLACEMENTS;
+    if (
+      scratch.length === previous.length &&
+      scratch.every((placement, index) => placement === previous[index])
+    ) {
+      return previous;
+    }
+    return previous = scratch.slice();
+  };
+}
+
 /** Project a map-local tile coordinate into its component's world space. */
 export function localToWorld(
   placement: Pick<WorldPlacement, "originTileX" | "originTileY">,

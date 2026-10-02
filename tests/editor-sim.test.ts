@@ -742,6 +742,10 @@ simDescribe("editor budget", () => {
     // token (shared engine code, the embedded schema, and the editor's
     // loop-body paths, picker entries and token scan) join it: measured
     // 1,430,125 B.
-    expect(js).toBeLessThan(1_436_000);
+    // The editor does not opt into connected-world rendering. Integer
+    // chunk-window reuse plus GameView's generic factory seam bring the
+    // measured bundle to 1,436,638 B; the 30,507 B concrete renderer portion
+    // formerly pulled through the preview is absent. Keep a narrow margin.
+    expect(js).toBeLessThan(1_442_000);
   });
 });

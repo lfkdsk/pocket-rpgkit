@@ -38,6 +38,21 @@ describe("chunkWindow", () => {
     });
   });
 
+  test("reuses a supplied window until integer chunk boundaries change", () => {
+    const viewport = { w: 480, h: 272 };
+    const first = chunkWindow({ x: 0, y: 0 }, viewport, 256, 4, 3, 16);
+    const within = chunkWindow({ x: 1, y: 1 }, viewport, 256, 4, 3, 16, first);
+    expect(within).toBe(first);
+
+    const crossed = chunkWindow({ x: 17, y: 1 }, viewport, 256, 4, 3, 16, first);
+    expect(crossed).not.toBe(first);
+    expect(crossed).toEqual({ x0: 0, y0: 0, x1: 2, y1: 1 });
+
+    const read = createChunkWindowReader();
+    const readFirst = read({ x: 0, y: 0 }, viewport, 256, 4, 3, 16);
+    expect(read({ x: 1, y: 1 }, viewport, 256, 4, 3, 16)).toBe(readFirst);
+  });
+
   test("uses half-open viewport edges and clamps at the world boundary", () => {
     expect(chunkWindow({ x: 256, y: 256 }, { w: 256, h: 256 }, 256, 4, 3)).toEqual({
       x0: 1, y0: 1, x1: 1, y1: 1,

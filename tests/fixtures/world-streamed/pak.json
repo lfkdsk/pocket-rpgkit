@@ -1,0 +1,42 @@
+[
+  {
+    "key": "ui:tile.world-a-northwest-ground",
+    "file": "assets/stream/world-a-northwest-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-a-northwest-upper",
+    "file": "assets/stream/world-a-northwest-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-b-northeast-ground",
+    "file": "assets/stream/world-b-northeast-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-b-northeast-upper",
+    "file": "assets/stream/world-b-northeast-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-c-southwest-ground",
+    "file": "assets/stream/world-c-southwest-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-c-southwest-upper",
+    "file": "assets/stream/world-c-southwest-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-d-southeast-ground",
+    "file": "assets/stream/world-d-southeast-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-d-southeast-upper",
+    "file": "assets/stream/world-d-southeast-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-e-small-ground",
+    "file": "assets/stream/world-e-small-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-e-small-upper",
+    "file": "assets/stream/world-e-small-upper.pkts"
+  }
+]

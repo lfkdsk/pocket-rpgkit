@@ -13,6 +13,7 @@
     "./ui/choice-icons": "./src/ui/ChoiceIconBox.tsx",
     "./ui/battle": "./src/ui/battle/index.ts",
     "./ui/demo": "./src/ui/demo/index.ts",
+    "./ui/world": "./src/ui/world/index.ts",
     "./ui/saves": "./src/ui/session-saves.ts",
     "./ui/audio": "./src/ui/audio/index.ts",
     "./host": "./src/host/index.ts",

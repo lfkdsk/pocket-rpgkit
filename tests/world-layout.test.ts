@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import schema from "../src/data/schema.json" with { type: "json" };
 import {
+  clampCamera,
+  createVisibleWorldMapsReader,
+  followCamera,
   localToWorld,
   validateWorldLayout,
   worldToLocal,
@@ -115,6 +118,57 @@ describe("WorldLayout coordinate contract", () => {
     expect(worldToLocal(placement, world)).toEqual(local);
     expect(worldToLocal(placement, { x: -13, y: -8 })).toEqual({ x: -1, y: -1 });
     expect(JSON.stringify({ placement, local })).toBe(before);
+  });
+
+  test("component camera clamps signed bounds and pins an undersized axis to its minimum", () => {
+    const component = LAYOUT.components[0]!;
+    const cfg = {
+      worldX: component.bounds.minTileX * 16,
+      worldY: component.bounds.minTileY * 16,
+      worldW: (component.bounds.maxTileX - component.bounds.minTileX) * 16,
+      worldH: (component.bounds.maxTileY - component.bounds.minTileY) * 16,
+      viewportW: 160,
+      viewportH: 480,
+    };
+    expect(clampCamera(-10_000, -10_000, cfg)).toEqual({ x: -192, y: -176 });
+    expect(clampCamera(10_000, 10_000, cfg)).toEqual({ x: -32, y: -176 });
+    expect(followCamera(-16, -32, 16, 3, cfg)).toEqual({ x: -88, y: -176, facing: 3 });
+  });
+
+  test("visible-map query is half-open, ordered and stable within a tile boundary", () => {
+    const component = LAYOUT.components[0]!;
+    const read = createVisibleWorldMapsReader(component, 16);
+    const camera = { x: -32, y: -96 };
+    const viewport = { w: 32, h: 32 };
+
+    const westOnly = read(camera, viewport);
+    expect(westOnly.map((placement) => placement.mapId)).toEqual(["west"]);
+    expect(read({ x: -32.5, y: -95.5 }, viewport)).toBe(westOnly);
+
+    camera.x = -16;
+    const straddling = read(camera, viewport);
+    expect(straddling.map((placement) => placement.mapId)).toEqual(["east", "west"]);
+    expect(straddling).not.toBe(westOnly);
+
+    camera.x = 0;
+    expect(read(camera, viewport).map((placement) => placement.mapId)).toEqual(["east"]);
+    camera.x = -32;
+    viewport.w = 48;
+    expect(read(camera, viewport, 16).map((placement) => placement.mapId)).toEqual(["east", "west"]);
+  });
+
+  test("visible-map query observes in-place inputs and returns one shared empty result", () => {
+    const read = createVisibleWorldMapsReader(LAYOUT.components[0]!, 16);
+    const camera = { x: -192, y: -176 };
+    const viewport = { w: 16, h: 16 };
+    expect(read(camera, viewport).map((placement) => placement.mapId)).toEqual(["north"]);
+    camera.x = 10_000;
+    const empty = read(camera, viewport);
+    expect(empty).toEqual([]);
+    viewport.w = 0;
+    expect(read(camera, viewport)).toBe(empty);
+    expect(() => createVisibleWorldMapsReader(LAYOUT.components[0]!, 0)).toThrow("tileSize must be positive");
+    expect(() => read(camera, { w: 1, h: 1 }, -1)).toThrow("margin must be non-negative");
   });
 
   test("the optional project field represents component bounds and mixed opening safety", () => {

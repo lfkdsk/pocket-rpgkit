@@ -46,6 +46,16 @@ export {
   type SceneComponent,
 } from "./GameView.tsx";
 export type {
+  GameViewWorldBand,
+  GameViewWorldBandSource,
+  GameViewWorldConfig,
+  GameViewWorldFactoryHost,
+  GameViewWorldFrame,
+  GameViewWorldRenderProps,
+  GameViewWorldRuntime,
+  GameViewWorldViewport,
+} from "./world-contract.ts";
+export type {
   GameViewDemoRuntime,
   GameViewDemoStepResult,
   GameViewOverlayConfig,

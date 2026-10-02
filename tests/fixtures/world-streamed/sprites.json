@@ -1,0 +1,16 @@
+{
+  "assets/anim/below.png": {
+    "cols": 1,
+    "rows": 1,
+    "frames": 1,
+    "step": 1,
+    "psm": 3
+  },
+  "assets/anim/above.png": {
+    "cols": 1,
+    "rows": 1,
+    "frames": 1,
+    "step": 1,
+    "psm": 3
+  }
+}

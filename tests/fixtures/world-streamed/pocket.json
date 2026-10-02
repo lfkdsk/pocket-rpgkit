@@ -1,0 +1,24 @@
+{
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json",
+  "pocket": 2,
+  "id": "dev.lfkdsk.pocket-rpgkit-world-streamed-fixture",
+  "name": "pocket-rpgkit-world-streamed-fixture",
+  "title": "Pocket RPG Kit — connected world fixture",
+  "version": "0.1.0",
+  "engine": {
+    "capabilities": {
+      "requires": ["input.buttons"]
+    }
+  },
+  "app": {
+    "entry": "tests/fixtures/world-streamed/world-streamed.tsx",
+    "output": "world-streamed",
+    "framework": "solid",
+    "viewport": {
+      "fixed": {
+        "logical": [480, 272],
+        "presentation": "integer-fit"
+      }
+    }
+  }
+}
