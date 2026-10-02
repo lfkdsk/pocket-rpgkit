@@ -66,8 +66,6 @@ interface ListLine {
 
 const sameStrings = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((s, i) => s === b[i]);
-const sameNumbers = (a: readonly number[], b: readonly number[]): boolean =>
-  a.length === b.length && a.every((n, i) => n === b[i]);
 
 export function ListMenu(props: ListMenuProps) {
   const theme = createMemo(() => resolveUiTheme(props.theme));
@@ -107,13 +105,18 @@ export function ListMenu(props: ListMenuProps) {
       return wrapLabel(label, Math.max(0, budget), measure);
     });
   });
-  const rowCounts = createMemo(() => wrapped().map((rows) => rows.length), undefined, { equals: sameNumbers });
-  const range = createMemo(() => windowByRows(props.index, rowCounts(), visible(), visible()), undefined, {
-    equals: (a, b) => a.start === b.start && a.end === b.end,
-  });
+  // Derive the window and its lines from one wrapped-row snapshot. During a
+  // live battle transition `rows` and `index` can change in the same Solid
+  // update; separate memos can otherwise expose a new range with the prior
+  // wrapped array and index past its end for that evaluation.
   const lines = createMemo((): ListLine[] => {
-    const { start, end } = range();
     const all = wrapped();
+    const { start, end } = windowByRows(
+      props.index,
+      all.map((rows) => rows.length),
+      visible(),
+      visible(),
+    );
     const out: ListLine[] = [];
     for (let item = start; item < end; item++) {
       all[item]!.forEach((text, row) => out.push({ item, row, text }));
