@@ -788,6 +788,19 @@ When present in a sharded project, the layout is kept in the shell, so both the
 layout and its `topologyHash` are covered by `mapManifestHash` and therefore by
 save/content identity.
 
+A game can also pass `createWorldCacheDriver` to `GameView`. The driver
+recomputes the active/visible/imminent working set from the component-world
+camera each presented frame, prefetches the compiled keep-set across frames,
+and evicts every session layer to its keep-set. The camera the driver receives
+is in component-world pixels — the same space as the renderer's `cameraFor`
+output and `WorldComponent.bounds` — so the placement origin is applied exactly
+once. `localCameraFor` converts the world camera back to map-local for the
+active map's own extra layers; actors keep the component-world camera and
+are translated by the shared `worldNode`. Both sit inside the renderer's
+`ActiveMapPlane`, which adds the active placement's origin, so neither
+band adds the origin itself. The coordinate spaces and the single
+conversion point are documented in `src/ui/world-contract.ts`.
+
 ### The 63 commands
 
 | op | purpose |

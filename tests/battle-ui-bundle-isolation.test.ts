@@ -131,8 +131,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // attractRewindOptions helper; Sunstone's opted-in demo adds
 // DemoOptions.rewind validation and the explicit four-field forwarding:
 // 835,407 measured.
+// The W3 cache fixes add the parsed-only compiled-layer rebuild, the
+// staged-preparation trim and the explicit blocked.failed flag with the
+// falsy-rejection normalizer.
 // Reusing integer chunk windows and the generic opt-in connected-world
-// factory seam bring it to 840,064 bytes. The concrete renderer remains
+// factory seam bring it to 842,016 bytes. The concrete renderer remains
 // absent, as verified by world-ui-bundle-isolation.test.ts.
 // KRM2's shared commands/state/compiler/save paths plus GameView's small
 // optional screen-presentation and host-action seams bring Sunstone to
@@ -140,7 +143,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // still absent; krm2-ui-bundle-isolation.test.ts checks those identifiers.
 // Timer-aware immutable page and trigger-scan keys add 317 shared bytes, and
 // the demo warp-toast fixes add 173 bytes: 872,013 total.
-const EXPECTED_BYTES = 872_013;
+// The W3 cache fixes and the coordinate-contract helper: 873,965 measured.
+const EXPECTED_BYTES = 873_965;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

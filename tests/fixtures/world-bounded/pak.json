@@ -1,0 +1,98 @@
+[
+  {
+    "key": "ui:tile.world-wb-00-ground",
+    "file": "assets/stream/world-wb-00-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-00-upper",
+    "file": "assets/stream/world-wb-00-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-01-ground",
+    "file": "assets/stream/world-wb-01-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-01-upper",
+    "file": "assets/stream/world-wb-01-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-02-ground",
+    "file": "assets/stream/world-wb-02-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-02-upper",
+    "file": "assets/stream/world-wb-02-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-03-ground",
+    "file": "assets/stream/world-wb-03-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-03-upper",
+    "file": "assets/stream/world-wb-03-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-04-ground",
+    "file": "assets/stream/world-wb-04-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-04-upper",
+    "file": "assets/stream/world-wb-04-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-05-ground",
+    "file": "assets/stream/world-wb-05-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-05-upper",
+    "file": "assets/stream/world-wb-05-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-06-ground",
+    "file": "assets/stream/world-wb-06-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-06-upper",
+    "file": "assets/stream/world-wb-06-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-07-ground",
+    "file": "assets/stream/world-wb-07-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-07-upper",
+    "file": "assets/stream/world-wb-07-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-08-ground",
+    "file": "assets/stream/world-wb-08-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-08-upper",
+    "file": "assets/stream/world-wb-08-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-09-ground",
+    "file": "assets/stream/world-wb-09-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-09-upper",
+    "file": "assets/stream/world-wb-09-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-10-ground",
+    "file": "assets/stream/world-wb-10-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-10-upper",
+    "file": "assets/stream/world-wb-10-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-11-ground",
+    "file": "assets/stream/world-wb-11-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-wb-11-upper",
+    "file": "assets/stream/world-wb-11-upper.pkts"
+  }
+]

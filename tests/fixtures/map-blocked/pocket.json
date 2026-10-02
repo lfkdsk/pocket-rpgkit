@@ -1,0 +1,24 @@
+{
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json",
+  "pocket": 2,
+  "id": "dev.lfkdsk.pocket-rpgkit-map-blocked-fixture",
+  "name": "pocket-rpgkit-map-blocked-fixture",
+  "title": "Pocket RPG Kit — map-blocked fixture",
+  "version": "0.1.0",
+  "engine": {
+    "capabilities": {
+      "requires": ["input.buttons"]
+    }
+  },
+  "app": {
+    "entry": "tests/fixtures/map-blocked/map-blocked.tsx",
+    "output": "map-blocked",
+    "framework": "solid",
+    "viewport": {
+      "fixed": {
+        "logical": [480, 272],
+        "presentation": "integer-fit"
+      }
+    }
+  }
+}

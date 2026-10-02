@@ -68,6 +68,12 @@ export type {
   GameViewOverlayConfig,
   GameViewSessionHost,
 } from "./demo-contract.ts";
+export {
+  createWorldCacheDriver,
+  type WorldCacheDriver,
+  type WorldCacheDriverOptions,
+  type WorldCacheStats,
+} from "./world-cache-driver.ts";
 export { NameInputScene, type NameInputSceneProps } from "./name-input/NameInputScene.tsx";
 export { NumberInputScene, type NumberInputSceneProps } from "./number-input/NumberInputScene.tsx";
 export type {

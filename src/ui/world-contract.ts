@@ -2,6 +2,29 @@
 // renderer. The concrete renderer lives behind `pocket-rpgkit/ui/world`, so a
 // game that does not import and pass it cannot pull that implementation into
 // its bundle.
+//
+// Coordinate spaces — the one contract every world consumer shares:
+//
+//   map-local      origin at the active map's top-left tile. `state.move`
+//                  (tx/ty/px/py), the legacy single-map camera and every
+//                  per-map layer coordinate live here.
+//
+//   component-world  origin at the connected component's signed world origin.
+//                  `WorldPlacement.originTileX/Y`, `WorldComponent.bounds`,
+//                  `visibleMaps`/`workingSet` rects and the camera returned by
+//                  `GameViewWorldRuntime.cameraFor` live here.
+//
+//   world = local + placement.origin   (pixels: origin * tileSize)
+//   local = world - placement.origin
+//
+// GameView is the single place that converts between the two: it presents a
+// component-world camera to the world renderer and to the cache driver
+// (`WorldCacheDriver.sync`). The active map's own extra layers receive a
+// map-local camera (via `localCameraFor`); actors receive the component-
+// world camera and are translated by the shared `worldNode`. Both sit inside
+// the renderer's `ActiveMapPlane`, which adds the active placement's origin,
+// so neither band adds the origin itself. A consumer that receives a
+// component-world camera must never add the placement origin again.
 
 import type { Accessor, Component, JSX } from "solid-js";
 import type { NodeMirror } from "@pocketjs/framework/renderer";

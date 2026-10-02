@@ -89,8 +89,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // success-path resync, plus the attractRewindOptions helper GameView
 // forwards through: shared bytes in Sunstone and the WAV fixture (Meadow
 // does not mount GameView); Sunstone's opted-in demo adds DemoOptions.rewind
-// validation and the explicit four-field forwarding. Merged, the three
-// measure 525,289, 835,407 and 668,171.
+// validation and the explicit four-field forwarding.
+// The W3 cache fixes add the parsed-only compiled-layer rebuild in
+// acquireSessionMap (shared engine code in all three), the staged-
+// preparation trim in releaseSessionMapLayers, and the explicit
+// blocked.failed flag plus the falsy-rejection normalizer in GameView
+// (the two GameView bundles only).
 // Reusing unchanged integer chunk windows adds 76 bytes to Meadow. The
 // connected-world renderer is behind `pocket-rpgkit/ui/world`: its
 // concrete modules are absent here, while GameView's generic factory seam
@@ -106,10 +110,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // and trigger-scan keys add 317 shared bytes to each bundle; keeping the demo
 // warp toast inside the viewport and dismissing it before a modal then adds
 // 173 bytes only to Sunstone: 543,193, 872,013 and 692,217 bytes.
+// The W3 cache fixes and the world coordinate-contract promotion helper
+// add shared GameView bytes. Merged, the three measure 543,736, 873,965
+// and 694,169.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 543_193;
-const EXPECTED_SUNSTONE_QOA_BYTES = 872_013;
-const EXPECTED_WAV_FIXTURE_BYTES = 692_217;
+const EXPECTED_MEADOW_BYTES = 543_736;
+const EXPECTED_SUNSTONE_QOA_BYTES = 873_965;
+const EXPECTED_WAV_FIXTURE_BYTES = 694_169;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

@@ -907,6 +907,8 @@ export interface MapRepository {
    * a non-zero transfer fade; acquire() still completes all remaining work. */
   acquireStep?(id: string): MapDef | undefined;
   releaseExcept(ids: readonly string[]): void;
+  /** Optional residency counters, for cache-boundedness diagnostics. */
+  stats?(): { cached: number; pending: number };
   prepare?(id: string): Promise<void>;
 }
 

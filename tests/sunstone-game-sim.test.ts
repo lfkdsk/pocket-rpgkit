@@ -459,6 +459,9 @@ simDescribe("sunstone — render budget", () => {
     // state and GameView's generic opt-in presentation/host-action seams
     // bring it to 871,523 B. The KRM2 JSX remains outside this input graph
     // (krm2-ui-bundle-isolation.test.ts).
+    // The W3 cache fixes (parsed-only rebuild, staged-preparation trim,
+    // the falsy-rejection normalizer) and the coordinate-contract
+    // promotion helper bring it to 873,965 B measured.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.

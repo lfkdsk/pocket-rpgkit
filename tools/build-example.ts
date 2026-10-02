@@ -24,7 +24,7 @@ export const EXAMPLES = ["showcase", "meadow", "sunstone", "grow", "wander"] as 
 /** The examples plus the editor app. */
 export const APPS = [...EXAMPLES, "editor"] as const;
 /** Small apps that exist only for the sim suites. */
-export const FIXTURES = ["ui-theme", "streamed", "world-streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kg1-name-input", "krm2-ui", "kau1-audio", "ks2-save", "rmi-play", "cjk-text", "no-truncation"] as const;
+export const FIXTURES = ["ui-theme", "streamed", "world-streamed", "world-bounded", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kg1-name-input", "krm2-ui", "kau1-audio", "ks2-save", "rmi-play", "cjk-text", "no-truncation", "map-blocked"] as const;
 /** Kit tools that are apps too: the project preview host (tools/preview),
  *  which the preview/Studio tests boot in the sim. */
 export const TOOL_APPS = ["preview"] as const;

@@ -56,6 +56,7 @@ import {
 } from "../engine/session.ts";
 import { isProjectShell, MapNotReadyError } from "../engine/map-repository.ts";
 import { AttractController, type AttractStatus } from "../engine/attract.ts";
+import type { WorldCacheDriver } from "./world-cache-driver.ts";
 import {
   activePage,
   effectiveEventAppearance,
@@ -77,6 +78,7 @@ import type {
   ProjectSource,
   JsonValue,
   SpriteDef,
+  WorldLayout,
 } from "../engine/types.ts";
 import { PlayerSprite, playerImageKey } from "./PlayerSprite.tsx";
 import { walkPose, type WalkPose } from "../engine/movement.ts";
@@ -124,6 +126,15 @@ type Sprites = Record<string, SpriteDef>;
 // The PocketJS spec screen; console hosts render at exactly this size.
 const SCREEN_W = 480;
 const SCREEN_H = 272;
+
+/** A stable description for a falsy async prepare rejection reason, so the
+ *  loading path can report it instead of hanging on an empty reason. */
+function describeMapPrepareRejection(reason: unknown): string {
+  if (reason === undefined) return "undefined";
+  if (reason === null) return "null";
+  if (typeof reason === "string") return reason === "" ? '""' : reason;
+  return String(reason);
+}
 
 /** Whether a project SpriteDef ever paints a character (static or walker). */
 function spritePaints(def: SpriteDef | undefined): boolean {
@@ -886,6 +897,16 @@ export interface GameViewProps {
   /** Browser repositories can report their frame barrier without putting
    * network timing into SessionState. null means ticking has resumed. */
   onMapLoading?: (mapId: string | null) => void;
+  /** Fires when the active map changes (after the fold that changed it,
+   *  including the first presented frame), with the resident MapDef. Games
+   *  use it to evict per-map asset shards to the new keep-set. */
+  onMapChange?: (mapId: string, map: MapDef) => void;
+  /** Optional factory for the seamless-world cache driver. When the project
+   *  carries a worldLayout and this is provided, GameView constructs the
+   *  driver and drives it once per presented frame. The factory is a
+   *  type-only seam: the driver's code ships only in the game bundle that
+   *  imports it, never in the kit's own bundles. */
+  createWorldCacheDriver?: (session: Session, layout: WorldLayout) => WorldCacheDriver;
   /** Opt-in connected-world renderer. Import its factory from
    * `pocket-rpgkit/ui/world`; omitting this keeps every concrete world
    * renderer module outside the application's dependency graph. */
@@ -1214,6 +1235,15 @@ export function GameView(props: GameViewProps) {
     : legacyCameraFor;
   let camera = cameraFor(state);
   globalThis.__rpgGameCamera = camera;
+  // Seamless worlds only, and only when the game opts in by supplying the
+  // driver factory: keep the parsed/compiled caches on the
+  // active/visible/imminent keep-sets and prefetch imminent targets across
+  // frames. Projects without a worldLayout (or without the factory) never
+  // construct a driver, so their hot loop gains nothing but the single
+  // untaken branch below.
+  const worldCache: WorldCacheDriver | null = project.worldLayout && props.createWorldCacheDriver
+    ? props.createWorldCacheDriver(session, project.worldLayout)
+    : null;
   const [fade, setFade] = createSignal(0);
   const layerFingerprint = (value: SessionState): string =>
     value.interp.layers ? JSON.stringify(value.interp.layers) : "";
@@ -1277,6 +1307,25 @@ export function GameView(props: GameViewProps) {
   const activeMapCamera = (): CameraState => {
     return worldRenderer?.localCameraFor(mapId(), camera) ?? camera;
   };
+  // The cache driver works in component-world pixels (see world-contract.ts).
+  // With a renderer the presented camera is already world; without one,
+  // promote the legacy map-local camera by the active placement's origin so
+  // the driver receives one coordinate space regardless of the renderer.
+  const worldCameraForDriver = (st: SessionState): CameraState => {
+    if (worldRenderer || !project.worldLayout) return camera;
+    for (const component of project.worldLayout.components) {
+      for (const placement of component.placements) {
+        if (placement.mapId === st.mapId) {
+          return {
+            x: camera.x + placement.originTileX * project.tileSize,
+            y: camera.y + placement.originTileY * project.tileSize,
+            facing: camera.facing,
+          };
+        }
+      }
+    }
+    return camera;
+  };
   startupProfileMark("game-view:model");
 
   // Live play fires reducer edges from the action handlers. Under the
@@ -1317,7 +1366,11 @@ export function GameView(props: GameViewProps) {
     buttons: number;
     input?: SessionInput;
     ready: boolean;
-    error?: unknown;
+    /** A prepare rejection was observed. Separate from `error` so a falsy
+     *  rejection reason (undefined/null/0/"") still surfaces instead of
+     *  hanging the view on the loading screen forever. */
+    failed: boolean;
+    error?: Error;
   } | null = null;
 
   const syncPresentedState = (
@@ -1329,6 +1382,16 @@ export function GameView(props: GameViewProps) {
 
     camera = cameraFor(state);
     globalThis.__rpgGameCamera = camera;
+
+    // Seamless-world cache policy: prefetch imminent targets and evict every
+    // layer to its keep-set. Derived-cache only; the fold above is untouched.
+    // The viewport signal is read only when a driver exists, so projects
+    // without a worldLayout pay a single untaken branch per frame. The
+    // driver receives a component-world camera (see world-contract.ts).
+    if (state.mapId !== prev.mapId) {
+      props.onMapChange?.(state.mapId, session.maps.get(state.mapId)!);
+    }
+    if (worldCache) worldCache.sync(state, worldCameraForDriver(state), viewport());
 
     const op = fadeOpacity(state.fade);
     frameProfileMark("signals:start");
@@ -1409,7 +1472,7 @@ export function GameView(props: GameViewProps) {
     const prev = state;
     let status: AttractStatus | null = null;
     if (blocked) {
-      if (blocked.error) throw blocked.error;
+      if (blocked.failed) throw blocked.error;
       if (!blocked.ready) return;
     }
     if (overlayRuntime && (replaced || !blocked)) {
@@ -1479,12 +1542,20 @@ export function GameView(props: GameViewProps) {
         buttons: frameButtons,
         ...(attract ? {} : { input }),
         ready: false,
+        failed: false,
       };
       blocked = pending;
       props.onMapLoading?.(error.mapId);
       void prepareSessionMap(session, error.mapId).then(
         () => { pending.ready = true; },
-        (reason) => { pending.error = reason; },
+        (reason) => {
+          // Normalize falsy reasons (undefined/null/0/"") to a stable Error:
+          // the frame loop keys off `failed`, never the reason's truthiness.
+          pending.failed = true;
+          pending.error = reason instanceof Error
+            ? reason
+            : new Error(`map preparation rejected for ${error.mapId}: ${describeMapPrepareRejection(reason)}`);
+        },
       );
       return;
     }

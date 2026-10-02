@@ -302,9 +302,10 @@ export interface Session {
   /** Content identity copied into save envelopes for sharded projects. */
   content: MapContentIdentity | null;
   repository: MapRepository | null;
-  /** Partially prepared transfer target. Derived only: never serialized or
-   * exposed to event logic. */
-  preparingMap: SessionMapPreparation | null;
+  /** Partially prepared maps (transfer targets and seamless-world imminent
+   *  targets), keyed by map id. Derived only: never serialized or exposed
+   *  to event logic. Each entry stays unpublished until its map is acquired. */
+  preparingMaps: Map<string, SessionMapPreparation>;
   sheets: ReadonlyMap<string, Sheet>;
   commonEvents: CommonEvent[];
   /** Project.system options, the item catalog/inventory caps (T2-10/B1)
@@ -506,7 +507,25 @@ function assertRegisteredExtensions(runtime: ExtensionRuntime, found: ReadonlySe
 export function acquireSessionMap(sess: Session, id: string): MapDef {
   const hit = sess.maps.get(id);
   if (hit) {
-    if (sess.preparingMap?.id === id) sess.preparingMap = null;
+    // A layered release (releaseSessionMapLayers) may have kept the parsed
+    // MapDef while dropping the compiled World/PassageTable — a map that
+    // stayed visible but left the imminent set. Rebuild the missing layers
+    // before the caller enters the map, adopting staged compilation when the
+    // prefetcher finished it, so a revisit never observes a half-cached map.
+    const staged = sess.preparingMaps.get(id);
+    if (!sess.worlds.has(id)) {
+      sess.worlds.set(
+        id,
+        staged?.world ?? createWorld(hit, sess.commonEvents, MOTION_HZ, sess.worldOptions),
+      );
+    }
+    if (!sess.tables.has(id)) {
+      sess.tables.set(id, staged?.table ?? buildPassage(hit, sess.sheets));
+    }
+    // The mutable layer is map-entry owned: it left with the compiled
+    // layers, so a rebuilt map starts from a fresh runtime view.
+    sess.runtimeTables.delete(id);
+    sess.preparingMaps.delete(id);
     return hit;
   }
   startupProfileMark("map-acquire:start");
@@ -519,13 +538,13 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
     actual.sha256 !== expected.sha256) {
     throw new Error(`map repository: manifest metadata mismatch for ${id}`);
   }
-  const prepared = sess.preparingMap?.id === id ? sess.preparingMap : null;
+  const prepared = sess.preparingMaps.get(id);
   if (prepared?.map && prepared.world && prepared.table) {
     sess.maps.set(id, prepared.map);
     sess.worlds.set(id, prepared.world);
     sess.tables.set(id, prepared.table);
     sess.runtimeTables.delete(id);
-    sess.preparingMap = null;
+    sess.preparingMaps.delete(id);
     return prepared.map;
   }
   const map = repository.acquire(id);
@@ -547,7 +566,7 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
   sess.worlds.set(id, world);
   sess.tables.set(id, table);
   sess.runtimeTables.delete(id);
-  if (sess.preparingMap?.id === id) sess.preparingMap = null;
+  sess.preparingMaps.delete(id);
   startupProfileMark("map-acquire:end");
   return map;
 }
@@ -556,9 +575,10 @@ export function acquireSessionMap(sess: Session, id: string): MapDef {
  * repository parse, repository validation, world compilation, then passage
  * compilation.
  * Completed data remains derived and unpublished until acquireSessionMap at
- * the original transfer boundary. */
+ * the original transfer boundary. A map whose parsed MapDef survived a
+ * layered release reuses it and only re-runs the compiled stages. */
 export function prepareSessionMapStep(sess: Session, id: string): boolean {
-  if (sess.maps.has(id)) return true;
+  if (sess.maps.has(id) && sess.worlds.has(id) && sess.tables.has(id)) return true;
   const expected = sess.mapIndex?.get(id);
   const repository = sess.repository;
   if (!expected || !repository) throw new Error(`session: unknown map ${id}`);
@@ -568,21 +588,31 @@ export function prepareSessionMapStep(sess: Session, id: string): boolean {
     actual.sha256 !== expected.sha256) {
     throw new Error(`map repository: manifest metadata mismatch for ${id}`);
   }
-  if (!repository.acquireStep) return false;
-  if (sess.preparingMap?.id !== id) sess.preparingMap = { id };
-  const preparation = sess.preparingMap;
+  let preparation = sess.preparingMaps.get(id);
+  if (!preparation) {
+    preparation = { id };
+    sess.preparingMaps.set(id, preparation);
+  }
   if (!preparation.map) {
-    const map = repository.acquireStep(id);
-    if (map) {
-      if (map.id !== expected.id || map.width !== expected.width || map.height !== expected.height) {
-        throw new Error(`map repository: payload metadata mismatch for ${id}`);
+    // The parsed layer survived a layered release: reuse the resident
+    // MapDef instead of re-reading the repository.
+    const resident = sess.maps.get(id);
+    if (resident) {
+      preparation.map = resident;
+    } else {
+      if (!repository.acquireStep) return false;
+      const map = repository.acquireStep(id);
+      if (map) {
+        if (map.id !== expected.id || map.width !== expected.width || map.height !== expected.height) {
+          throw new Error(`map repository: payload metadata mismatch for ${id}`);
+        }
+        assertRegisteredExtensions(sess.extensions, mapExtensionCalls(map));
+        assertBattleRegistered(sess.battle, mapUsesBattle(map));
+        assertScenesRegistered(sess.scenes, mapSceneIds(map));
+        preparation.map = map;
       }
-      assertRegisteredExtensions(sess.extensions, mapExtensionCalls(map));
-      assertBattleRegistered(sess.battle, mapUsesBattle(map));
-      assertScenesRegistered(sess.scenes, mapSceneIds(map));
-      preparation.map = map;
+      return false;
     }
-    return false;
   }
   if (!preparation.world) {
     preparation.world = createWorld(
@@ -603,7 +633,7 @@ export function prepareSessionMapStep(sess: Session, id: string): boolean {
  * reducer. The caller then retries the exact state/input pair that met a
  * MapNotReadyError; no logical tick is consumed while this promise waits. */
 export async function prepareSessionMap(sess: Session, id: string): Promise<void> {
-  if (sess.maps.has(id)) return;
+  if (sess.maps.has(id) && sess.worlds.has(id) && sess.tables.has(id)) return;
   if (!sess.repository || !sess.mapIndex?.has(id)) {
     throw new Error(`session: unknown map ${id}`);
   }
@@ -620,8 +650,46 @@ export function releaseSessionMapsExcept(sess: Session, ids: readonly string[]):
   for (const id of [...sess.worlds.keys()]) if (!keep.has(id)) sess.worlds.delete(id);
   for (const id of [...sess.tables.keys()]) if (!keep.has(id)) sess.tables.delete(id);
   for (const id of [...sess.runtimeTables.keys()]) if (!keep.has(id)) sess.runtimeTables.delete(id);
-  if (sess.preparingMap && !keep.has(sess.preparingMap.id)) sess.preparingMap = null;
+  for (const id of [...sess.preparingMaps.keys()]) {
+    if (!keep.has(id)) sess.preparingMaps.delete(id);
+  }
   sess.repository.releaseExcept(ids);
+}
+
+/** Layered cache policy for seamless worlds (plan 3.6). The parsed/source
+ * layer (MapDefs and repository bytes) follows `parsed` — active, visible and
+ * one-hop prefetch maps. The compiled layer (World and PassageTable) follows
+ * the smaller `compiled` set — active plus imminent targets. The mutable
+ * layer (runtime passage overrides) is retained for the active map only,
+ * matching map-entry ownership. Unpublished staged preparation for a map
+ * outside `parsed` is dropped; one inside `parsed` but outside `compiled`
+ * keeps only its parsed stage, so the compiled stages re-run if the map
+ * becomes imminent again. Inline projects keep their eager cache. */
+export function releaseSessionMapLayers(
+  sess: Session,
+  parsed: readonly string[],
+  compiled: readonly string[],
+  active: string,
+): void {
+  if (!sess.repository) return;
+  const parsedKeep = new Set(parsed);
+  const compiledKeep = new Set(compiled);
+  for (const id of [...sess.maps.keys()]) if (!parsedKeep.has(id)) sess.maps.delete(id);
+  for (const id of [...sess.worlds.keys()]) if (!compiledKeep.has(id)) sess.worlds.delete(id);
+  for (const id of [...sess.tables.keys()]) if (!compiledKeep.has(id)) sess.tables.delete(id);
+  for (const id of [...sess.runtimeTables.keys()]) if (id !== active) sess.runtimeTables.delete(id);
+  for (const id of [...sess.preparingMaps.keys()]) {
+    if (!parsedKeep.has(id)) {
+      sess.preparingMaps.delete(id);
+    } else if (!compiledKeep.has(id)) {
+      // Visible but not imminent: retain the parsed stage, drop the compiled
+      // stages (they are cheap to re-run when the map returns to the set).
+      const preparation = sess.preparingMaps.get(id)!;
+      preparation.world = undefined;
+      preparation.table = undefined;
+    }
+  }
+  sess.repository.releaseExcept(parsed);
 }
 
 export function createSession(
@@ -682,7 +750,7 @@ export function createSession(
       mapIndex: index,
       content: { manifest, schema: MAP_SCHEMA_HASH },
       repository: maps,
-      preparingMap: null,
+    preparingMaps: new Map(),
       sheets,
       commonEvents,
       worldOptions,
@@ -724,7 +792,7 @@ export function createSession(
     mapIndex: null,
     content: null,
     repository: null,
-    preparingMap: null,
+    preparingMaps: new Map(),
     sheets,
     commonEvents,
     worldOptions,

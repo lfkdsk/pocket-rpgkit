@@ -465,6 +465,7 @@ export function createJsonMapRepository(
       for (const id of [...cache.keys()]) if (!keep.has(id)) cache.delete(id);
       for (const id of [...pending.keys()]) if (!keep.has(id)) pending.delete(id);
     },
+    stats: () => ({ cached: cache.size, pending: pending.size }),
     ...(source.prepare ? {
       prepare: async (id: string) => {
         const meta = index.get(id);

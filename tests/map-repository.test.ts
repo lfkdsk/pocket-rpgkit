@@ -417,14 +417,14 @@ describe("sharded map repository", () => {
     expect(prepareSessionMapStep(session, "map_01")).toBe(false); // parse
     expect(prepareSessionMapStep(session, "map_01")).toBe(false); // validate
     expect(prepareSessionMapStep(session, "map_01")).toBe(false); // world
-    expect(session.preparingMap?.world).toBeDefined();
-    expect(session.preparingMap?.table).toBeUndefined();
+    expect(session.preparingMaps.get("map_01")?.world).toBeDefined();
+    expect(session.preparingMaps.get("map_01")?.table).toBeUndefined();
     expect(prepareSessionMapStep(session, "map_01")).toBe(true); // passage
-    expect(session.preparingMap?.table).toBeDefined();
+    expect(session.preparingMaps.get("map_01")?.table).toBeDefined();
     expect(session.maps.has("map_01")).toBe(false);
 
     acquireSessionMap(session, "map_01");
-    expect(session.preparingMap).toBeNull();
+    expect(session.preparingMaps.has("map_01")).toBe(false);
     expect(session.maps.has("map_01")).toBe(true);
   });
 

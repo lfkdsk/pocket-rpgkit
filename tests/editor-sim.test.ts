@@ -751,6 +751,8 @@ simDescribe("editor budget", () => {
     // GameView apps keep the picture/HUD implementation isolated. The merged
     // Studio command palette, minimap, layers and canvas polish add 3,595 B;
     // timer-aware immutable cache keys add 317 B: measured 1,496,504 B.
-    expect(js).toBeLessThan(1_500_000);
+    // The W3 cache driver's editor-visible types and the world-bounded
+    // fixture's shared paths: measured 1,498,456 B. Keep a narrow margin.
+    expect(js).toBeLessThan(1_502_000);
   });
 });
