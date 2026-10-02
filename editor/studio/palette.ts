@@ -109,6 +109,11 @@ export function mountPalette(root: HTMLElement, app: StudioApp, art: ArtRegistry
     const activeSearch = document.activeElement instanceof HTMLInputElement && document.activeElement.dataset.testid === "tile-search"
       ? document.activeElement
       : null;
+    // A brush choice rebuilds this panel synchronously. Remember the sheet,
+    // then find the newest canvas after all same-turn rebuilds have finished.
+    const restoreAtlasFocus = document.activeElement instanceof HTMLCanvasElement && document.activeElement.classList.contains("palette-canvas")
+      ? document.activeElement.dataset.sheet ?? null
+      : null;
     const restoreSearch = activeSearch ? {
       start: activeSearch.selectionStart,
       end: activeSearch.selectionEnd,
@@ -206,13 +211,23 @@ export function mountPalette(root: HTMLElement, app: StudioApp, art: ArtRegistry
     const ctx = canvas.getContext("2d")!;
     const selectionColor = getComputedStyle(root).getPropertyValue("--canvas-select").trim() || "#f0b429";
     if (!atlasCursor || atlasCursor.sheet !== sheet.id) {
-      const brush = app.brush ? parseTileId(app.brush) : null;
-      atlasCursor = {
-        sheet: sheet.id,
-        x: brush?.sheet === sheet.id ? brush.cell % sheet.cols : 0,
-        y: brush?.sheet === sheet.id ? Math.floor(brush.cell / sheet.cols) : 0,
-        anchor: null,
-      };
+      const selection = app.tileSelection?.sheet === sheet.id ? app.tileSelection : null;
+      if (selection) {
+        atlasCursor = {
+          sheet: sheet.id,
+          x: selection.x + selection.width - 1,
+          y: selection.y + selection.height - 1,
+          anchor: selection.width === 1 && selection.height === 1 ? null : { x: selection.x, y: selection.y },
+        };
+      } else {
+        const brush = app.brush ? parseTileId(app.brush) : null;
+        atlasCursor = {
+          sheet: sheet.id,
+          x: brush?.sheet === sheet.id ? brush.cell % sheet.cols : 0,
+          y: brush?.sheet === sheet.id ? Math.floor(brush.cell / sheet.cols) : 0,
+          anchor: null,
+        };
+      }
     }
     const drawAtlas = (preview = atlasDrag
       ? rectangularTileSelection(sheet, atlasDrag.from, atlasDrag.to)
@@ -369,6 +384,11 @@ export function mountPalette(root: HTMLElement, app: StudioApp, art: ArtRegistry
       search.focus();
       search.setSelectionRange(restoreSearch.start, restoreSearch.end, restoreSearch.direction ?? undefined);
     });
+    if (restoreAtlasFocus) queueMicrotask(() => {
+      const replacement = [...body.querySelectorAll<HTMLCanvasElement>(".palette-canvas")]
+        .find((item) => item.dataset.sheet === restoreAtlasFocus);
+      replacement?.focus();
+    });
   }
 
   function renderPassage(): void {
@@ -426,6 +446,7 @@ export function mountPalette(root: HTMLElement, app: StudioApp, art: ArtRegistry
 
   app.on((reason) => {
     if (reason === "hover" || reason === "view" || reason === "notice" || reason === "selection") return;
+    if (reason === "brush" || reason === "load" || reason === "map" || reason === "document") atlasCursor = null;
     render();
   });
   art.onChange(render);

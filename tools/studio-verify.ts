@@ -183,6 +183,9 @@ async function main(): Promise<void> {
   await cdp.send("Network.enable");
   await cdp.send("Page.enable");
   await cdp.send("DOM.enable");
+  // Keep CSS transitions deterministic. Camera interpolation is still
+  // exercised explicitly by choosing Studio's full-motion preference below.
+  await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
   await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads, eventsEnabled: true });
 
   const evaluate = async <T = any>(expression: string): Promise<T> => {
@@ -210,11 +213,100 @@ async function main(): Promise<void> {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile });
     await sleep(300);
   };
-  const shot = async (name: string) => {
+  const settleStudio = async (label: string) => {
+    await waitFor(`${label}: camera and canvas settle`, `globalThis.__studio?.canvas?.settled === true`, 10_000);
+    // Give Chrome a complete style/layout/paint/composite turn, then verify
+    // that the turn itself did not queue another canvas draw.
+    await evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await waitFor(`${label}: post-composite canvas settle`, `globalThis.__studio?.canvas?.settled === true`, 10_000);
+  };
+  const stabilizeCaptureChrome = async () => {
+    await evaluate(`(() => {
+      let style = document.getElementById("studio-verify-stable-capture");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "studio-verify-stable-capture";
+        style.textContent = [
+          '* { caret-color: transparent !important; }',
+          '#statusbar [title="Last protocol operation"] { visibility: hidden !important; }',
+          '#playtest dd[data-field="frame"] { visibility: hidden !important; }',
+        ].join("\\n");
+        document.head.appendChild(style);
+      }
+    })()`);
+  };
+  /** Stop the embedded game on one complete engine frame while Chrome
+   * captures it. Documentation states are replayed from a fresh warp with
+   * exact input-frame counts: the preview intentionally preserves its frame
+   * across a warp, so waiting for an absolute frame would leave autonomous
+   * NPCs dependent on how long the preceding load took. Returns whether the
+   * player must be resumed. */
+  const freezePlaytest = async (captureState?: "idle" | "dialogue"): Promise<boolean> => evaluate<boolean>(`(async () => {
+    const win = document.querySelector("#playtest-screen iframe")?.contentWindow;
+    const player = win?.__pocketPlayer;
+    if (!player || player.state !== "running") return false;
+    const resume = player.running === true;
+    player.pause();
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const captureState = ${JSON.stringify(captureState ?? null)};
+    const preview = win.__rpgkitPreview;
+    if (captureState && !preview) throw new Error("play-test capture has no preview hook");
+    if (captureState === "idle") {
+      const state = preview.state();
+      preview.start({ kind: "tile", map: state.map, x: state.x, y: state.y, dir: state.dir });
+      await flush();
+      player.step();
+      player.step();
+    } else if (captureState === "dialogue") {
+      preview.start({ kind: "tile", map: "village", x: 9, y: 7, dir: "down" });
+      await flush();
+      preview.input(0x0010, 8);
+      for (let i = 0; i < 24; i++) {
+        player.step();
+        const state = preview.state();
+        if (state.y === 6 && !state.moving && state.dir === "up") break;
+      }
+      const atElder = preview.state();
+      if (atElder.y !== 6 || atElder.moving || atElder.dir !== "up") {
+        throw new Error("play-test capture could not reach the elder: " + JSON.stringify(atElder));
+      }
+      preview.input(0x2000, 1);
+      for (let i = 0; i < 24 && !preview.state().message; i++) player.step();
+      const talking = preview.state();
+      if (!talking.message || !talking.message.text.startsWith("ELDER: Studio says hello!")) {
+        throw new Error("play-test capture could not open the edited dialogue: " + JSON.stringify(talking));
+      }
+      await flush();
+      // input() is a finite attract tape. Once its confirm tape ends the
+      // attract controller holds, so give it an explicit zero-mask tape for
+      // the typewriter interval instead of ticking a stopped controller.
+      preview.input(0, 180);
+      for (let i = 0; i < 181; i++) player.step();
+      const modal = win.__rpgSessionState?.interp?.modal;
+      if (modal?.kind !== "text" || modal.revealed < 10) {
+        throw new Error("play-test capture did not reveal the edited dialogue: " + JSON.stringify(modal));
+      }
+    }
+    await flush();
+    player.paint();
+    return resume;
+  })()`);
+  const resumePlaytest = async (resume: boolean): Promise<void> => {
+    if (resume) await evaluate(`document.querySelector("#playtest-screen iframe")?.contentWindow?.__pocketPlayer?.resume()`);
+  };
+  const shot = async (name: string, options: { playtestState?: "idle" | "dialogue" } = {}) => {
     // Transient notices would cover the panels in documentation shots.
     await evaluate(`(() => { __studio.app.notices = []; __studio.app.emit("notice"); })()`);
-    await sleep(200);
-    const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+    await stabilizeCaptureChrome();
+    await settleStudio(`shot ${name}`);
+    const resume = options.playtestState === undefined ? false : await freezePlaytest(options.playtestState);
+    const data = await (async () => {
+      try {
+        return await cdp.send("Page.captureScreenshot", { format: "png" });
+      } finally {
+        await resumePlaytest(resume);
+      }
+    })();
     const path = join(SHOTS, `${name}.png`);
     writeFileSync(path, Buffer.from(data.data, "base64"));
     results[`shot:${name}`] = path.slice(ROOT.length + 1);
@@ -223,7 +315,7 @@ async function main(): Promise<void> {
    *  to OUT first and replaces the committed picture only when every check
    *  passes, so a broken frame never overwrites the docs. Dynamic areas (the
    *  readout's frame number, the status bar's `op N ms`) are never sampled. */
-  const playShot = async (name: string, want: { dialogue: boolean; theme: "light" | "dark" }) => {
+  const playShot = async (name: string, want: { dialogue: boolean; theme: "light" | "dark"; playtestState?: "idle" | "dialogue" }) => {
     // Focusing a field scrolls the inspector so that the top of its page
     // tabs is cut off at the panel edge; scroll back just enough that the
     // page tabs show whole and the edited field stays in view.
@@ -238,8 +330,12 @@ async function main(): Promise<void> {
       return [before, i.scrollTop];
     })()`);
     await evaluate(`(() => { __studio.app.notices = []; __studio.app.emit("notice"); })()`);
-    await sleep(200);
-    const layout = await evaluate<any>(`(() => {
+    await stabilizeCaptureChrome();
+    await settleStudio(`shot ${name}`);
+    const resume = await freezePlaytest(want.playtestState);
+    const { layout, data } = await (async () => {
+      try {
+        const layout = await evaluate<any>(`(() => {
       const box = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
       const frame = document.querySelector("#playtest-screen iframe");
       const doc = frame?.contentDocument;
@@ -266,7 +362,12 @@ async function main(): Promise<void> {
         inspectorClipX: inspector ? inspector.scrollWidth - inspector.clientWidth : null,
       };
     })()`);
-    const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+        const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+        return { layout, data };
+      } finally {
+        await resumePlaytest(resume);
+      }
+    })();
     const bytes = Buffer.from(data.data, "base64");
     const draft = join(OUT, `${name}.png`);
     writeFileSync(draft, bytes);
@@ -338,7 +439,8 @@ async function main(): Promise<void> {
    *  theme, and the captured map/minimap contain real rendered pixels. */
   const studioShot = async (name: string, wantTheme: "light" | "dark") => {
     await evaluate(`(() => { __studio.app.notices = []; __studio.app.emit("notice"); })()`);
-    await sleep(200);
+    await stabilizeCaptureChrome();
+    await settleStudio(`shot ${name}`);
     const layout = await evaluate<{
       vw: number;
       vh: number;
@@ -499,6 +601,70 @@ async function main(): Promise<void> {
     await mouse("mouseReleased", points.at(-1)!.x, points.at(-1)!.y, button);
     await sleep(120);
   };
+  const probeCommandHover = async () => {
+    const setup = await evaluate<{ x: number; y: number; target: string; partial: boolean; rows: number }>(`(() => {
+      const dialog = document.querySelector('[data-testid="command-palette"]');
+      const list = document.getElementById("studio-command-results");
+      const rows = [...list.querySelectorAll(".command-palette-row")];
+      const enabled = rows.filter((row) => !row.disabled);
+      const target = enabled[Math.max(1, Math.floor(enabled.length * 0.7))];
+      target.scrollIntoView({ block: "end" });
+      list.scrollTop = Math.max(0, list.scrollTop - target.offsetHeight / 2);
+      const listRect = list.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const mutations = [];
+      const observer = new MutationObserver((records) => mutations.push(...records.map((record) => ({
+        type: record.type,
+        attributeName: record.attributeName,
+      }))));
+      observer.observe(dialog, { subtree: true, childList: true, characterData: true, attributes: true });
+      globalThis.__studioCommandHoverProbe = {
+        refs: rows,
+        scrollTop: list.scrollTop,
+        target,
+        mutations,
+        observer,
+      };
+      return {
+        x: targetRect.left + targetRect.width / 2,
+        y: Math.max(listRect.top + 2, Math.min(listRect.bottom - 2, targetRect.bottom - 2)),
+        target: target.dataset.commandId,
+        partial: targetRect.top < listRect.bottom && targetRect.bottom > listRect.bottom,
+        rows: rows.length,
+      };
+    })()`);
+    await mouse("mouseMoved", setup.x, setup.y, "none");
+    const result = await evaluate<{
+      target: string;
+      sameRows: boolean;
+      sameScroll: boolean;
+      selected: boolean;
+      activeDescendant: boolean;
+      structuralMutations: number;
+      unexpectedAttributes: string[];
+      mutations: { type: string; attributeName: string | null }[];
+    }>(`(() => {
+      const probe = globalThis.__studioCommandHoverProbe;
+      probe.observer.disconnect();
+      const rows = [...document.querySelectorAll(".command-palette-row")];
+      const input = document.querySelector(".command-palette-input");
+      const allowed = new Set(["class", "aria-selected", "aria-activedescendant"]);
+      const unexpectedAttributes = probe.mutations
+        .filter((item) => item.type === "attributes" && !allowed.has(item.attributeName))
+        .map((item) => item.attributeName);
+      return {
+        target: probe.target.dataset.commandId,
+        sameRows: rows.length === probe.refs.length && rows.every((row, index) => row === probe.refs[index]),
+        sameScroll: document.getElementById("studio-command-results").scrollTop === probe.scrollTop,
+        selected: probe.target.classList.contains("active") && probe.target.getAttribute("aria-selected") === "true",
+        activeDescendant: input.getAttribute("aria-activedescendant") === probe.target.id,
+        structuralMutations: probe.mutations.filter((item) => item.type === "childList" || item.type === "characterData").length,
+        unexpectedAttributes,
+        mutations: probe.mutations,
+      };
+    })()`);
+    return { ...setup, ...result };
+  };
   const setFile = async (selector: string, path: string) => {
     const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
     const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
@@ -567,6 +733,12 @@ async function main(): Promise<void> {
     expect("polish: Ctrl/Cmd+K opens the labelled command dialog and focuses its combobox",
       commandShell.dialog && commandShell.dialogLabel === "Command palette" && commandShell.inputRole === "combobox" && commandShell.controls === "studio-command-results" && commandShell.listRole === "listbox" && commandShell.focused,
       JSON.stringify(commandShell));
+    const commandHover = await probeCommandHover();
+    expect("polish: hovering a clipped command only updates active ARIA state without rebuilding or scrolling",
+      commandHover.rows > 12 && commandHover.partial && commandHover.sameRows && commandHover.sameScroll && commandHover.selected && commandHover.activeDescendant &&
+        commandHover.structuralMutations === 0 && commandHover.unexpectedAttributes.length === 0,
+      JSON.stringify(commandHover));
+    await studioShot("studio-command-hover-light", "light");
     await evaluate(`(() => {
       const input = document.querySelector(".command-palette-input");
       input.value = "edit upper layer";
@@ -647,17 +819,21 @@ async function main(): Promise<void> {
     })()`);
     await sleep(80);
 
-    // Hovering an event long enough shows its semantic summary. The card is
-    // clamped to the map host and must disappear when the pointer leaves.
+    // Hovering an event long enough shows its semantic summary. The merchant
+    // has more room on the left, so the card must choose that side rather than
+    // merely taking the first side that fits.
     await key("v", "KeyV", 0, "v");
-    const hoverPoint = await cell(9, 5);
+    const hoverPoint = await cell(11, 5);
     await mouse("mouseMoved", hoverPoint.x, hoverPoint.y, "none");
-    await waitFor("elder hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "elder"; })()`);
+    await waitFor("merchant hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "merchant"; })()`);
     const hoverCard = await evaluate<{
       event: string | null;
       text: string;
       commands: number;
       inside: boolean;
+      side: string;
+      leftRoom: number;
+      rightRoom: number;
       box: number[];
       host: number[];
     }>(`(() => {
@@ -665,19 +841,26 @@ async function main(): Promise<void> {
       const host = document.getElementById("canvas-host");
       const r = card.getBoundingClientRect();
       const h = host.getBoundingClientRect();
+      const center = __studio.cellToClient(11, 5);
+      const halfEvent = Math.max(8, 8 * __studio.app.view.zoom);
       return {
         event: card.dataset.event ?? null,
         text: card.textContent ?? "",
         commands: card.querySelectorAll("li").length,
         inside: r.left >= h.left + 7 && r.top >= h.top + 7 && r.right <= h.right - 7 && r.bottom <= h.bottom - 7,
+        side: r.right <= center.x - halfEvent ? "left" : r.left >= center.x + halfEvent ? "right" : "overlap",
+        leftRoom: center.x - halfEvent - 12 - (h.left + 8),
+        rightRoom: h.right - 8 - (center.x + halfEvent + 12),
         box: [r.left, r.top, r.width, r.height],
         host: [h.left, h.top, h.width, h.height],
       };
     })()`);
     expect("polish: the delayed event hover card contains identity, trigger, position and command summaries",
-      hoverCard.event === "elder" && /Village Elder/.test(hoverCard.text) && /elder/.test(hoverCard.text) && /action/.test(hoverCard.text) && /\(9, 5\)/.test(hoverCard.text) && hoverCard.commands === 3,
+      hoverCard.event === "merchant" && /Traveling Merchant/.test(hoverCard.text) && /merchant/.test(hoverCard.text) && /action/.test(hoverCard.text) && /\(11, 5\)/.test(hoverCard.text) && hoverCard.commands === 3,
       JSON.stringify(hoverCard));
-    expect("polish: the event hover card stays inside the canvas host", hoverCard.inside, JSON.stringify({ box: hoverCard.box, host: hoverCard.host }));
+    expect("polish: the hover card chooses the roomier left side and stays inside the canvas host",
+      hoverCard.leftRoom > hoverCard.rightRoom && hoverCard.side === "left" && hoverCard.inside,
+      JSON.stringify(hoverCard));
     await studioShot("studio-event-hover-light", "light");
     await mouse("mouseMoved", 2, 2, "none");
     await sleep(80);
@@ -801,6 +984,37 @@ async function main(): Promise<void> {
     expect("polish: dragging the atlas selects a row-major 2×2 brush",
       !!atlasSelection && atlasSelection.sheet === "town" && atlasSelection.width === 2 && atlasSelection.height === 2 && JSON.stringify(atlasSelection.tiles) === JSON.stringify(["town.26", "town.27", "town.38", "town.39"]),
       JSON.stringify(atlasSelection));
+    const atlasFocusBefore = await evaluate<number>(`(() => {
+      const canvas = document.querySelector('.palette-canvas[data-sheet="town"]');
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let hash = 2166136261;
+      for (const value of pixels) hash = Math.imul(hash ^ value, 16777619);
+      canvas.focus();
+      return hash >>> 0;
+    })()`);
+    await evaluate(`new Promise((resolve) => requestAnimationFrame(resolve))`);
+    const atlasFocused = await evaluate<{ hash: number; focused: boolean }>(`(() => {
+      const canvas = document.querySelector('.palette-canvas[data-sheet="town"]');
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let hash = 2166136261;
+      for (const value of pixels) hash = Math.imul(hash ^ value, 16777619);
+      return { hash: hash >>> 0, focused: document.activeElement === canvas };
+    })()`);
+    expect("polish: focusing the atlas preserves the committed pattern highlight",
+      atlasFocused.focused && atlasFocused.hash === atlasFocusBefore,
+      JSON.stringify({ before: atlasFocusBefore, after: atlasFocused }));
+    await key("Enter", "Enter");
+    const atlasAccepted = await evaluate<{ hash: number; focused: boolean; selection: unknown }>(`(() => {
+      const canvas = document.querySelector('.palette-canvas[data-sheet="town"]');
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let hash = 2166136261;
+      for (const value of pixels) hash = Math.imul(hash ^ value, 16777619);
+      return { hash: hash >>> 0, focused: document.activeElement === canvas, selection: __studio.app.tileSelection };
+    })()`);
+    expect("polish: Enter accepts the pattern while retaining atlas focus and highlight",
+      atlasAccepted.focused && atlasAccepted.hash === atlasFocusBefore && JSON.stringify(atlasAccepted.selection) === JSON.stringify(atlasSelection),
+      JSON.stringify(atlasAccepted));
+    await studioShot("studio-atlas-focus-light", "light");
     await key("b", "KeyB", 0, "b");
     const patternCells: [number, number][] = [[2, 2], [3, 2], [2, 3], [3, 3]];
     const patternBefore = await evaluate<{ tiles: string[]; text: string }>(`({
@@ -828,6 +1042,99 @@ async function main(): Promise<void> {
     expect("polish: undo restores every patterned cell and the original project bytes",
       JSON.stringify(patternUndone.tiles) === JSON.stringify(patternBefore.tiles) && patternUndone.text === patternBefore.text && patternUndone.history === 0,
       JSON.stringify(patternUndone));
+
+    // Hold a rectangle drag over a uniform patch. The live preview must show
+    // the same 2×2 texture periodicity that pointer-up will commit, rather
+    // than a uniform translucent fill.
+    const previewCells: [number, number][] = [];
+    for (let y = 2; y <= 5; y++) for (let x = 2; x <= 5; x++) previewCells.push([x, y]);
+    await evaluate(`(() => {
+      __studio.app.run("paint-cells", { map: "village", layer: "ground", cells: ${JSON.stringify(previewCells)}, value: "town.0" }, "Prepare pattern preview");
+      __studio.app.visible.upper = false;
+      __studio.app.visible.events = false;
+      __studio.app.emit("view");
+    })()`);
+    await key("r", "KeyR", 0, "r");
+    const previewFrom = await cell(2, 2);
+    const previewTo = await cell(5, 5);
+    await mouse("mouseMoved", previewFrom.x, previewFrom.y, "none");
+    await mouse("mousePressed", previewFrom.x, previewFrom.y);
+    await mouse("mouseMoved", previewTo.x, previewTo.y);
+    await settleStudio("pattern rectangle live preview");
+    const previewHashes = await evaluate<number[]>(`(() => {
+      const canvas = document.querySelector(".map-canvas");
+      const rect = canvas.getBoundingClientRect();
+      const ratioX = canvas.width / rect.width;
+      const ratioY = canvas.height / rect.height;
+      const ctx = canvas.getContext("2d");
+      const hashCell = (x, y) => {
+        const center = __studio.cellToClient(x, y);
+        const half = Math.max(2, Math.floor(16 * __studio.app.view.zoom * ratioX * 0.22));
+        const cx = Math.round((center.x - rect.left) * ratioX);
+        const cy = Math.round((center.y - rect.top) * ratioY);
+        const pixels = ctx.getImageData(cx - half, cy - half, half * 2, half * 2).data;
+        let hash = 2166136261;
+        for (const value of pixels) hash = Math.imul(hash ^ value, 16777619);
+        return hash >>> 0;
+      };
+      const hashes = [];
+      for (let y = 2; y <= 5; y++) for (let x = 2; x <= 5; x++) hashes.push(hashCell(x, y));
+      return hashes;
+    })()`);
+    const periodic = [0, 1, 4, 5].every((origin) => [origin, origin + 2, origin + 8, origin + 10].every((index) => previewHashes[index] === previewHashes[origin]));
+    const textured = new Set([previewHashes[0], previewHashes[1], previewHashes[4], previewHashes[5]]).size >= 2;
+    expect("polish: rectangle drag previews the selected texture with 2×2 periodicity",
+      periodic && textured,
+      JSON.stringify(previewHashes));
+    await studioShot("studio-pattern-preview-light", "light");
+    await mouse("mouseReleased", previewTo.x, previewTo.y);
+    await sleep(80);
+    const patternPreviewPaint = await evaluate<{ tiles: string[]; history: { commands: string[] }[] }>(`({
+      tiles: [${previewCells.map(([x, y]) => `__studio.tileAt(${x}, ${y})`).join(",")}],
+      history: __studio.app.session.history().map((step) => ({ commands: step.commands })),
+    })`);
+    const expectedPreviewTiles = previewCells.map(([x, y]) => ["town.26", "town.27", "town.38", "town.39"][((y - 2) % 2) * 2 + ((x - 2) % 2)]!);
+    expect("polish: rectangle pointer-up commits exactly the texture shown in its preview",
+      JSON.stringify(patternPreviewPaint.tiles) === JSON.stringify(expectedPreviewTiles) &&
+        patternPreviewPaint.history.length === 2 && patternPreviewPaint.history[1]?.commands[0] === "paint-cells",
+      JSON.stringify(patternPreviewPaint));
+    await key("z", "KeyZ", CTRL);
+    await key("z", "KeyZ", CTRL);
+    const patternPreviewUndone = await evaluate<string>(`__studio.app.session.exportText()`);
+    expect("polish: undo removes both preview setup edits byte-for-byte", patternPreviewUndone === patternBefore.text, `${patternPreviewUndone.length} bytes`);
+
+    // A passage-only map is authored content: its overlay must not be covered
+    // by the generic “Start with the ground” guide.
+    await evaluate(`(() => {
+      __studio.app.run("add-map", { map: "passage-only", name: "Passage only", width: 8, height: 6, sheets: ["town"] }, "Add passage-only map");
+      __studio.app.openMap("passage-only");
+      __studio.app.setLayer("passage");
+    })()`);
+    await settleStudio("empty passage-only map");
+    const passageGuideBefore = await evaluate<boolean>(`document.querySelector(".canvas-empty")?.hidden === false`);
+    await evaluate(`__studio.app.run("paint-cells", { map: "passage-only", layer: "passage", cells: [[3, 2]], value: "block" }, "Block passage cell")`);
+    await settleStudio("passage-only override");
+    const passageOnly = await evaluate<{ hidden: boolean; passage: unknown[]; redPixels: number }>(`(() => {
+      const canvas = document.querySelector(".map-canvas");
+      const rect = canvas.getBoundingClientRect();
+      const center = __studio.cellToClient(3, 2);
+      const ratio = canvas.width / rect.width;
+      const cx = Math.round((center.x - rect.left) * ratio);
+      const cy = Math.round((center.y - rect.top) * ratio);
+      const pixels = canvas.getContext("2d").getImageData(cx - 8, cy - 8, 16, 16).data;
+      let redPixels = 0;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > pixels[i + 1] + 20 && pixels[i] > pixels[i + 2] + 20) redPixels++;
+      return {
+        hidden: document.querySelector(".canvas-empty")?.hidden === true,
+        passage: __studio.app.currentMap().passage ?? [],
+        redPixels,
+      };
+    })()`);
+    expect("polish: a passage override hides the empty-map guide and remains visibly rendered",
+      passageGuideBefore && passageOnly.hidden && passageOnly.passage.length === 1 && passageOnly.redPixels > 4,
+      JSON.stringify(passageOnly));
+    await shot("studio-passage-only-light");
+
     // Start the original paint scenario with fresh document history.
     await navigate(`${base}?example=sunstone`);
     await waitFor("sheet art after atlas scenario", `__studio.art.sheetStatus("town").source === "bundled"`);
@@ -1411,7 +1718,7 @@ async function main(): Promise<void> {
     expect("art: the game draws the autumn town sheet (no green grass left) and the magenta wiz", gameColors.autumn > 0.2 && gameColors.green < 0.02 && gameColors.magenta > 20, JSON.stringify(gameColors));
     await mouse("mouseMoved", 700, 860, "none");
     await sleep(200);
-    await shot("studio-playtest-project-art");
+    await shot("studio-playtest-project-art", { playtestState: "idle" });
     await clickSelector("#playtest-close");
     const artPack = readFileSync(await download(), "utf8");
     const artPackParsed = parseShardedPack(artPack);
@@ -1722,10 +2029,28 @@ async function main(): Promise<void> {
       await click(point.x, point.y);
     }
     await key("p", "KeyP", 0, "p");
-    await evaluate(`__studio.canvas.setZoom(3)`);
+    const mapShotZoomStarted = await evaluate<{ zoom: number; settled: boolean }>(`(() => {
+      __studio.app.setMotion("full");
+      __studio.canvas.setZoom(2, 0, 0, true, true);
+      __studio.canvas.setZoom(3, 0, 0, true);
+      return { zoom: __studio.app.view.zoom, settled: __studio.canvas.settled };
+    })()`);
+    expect("map shot: the verifier exercises a live smooth zoom before capture",
+      mapShotZoomStarted.zoom === 2 && !mapShotZoomStarted.settled,
+      JSON.stringify(mapShotZoomStarted));
+    await settleStudio("map-editing 300% zoom");
+    const mapShotZoomDone = await evaluate<{ zoom: number; label: string | null; settled: boolean }>(`({
+      zoom: __studio.app.view.zoom,
+      label: document.getElementById("studio-zoom")?.textContent ?? null,
+      settled: __studio.canvas.settled,
+    })`);
+    expect("map shot: smooth zoom is exact and fully painted before locating hover/capture",
+      mapShotZoomDone.zoom === 3 && mapShotZoomDone.label === "300%" && mapShotZoomDone.settled,
+      JSON.stringify(mapShotZoomDone));
     const hoverAt = await cell(7, 6);
     await mouse("mouseMoved", hoverAt.x, hoverAt.y, "none");
     await shot("studio-map-editing");
+    await evaluate(`__studio.app.setMotion("system")`);
     await key("p", "KeyP", 0, "p");
 
     // ---- problems ----
@@ -1752,8 +2077,10 @@ async function main(): Promise<void> {
     phase = "narrow";
     await clickSelector("#status-problems");
     await viewport(820, 1180);
-    await evaluate(`__studio.canvas.fit()`);
+    await evaluate(`(() => { __studio.app.setMotion("full"); __studio.canvas.fit(); })()`);
+    await settleStudio("narrow fitted camera");
     await shot("studio-narrow");
+    await evaluate(`__studio.app.setMotion("system")`);
     const narrow = await evaluate<{ overflowX: boolean; canvas: number }>(`({ overflowX: document.documentElement.scrollWidth > innerWidth + 1, canvas: document.querySelector(".map-canvas").getBoundingClientRect().width })`);
     expect("narrow: the layout fits an 820 px window", !narrow.overflowX && narrow.canvas > 700, JSON.stringify(narrow));
 
@@ -1791,7 +2118,7 @@ async function main(): Promise<void> {
     const focused = await evaluate<string>(`document.activeElement?.tagName ?? ""`);
     expect("playtest: the game has the keyboard after starting", focused === "IFRAME", focused);
     await mouse("mouseMoved", 420, 760, "none"); // no toolbar tooltip in the shot
-    await playShot("studio-playtest-light", { dialogue: false, theme: "light" });
+    await playShot("studio-playtest-light", { dialogue: false, theme: "light", playtestState: "idle" });
 
     await key("Escape", "Escape");
     await sleep(150);
@@ -1874,12 +2201,12 @@ async function main(): Promise<void> {
       return rows;
     })()`);
     expect("playtest: the Chinese row shows distinct glyphs, not repeated boxes", rowInk[1]! >= 8, JSON.stringify(rowInk));
-    await playShot("studio-playtest-dialogue", { dialogue: true, theme: "light" });
+    await playShot("studio-playtest-dialogue", { dialogue: true, theme: "light", playtestState: "dialogue" });
     await clickSelector("#studio-theme");
     await evaluate(`__studio.play.focusGame()`);
     await mouse("mouseMoved", 420, 760, "none");
     await sleep(250);
-    await playShot("studio-playtest-dark", { dialogue: true, theme: "dark" });
+    await playShot("studio-playtest-dark", { dialogue: true, theme: "dark", playtestState: "dialogue" });
     await clickSelector("#studio-theme");
     await sleep(150);
 
@@ -2036,6 +2363,11 @@ async function main(): Promise<void> {
     // while capturing so the PNG is evidence of the same DOM assertion used
     // above rather than a staged mock-up.
     await key("k", "KeyK", CTRL);
+    const darkCommandHover = await probeCommandHover();
+    expect("theme: clipped command hover remains stable in the dark theme",
+      darkCommandHover.partial && darkCommandHover.sameRows && darkCommandHover.sameScroll && darkCommandHover.selected && darkCommandHover.structuralMutations === 0,
+      JSON.stringify(darkCommandHover));
+    await studioShot("studio-command-hover-dark", "dark");
     await evaluate(`(() => {
       const input = document.querySelector(".command-palette-input");
       input.value = "edit upper layer";
@@ -2061,10 +2393,25 @@ async function main(): Promise<void> {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
 
-    await mouse("mouseMoved", elder2.x, elder2.y, "none");
-    await waitFor("dark elder hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "elder"; })()`);
-    const darkHover = await evaluate<boolean>(`document.querySelector(".event-hover-card")?.querySelectorAll("li").length === 3`);
-    expect("theme: the event hover summary is visible in the dark theme", darkHover, String(darkHover));
+    const merchant2 = await cell(11, 5);
+    await mouse("mouseMoved", merchant2.x, merchant2.y, "none");
+    await waitFor("dark merchant hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "merchant"; })()`);
+    const darkHover = await evaluate<{ rows: number; side: string; leftRoom: number; rightRoom: number }>(`(() => {
+      const card = document.querySelector(".event-hover-card");
+      const host = document.getElementById("canvas-host").getBoundingClientRect();
+      const box = card.getBoundingClientRect();
+      const center = __studio.cellToClient(11, 5);
+      const halfEvent = Math.max(8, 8 * __studio.app.view.zoom);
+      return {
+        rows: card.querySelectorAll("li").length,
+        side: box.right <= center.x - halfEvent ? "left" : box.left >= center.x + halfEvent ? "right" : "overlap",
+        leftRoom: center.x - halfEvent - 12 - (host.left + 8),
+        rightRoom: host.right - 8 - (center.x + halfEvent + 12),
+      };
+    })()`);
+    expect("theme: the event hover summary chooses the roomier side in the dark theme",
+      darkHover.rows === 3 && darkHover.leftRoom > darkHover.rightRoom && darkHover.side === "left",
+      JSON.stringify(darkHover));
     await studioShot("studio-event-hover-dark", "dark");
     await mouse("mouseMoved", 2, 2, "none");
 
@@ -2081,10 +2428,60 @@ async function main(): Promise<void> {
       const input = document.querySelector('[data-testid="tile-search"]');
       input.value = "";
       input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+
+    const darkAtlas = await evaluate<{ from: { x: number; y: number }; to: { x: number; y: number } }>(`(() => {
+      const canvas = document.querySelector('.palette-canvas[data-sheet="town"]');
+      const rect = canvas.getBoundingClientRect();
+      const point = (x, y) => ({ x: rect.left + (x + 0.5) * rect.width / 12, y: rect.top + (y + 0.5) * rect.height / 11 });
+      return { from: point(2, 2), to: point(3, 3) };
+    })()`);
+    await mouse("mouseMoved", darkAtlas.from.x, darkAtlas.from.y, "none");
+    await mouse("mousePressed", darkAtlas.from.x, darkAtlas.from.y);
+    await mouse("mouseMoved", darkAtlas.to.x, darkAtlas.to.y);
+    await mouse("mouseReleased", darkAtlas.to.x, darkAtlas.to.y);
+    await evaluate(`document.querySelector('.palette-canvas[data-sheet="town"]').focus()`);
+    await key("Enter", "Enter");
+    const darkAtlasFocus = await evaluate<boolean>(`document.activeElement === document.querySelector('.palette-canvas[data-sheet="town"]') && __studio.app.tileSelection?.width === 2 && __studio.app.tileSelection?.height === 2`);
+    expect("theme: atlas Enter keeps the dark pattern highlight focused", darkAtlasFocus, String(darkAtlasFocus));
+    await studioShot("studio-atlas-focus-dark", "dark");
+
+    await evaluate(`(() => {
+      __studio.app.run("paint-cells", { map: "village", layer: "ground", cells: ${JSON.stringify(previewCells)}, value: "town.0" }, "Prepare dark pattern preview");
+      __studio.app.visible.upper = false;
+      __studio.app.visible.events = false;
+      __studio.app.emit("view");
+    })()`);
+    await key("r", "KeyR", 0, "r");
+    const darkPreviewFrom = await cell(2, 2);
+    const darkPreviewTo = await cell(5, 5);
+    await mouse("mouseMoved", darkPreviewFrom.x, darkPreviewFrom.y, "none");
+    await mouse("mousePressed", darkPreviewFrom.x, darkPreviewFrom.y);
+    await mouse("mouseMoved", darkPreviewTo.x, darkPreviewTo.y);
+    await settleStudio("dark pattern rectangle live preview");
+    const darkPatternLive = await evaluate<boolean>(`__studio.canvas.drag?.kind === "rect" && __studio.app.tileSelection?.width === 2 && __studio.app.tileSelection?.height === 2`);
+    expect("theme: the textured rectangle preview is live in the dark theme", darkPatternLive, String(darkPatternLive));
+    await studioShot("studio-pattern-preview-dark", "dark");
+    await mouse("mouseReleased", darkPreviewTo.x, darkPreviewTo.y);
+
+    await evaluate(`(() => {
+      __studio.app.run("add-map", { map: "passage-only", name: "Passage only", width: 8, height: 6, sheets: ["town"] }, "Add passage-only map");
+      __studio.app.openMap("passage-only");
+      __studio.app.setLayer("passage");
+      __studio.app.run("paint-cells", { map: "passage-only", layer: "passage", cells: [[3, 2]], value: "block" }, "Block passage cell");
+    })()`);
+    await settleStudio("dark passage-only override");
+    const darkPassage = await evaluate<boolean>(`document.querySelector(".canvas-empty")?.hidden === true && __studio.app.currentMap().passage?.length === 1`);
+    expect("theme: passage-only content stays unobscured in the dark theme", darkPassage, String(darkPassage));
+    await shot("studio-passage-only-dark");
+
+    await navigate(`${base}?example=sunstone`);
+    await waitFor("dark sheet art after passage shot", `__studio.art.sheetStatus("town").source === "bundled"`);
+    await evaluate(`(() => {
       __studio.app.setMotion("reduced");
       __studio.canvas.setZoom(2, 0, 0, true, true);
     })()`);
-    await sleep(80);
+    await settleStudio("dark 200% zoom");
     const darkZoom = await evaluate<boolean>(`Math.abs(__studio.app.view.zoom - 2) < 1e-9 && document.getElementById("studio-zoom")?.textContent === "200%"`);
     expect("theme: the zoomed canvas and 200% readout are visible in the dark theme", darkZoom, String(darkZoom));
     await studioShot("studio-zoom-dark", "dark");

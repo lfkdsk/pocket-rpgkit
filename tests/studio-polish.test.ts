@@ -5,7 +5,9 @@ import { EDIT_COMMANDS } from "../editor/api/types.ts";
 import { EditSession } from "../editor/api/session.ts";
 import { fuzzyScore, rankCommands, type StudioCommand } from "../editor/studio/command-palette.ts";
 import { StudioApp } from "../editor/studio/app.ts";
+import { isStudioMapBlank } from "../editor/studio/canvas.ts";
 import { normalizeStudioPreferences } from "../editor/studio/host.ts";
+import { hoverCardX } from "../editor/studio/event-hover-card.ts";
 import { mapDropIndex } from "../editor/studio/map-tree.ts";
 import { rectangularTileSelection, searchPaletteTiles } from "../editor/studio/palette.ts";
 import { SHORTCUT_GROUPS } from "../editor/studio/shortcuts.ts";
@@ -81,6 +83,20 @@ describe("Studio polish contracts", () => {
     expect(app.tileAtBrushOffset(0, 0)).toBe("town.1");
     expect(app.tileAtBrushOffset(3, 4)).toBe("town.6");
     expect(app.tileAtBrushOffset(-1, -1)).toBe("town.10");
+  });
+
+  test("passage overrides count as authored map content", () => {
+    const empty = { ground: [null, null, null, null], upper: [], events: [], passage: [] };
+    expect(isStudioMapBlank(empty)).toBe(true);
+    expect(isStudioMapBlank({ ...empty, passage: [[2, "block"]] })).toBe(false);
+    expect(isStudioMapBlank({ ...empty, ground: [null, "town.1", null, null] })).toBe(false);
+  });
+
+  test("hover cards choose the roomier side and clamp symmetrically", () => {
+    expect(hoverCardX(1_000, 300, 20, 200)).toBe(332);
+    expect(hoverCardX(1_000, 700, 20, 200)).toBe(468);
+    expect(hoverCardX(1_000, 500, 20, 200)).toBe(532);
+    expect(hoverCardX(300, 150, 8, 400)).toBe(8);
   });
 
   test("a pattern that is not declared by the next map is cleared", () => {

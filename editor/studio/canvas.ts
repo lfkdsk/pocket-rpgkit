@@ -43,6 +43,16 @@ export interface FrameStats {
   recent: number[];
 }
 
+/** A map with passage overrides still contains authored content even when
+ * every visual layer is empty. Keep this pure so the empty-guide contract is
+ * cheap to exercise without constructing a browser canvas. */
+export function isStudioMapBlank(map: Pick<MapDef, "ground" | "upper" | "events" | "passage">): boolean {
+  return map.ground.every((tile) => tile === null) &&
+    (map.upper?.length ?? 0) === 0 &&
+    (map.events?.length ?? 0) === 0 &&
+    (map.passage?.length ?? 0) === 0;
+}
+
 export class MapCanvas {
   readonly canvas: HTMLCanvasElement;
   private readonly emptyGuide: HTMLElement;
@@ -75,6 +85,13 @@ export class MapCanvas {
   lastRebuildMs = 0;
   /** Cells redrawn by the last cache update. */
   lastRebuildCells = 0;
+
+  /** True only after camera interpolation/inertia and the requested canvas
+   * repaint have all finished. Verification captures use this state instead
+   * of racing animation frames with a fixed delay. */
+  get settled(): boolean {
+    return this.cameraTarget === null && this.inertia === null && this.cameraFrame === 0 && !this.pending;
+  }
 
   constructor(private host: HTMLElement, private app: StudioApp, private art: ArtRegistry) {
     this.canvas = document.createElement("canvas");
@@ -365,12 +382,11 @@ export class MapCanvas {
     const g = this.ground.getContext("2d")!;
     const u = this.upper.getContext("2d")!;
     let redrawn = 0;
-    let blank = (map.upper?.length ?? 0) === 0 && (map.events?.length ?? 0) === 0;
+    const blank = isStudioMapBlank(map);
     for (let i = 0; i < map.width * map.height; i++) {
       const x = (i % map.width) * TILE;
       const y = Math.floor(i / map.width) * TILE;
       const ground = map.ground[i] ?? null;
-      if (ground !== null) blank = false;
       if (this.drawnGround[i] !== ground) {
         g.clearRect(x, y, TILE, TILE);
         this.drawTile(g, ground, x, y);
@@ -699,8 +715,18 @@ export class MapCanvas {
       const y = Math.min(drag.from.y, drag.to.y);
       const w = Math.abs(drag.from.x - drag.to.x) + 1;
       const h = Math.abs(drag.from.y - drag.to.y) + 1;
-      ctx.fillStyle = "rgba(255,209,102,0.22)";
-      ctx.fillRect(x * TILE, y * TILE, w * TILE, h * TILE);
+      const patterned = !drag.erase && (this.app.layer === "ground" || this.app.layer === "upper") && this.app.tileSelection;
+      if (patterned) {
+        ctx.save();
+        ctx.globalAlpha = 0.68;
+        for (let py = y; py < y + h; py++) for (let px = x; px < x + w; px++) {
+          this.drawTile(ctx, this.app.tileAtBrushOffset(px - x, py - y), px * TILE, py * TILE);
+        }
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "rgba(255,209,102,0.22)";
+        ctx.fillRect(x * TILE, y * TILE, w * TILE, h * TILE);
+      }
       ctx.lineWidth = 2 / scale;
       ctx.strokeStyle = this.theme.select;
       ctx.strokeRect(x * TILE, y * TILE, w * TILE, h * TILE);

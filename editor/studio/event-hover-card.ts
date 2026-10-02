@@ -8,6 +8,18 @@ import type { ArtRegistry } from "./art.ts";
 import type { MapCanvas } from "./canvas.ts";
 import { h, icon, replace } from "./dom.ts";
 
+export function hoverCardX(hostWidth: number, eventCenter: number, eventHalfWidth: number, cardWidth: number): number {
+  const inset = 8;
+  const gap = 12;
+  const right = eventCenter + eventHalfWidth + gap;
+  const left = eventCenter - eventHalfWidth - gap - cardWidth;
+  const rightRoom = hostWidth - inset - right;
+  const leftRoom = left + cardWidth - inset;
+  const ideal = rightRoom >= leftRoom ? right : left;
+  const maxX = Math.max(inset, hostWidth - cardWidth - inset);
+  return Math.max(inset, Math.min(maxX, ideal));
+}
+
 export class EventHoverCard {
   readonly root: HTMLElement;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -110,9 +122,7 @@ export class EventHoverCard {
     const localX = center.x - hostRect.left;
     const localY = center.y - hostRect.top;
     const halfEvent = Math.max(8, (event.w ?? 1) * 8 * this.app.view.zoom);
-    const right = localX + halfEvent + 12;
-    const left = localX - halfEvent - width - 12;
-    const x = right + width <= hostRect.width - 8 ? right : Math.max(8, left);
+    const x = hoverCardX(hostRect.width, localX, halfEvent, width);
     const y = Math.max(8, Math.min(hostRect.height - height - 8, localY - height / 2));
     this.root.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }

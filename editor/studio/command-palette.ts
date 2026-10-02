@@ -128,13 +128,27 @@ export class CommandPalette {
     if (focus?.isConnected) focus.focus();
   }
 
+  private setActive(index: number, reveal: boolean): void {
+    const input = this.input;
+    const list = this.list;
+    if (!input || !list || index === this.active || index < 0 || index >= this.visible.length) return;
+    const previous = list.querySelector<HTMLElement>(`#studio-command-${this.active}`);
+    previous?.classList.remove("active");
+    previous?.setAttribute("aria-selected", "false");
+    this.active = index;
+    input.setAttribute("aria-activedescendant", `studio-command-${index}`);
+    const current = list.querySelector<HTMLElement>(`#studio-command-${index}`);
+    current?.classList.add("active");
+    current?.setAttribute("aria-selected", "true");
+    if (reveal) current?.scrollIntoView({ block: "nearest" });
+  }
+
   private keydown(event: KeyboardEvent): void {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (this.visible.length === 0) return;
       const delta = event.key === "ArrowDown" ? 1 : -1;
-      this.active = (this.active + delta + this.visible.length) % this.visible.length;
-      this.render();
+      this.setActive((this.active + delta + this.visible.length) % this.visible.length, true);
       return;
     }
     if (event.key === "Enter") {
@@ -193,7 +207,7 @@ export class CommandPalette {
           disabled: !!command.disabled,
           title: command.disabled,
           dataset: { commandId: command.id },
-          onpointermove: () => { if (this.active !== index) { this.active = index; this.render(); } },
+          onpointermove: () => this.setActive(index, false),
           onclick: () => this.run(command),
         },
         h("span", { class: "command-palette-mark" }, icon(command.section === "Maps" ? "map" : command.section === "Events" ? "event" : command.section === "Commands" ? "plus" : "search")),

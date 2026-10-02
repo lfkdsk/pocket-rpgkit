@@ -158,10 +158,14 @@ Press Ctrl/Command+K or the toolbar's **Command palette** button to search
 every Studio action, map, event and command on the open map, plus every
 insertable command kind when an event page is selected. Search is fuzzy over
 labels, ids and context. Recently run results appear first; Up/Down selects,
-Enter runs and Escape closes the palette. Opening it does not eagerly load
-the other maps in a sharded project.
+Enter runs and Escape closes the palette. Pointer hover changes only the
+active row and does not scroll the result list; keyboard movement scrolls as
+needed to reveal its active row. Opening the palette does not eagerly load the
+other maps in a sharded project.
 
 ![The command palette filtered to an event in the light theme](screenshots/studio/studio-command-palette-light.png)
+
+![Pointer hover on the last visible palette row in the dark theme; the list does not scroll](screenshots/studio/studio-command-hover-dark.png)
 
 ### Camera, minimap and layers
 
@@ -213,12 +217,21 @@ sheets declared by the current map. Star a result or the current brush to put
 it in the persistent Favorites strip; committed choices appear in Recent.
 Drag over the atlas to select a rectangular pattern. With the atlas focused,
 Arrow keys move the selection and Shift+Arrow extends it; Enter or Space
-accepts it. Brush and rectangle strokes repeat the pattern from the stroke's
-origin. The patterned form of `paint-cells` sends parallel `cells` and
-`values` arrays as one operation, so the preview, commit and undo all remain
-one step.
+accepts it while keeping the atlas focused and the whole pattern highlighted.
+Brush and rectangle strokes repeat the pattern from the stroke's origin; a
+rectangle drag previews those repeated tiles before the pointer is released.
+The patterned form of `paint-cells` sends parallel `cells` and `values` arrays
+as one operation, so the preview, commit and undo all remain one step. A map
+whose only authored content is a passage override keeps that overlay visible
+without the empty-map guide covering it.
 
 ![Searching for a tile by number](screenshots/studio/studio-tile-search-light.png)
+
+![A 2×2 pattern selected in the focused atlas](screenshots/studio/studio-atlas-focus-light.png)
+
+![A rectangle drag previewing the repeated 2×2 pattern before release](screenshots/studio/studio-pattern-preview-light.png)
+
+![A map whose only content is a passage override keeps the overlay visible](screenshots/studio/studio-passage-only-dark.png)
 
 ## Events
 
@@ -246,9 +259,9 @@ command** opens a searchable list of every command kind and inserts after
 the selection or into a chosen branch.
 
 Pause over an event on the canvas to see its sprite, id/name, first-page
-trigger and the first three meaningful command summaries. The card opens to
-the right of the event when it fits there and otherwise to its left, stays
-inside the canvas and disappears when you
+trigger and the first three meaningful command summaries. The card compares
+the room on both sides, opens on the roomier side, clamps symmetrically inside
+the canvas and disappears when you
 move, drag, edit, switch maps or hide events; hovering never changes the
 selection.
 
@@ -506,5 +519,7 @@ lands), `tests/edit-move-map.test.ts`, `tests/studio-pack-assets.test.ts`
 the in-memory host), `tests/preview-art-sim.test.ts` (the preview page draws
 supplied art and plays the same without it) and the browser run
 `bun tools/studio-verify.ts`, which drags maps, commands and events, opens a
-folder with its own art and plays it, and regenerates the screenshots in
-`docs/screenshots/studio/`.
+folder with its own art and plays it. Before each capture it waits for camera
+interpolation, inertia and requested canvas drawing to finish, and it freezes
+changing readouts and play-test frames. It verifies light and dark polished
+states before regenerating their screenshots in `docs/screenshots/studio/`.
