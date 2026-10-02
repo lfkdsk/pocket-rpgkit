@@ -524,6 +524,93 @@ export interface MapDef {
   events?: GameEvent[];
 }
 
+/** One map's immutable placement in a world/component tile coordinate space.
+ * Origins may be negative; width and height are the authoritative MapDef
+ * dimensions rather than metadata copied from an external layout editor. */
+export interface WorldPlacement {
+  mapId: string;
+  originTileX: number;
+  originTileY: number;
+  width: number;
+  height: number;
+}
+
+/** Inclusive/exclusive interval on an opening's tangent tile axis. */
+export interface WorldTileSpan {
+  start: number;
+  end: number;
+}
+
+export type WorldSide = "north" | "east" | "south" | "west";
+export type WorldAxis = "x" | "y";
+
+/** One side of an authored opening, qualified by its owning map. */
+export interface WorldOpeningEndpoint {
+  mapId: string;
+  side: WorldSide;
+  span: WorldTileSpan;
+}
+
+/** An authored map-edge portal. `offset` maps the source tangent coordinate
+ * to the target tangent coordinate. Only `coordinate-preserving` openings
+ * are eligible for a future seamless handoff; `portal-only` must retain the
+ * project's ordinary transfer semantics. */
+export interface WorldOpening {
+  portalId: string;
+  source: WorldOpeningEndpoint;
+  target: WorldOpeningEndpoint;
+  axis: WorldAxis;
+  offset: number;
+  compatibility: "coordinate-preserving" | "portal-only";
+}
+
+/** One evidence-approved geometric edge shared by two placements. The
+ * tangent mapping is `mapB = mapA + offsetAtoB`; a seam with no opening is
+ * descriptive only and does not authorize crossing. */
+export interface WorldSeam {
+  mapA: string;
+  sideA: WorldSide;
+  spanA: WorldTileSpan;
+  mapB: string;
+  sideB: WorldSide;
+  spanB: WorldTileSpan;
+  axis: WorldAxis;
+  offsetAtoB: number;
+  openingIds: readonly string[];
+}
+
+/** Exclusive tile bounds for one connected component. */
+export interface WorldComponentBounds {
+  minTileX: number;
+  minTileY: number;
+  maxTileX: number;
+  maxTileY: number;
+}
+
+/** A connected set of placements. `worldId` and `componentId` together are
+ * the namespace for every world coordinate in this component. */
+export interface WorldComponent {
+  worldId: string;
+  componentId: string;
+  bounds: WorldComponentBounds;
+  placements: readonly WorldPlacement[];
+  seams: readonly WorldSeam[];
+  openings: readonly WorldOpening[];
+}
+
+/** Optional immutable project layout. The topology hash binds the projected
+ * geometry and opening safety decisions to the project's content identity. */
+export interface WorldLayout {
+  topologyHash: string;
+  components: readonly WorldComponent[];
+}
+
+/** A tile coordinate in either a map-local or component-world namespace. */
+export interface WorldTilePoint {
+  x: number;
+  y: number;
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -670,6 +757,9 @@ export interface Project {
    *  is absent. */
   audio?: Record<string, string>;
   commonEvents?: CommonEvent[];
+  /** Optional world-space placement data. It is descriptive until a renderer
+   * or transfer implementation explicitly opts into it. */
+  worldLayout?: WorldLayout;
   maps: MapDef[];
 }
 

@@ -39,6 +39,7 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2` | optional `worldLayout` with topology identity, connected components, placements, seams and per-portal opening compatibility | additive |
 | `c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06` | optional `icon` on `choices` options | additive |
 | `0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5` | `scene` command; a battle queued by a parallel page is dropped when that page stops being active before the battle starts (it used to start anyway) | breaking |
 | `47cf3d8ffdb35044fb6b099d98455368123db4710bc8516875a0bc06902c6d59` | `audio` entries may also name QOA streams | additive |

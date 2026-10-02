@@ -118,7 +118,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 3,357 shared bytes.
 // With the save changes and the tile loader merged in, Sunstone measures
 // 822,635.
-const EXPECTED_BYTES = 822_635;
+// The additive world-layout schema contributes only its newly compatible
+// 64-byte schema identity (72 bundled bytes); its validator stays excluded.
+const EXPECTED_BYTES = 822_707;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

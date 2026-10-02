@@ -235,13 +235,16 @@ describe("shells and saves from earlier schema generations", () => {
     const hash = "47cf3d8ffdb35044fb6b099d98455368123db4710bc8516875a0bc06902c6d59";
     expect(REFUSED).toContain(hash);
     const accepted = [MAP_SCHEMA_HASH, ...MAP_SCHEMA_COMPATIBLE_HASHES].map((h) => `${h.slice(0, 8)}…`).join(", ");
-    expect(MAP_SCHEMA_COMPATIBLE_HASHES).toEqual(["0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5"]);
+    expect(MAP_SCHEMA_COMPATIBLE_HASHES).toEqual([
+      "c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06",
+      "0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5",
+    ]);
     expect(() => open(readShell(hash))).toThrow(
       `map repository: shell schema hash mismatch: schema 47cf3d8f… is not one this runtime reads (it reads ${accepted}); ` +
         "it comes from before a breaking format change or from a different RPG Kit build, " +
         "see Schema identities in the rpgkit-project CHANGELOG",
     );
-    expect(accepted).toBe("c0588207…, 0b9fff5b…");
+    expect(accepted).toBe("ed562c6f…, c0588207…, 0b9fff5b…");
     const current = open(readShell(MAP_SCHEMA_COMPATIBLE_HASHES[0]!));
     expect(() => restoreSessionEnvelope(current, readSave(hash))).toThrow(/schema 47cf3d8f… is not one this runtime reads/);
     expect(() => loadValidatedProjectShell(readFileSync(join(genDir(hash), "project.json"), "utf8")))

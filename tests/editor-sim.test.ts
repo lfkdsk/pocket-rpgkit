@@ -716,6 +716,9 @@ simDescribe("editor budget", () => {
     // (9,416 B) and dialog pages and wrapped list labels that never cut
     // text (5,252 B) join it, with Studio's move-map
     // operation: measured 1,412,949 B.
-    expect(js).toBeLessThan(1_420_000);
+    // The editor's embedded WorldLayout schema and project support add
+    // 5,620 B: measured 1,418,569 B. Runtime consumers only pay for the
+    // compatible schema identity recorded by the isolation tests.
+    expect(js).toBeLessThan(1_425_000);
   });
 });

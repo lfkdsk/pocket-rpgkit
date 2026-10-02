@@ -725,7 +725,7 @@ different content build before acquiring the saved map, or reacquires that
 map if it was evicted. Shells and saves from an earlier schema whose changes
 since were purely additive still load (`MAP_SCHEMA_COMPATIBLE_HASHES`; see
 [Schema identities](src/data/CHANGELOG.md#schema-identities); today that is
-only the schema just before optional choice icons, and older ones are refused
+the two additive schemas before world layouts and optional choice icons, and older ones are refused
 with an error naming the accepted identities), and the next save is stamped
 with the current identity. A non-zero transfer fade lets the standard synchronous
 repository prepare one fixed unit per reference tick (read/optional byte decode/parse,
@@ -742,6 +742,28 @@ repositories must give `acquire` the same synchronous validated contract as
 `createJsonMapRepository`. A source with `prepare` must keep the bytes for any
 resident map synchronously readable: attract-mode rollback can reacquire an
 earlier resident map within the same host frame.
+
+### World-layout data
+
+Projects may carry an optional `worldLayout` containing a topology SHA-256
+and sorted connected components. Each component has its `(worldId,
+componentId)` coordinate namespace, exclusive tile bounds, map placements,
+evidence-approved seams, and authored portal openings. An opening keeps its
+stable `portalId` and is classified per portal as either
+`coordinate-preserving` or `portal-only`; an empty seam `openingIds` list does
+not authorize crossing.
+
+`localToWorld(placement, point)` adds the signed tile origin and
+`worldToLocal(placement, point)` subtracts it. Both are pure and deliberately
+leave clamping and pixel scaling to their caller. `validateWorldLayout`
+checks the relational contract that JSON Schema cannot express: exact bounds,
+non-overlapping placements, connected components, touching seam geometry,
+span/offset consistency, unique references, and opening ownership.
+
+The layout is descriptive data only: the current renderer and transfer
+interpreter do not consume it. When present in a sharded project it is kept in
+the shell, so both the layout and its `topologyHash` are covered by
+`mapManifestHash` and therefore by save/content identity.
 
 ### The 47 commands
 

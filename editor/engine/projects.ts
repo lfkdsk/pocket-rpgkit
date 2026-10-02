@@ -110,6 +110,10 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
       "items": { "$ref": "#/$defs/mapIndexEntry" },
       "description": "Large-project map manifest. MapDef payloads are loaded independently through MapRepository."
     },
+    "worldLayout": {
+      "$ref": "#/$defs/worldLayout",
+      "description": "Immutable world/component placement and authored-opening data. It is descriptive until a renderer or transfer implementation opts in; topologyHash participates in a sharded shell's content identity."
+    },
     "mapManifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "mapSchemaHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   },
@@ -268,6 +272,123 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         "name": { "type": "string", "minLength": 1 },
         "sprite": { "type": "string", "description": "Key in project.sprites." },
         "moveSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 }
+      }
+    },
+    "worldLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topologyHash", "components"],
+      "properties": {
+        "topologyHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 identity of the source topology from which this layout was projected."
+        },
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/worldComponent" }
+        }
+      }
+    },
+    "worldComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worldId", "componentId", "bounds", "placements", "seams", "openings"],
+      "properties": {
+        "worldId": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "componentId": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "bounds": { "$ref": "#/$defs/worldComponentBounds" },
+        "placements": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/worldPlacement" }
+        },
+        "seams": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/worldSeam" }
+        },
+        "openings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/worldOpening" }
+        }
+      }
+    },
+    "worldComponentBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minTileX", "minTileY", "maxTileX", "maxTileY"],
+      "properties": {
+        "minTileX": { "type": "integer" },
+        "minTileY": { "type": "integer" },
+        "maxTileX": { "type": "integer" },
+        "maxTileY": { "type": "integer" }
+      },
+      "description": "Exclusive component bounds in world tile coordinates."
+    },
+    "worldPlacement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mapId", "originTileX", "originTileY", "width", "height"],
+      "properties": {
+        "mapId": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "originTileX": { "type": "integer" },
+        "originTileY": { "type": "integer" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 256 }
+      }
+    },
+    "worldTileSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 }
+      },
+      "description": "Inclusive start and exclusive end on an opening's local tangent axis."
+    },
+    "worldOpeningEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mapId", "side", "span"],
+      "properties": {
+        "mapId": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "side": { "enum": ["north", "east", "south", "west"] },
+        "span": { "$ref": "#/$defs/worldTileSpan" }
+      }
+    },
+    "worldSeam": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mapA", "sideA", "spanA", "mapB", "sideB", "spanB", "axis", "offsetAtoB", "openingIds"],
+      "properties": {
+        "mapA": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "sideA": { "enum": ["north", "east", "south", "west"] },
+        "spanA": { "$ref": "#/$defs/worldTileSpan" },
+        "mapB": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "sideB": { "enum": ["north", "east", "south", "west"] },
+        "spanB": { "$ref": "#/$defs/worldTileSpan" },
+        "axis": { "enum": ["x", "y"] },
+        "offsetAtoB": { "type": "integer" },
+        "openingIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "worldOpening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["portalId", "source", "target", "axis", "offset", "compatibility"],
+      "properties": {
+        "portalId": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/$defs/worldOpeningEndpoint" },
+        "target": { "$ref": "#/$defs/worldOpeningEndpoint" },
+        "axis": { "enum": ["x", "y"] },
+        "offset": { "type": "integer" },
+        "compatibility": { "enum": ["coordinate-preserving", "portal-only"] }
       }
     },
     "mapIndexEntry": {

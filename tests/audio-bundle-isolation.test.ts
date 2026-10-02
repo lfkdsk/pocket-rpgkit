@@ -71,10 +71,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // With the save changes, the tile loader and PocketJS #508/#512 merged in,
 // the three measure 516,324 (Meadow), 822,635 (Sunstone) and 657,634 (WAV
 // fixture).
+// The additive world-layout schema keeps the immediately preceding schema
+// identity compatible, adding one 64-byte hash literal (72 bundled bytes) to
+// every engine consumer; world-layout validation remains out of these apps.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 516_324;
-const EXPECTED_SUNSTONE_QOA_BYTES = 822_635;
-const EXPECTED_WAV_FIXTURE_BYTES = 657_634;
+const EXPECTED_MEADOW_BYTES = 516_396;
+const EXPECTED_SUNSTONE_QOA_BYTES = 822_707;
+const EXPECTED_WAV_FIXTURE_BYTES = 657_706;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

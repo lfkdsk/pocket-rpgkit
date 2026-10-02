@@ -7,6 +7,7 @@
 export * from "./types.ts";
 export * from "./clone.ts";
 export * from "./tiles.ts";
+export * from "./world-layout.ts";
 export * from "./chunk-window.ts";
 export * from "./camera.ts";
 export * from "./screen.ts";
