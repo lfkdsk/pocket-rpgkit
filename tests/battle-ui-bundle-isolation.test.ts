@@ -107,7 +107,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 1,869 for save-code length and depth bounds and 814 for counting envelope
 // text in UTF-8 bytes. PocketJS #508's opt-in model-trace guards and #512's
 // retired console-bridge cleanup add another 323 shared bytes.
-const EXPECTED_BYTES = 807_062;
+// Hiding an erased event's actor adds 148 shared GameView bytes.
+const EXPECTED_BYTES = 807_210;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

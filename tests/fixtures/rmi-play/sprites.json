@@ -1,0 +1,135 @@
+{
+  "assets/anim/rmi-0.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-1.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-2.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-3.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-4.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-5.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-6.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-7.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-8.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-9.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-10.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-11.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 3,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-12.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 3,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-13.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-14.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-15.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-16.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-17.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  },
+  "assets/anim/rmi-18.png": {
+    "cols": 4,
+    "rows": 1,
+    "frames": 4,
+    "step": 30,
+    "psm": 3
+  }
+}

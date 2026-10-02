@@ -24,7 +24,7 @@ export const EXAMPLES = ["showcase", "meadow", "sunstone", "grow", "wander"] as 
 /** The examples plus the editor app. */
 export const APPS = [...EXAMPLES, "editor"] as const;
 /** Small apps that exist only for the sim suites. */
-export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kg1-name-input", "kau1-audio", "ks2-save"] as const;
+export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kg1-name-input", "kau1-audio", "ks2-save", "rmi-play"] as const;
 /** UI theme and Meadow are also built at web densities 2 and 3. The density
  *  regression test uses these variants to compare the same dialog and real
  *  tile art without rebuilding artifacts inside `bun test`. */

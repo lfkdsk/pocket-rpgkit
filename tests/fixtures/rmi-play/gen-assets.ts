@@ -1,0 +1,219 @@
+// tests/fixtures/rmi-play/gen-assets.ts — import the RPG Maker test
+// projects and bake what GameView needs to play them.
+//
+//   bun tests/fixtures/rmi-play/gen-assets.ts   (run by build:example)
+//
+// For each game: tools/rpgmaker-import writes the rpgkit project and its
+// generated art into assets/imported/<game>/; this cooker then bakes the
+// 512 px map chunks from the generated tile sheets, slices every character
+// block into the kit's twelve walker frames, cooks the animated water cells
+// into shared sprite atlases, slices the balloon sheet into per-frame
+// images and fits pictures into a power-of-two screen-layer image. Every
+// output is a pure function of tests/fixtures/rpgmaker/.
+//
+// games.ts (committed) carries the imported projects and their GameAssets.
+
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { encodePNG } from "../../../vendor/pocketjs/tests/png.ts";
+import { CHUNK_PX, TILE } from "../../../src/engine/tiles.ts";
+import type { Project, TileId } from "../../../src/engine/types.ts";
+import { bakeMapChunks, cutCell } from "../../../tools/lib/chunks.ts";
+import { sliceWalkerSheet, TUXEMON_WALKER_LAYOUT } from "../../../tools/lib/bake.ts";
+import { animatedManifestSource, cookAnimationAtlases, type AnimationSequenceInput } from "../../../tools/lib/animated.ts";
+import { sliceAnimationSheet } from "../../../tools/lib/anim-sheet.ts";
+import { importToDirectory } from "../../../tools/rpgmaker-import/index.ts";
+import { readPng, type RgbaImage } from "../../../tools/rpgmaker-import/png.ts";
+
+const HERE = import.meta.dir;
+const ROOT = join(HERE, "..", "..", "..");
+const ASSETS = join(HERE, "assets");
+
+export const RMI_SOURCES = [
+  { id: "hollow", dir: "tests/fixtures/rpgmaker/hollow-mz" },
+  { id: "stage", dir: "tests/fixtures/rpgmaker/stage-mv" },
+] as const;
+
+/** RM character sheets list rows down, left, right, up and columns
+ *  step-left, idle, step-right: the same grid as the Tuxemon walker. */
+const RM_WALKER_LAYOUT = TUXEMON_WALKER_LAYOUT;
+/** Pictures are drawn to fill the screen; the pak needs power-of-two edges. */
+const PICTURE_W = 512;
+const PICTURE_H = 256;
+
+const imageMeta: Record<string, { psm: number }> = {};
+const writeAsset = (rel: string, bytes: Uint8Array): string => {
+  const path = join(HERE, rel);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, bytes);
+  return rel;
+};
+
+const asSheet = (img: RgbaImage) => ({ width: img.width, height: img.height, rgba: img.data });
+
+/** Nearest-neighbour resample (pictures only; tile art is never resampled here). */
+function resample(img: RgbaImage, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(img.height - 1, Math.floor((y * img.height) / h));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(img.width - 1, Math.floor((x * img.width) / w));
+      out.set(img.data.subarray((sy * img.width + sx) * 4, (sy * img.width + sx) * 4 + 4), (y * w + x) * 4);
+    }
+  }
+  return out;
+}
+
+rmSync(ASSETS, { recursive: true, force: true });
+mkdirSync(ASSETS, { recursive: true });
+
+const q = JSON.stringify;
+const gameSources: string[] = [];
+const animSequences: AnimationSequenceInput[] = [];
+const animPlacements: { game: string; map: string; x: number; y: number; above: boolean; seq: string }[] = [];
+const summaries: string[] = [];
+
+for (const source of RMI_SOURCES) {
+  const out = join(ASSETS, "imported", source.id);
+  const result = await importToDirectory(join(ROOT, source.dir), out);
+  const { project, assets } = result;
+  const prefix = `assets/${source.id}`;
+
+  // --- tile art -----------------------------------------------------------
+  const sheets = new Map<string, RgbaImage>();
+  for (const [id, sheet] of Object.entries(assets.sheets)) sheets.set(id, result.images.get(sheet.png)!);
+  const cellCache = new Map<string, Uint8Array>();
+  const tileArt = (tile: TileId): Uint8Array | null => {
+    if (!tile) return null;
+    let art = cellCache.get(tile);
+    if (!art) {
+      const dot = tile.lastIndexOf(".");
+      const sheet = sheets.get(tile.slice(0, dot));
+      if (!sheet) throw new Error(`rmi-play: unknown sheet in ${tile}`);
+      const cell = Number(tile.slice(dot + 1));
+      const cols = sheet.width / TILE;
+      art = cutCell(asSheet(sheet), (cell % cols) * TILE, Math.floor(cell / cols) * TILE);
+      cellCache.set(tile, art);
+    }
+    return art;
+  };
+  const black = new Uint8Array(TILE * TILE * 4);
+  for (let i = 3; i < black.length; i += 4) black[i] = 255;
+
+  const ground: Record<string, string[]> = {};
+  const upper: Record<string, string[]> = {};
+  const columns: Record<string, number> = {};
+  let maxChunks = 1;
+  for (const map of project.maps) {
+    const baked = bakeMapChunks(map, tileArt, black);
+    const count = baked.columns * baked.rows;
+    maxChunks = Math.max(maxChunks, count);
+    columns[map.id] = baked.columns;
+    ground[map.id] = [];
+    upper[map.id] = [];
+    for (let i = 0; i < count; i++) {
+      const g = writeAsset(`${prefix}/map-${map.id}-ground-${i}.png`, encodePNG(baked.ground[i]!, CHUNK_PX, CHUNK_PX));
+      const u = writeAsset(`${prefix}/map-${map.id}-upper-${i}.png`, encodePNG(baked.upper[i]!, CHUNK_PX, CHUNK_PX));
+      imageMeta[g] = { psm: 3 };
+      imageMeta[u] = { psm: 3 };
+      ground[map.id]!.push(g);
+      upper[map.id]!.push(u);
+    }
+    for (const cell of result.assets.animated[map.id] ?? []) {
+      const seq = `${source.id}:${map.id}:${cell.x},${cell.y}:${cell.above ? "a" : "b"}`;
+      animSequences.push({
+        id: seq,
+        frames: cell.frames.map((t) => ({ rgba: tileArt(t)!, durationMs: Math.round(cell.frameSeconds * 1000) })),
+      });
+      animPlacements.push({ game: source.id, map: map.id, x: cell.x, y: cell.y, above: cell.above, seq });
+    }
+  }
+
+  // --- characters ---------------------------------------------------------
+  const walkerSource: string[] = [];
+  const staticSource: string[] = [];
+  for (const [key, sprite] of Object.entries(assets.sprites)) {
+    const img = result.images.get(sprite.png)!;
+    if (sprite.kind === "image") {
+      staticSource.push(`${q(key)}: ${q(writeAsset(`${prefix}/sprite-${key}.png`, encodePNG(img.data, img.width, img.height)))}`);
+      continue;
+    }
+    const frames = sliceWalkerSheet(asSheet(img), { cellW: TILE, cellH: sprite.h, layout: RM_WALKER_LAYOUT }, key);
+    const names = { idle: [] as string[], walkL: [] as string[], walkR: [] as string[] };
+    for (const pose of ["idle", "walkL", "walkR"] as const) {
+      frames[pose].forEach((png, facing) => names[pose].push(writeAsset(`${prefix}/chr/${key}-${pose}-${facing}.png`, png)));
+    }
+    walkerSource.push(
+      `${q(key)}: { idle: ${q(names.idle)}, walkL: ${q(names.walkL)}, walkR: ${q(names.walkR)}, h: ${sprite.h} }`,
+    );
+  }
+
+  // --- balloons -----------------------------------------------------------
+  const animSource: string[] = [];
+  if (assets.balloon) {
+    const sheet = asSheet(result.images.get(assets.balloon)!);
+    for (const def of project.animations ?? []) {
+      const cooked = sliceAnimationSheet(sheet, def);
+      const names = cooked.frames.map((png, i) => writeAsset(`${prefix}/anim/${def.id}-${i}.png`, png));
+      animSource.push(`${q(def.id)}: { frames: ${q(names)}, w: ${cooked.w}, h: ${cooked.h} }`);
+    }
+  }
+
+  // --- pictures -----------------------------------------------------------
+  const pictureVariants: string[] = [];
+  for (const [variant, rel] of Object.entries(assets.pictures)) {
+    const img = await readPng(join(out, rel));
+    const file = writeAsset(`${prefix}/picture-${variant}.png`, encodePNG(resample(img, PICTURE_W, PICTURE_H), PICTURE_W, PICTURE_H));
+    pictureVariants.push(`${q(variant)}: { image: ${q(file)} }`);
+  }
+
+  const player = assets.player ? `WALKERS_${source.id}[${q(assets.player)}]!` : "undefined!";
+  const maxActors = Math.max(1, ...project.maps.map((m) => m.events?.length ?? 0));
+  const world = Object.fromEntries(project.maps.map((m) => [m.id, { w: m.width * TILE, h: m.height * TILE }]));
+  gameSources.push(
+    `const WALKERS_${source.id}: Record<string, CharacterFrames> = {\n  ${walkerSource.join(",\n  ")}\n};\n\n` +
+      `const PROJECT_${source.id}: Project = ${JSON.stringify(project)};\n\n` +
+      `const ASSETS_${source.id}: GameAssets = {\n` +
+      `  ground: ${q(ground)},\n  upper: ${q(upper)},\n  chunkColumns: ${q(columns)},\n` +
+      `  maxChunks: ${maxChunks},\n  maxActors: ${maxActors},\n  world: ${q(world)},\n` +
+      `  order: ${q(project.maps.map((m) => m.id))},\n` +
+      `  npcSrc: { ...WALKERS_${source.id}, ${staticSource.join(", ")} },\n` +
+      `  player: ${player},\n  playerHeight: ${assets.player ? `${assets.sprites[assets.player]!.h}` : 16},\n` +
+      `  animated: ANIMATED_${source.id},\n` +
+      `  anims: { ${animSource.join(", ")} },\n` +
+      `  layers: { picture: { placement: "screen", defaultVisible: false, variants: { ${pictureVariants.join(", ")} } } },\n` +
+      `};\n`,
+  );
+  summaries.push(`${source.id}: ${project.maps.length} maps, ${Object.keys(assets.sprites).length} sprites, ${Object.keys(assets.pictures).length} pictures`);
+}
+
+// Animated cells: identical sequences across both games share one atlas.
+const cooked = cookAnimationAtlases(animSequences, { directory: "assets/anim", prefix: "rmi" });
+for (const atlas of cooked.atlases) writeAsset(atlas.file, atlas.png);
+writeFileSync(join(HERE, "sprites.json"), JSON.stringify(cooked.spritesJson, null, 2) + "\n");
+const animatedSources = RMI_SOURCES.map((source) => {
+  const byMap = new Map<string, { x: number; y: number; above: boolean; sprite: string }[]>();
+  for (const p of animPlacements.filter((a) => a.game === source.id)) {
+    if (!byMap.has(p.map)) byMap.set(p.map, []);
+    byMap.get(p.map)!.push({ x: p.x, y: p.y, above: p.above, sprite: cooked.atlasFor.get(p.seq)! });
+  }
+  return `const ANIMATED_${source.id}: GameAssets["animated"] = ${animatedManifestSource([...byMap.entries()].map(([id, tiles]) => ({ id, tiles })))};\n`;
+});
+
+writeFileSync(join(HERE, "images.json"), JSON.stringify(imageMeta, null, 2) + "\n");
+writeFileSync(
+  join(HERE, "games.ts"),
+  `// AUTO-GENERATED by tests/fixtures/rmi-play/gen-assets.ts from the RPG Maker\n` +
+    `// test projects in tests/fixtures/rpgmaker — do not edit. The projects are\n` +
+    `// the importer's output verbatim; the asset names are full literals so the\n` +
+    `// PocketJS pak pass bakes them.\n\n` +
+    `import type { Project } from "../../../src/engine/types.ts";\n` +
+    `import type { CharacterFrames, GameAssets } from "../../../src/ui/game-assets.ts";\n\n` +
+    `export type RmiGameId = ${RMI_SOURCES.map((s) => q(s.id)).join(" | ")};\n\n` +
+    animatedSources.join("\n") + "\n" +
+    gameSources.join("\n") + "\n" +
+    `export const RMI_GAMES: Record<RmiGameId, { project: Project; assets: GameAssets }> = {\n` +
+    RMI_SOURCES.map((s) => `  ${s.id}: { project: PROJECT_${s.id}, assets: ASSETS_${s.id} },`).join("\n") +
+    `\n};\n`,
+);
+console.log(`rmi-play gen-assets: ${summaries.join("; ")}; ${cooked.atlases.length} animated atlases`);

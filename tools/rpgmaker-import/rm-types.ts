@@ -1,0 +1,218 @@
+// tools/rpgmaker-import/rm-types.ts — the subset of the RPG Maker MV/MZ
+// `data/*.json` formats the importer reads. Field names follow the files
+// as the MV/MZ editors write them; everything the importer does not read is
+// left out (extra fields in real files are ignored).
+//
+// MV and MZ share these shapes. MZ adds `System.tileSize` and the
+// `speakerName` parameter of Show Text; both are optional here.
+
+/** One event command: `code` selects the command, `indent` nests it under
+ *  the nearest preceding command of a lower indent (branches, loops,
+ *  choices), `parameters` is code-specific. */
+export interface RmCommand {
+  code: number;
+  indent: number;
+  parameters: unknown[];
+}
+
+/** One step of a movement route (Set Movement Route, custom move type). */
+export interface RmMoveCommand {
+  code: number;
+  parameters?: unknown[];
+  indent?: number | null;
+}
+
+export interface RmMoveRoute {
+  list: RmMoveCommand[];
+  repeat: boolean;
+  skippable: boolean;
+  wait: boolean;
+}
+
+export interface RmAudio {
+  name: string;
+  volume: number;
+  pitch: number;
+  pan: number;
+}
+
+/** Event page activation conditions (all present clauses must hold). */
+export interface RmPageConditions {
+  actorId: number;
+  actorValid: boolean;
+  itemId: number;
+  itemValid: boolean;
+  selfSwitchCh: string;
+  selfSwitchValid: boolean;
+  switch1Id: number;
+  switch1Valid: boolean;
+  switch2Id: number;
+  switch2Valid: boolean;
+  variableId: number;
+  variableValid: boolean;
+  variableValue: number;
+}
+
+export interface RmPageImage {
+  tileId: number;
+  characterName: string;
+  /** 0..7 on an eight-character sheet; 0 on a `$` single-character sheet. */
+  characterIndex: number;
+  /** 2 down, 4 left, 6 right, 8 up. */
+  direction: number;
+  /** 0..2 walking pattern; 1 is the idle frame. */
+  pattern: number;
+}
+
+export interface RmEventPage {
+  conditions: RmPageConditions;
+  directionFix: boolean;
+  image: RmPageImage;
+  list: RmCommand[];
+  moveFrequency: number;
+  moveRoute: RmMoveRoute;
+  moveSpeed: number;
+  /** 0 fixed, 1 random, 2 approach, 3 custom. */
+  moveType: number;
+  /** 0 below characters, 1 same as characters, 2 above characters. */
+  priorityType: number;
+  stepAnime: boolean;
+  through: boolean;
+  /** 0 action button, 1 player touch, 2 event touch, 3 autorun, 4 parallel. */
+  trigger: number;
+  walkAnime: boolean;
+}
+
+export interface RmEvent {
+  id: number;
+  name: string;
+  note: string;
+  pages: RmEventPage[];
+  x: number;
+  y: number;
+}
+
+export interface RmMap {
+  autoplayBgm: boolean;
+  autoplayBgs: boolean;
+  bgm: RmAudio;
+  bgs: RmAudio;
+  displayName: string;
+  encounterList: { regionSet: number[]; troopId: number; weight: number }[];
+  encounterStep: number;
+  height: number;
+  width: number;
+  note: string;
+  parallaxName: string;
+  scrollType: number;
+  specifyBattleback: boolean;
+  tilesetId: number;
+  /** Six z-planes of width*height: z 0..3 tile ids, z 4 shadow bits, z 5
+   *  region ids. Index = (z * height + y) * width + x. */
+  data: number[];
+  /** Index 0 is null; event ids index the array. Deleted events are null. */
+  events: (RmEvent | null)[];
+}
+
+export interface RmMapInfo {
+  id: number;
+  name: string;
+  order: number;
+  parentId: number;
+  expanded?: boolean;
+  scrollX?: number;
+  scrollY?: number;
+}
+
+export interface RmCommonEvent {
+  id: number;
+  name: string;
+  /** 0 none, 1 autorun, 2 parallel. */
+  trigger: number;
+  switchId: number;
+  list: RmCommand[];
+}
+
+export interface RmTileset {
+  id: number;
+  name: string;
+  /** 0 world, 1 area, 2 VX compatible. */
+  mode: number;
+  /** A1, A2, A3, A4, A5, B, C, D, E image names (without extension). */
+  tilesetNames: string[];
+  /** 8192 passage/attribute bit fields, indexed by tile id. */
+  flags: number[];
+  note: string;
+}
+
+export interface RmItem {
+  id: number;
+  name: string;
+  description: string;
+  iconIndex: number;
+  price: number;
+  consumable?: boolean;
+  /** 1 regular, 2 key item, 3 hidden A, 4 hidden B (items only). */
+  itypeId?: number;
+  note: string;
+}
+
+export interface RmActor {
+  id: number;
+  name: string;
+  nickname: string;
+  characterName: string;
+  characterIndex: number;
+  faceName: string;
+  faceIndex: number;
+  classId: number;
+  initialLevel: number;
+  note: string;
+}
+
+export interface RmTroop {
+  id: number;
+  name: string;
+  members: { enemyId: number; x: number; y: number; hidden: boolean }[];
+  pages: unknown[];
+}
+
+export interface RmSystem {
+  gameTitle: string;
+  currencyUnit: string;
+  partyMembers: number[];
+  startMapId: number;
+  startX: number;
+  startY: number;
+  switches: string[];
+  variables: string[];
+  /** MZ only; MV is always 48. */
+  tileSize?: number;
+  locale?: string;
+  /** Present in both; MZ writes `advanced` with extra screen settings. */
+  advanced?: { screenWidth?: number; screenHeight?: number };
+  /** MV/MZ store the editor version as a number; MZ files carry
+   *  `versionId` and an `advanced` block. */
+  versionId?: number;
+}
+
+/** Everything the importer reads from one project's `data/` directory.
+ *  Arrays keep the files' own layout: index 0 is null and ids index the
+ *  array; a missing optional file reads as `[null]`. */
+export interface RmProject {
+  /** Absolute project root (the directory holding `data/` and `img/`). */
+  root: string;
+  /** "MZ" when System.json has the MZ-only fields, else "MV". */
+  flavor: "MV" | "MZ";
+  system: RmSystem;
+  mapInfos: (RmMapInfo | null)[];
+  maps: Map<number, RmMap>;
+  tilesets: (RmTileset | null)[];
+  commonEvents: (RmCommonEvent | null)[];
+  items: (RmItem | null)[];
+  weapons: (RmItem | null)[];
+  armors: (RmItem | null)[];
+  actors: (RmActor | null)[];
+  troops: (RmTroop | null)[];
+  animations: ({ id: number; name: string } | null)[];
+}

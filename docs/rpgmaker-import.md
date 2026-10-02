@@ -1,0 +1,286 @@
+# Importing RPG Maker MV/MZ projects
+
+`tools/rpgmaker-import` converts an RPG Maker MV or MZ project's
+`data/*.json` files (and the images they use) into an `rpgkit-project/v1`
+document plus generated art. It is a prototype: it shows how much of an
+RPG Maker game maps onto the kit directly, and lists what is still missing.
+
+The importer is a build-time tool. Nothing in it is imported by the
+runtime, so games that do not use it carry none of its code.
+
+## Usage
+
+```sh
+bun tools/rpgmaker-import <project-dir> --out <dir> [--shard] [--placeholders visible|silent]
+```
+
+`<project-dir>` is the folder holding `data/System.json` (MV deployments
+with a `www/` folder work too). The output folder receives:
+
+| File | Contents |
+| --- | --- |
+| `project.json` | The `rpgkit-project/v1` document. With `--shard`, a `ProjectShell` plus one `maps/<id>.json` per map. |
+| `tiles/ts<N>.png` | One generated 16 px tile sheet per RM tileset (every distinct composed cell, see [Tiles](#tiles-and-autotiles)). |
+| `sprites/*.png` | Character blocks (3 × 4 walking frames) and tile-image events. |
+| `pictures/*.png` | Pictures used by Show Picture, copied unchanged. |
+| `system/balloon.png` | The balloon sheet, when Show Balloon Icon is used. |
+| `assets.json` | The render manifest an asset cooker bakes: sheets, sprites, pictures, animated water cells per map, the balloon sheet, the player's sprite. |
+| `coverage.md`, `coverage.json` | What happened to every construct in this project, and the table of every MV/MZ command. |
+
+`--placeholders silent` drops the visible text boxes that stand in for
+plugin and script commands (they still count as Placeholder).
+
+Importing the same project twice writes the same bytes.
+
+### Running an imported project
+
+`project.json` runs on the kit's engine like any other project; the art has
+to be baked by a cooker as for any game. `tests/fixtures/rmi-play` is a
+complete example: its `gen-assets.ts` imports two test projects, bakes the
+512 px map chunks from the generated tile sheets, slices each character
+block into the twelve walker frames, cooks animated water into sprite
+atlases, slices balloons, fits pictures into a screen layer, and writes the
+`GameAssets` manifest. Its `rmi-play.tsx` mounts `GameView` with a
+placeholder battle and the kit's name-input scene.
+
+## Ids
+
+| RPG Maker | Kit |
+| --- | --- |
+| Map 1 | map `map001` |
+| Event 7 | event `ev007` on its map |
+| Common event 2 | common event `ce002` |
+| Switch 1, variable 1 | switch `s001`, variable `v001` |
+| Item / weapon / armor 1 | items `item001`, `weapon001`, `armor001` (one bank) |
+| Actor 3 in the party | switch `party-actor003` (stored inverted as `party-out-actor003` for actors in the starting party) |
+| Tileset 1 | tile sheet `ts1` |
+
+## Tiles and autotiles
+
+The kit draws one ground tile and one optional "star" tile (above
+characters) per cell, from 16 px sheets. RPG Maker stacks four tile layers,
+a shadow layer and a region layer per cell, and draws autotiles from
+quarter-tile pieces. The importer therefore composes every cell at import
+time:
+
+1. The four layers are split by the tileset's star flag (`0x10`): non-star
+   tiles, bottom to top with the shadow drawn after layers 0–1 as MV does,
+   form the ground cell; star tiles form the upper cell.
+2. Each tile is drawn exactly like MV/MZ's `Tilemap`: A5 and B–E tiles are
+   plain cuts; autotiles (A1–A4) pick four quarter pieces from their source
+   block through the floor (47 shapes + the isolated preview), wall/roof
+   (16 shapes) or waterfall (4 shapes) table, with the A1 water and A2
+   table-tile special cases.
+3. Each distinct stack becomes one cell of the generated sheet. Cells are
+   keyed by tile ids, not pixels, so two stacks that look the same but pass
+   differently stay separate.
+4. Passage follows `Game_Map.checkPassage`: per direction, the top non-star
+   tile decides (bit clear = passable); a cell with no deciding tile blocks.
+   The four direction bits become the sheet's undirected `dirBlock` edges
+   (MV checks the source cell's bit and the destination cell's reverse bit,
+   which is exactly `dirBlock`); all four blocked becomes a `block` cell.
+5. Animated autotiles (A1 water: steps 0, 1, 2, 1 every 0.5 s; waterfalls:
+   three steps) produce one cell per step of the whole stack; the manifest
+   lists them per map and the cooker turns them into animated tile sprites.
+6. Projects whose tiles are larger than 16 px (MV is always 48 px; MZ stores
+   `tileSize`) are composed at their own size and averaged down by an
+   integer factor.
+
+The editor stores each autotile's shape in the map data, so the runtime
+never computes it. `reshapeAutotiles` reproduces the editor's rule (eight
+neighbours, the map edge counts as joined) for hand-written maps such as the
+test projects.
+
+## Events
+
+See the coverage table in [the report](#coverage) for every command code.
+In short:
+
+- Pages keep their order; the kit, like MV, runs the highest-numbered page
+  whose conditions hold. Triggers map one to one, except Event Touch, which
+  becomes Player Touch (an event walking into the player does not start it).
+- Conditions on switches, variables (≥), self switches, items and party
+  members map directly.
+- Commands map to kit commands where one exists; where the kit has a
+  narrower command the importer lowers it (for example a comparison
+  between two variables goes through a scratch variable; a transfer to a
+  map held in a variable becomes a chain of `if` branches over the map
+  ids).
+- Plugin commands (356, 357) and Script (355) are never ported: each
+  becomes a visible text box naming it (or nothing with
+  `--placeholders silent`) and is counted as Placeholder.
+- Battle Processing becomes the kit's `battle` command with
+  `{ troop, name, canEscape, canLose }` and the If Win / If Escape /
+  If Lose branches. The kit has no RPG Maker battle system; the test
+  fixture registers a placeholder battle that lets the player choose the
+  outcome.
+
+## Command table
+
+Every MV/MZ event command code and what the importer does with a minimal
+use of it: 39 of the 107 commands map natively, 4 run degraded, 4 become
+placeholders (Battle Processing, Script and the two plugin commands) and
+60 are dropped, half of them actor, enemy and battle-only commands. "Needs
+kit" names the runtime capability a native mapping would take; it is the
+list of what the kit would need to import an RPG Maker game completely.
+`tests/rpgmaker-import.test.ts` keeps this table in step with the
+importer. Each import also writes the same table, plus per-construct counts
+for that project, to `coverage.md`.
+
+<!-- rpgmaker-commands:begin -->
+| Code | Command | Flavor | Handling | Notes | Needs kit |
+|---:|---|---|---|---|---|
+| 101 | Show Text | MV/MZ | Native |  | face graphics per message (portrait keyed by file/index, not speaker) |
+| 102 | Show Choices | MV/MZ | Native |  | single-option lists and a default cursor row |
+| 103 | Input Number | MV/MZ | Dropped |  | a number-input scene writing a numeric variable |
+| 104 | Select Item | MV/MZ | Dropped |  | an item picker writing the chosen item id to a variable |
+| 105 | Show Scrolling Text | MV/MZ | Degraded | scrolling text shown as message pages | a scrolling credits-style text box |
+| 108 | Comment | MV/MZ | Native |  |  |
+| 109 | Skip | MZ | Native |  |  |
+| 111 | Conditional Branch | MV/MZ | Native |  | conditions over timer, actor stats, enemies, event facing, buttons, vehicles |
+| 112 | Loop | MV/MZ | Degraded | loop body runs once; needs a kit loop/break op | a loop/break command (forward-only jumps cannot repeat a block) |
+| 113 | Break Loop | MV/MZ | Native |  | a loop/break command |
+| 115 | Exit Event Processing | MV/MZ | Native |  | a return-from-common-event command (exit ends the calling fiber) |
+| 117 | Common Event | MV/MZ | Native |  |  |
+| 118 | Label | MV/MZ | Native |  | labels and goto |
+| 119 | Jump to Label | MV/MZ | Dropped |  | labels and goto |
+| 121 | Control Switches | MV/MZ | Native |  |  |
+| 122 | Control Variables | MV/MZ | Native |  | variable sources for item/gold/actor/character/party/timer game data |
+| 123 | Control Self Switch | MV/MZ | Native |  | four independent self switches per event (the kit keeps one slot) |
+| 124 | Control Timer | MV/MZ | Dropped |  | a countdown timer with an on-screen display |
+| 125 | Change Gold | MV/MZ | Native |  | gold changes by variable and a 0 floor on losses |
+| 126 | Change Items | MV/MZ | Native |  | item changes by variable and a 0 floor on losses |
+| 127 | Change Weapons | MV/MZ | Native |  | equipment (equipped copies) and item changes by variable |
+| 128 | Change Armors | MV/MZ | Native |  | equipment (equipped copies) and item changes by variable |
+| 129 | Change Party Member | MV/MZ | Native |  | a party roster (the importer keeps one switch per actor) |
+| 132 | Change Battle BGM | MV/MZ | Dropped |  | battle audio settings in the battle setup |
+| 133 | Change Victory ME | MV/MZ | Dropped |  | battle audio settings in the battle setup |
+| 134 | Change Save Access | MV/MZ | Dropped |  | a save-access flag the host save menu honours |
+| 135 | Change Menu Access | MV/MZ | Dropped |  | a menu-access flag the host menu honours |
+| 136 | Change Encounter | MV/MZ | Dropped |  | random encounters |
+| 137 | Change Formation Access | MV/MZ | Dropped |  | a party formation menu |
+| 138 | Change Window Color | MV/MZ | Dropped |  | a runtime UI theme command |
+| 139 | Change Defeat ME | MV/MZ | Dropped |  | battle audio settings in the battle setup |
+| 140 | Change Vehicle BGM | MV/MZ | Dropped |  | vehicles |
+| 201 | Transfer Player | MV/MZ | Native |  | a white transfer fade colour |
+| 202 | Set Vehicle Location | MV/MZ | Dropped |  | vehicles |
+| 203 | Set Event Location | MV/MZ | Native |  | place by variable coordinates and character exchange |
+| 204 | Scroll Map | MV/MZ | Dropped |  | a relative camera scroll (direction, distance, speed) |
+| 205 | Set Movement Route | MV/MZ | Native |  | diagonal, jump, backward/away moves, relative turns, in-route switches/SE/image |
+| 206 | Get on/off Vehicle | MV/MZ | Dropped |  | vehicles |
+| 211 | Change Transparency | MV/MZ | Native |  |  |
+| 212 | Show Animation | MV/MZ | Dropped |  | Animations.json effects cooked into mapAnim AnimationDefs |
+| 213 | Show Balloon Icon | MV/MZ | Native |  |  |
+| 214 | Erase Event | MV/MZ | Native |  |  |
+| 216 | Change Player Followers | MV/MZ | Dropped |  | party followers on the map |
+| 217 | Gather Followers | MV/MZ | Dropped |  | party followers on the map |
+| 221 | Fadeout Screen | MV/MZ | Native |  |  |
+| 222 | Fadein Screen | MV/MZ | Native |  |  |
+| 223 | Tint Screen | MV/MZ | Degraded | colour tone approximated as an overlay colour | an additive colour-tone (and greyscale) screen filter |
+| 224 | Flash Screen | MV/MZ | Native |  |  |
+| 225 | Shake Screen | MV/MZ | Native |  |  |
+| 230 | Wait | MV/MZ | Native |  |  |
+| 231 | Show Picture | MV/MZ | Native |  | numbered pictures with position, origin, scale, opacity and blend |
+| 232 | Move Picture | MV/MZ | Dropped |  | tweened picture position/scale/opacity |
+| 233 | Rotate Picture | MV/MZ | Dropped |  | picture rotation |
+| 234 | Tint Picture | MV/MZ | Dropped |  | per-picture colour tone |
+| 235 | Erase Picture | MV/MZ | Native |  | numbered pictures (the backdrop is a single slot) |
+| 236 | Set Weather Effect | MV/MZ | Dropped |  | rain/storm/snow weather particles |
+| 241 | Play BGM | MV/MZ | Native |  | audio pan |
+| 242 | Fadeout BGM | MV/MZ | Native |  |  |
+| 243 | Save BGM | MV/MZ | Native |  |  |
+| 244 | Resume BGM | MV/MZ | Native |  |  |
+| 245 | Play BGS | MV/MZ | Native |  | audio pan |
+| 246 | Fadeout BGS | MV/MZ | Native |  |  |
+| 249 | Play ME | MV/MZ | Degraded | ME length unknown; plays for 4 s | ME length from the decoded audio file (playMe needs an authored duration) |
+| 250 | Play SE | MV/MZ | Native |  | audio pan |
+| 251 | Stop SE | MV/MZ | Dropped |  | a stop-all-SE command |
+| 261 | Play Movie | MV/MZ | Dropped |  | video playback |
+| 281 | Change Map Name Display | MV/MZ | Dropped |  | a map name banner |
+| 282 | Change Tileset | MV/MZ | Dropped |  | runtime tileset swaps (a ground/upper layer variant per tileset) |
+| 283 | Change Battle Background | MV/MZ | Dropped |  | battle backgrounds in the battle setup |
+| 284 | Change Parallax | MV/MZ | Dropped |  | scrolling parallax backgrounds |
+| 285 | Get Location Info | MV/MZ | Dropped |  | a variable source for terrain tag/event id/tile id/region at a cell |
+| 301 | Battle Processing | MV/MZ | Placeholder | no RPG Maker battle system; the game runs a placeholder battle | an RPG Maker battle system (troops, actors, skills) behind the battle op |
+| 302 | Shop Processing | MV/MZ | Native |  |  |
+| 303 | Name Input Processing | MV/MZ | Native |  | per-actor names (only the player name has a text token) |
+| 311 | Change HP | MV/MZ | Dropped |  | actor stats |
+| 312 | Change MP | MV/MZ | Dropped |  | actor stats |
+| 326 | Change TP | MV/MZ | Dropped |  | actor stats |
+| 313 | Change State | MV/MZ | Dropped |  | actor states |
+| 314 | Recover All | MV/MZ | Dropped |  | actor stats |
+| 315 | Change EXP | MV/MZ | Dropped |  | actor experience |
+| 316 | Change Level | MV/MZ | Dropped |  | actor levels |
+| 317 | Change Parameter | MV/MZ | Dropped |  | actor parameters |
+| 318 | Change Skill | MV/MZ | Dropped |  | actor skills |
+| 319 | Change Equipment | MV/MZ | Dropped |  | equipment slots |
+| 320 | Change Name | MV/MZ | Dropped |  | a set-player-name command (and per-actor names) |
+| 321 | Change Class | MV/MZ | Dropped |  | actor classes |
+| 322 | Change Actor Images | MV/MZ | Dropped |  | per-actor walking/face/battler images (the player sprite can change via appearance) |
+| 323 | Change Vehicle Image | MV/MZ | Dropped |  | vehicles |
+| 324 | Change Nickname | MV/MZ | Dropped |  | actor profiles |
+| 325 | Change Profile | MV/MZ | Dropped |  | actor profiles |
+| 331 | Change Enemy HP | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 332 | Change Enemy MP | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 342 | Change Enemy TP | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 333 | Change Enemy State | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 334 | Enemy Recover All | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 335 | Enemy Appear | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 336 | Enemy Transform | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 337 | Show Battle Animation | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 339 | Force Action | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 340 | Abort Battle | MV/MZ | Dropped |  | an RPG Maker battle system |
+| 351 | Open Menu Screen | MV/MZ | Dropped |  | a command that opens the host menu |
+| 352 | Open Save Screen | MV/MZ | Dropped |  | a command that opens the host save menu |
+| 353 | Game Over | MV/MZ | Dropped |  | a game-over command |
+| 354 | Return to Title Screen | MV/MZ | Dropped |  | a return-to-title command |
+| 355 | Script | MV/MZ | Placeholder | script not ported | hand-porting: arbitrary JavaScript has no kit equivalent |
+| 356 | Plugin Command (MV) | MV | Placeholder | plugin command not ported | a per-plugin port (an ext handler) |
+| 357 | Plugin Command (MZ) | MZ | Placeholder | plugin command not ported | a per-plugin port (an ext handler) |
+<!-- rpgmaker-commands:end -->
+
+Besides the commands, the report counts conditional branch types, page
+conditions, triggers, movement route steps, message escape codes and tile
+constructs. Of note:
+
+- **Touch events that block** (same-as-characters priority) start in MV
+  when the player walks into them. The kit starts a touch page only when
+  the player stands on its cell, so the importer makes such pages
+  non-blocking and opens the cell's passage (a door set into a wall becomes
+  a door the player steps onto). Needs a kit "touch front" trigger.
+- **Loops** run their body once unless the loop is the whole page of an
+  autorun or parallel event (the page itself repeats, and Break Loop
+  becomes Exit Event Processing). A cutscene that polls in a loop
+  therefore moves on without waiting. Needs a kit loop/break command.
+- **Self switches**: the kit keeps one self-switch letter per event, so an
+  event that sets B after A loses A (counted Degraded where it happens).
+- **Waited movement routes** that change a switch, the character's
+  image, opacity or transparency, or play a sound in the middle are split
+  at those steps into route, command, route — exact, because the event
+  waits for the route anyway. Unwaited or repeating routes drop those
+  steps.
+- **Escape codes**: `\N[1]`/`\P[1]` become the `{name}` token and `\G` the
+  currency unit; `\V[n]` shows a visible `[Vn]` marker (no variable text
+  token yet); colour, icon, font-size and timing codes are stripped.
+
+## Known limitations
+
+- **Plugins and scripts are not ported.** Plugin commands, Script
+  commands, script conditions and script variable operands become
+  placeholders. Plugin parameters in `js/plugins.js` are not read.
+- **RTP assets.** The RPG Maker runtime package (RTP) art and audio is
+  licensed for use in RPG Maker games only. The importer reads whatever
+  images a project folder holds and does not ship or fetch any; do not
+  redistribute RTP art in a kit game unless your license allows it.
+- **Encrypted projects are refused.** A deployed game with encrypted images
+  or audio (`hasEncryptedImages` / `hasEncryptedAudio`) is not decrypted.
+- **Audio files are not converted.** Commands keep logical ids
+  (`bgm-<name>`, `se-<name>` …) and `project.audio` stays empty; a game
+  adds WAV/QOA entries itself.
+- **No battle system, actors or classes.** Actor, enemy and battle-only
+  commands are dropped; Battle Processing is a placeholder.
+- **Maps are capped at 256 × 256**, the kit's limit.
+- Region ids, terrain tags, damage floors, parallaxes and map encounters
+  are not carried over; ladders, bushes and counters keep their passage
+  but not their special behaviour.
+- Item icons (`IconSet.png`) are not imported.

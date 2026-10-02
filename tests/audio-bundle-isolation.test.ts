@@ -55,10 +55,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 1,450.
 // PocketJS #508's opt-in model-trace guards and #512's retired console-bridge
 // cleanup add 323 shared bytes to each bundle.
+// Hiding an erased event's actor in GameView adds 148 bytes to Sunstone and
+// the WAV fixture (Meadow does not mount GameView).
 // Re-measure after every shared-path change.
 const EXPECTED_MEADOW_BYTES = 502_945;
-const EXPECTED_SUNSTONE_QOA_BYTES = 807_062;
-const EXPECTED_WAV_FIXTURE_BYTES = 642_606;
+const EXPECTED_SUNSTONE_QOA_BYTES = 807_210;
+const EXPECTED_WAV_FIXTURE_BYTES = 642_754;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

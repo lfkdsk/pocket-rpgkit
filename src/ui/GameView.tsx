@@ -61,6 +61,7 @@ import {
   effectiveEventAppearance,
   effectivePlayerAppearance,
   eventIdLess,
+  eventKey,
   modalChanged,
   type CompiledAnim,
   type EventAppearanceState,
@@ -160,6 +161,12 @@ function npcFrame(
   extensions: ExtensionRuntime,
 ): NpcFrame {
   const ch = state.chars.chars[event.id];
+  // An erased event has no character; without this its active page would
+  // still paint at the authored cell (Erase Event must hide it until the
+  // map is re-entered).
+  if (!ch && Object.prototype.hasOwnProperty.call(state.interp.erased, eventKey(state.mapId, event.id))) {
+    return HIDDEN_NPC_FRAME;
+  }
   const active = ch && event.pages[ch.pageIndex]
     ? { page: event.pages[ch.pageIndex]!, index: ch.pageIndex }
     : activePage(event, state.sw, state.mapId, state.move.facing, {
