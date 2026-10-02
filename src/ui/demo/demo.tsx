@@ -323,8 +323,16 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
   const runtime: GameViewDemoRuntime = {
     step(buttons: number, pressed: number): GameViewDemoStepResult {
       if (toastFrames > 0) {
-        toastFrames--;
-        if (toastFrames === 0) setToast(null);
+        // A warp can immediately open an autorun text/choice modal. That
+        // modal owns the bottom of the screen, so retire the transport toast
+        // instead of covering its choices until the ordinary timeout.
+        if (host.getState().interp.modal !== null) {
+          toastFrames = 0;
+          setToast(null);
+        } else {
+          toastFrames--;
+          if (toastFrames === 0) setToast(null);
+        }
       }
       if (externalAction) {
         const action = externalAction;
