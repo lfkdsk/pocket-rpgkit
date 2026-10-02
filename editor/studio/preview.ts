@@ -215,6 +215,9 @@ export class PlayTest {
   target: PreviewTarget | null = null;
   /** Edits since the running game loaded the document. */
   stale = false;
+  /** What the game baked for the loaded document's text (its characters
+   *  beyond the built-in ones, and those it has no glyph for). */
+  glyphs: { added: number; missing: string } | null = null;
   /** Facing for a start at a cell. */
   dir: PreviewDir = "down";
   /** What the loaded game draws; null before a load. */
@@ -361,6 +364,7 @@ export class PlayTest {
     if (!loaded.ok) return false;
     this.loadedSession = session;
     this.loadedRevision = revision;
+    this.noteGlyphs(loaded.result);
     this.loadedText = document.text;
     this.loadedChapters = chapters;
     this.loadedArt = images;
@@ -385,6 +389,7 @@ export class PlayTest {
     this.emit();
     const loaded = await this.loadInto(preview, text, this.loadedChapters, this.loadedArt, generation);
     if (!loaded.ok) return false;
+    this.glyphs = loaded.result.glyphs ?? null;
     return this.startAt(target, generation);
   }
 
@@ -454,6 +459,17 @@ export class PlayTest {
     const gone = code === "disconnected" || code === "bad-version" || code === "timeout";
     if (gone) this.connected = false;
     return gone;
+  }
+
+  /** Keep the glyph report; say so when some text has no glyph in the
+   * play-test (a built game bakes its own font and draws it). */
+  private noteGlyphs(loaded: PreviewLoadResult): void {
+    this.glyphs = loaded.glyphs ?? null;
+    const missing = [...(loaded.glyphs?.missing ?? "")];
+    if (missing.length > 0) {
+      const shown = missing.slice(0, 12).join(" ") + (missing.length > 12 ? ` … (${missing.length} in all)` : "");
+      this.app.notify("info", `The play-test has no glyph for ${shown}; it shows a box there. A built game bakes its own font.`);
+    }
   }
 
   private async startAt(target: PreviewTarget, generation: number): Promise<boolean> {

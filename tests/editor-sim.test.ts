@@ -712,6 +712,10 @@ simDescribe("editor budget", () => {
     // 42,405 -> 25,393 B for the operation/history layer), plus the
     // validation memo (1,632 B) and refusal reporting in the app (1,225 B):
     // measured 1,391,375 B.
-    expect(js).toBeLessThan(1_400_000);
+    // CJK-aware text layout in the shared dialog/battle/save-menu boxes
+    // (9,416 B) and dialog pages and wrapped list labels that never cut
+    // text (5,252 B) join it, with Studio's move-map
+    // operation: measured 1,412,949 B.
+    expect(js).toBeLessThan(1_420_000);
   });
 });

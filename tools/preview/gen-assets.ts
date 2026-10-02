@@ -11,7 +11,9 @@
 // Outputs (committed; every byte is a copy of editor/assets/playtest):
 //   assets/playtest/*        player/NPC frames and the two sheet TILESETs
 //   images.json              PSM marks for the PNGs
-//   pak.json                 the two raw TILESET entries
+//   pak.json                 the two raw TILESET entries, the two budgeted
+//                            text faces and their licenses (fonts/, from
+//                            gen-cjk-font.ts)
 
 import { copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -35,6 +37,12 @@ writeFileSync(
     [
       { key: "ui:tile.editor-sheet-town", file: "assets/playtest/sheet-town.pkts" },
       { key: "ui:tile.editor-sheet-dun", file: "assets/playtest/sheet-dun.pkts" },
+      // The faces a loaded document's text is baked from (cjk-glyphs.ts) and
+      // their licenses (gen-cjk-font.ts writes all four).
+      { key: "font:preview-latin", file: "fonts/Inter-preview.otf" },
+      { key: "font:preview-cjk", file: "fonts/NotoSansCJKsc-preview.otf" },
+      { key: "license:Inter.txt", file: "fonts/LICENSE-Inter.txt" },
+      { key: "license:NotoSansCJK.txt", file: "fonts/LICENSE-NotoSansCJK.txt" },
     ],
     null,
     2,

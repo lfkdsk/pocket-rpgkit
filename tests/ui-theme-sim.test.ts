@@ -373,6 +373,24 @@ simDescribe("ui theme — built fixture on the sim host", () => {
 
   // --- T2-9 scrolling choices --------------------------------------------
 
+  /** The choices box's drawn rows, in order (empty slots dropped). */
+  function choiceRows(tree: unknown): string[] {
+    const rows: string[] = [];
+    const walk = (node: unknown): void => {
+      const n = node as { n?: string; x?: string; k?: unknown[] } | null;
+      if (!n) return;
+      const m = /^rpgkit-choice-(\d+)$/.exec(n.n ?? "");
+      if (m) {
+        const text = (n.k ?? []).map((c) => (c as { x?: string }).x ?? "").join("");
+        if (text.trim()) rows[Number(m[1])] = text;
+        return;
+      }
+      for (const child of n.k ?? []) walk(child);
+    };
+    walk(tree);
+    return rows.filter((row) => row !== undefined);
+  }
+
   test("more than 4 choices scroll a 4-row window that follows the live cursor", () => {
     // choices8: 8 options, cursor at index 5 -> window [4..7] (a clamped
     // "cursor one row from the top" window: windowStart(5, 8, 4) = 4).
@@ -386,11 +404,19 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     for (const label of ["Mercenary route", "Diplomat route", "Smuggler route", "Pilgrim route"]) {
       expect(treeHasText(tree, label), label).toBe(false);
     }
-    // The selected row (window row 1, y 118..132) is accent; its 32-char
-    // label is truncated to fit the 248 px panel with an ellipsis.
+    // The selected option (window item 1) is wider than the 248 px panel:
+    // it wraps onto two rows instead of being cut, the box grows one row
+    // (14 px) upward, and both of its rows (y 104..118 and 118..132) are
+    // accent while the rows around them are not.
+    expect(choiceRows(tree)).toEqual([
+      "  Scholar route", "> A label far too long to fit the choices", "  box at all", "  Hermit route", "  Wanderer route",
+    ]);
+    expect(treeHasText(tree, "\u2026")).toBe(false);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 104, 118)).toBeGreaterThan(15);
     expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 118, 132)).toBeGreaterThan(15);
-    expect(treeHasText(tree, "A label far too long to…")).toBe(true);
-    expect(treeHasText(tree, "A label far too long to fit the choices box at all")).toBe(false);
+    // (Tall glyphs of the accent row reach 2 px into the row above.)
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 90, 102)).toBe(0);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 132, 146)).toBe(0);
 
     // Cursor at the top (index 0): window [0..3], the tail options are
     // out of view — the window follows the cursor, it is not pinned
@@ -409,25 +435,28 @@ simDescribe("ui theme — built fixture on the sim host", () => {
       expect(treeHasText(tree, label), label).toBe(true);
     }
     expect(treeHasText(tree, "Mercenary route")).toBe(false);
-    expect(treeHasText(tree, "A label far too long to…")).toBe(true);
-    expect(treeHasText(tree, "A label far too long to fit the choices box at all")).toBe(false);
-    // Disabled wins over selected: the "> " cursor remains, but the entire
-    // row is dim and contributes no accent pixels.
+    expect(choiceRows(tree).slice(1, 3)).toEqual(["> A label far too long to fit the choices", "  box at all"]);
+    expect(treeHasText(tree, "\u2026")).toBe(false);
+    // Disabled wins over selected: the "> " cursor remains, but both rows
+    // of the option are dim and contribute no accent pixels.
+    expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 104, 118)).toBeGreaterThan(15);
     expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 118, 132)).toBeGreaterThan(15);
-    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 118, 132)).toBe(0);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 104, 132)).toBe(0);
   });
 
   test("extension choices keep their fixed frame and semantic colours in a 960x544 viewport", () => {
     const stride = 960;
-    const wideChoices = { x0: 700, x1: 948, y0: 350, y1: 446 };
+    // 96 px plus one row for the wrapped long option.
+    const wideChoices = { x0: 700, x1: 948, y0: 336, y1: 446 };
     try {
       world.resizeViewport(stride, 544);
       const fb = shot({ modal: "choicesDynamic" });
       expect(fb.length).toBe(stride * 544 * 4);
       expectFrame(fb, wideChoices, DEFAULT_UI_THEME.border, DEFAULT_UI_THEME.paper, stride);
-      // Content starts at (708, 358); selected index 5 is window row 1.
-      expect(count(fb, DEFAULT_UI_THEME.dim, 708, 940, 390, 404, stride)).toBeGreaterThan(15);
-      expect(count(fb, DEFAULT_UI_THEME.accent, 708, 940, 390, 404, stride)).toBe(0);
+      // Content starts at (708, 344); selected index 5 is window item 1,
+      // two rows.
+      expect(count(fb, DEFAULT_UI_THEME.dim, 708, 940, 376, 404, stride)).toBeGreaterThan(30);
+      expect(count(fb, DEFAULT_UI_THEME.accent, 708, 940, 376, 404, stride)).toBe(0);
     } finally {
       world.resizeViewport(W, 272);
       show({});

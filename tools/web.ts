@@ -62,6 +62,7 @@ import {
   type PlatformContractRegistry,
 } from "../vendor/pocketjs/contracts/spec/platforms.ts";
 import { APPS } from "./build-example.ts";
+import { appDirOf, fontLicenseFiles } from "./lib/font-licenses.ts";
 import type { Size, ViewportConfig } from "./web/fit.ts";
 import {
   BUTTON_GLYPHS,
@@ -824,12 +825,33 @@ function showcaseCard(entry: ShowcaseEntry): string {
   ].join("\n");
 }
 
+/** Copy the license files of the fonts an app bakes (tools/lib/font-licenses.ts)
+ *  into its site directory; returns their file names. */
+export function copyFontLicenses(appDir: string, dir: string): string[] {
+  const names: string[] = [];
+  for (const file of fontLicenseFiles(appDir)) {
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    copyFileSync(file, join(dir, name));
+    names.push(name);
+  }
+  return names;
+}
+
 /** One game's player page, <site>/<id>/index.html. */
-export function renderPlayer(site: SiteInfo, game: WebGame, config: PlayerConfig, credits: boolean): string {
+export function renderPlayer(
+  site: SiteInfo,
+  game: WebGame,
+  config: PlayerConfig,
+  credits: boolean,
+  fontLicenses: readonly string[] = [],
+): string {
   const shape = config.viewport.policy === "fixed" ? config.viewport.logical : config.viewport.default;
   const demoControls = playerDemoControls(game);
   const footer = [
     ...(credits ? ['Art credits and licenses: <a href="ATTRIBUTION.txt">ATTRIBUTION.txt</a>.'] : []),
+    ...(fontLicenses.length > 0
+      ? [`Font license: ${fontLicenses.map((name) => `<a href="${escapeHtml(name)}">${escapeHtml(name)}</a>`).join(", ")}.`]
+      : []),
     `Built with <a href="${escapeHtml(site.source ?? "https://github.com/lfkdsk/pocketjs-rpgkit")}">${escapeHtml(site.title)}</a> ` +
       'on <a href="https://github.com/pocket-stack/pocketjs">PocketJS</a>.',
   ].join(" ");
@@ -1032,6 +1054,9 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
     const attribution = join(dirname(game.manifestPath), "ATTRIBUTION.md");
     const credits = existsSync(attribution);
     if (credits) copyFileSync(attribution, join(dir, "ATTRIBUTION.txt"));
+    // Glyphs baked from a fallback font are a derivative of it: its license
+    // goes beside the game (the pak carries it too, through pak.json).
+    const fontLicenses = copyFontLicenses(appDirOf(projectRoot, game.plan.app.entry), dir);
 
     const playerConfig: PlayerConfig = {
       id: game.id,
@@ -1062,7 +1087,7 @@ export async function buildWebSite(options: BuildOptions): Promise<WebGame[]> {
       mkdirSync(documentsDir, { recursive: true });
       for (const document of game.documents) copyFileSync(document.path, join(documentsDir, `${document.id}.json`));
     }
-    await Bun.write(join(dir, "index.html"), renderPlayer(site, game, playerConfig, credits));
+    await Bun.write(join(dir, "index.html"), renderPlayer(site, game, playerConfig, credits, fontLicenses));
   }
 
   copyFileSync(WASM_PATH, join(outdir, "pocketjs.wasm"));

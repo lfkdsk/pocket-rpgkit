@@ -1131,6 +1131,8 @@ async function main(): Promise<void> {
 
     // Edit the elder's first line in the inspector.
     const NEW_LINE = "ELDER: Studio says hello!";
+    // The second line is Chinese: the play-test bakes its glyphs at load.
+    const ZH_LINE = "长老：试玩也能显示中文。";
     const elderCell = await cell(9, 5);
     await click(elderCell.x, elderCell.y);
     await sleep(150);
@@ -1139,14 +1141,14 @@ async function main(): Promise<void> {
     await evaluate(`(() => {
       const f = document.querySelector('[data-field="command.lines"]');
       f.focus();
-      f.value = ${JSON.stringify(`${NEW_LINE}\nThe play-test runs this edit.`)};
+      f.value = ${JSON.stringify(`${NEW_LINE}\n${ZH_LINE}`)};
       f.dispatchEvent(new Event("input", { bubbles: true }));
       f.dispatchEvent(new Event("change", { bubbles: true }));
       f.blur();
     })()`);
     await sleep(200);
     const edited = await evaluate<unknown>(`__studio.app.currentMap().events.find((e) => e.id === "elder").pages[0].commands[0].lines`);
-    expect("playtest: the elder's dialogue is edited", JSON.stringify(edited) === JSON.stringify([NEW_LINE, "The play-test runs this edit."]), JSON.stringify(edited));
+    expect("playtest: the elder's dialogue is edited", JSON.stringify(edited) === JSON.stringify([NEW_LINE, ZH_LINE]), JSON.stringify(edited));
     const stale = await evaluate<{ stale: boolean; pressed: string | null }>(`({ stale: __studio.play.stale, pressed: document.getElementById("playtest-reload")?.getAttribute("aria-pressed") })`);
     expect("playtest: Reload is marked once the document changes", stale.stale && stale.pressed === "true", JSON.stringify(stale));
     await clickSelector("#playtest-reload");
@@ -1173,6 +1175,36 @@ async function main(): Promise<void> {
     expect("playtest: the game shows the edited dialogue", talking?.message?.kind === "text" && talking.message.text.startsWith(NEW_LINE) && talking.running >= 1 && talking.event === "village/elder", JSON.stringify({ message: talking?.message, running: talking?.running, event: talking?.event }));
     const shown = await evaluate<string>(`document.querySelector('#playtest-readout dd[data-field="message"]').textContent`);
     expect("playtest: the readout shows the open message", shown.startsWith(NEW_LINE), shown);
+    expect("playtest: the Chinese line is on the game's screen", talking?.message?.text === `${NEW_LINE}\n${ZH_LINE}`, JSON.stringify(talking?.message));
+    const glyphs = await evaluate<{ added: number; missing: string } | null>(`__studio.play.glyphs`);
+    expect(
+      "playtest: the game baked the Chinese line's glyphs (none missing)",
+      glyphs?.added === new Set([...ZH_LINE].filter((ch) => ch.codePointAt(0)! > 0x7e)).size && glyphs.missing === "",
+      JSON.stringify(glyphs),
+    );
+    // Missing glyphs would draw one identical box per character; real
+    // glyphs differ cell to cell. Count distinct 12 px cells along each of
+    // the two text rows of the game canvas (light ink on the dark box).
+    const rowInk = await evaluate<number[]>(`(() => {
+      const c = document.querySelector("#playtest-screen iframe").contentDocument.getElementById("screen");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      const k = c.width / 480;
+      const rows = [];
+      for (const [y0, y1] of [[180, 196], [196, 212]]) {
+        const keys = new Set();
+        for (let cell = 0; cell < 10; cell++) {
+          let key = "";
+          for (let y = y0; y < y1; y++) for (let x = 18 + cell * 12; x < 30 + cell * 12; x++) {
+            const i = ((Math.floor(y * k)) * c.width + Math.floor(x * k)) * 4;
+            key += d[i] + d[i + 1] + d[i + 2] > 450 ? "1" : "0";
+          }
+          keys.add(key);
+        }
+        rows.push(keys.size);
+      }
+      return rows;
+    })()`);
+    expect("playtest: the Chinese row shows distinct glyphs, not repeated boxes", rowInk[1]! >= 8, JSON.stringify(rowInk));
     await playShot("studio-playtest-dialogue", { dialogue: true, theme: "light" });
     await clickSelector("#studio-theme");
     await evaluate(`__studio.play.focusGame()`);

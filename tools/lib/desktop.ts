@@ -10,11 +10,12 @@
 // and start it with --js/--pak pointing at this repo's artifacts. Every
 // host flag derives from the resolved plan.
 
-import { mkdirSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { basename, join, relative, resolve } from "node:path";
 import { $ } from "bun";
 import { validateAndResolveBuildPlan } from "../../vendor/pocketjs/framework/src/manifest/resolve.ts";
 import type { ResolvedBuildPlan } from "../../vendor/pocketjs/framework/src/manifest/plan.ts";
+import { appDirOf, fontLicenseFiles } from "./font-licenses.ts";
 
 const root = resolve(import.meta.dir, "..", "..");
 const pocketjs = join(root, "vendor", "pocketjs");
@@ -49,6 +50,10 @@ export async function buildForDesktop(manifestPath: string): Promise<DesktopBuil
   await Bun.write(planPath, JSON.stringify(plan, null, 2) + "\n");
   await $`bun ${join(pocketjs, "tools", "build.ts")} --plan=${planPath} --project-root=${root} --outdir=${outdir}`.cwd(root);
   await $`cargo build --release ${desktopHostFeatures()}`.cwd(join(pocketjs, "hosts", "desktop"));
+
+  // Glyphs baked from a fallback font are a derivative of it: its license
+  // sits beside the pak (which also carries it, through pak.json).
+  for (const file of fontLicenseFiles(appDirOf(root, plan.app.entry))) copyFileSync(file, join(outdir, basename(file)));
 
   const bin = join(pocketjs, "hosts", "desktop", "target", "release", "pocket-desktop-host");
   return { plan, outdir, bin };

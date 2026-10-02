@@ -329,7 +329,7 @@ notification, and it gets no reply (there is no valid correlation key).
 
 | Request | Fields | Reply `result` |
 | --- | --- | --- |
-| `load` | `document`: project JSON text or object; optional `chapters`: `[{id, title, snapshot, tape?}]` (save snapshot/code + u16 tape, for `start` by chapter); optional `art: true` (draw the staged images) | `{title, maps: [{id, name, width, height}], start: {map, x, y, dir}}`, plus `art: {used, skipped: [{kind, id, reason}]}` when the load asked for art |
+| `load` | `document`: project JSON text or object; optional `chapters`: `[{id, title, snapshot, tape?}]` (save snapshot/code + u16 tape, for `start` by chapter); optional `art: true` (draw the staged images) | `{title, maps: [{id, name, width, height}], start: {map, x, y, dir}, glyphs: {added, missing}}` (`glyphs`: the document's characters the host baked at load beyond its built-in ones, and the ones it has no glyph for, drawn as boxes), plus `art: {used, skipped: [{kind, id, reason}]}` when the load asked for art |
 | `art` | `kind` (`sheet` or `sprite`), `id`, `width`, `height`, `offset`, `rgba` (base64 of RGBA8 bytes starting at byte `offset` of the image) | `{received, complete, staged}`: bytes of this image so far, whether it is whole, images staged |
 | `start` | `map` + `x` + `y` + optional `dir` (`down`/`left`/`up`/`right`), **or** `chapter` (a chapter id supplied with `load`) | `{map, x, y, dir}` after the warp/restore |
 | `state` | — | `{status, map, x, y, px, py, dir, moving, frame, running, event, message, switches, variables, gold, items}` |

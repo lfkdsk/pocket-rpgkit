@@ -42,16 +42,17 @@
 import { createMemo, For, Show, type Accessor } from "solid-js";
 import { Image, Text, View } from "@pocketjs/framework/components";
 import type { Modal, ShopRow } from "../engine/interpreter.ts";
-import { truncateLabel, windowStart } from "./list-window.ts";
+import { windowByRows, wrapLabel } from "./list-window.ts";
+import { flowRows, revealRows } from "./text-flow.ts";
+import { DIALOG_ROWS, FACE_WIDTH, dialogColumnWidth, messagePage, messageSpeaker, pageRevealed, shownMessageLines } from "./dialog-pages.ts";
+import { slotMeasure } from "./text-measure.ts";
 import { Panel } from "./Panel.tsx";
-import { resolveUiTheme, speakerLabel, splitSpeaker, type SpeakerSplit, type UiTheme } from "./theme.ts";
+import { resolveUiTheme, speakerLabel, type SpeakerSplit, type UiTheme } from "./theme.ts";
 import { startupProfileMark } from "../startup-profile.ts";
 import type { ChoiceIconBoxComponent, ChoiceIconResolver } from "./choice-icons.ts";
 
 /** Portrait images are 64x64: pak images must be power-of-two. */
 const FACE_PX = 64;
-/** Default portrait column: the image plus an 8 px gap before the text. */
-const FACE_WIDTH = 72;
 /** The message box's top edge, measured up from the layer bottom
  *  (insetB 8 + height 92); the name tab sits on it. */
 const BOX_TOP = 100;
@@ -85,31 +86,74 @@ export interface DialogBoxProps {
   choiceIcon?: ChoiceIconResolver;
 }
 
-/** Slice the joined "line\nline" text to `revealed` chars; lines whose turn
- *  has not come render as empty strings. The view hides their retained rows. */
-function visibleLines(lines: string[], revealed: number): string[] {
-  let left = revealed;
-  return lines.map((line, i) => {
-    if (left <= 0) return "";
-    const take = Math.min(line.length, left);
-    left -= take;
-    if (i < lines.length - 1) left -= 1; // the joined "\n" separator
-    return line.slice(0, take);
-  });
+/** Rows visible at once in the choices/shop box (T2-9: up to 8 choice
+ *  options and an unbounded shop goods list scroll a 4-item window). */
+const VISIBLE_ROWS = 4;
+/** Content width of the choices and shop boxes: 248 outer, 2 px border and
+ *  6 px padding each side, 1 px more each side for a theme rim. A label
+ *  wider than it (after the cursor prefix) wraps onto more rows; nothing
+ *  is cut. */
+const LIST_TEXT_WIDTH = 248 - 2 * (2 + 6);
+/** The choices/shop box: 96 px for a one-row prompt/header and four item
+ *  rows; each further row adds LIST_ROW_H and the box grows upward. */
+const LIST_BOX_H = 96;
+const LIST_ROW_H = 14;
+/** Rows the choices/shop box may add before it would leave a 272 px
+ *  screen (its bottom sits 98 px up): 272 - 98 - 96 = 78 px, five rows.
+ *  Past that the item window scrolls by rows. */
+const LIST_EXTRA_ROWS = 5;
+/** The message box: 92 px for four rows; a page that needs more rows at
+ *  a window narrower than the design width grows it upward. */
+const MESSAGE_BOX_H = 92;
+const MESSAGE_ROW_H = 15;
+/** Row cursor prefixes ("> " selected, "  " not); the label is fitted to
+ *  what remains after the wider of the two. */
+const CURSOR_ON = "> ";
+const CURSOR_OFF = "  ";
+const NO_SPEAKER: SpeakerSplit = { name: null, rest: "", cut: 0 };
+const EMPTY_LINES: readonly string[] = [];
+const range = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+const sameRange = (a: number[], b: number[]): boolean => a.length === b.length;
+
+/** One drawn row of the choices or shop box: an item's first row carries
+ *  the cursor prefix (and a shop price), its further rows indent. */
+interface ListRow {
+  item: number;
+  left: string;
+  right: string;
 }
 
-const TEXT_ROWS = [0, 1, 2, 3];
-const CHOICE_ROWS = [0, 1, 2, 3];
-/** Rows visible at once in the choices/shop box (T2-9: up to 8 choice
- *  options and an unbounded shop goods list scroll a 4-row window; the
- *  box's fixed pixel height never grows). */
-const VISIBLE_ROWS = 4;
-/** Choice/shop row content budget after the 2-char "> "/"  " cursor
- *  prefix: the box fit maxLength:24 authored text before T2-9 raised the
- *  schema cap to 32/unbounded item names, so a longer label truncates
- *  instead of overflowing the 248px panel. */
-const ROW_LABEL_MAX = 24;
-const NO_SPEAKER: SpeakerSplit = { name: null, rest: "", cut: 0 };
+/** The rows of a scrolled list: the window around `index` (windowByRows)
+ *  with every row of every item in it. */
+function listRows(
+  index: number,
+  labels: readonly (readonly string[])[],
+  rights: readonly string[],
+  maxRows: number,
+): ListRow[] {
+  const { start, end } = windowByRows(index, labels.map((rows) => rows.length), VISIBLE_ROWS, maxRows);
+  const out: ListRow[] = [];
+  for (let item = start; item < end; item++) {
+    labels[item]!.forEach((text, j) => {
+      out.push({
+        item,
+        left: `${j > 0 ? CURSOR_OFF : item === index ? CURSOR_ON : CURSOR_OFF}${text}`,
+        right: j === 0 ? rights[item] ?? "" : "",
+      });
+    });
+  }
+  return out;
+}
+const sameLines = (a: readonly string[], b: readonly string[]): boolean =>
+  a === b || (a.length === b.length && a.every((line, i) => line === b[i]));
+
+/** A shop item row's right column. Finite shop stock (B1) shows next to the
+ *  price; unlimited goods (stock: null, and every sell-stage row) show the
+ *  price alone. */
+function priceLabel(r: Extract<ShopRow, { kind: "item" }>): string {
+  const stockSuffix = r.stock !== null ? ` (${r.stock})` : "";
+  return `${r.price}g${stockSuffix}`;
+}
 let warnedNoIconBox = false;
 
 export function DialogBox(props: DialogBoxProps) {
@@ -147,21 +191,12 @@ export function DialogBox(props: DialogBoxProps) {
   const speaker = createMemo(
     () => {
       const m = message();
-      const faces = props.faces;
-      if (!faces || m?.kind !== "text" || m.lines.length === 0) return NO_SPEAKER;
-      return splitSpeaker(m.lines[0]!, faces);
+      if (m?.kind !== "text") return NO_SPEAKER;
+      return messageSpeaker(m.lines, props.faces);
     },
     NO_SPEAKER,
     { equals: (a, b) => a.name === b.name && a.cut === b.cut && a.rest === b.rest },
   );
-  const textLines = createMemo(() => {
-    const m = message();
-    if (m?.kind !== "text") return ["", "", "", ""];
-    const sp = speaker();
-    const lines = sp.name ? [sp.rest, ...m.lines.slice(1)] : m.lines;
-    const visible = visibleLines(lines, Math.max(0, m.revealed - sp.cut));
-    return TEXT_ROWS.map((i) => visible[i] ?? "");
-  });
   // display: 0 shows, 1 hides (the column and the tab stay mounted).
   const faceDisplay = createMemo(() => (speaker().name ? 0 : 1));
   // All three boxes stay mounted and hide while unused: opening a dialog updates
@@ -172,12 +207,90 @@ export function DialogBox(props: DialogBoxProps) {
   const messageDisplay = createMemo(() => (message() ? 0 : 1));
   const textWidth = createMemo(() => props.viewportWidth === undefined
     ? Number.NaN
-    : Math.max(
-        0,
-        props.viewportWidth - 36 -
-          (props.faces && speaker().name ? props.faceWidth ?? FACE_WIDTH : 0),
+    : dialogColumnWidth(
+        { viewportWidth: props.viewportWidth, faces: props.faces, faceWidth: props.faceWidth },
+        speaker().name !== null,
       ));
+  const measure = slotMeasure();
+  // Row width the text may fill: the Text node's width, less the rim's 1 px
+  // inner border on each side when the theme draws one.
+  const textBudget = createMemo(() => textWidth() - (theme().rim ? 2 : 0));
+  const listBudget = createMemo(() => LIST_TEXT_WIDTH - (theme().rim ? 2 : 0));
+  const labelBudget = createMemo(() => listBudget() - Math.max(measure(CURSOR_ON), measure(CURSOR_OFF)));
+  // Choices: the prompt and each option wrap at the box's width; the
+  // window shows whole options, four at most, and the box grows by the
+  // extra rows (up to LIST_EXTRA_ROWS, then the window narrows). The
+  // window is a pure function of the live cursor index: never desyncs
+  // from the reducer, and wrap-around (top<->bottom) recomputes it with
+  // no leftover scroll state.
+  const choicePrompt = createMemo(() => wrapLabel(textChoice()?.prompt ?? "", listBudget(), measure), [""], { equals: sameLines });
+  const promptSlots = createMemo(() => range(choicePrompt().length), [0], { equals: sameRange });
+  // Compared by content, so a cursor move does not re-wrap the labels.
+  const choiceOptions = createMemo(() => textChoice()?.options ?? EMPTY_LINES, EMPTY_LINES, { equals: sameLines });
+  const choiceLabels = createMemo(() => choiceOptions().map((option) => wrapLabel(option, labelBudget(), measure)));
+  const choiceRows = createMemo(() => {
+    const m = textChoice();
+    if (!m) return [];
+    return listRows(m.index, choiceLabels(), [], VISIBLE_ROWS + LIST_EXTRA_ROWS - (choicePrompt().length - 1));
+  });
+  const choiceSlots = createMemo(() => range(Math.max(VISIBLE_ROWS, choiceRows().length)), range(VISIBLE_ROWS), { equals: sameRange });
+  const choiceBoxH = () => LIST_BOX_H + LIST_ROW_H * (promptSlots().length - 1 + choiceSlots().length - VISIBLE_ROWS);
+  // Shop: an item name wraps beside its price column (plus a 6 px gap);
+  // the price stays on the name's first row.
+  const shopLabels = createMemo(() => {
+    const m = shop();
+    if (!m) return { labels: [] as string[][], rights: [] as string[] };
+    const rights = m.rows.map((r) => (r.kind === "item" ? priceLabel(r) : ""));
+    const labels = m.rows.map((r, i) => {
+      if (r.kind !== "item") return [r.kind === "sell" ? "Sell" : r.kind === "leave" ? "Leave" : "Back"];
+      const name = props.items?.[r.item]?.name ?? r.item;
+      return wrapLabel(name, labelBudget() - measure(rights[i]!) - 6, measure);
+    });
+    return { labels, rights };
+  });
+  const shopRows = createMemo(() => {
+    const m = shop();
+    if (!m) return [];
+    const { labels, rights } = shopLabels();
+    return listRows(m.index, labels, rights, VISIBLE_ROWS + LIST_EXTRA_ROWS);
+  });
+  const shopSlots = createMemo(() => range(Math.max(VISIBLE_ROWS, shopRows().length)), range(VISIBLE_ROWS), { equals: sameRange });
+  const shopBoxH = () => LIST_BOX_H + LIST_ROW_H * (shopSlots().length - VISIBLE_ROWS);
   const messageLegend = createMemo(() => message()?.complete ? props.legend() : "");
+  // The rows a message lays out in (text-flow.ts): authored lines that fit
+  // stay as they are; a wider line wraps at the text column's pixel width
+  // (CJK between characters with kinsoku, Latin at spaces). A message the
+  // interpreter split into pages (dialog-pages.ts) shows one page at a
+  // time. Recomputed when the words, the page or the column change, not
+  // per typed character.
+  const shownLines = createMemo(
+    () => {
+      const m = message();
+      if (m?.kind !== "text") return EMPTY_LINES;
+      return shownMessageLines(m.lines, speaker());
+    },
+    EMPTY_LINES,
+    { equals: sameLines },
+  );
+  const pageStarts = createMemo(() => message()?.pageStarts);
+  const page = createMemo(() => message()?.page ?? 0);
+  const pageLines = createMemo(
+    () => messagePage(shownLines(), speaker().cut, pageStarts(), page()),
+    EMPTY_LINES,
+    { equals: sameLines },
+  );
+  const flow = createMemo(() => flowRows(pageLines(), textBudget(), DIALOG_ROWS, measure));
+  // Four rows, more only when a page needs them (a window narrower than
+  // the width pages are cut at).
+  const textRows = createMemo(() => range(Math.max(DIALOG_ROWS, flow().rows.length)), range(DIALOG_ROWS), { equals: sameRange });
+  const extraTextH = () => (textRows().length - DIALOG_ROWS) * MESSAGE_ROW_H;
+  const textLines = createMemo(() => {
+    const m = message();
+    if (m?.kind !== "text") return textRows().map(() => "");
+    const shown = pageRevealed(m.revealed, speaker().cut, pageStarts(), page());
+    const visible = revealRows(flow(), shown);
+    return textRows().map((i) => visible[i] ?? "");
+  });
 
   // Solid replaces an empty string's Text child on the next character. Keep
   // a space in that child and hide its row instead: revealing it only
@@ -186,7 +299,7 @@ export function DialogBox(props: DialogBoxProps) {
   // itself, or the text column right of the portrait when faces are on.
   const messageRows = () => (
     <>
-      <For each={TEXT_ROWS}>
+      <For each={textRows()}>
         {(row) => {
           const line = createMemo(() => textLines()[row]!);
           return (
@@ -194,8 +307,8 @@ export function DialogBox(props: DialogBoxProps) {
               class="text-xs"
               style={{
                 textColor: theme().ink,
-                lineHeight: 15,
-                height: 15,
+                lineHeight: MESSAGE_ROW_H,
+                height: MESSAGE_ROW_H,
                 width: textWidth(),
                 display: line() ? 0 : 1,
               }}
@@ -233,40 +346,39 @@ export function DialogBox(props: DialogBoxProps) {
     >
       {/* Choices box: docked right, immediately above the message box.
           During choices the message box is hidden (the prompt lives in
-          this box, MV parity). */}
+          this box, MV parity). A long prompt or option wraps and the box
+          grows upward. */}
       <Panel
         theme={theme()}
-        style={{ posType: 1, width: 248, height: 96, insetR: 12, insetB: 98, display: choicesDisplay() }}
+        style={{ posType: 1, width: 248, height: choiceBoxH(), insetR: 12, insetB: 98, display: choicesDisplay() }}
         paperClass="flex-col p-[6]"
         debugName="rpgkit-choices-box"
       >
-        <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-choice-prompt">
-          {textChoice()?.prompt ?? ""}
-        </Text>
+        <For each={promptSlots()}>
+          {(row) => (
+            <Text
+              class="text-xs"
+              style={{ textColor: theme().dim, lineHeight: LIST_ROW_H, height: LIST_ROW_H }}
+              debugName={row === 0 ? "rpgkit-choice-prompt" : `rpgkit-choice-prompt-${row}`}
+            >
+              {`${choicePrompt()[row] ?? ""}`}
+            </Text>
+          )}
+        </For>
         <View class="flex-col" style={{ height: 4 }} />
-        <For each={CHOICE_ROWS}>
-          {(row) => {
+        <For each={choiceSlots()}>
+          {(slot) => {
             const m = textChoice;
-            const total = () => m()?.options.length ?? 0;
-            // A pure function of the live cursor index: never desyncs
-            // from the reducer, and wrap-around (top<->bottom) recomputes
-            // the correct window with no leftover scroll state.
-            const start = () => windowStart(m()?.index ?? 0, total(), VISIBLE_ROWS);
-            const optIndex = () => start() + row;
-            const exists = () => m()?.kind === "choices" && optIndex() < total();
-            const selected = () => exists() && m()!.index === optIndex();
-            const disabled = () => exists() && m()!.enabled?.[optIndex()] === false;
-            const label = () =>
-              exists()
-                ? `${selected() ? "> " : "  "}${truncateLabel(m()!.options[optIndex()]!, ROW_LABEL_MAX)}`
-                : "";
+            const row = () => choiceRows()[slot];
+            const selected = () => row() !== undefined && m()!.index === row()!.item;
+            const disabled = () => row() !== undefined && m()!.enabled?.[row()!.item] === false;
             return (
               <Text
                 class="text-xs"
-                style={{ textColor: disabled() ? theme().dim : selected() ? theme().accent : theme().ink, lineHeight: 14, height: 14 }}
-                debugName={`rpgkit-choice-${row}`}
+                style={{ textColor: disabled() ? theme().dim : selected() ? theme().accent : theme().ink, lineHeight: LIST_ROW_H, height: LIST_ROW_H }}
+                debugName={`rpgkit-choice-${slot}`}
               >
-                {`${label()}`}
+                {`${row()?.left ?? ""}`}
               </Text>
             );
           }}
@@ -291,7 +403,7 @@ export function DialogBox(props: DialogBoxProps) {
             stays navigable, just unconfirmable. */}
       <Panel
             theme={theme()}
-            style={{ posType: 1, width: 248, height: 96, insetR: 12, insetB: 98, display: shopDisplay() }}
+            style={{ posType: 1, width: 248, height: shopBoxH(), insetR: 12, insetB: 98, display: shopDisplay() }}
             paperClass="flex-col p-[6]"
             debugName="rpgkit-shop-box"
           >
@@ -310,15 +422,12 @@ export function DialogBox(props: DialogBoxProps) {
               </Text>
             </View>
             <View class="flex-col" style={{ height: 4 }} />
-            <For each={CHOICE_ROWS}>
-              {(row) => {
+            <For each={shopSlots()}>
+              {(slot) => {
                 const m = shop;
-                const total = () => m()?.rows.length ?? 0;
-                const start = () => windowStart(m()?.index ?? 0, total(), VISIBLE_ROWS);
-                const rowIndex = () => start() + row;
-                const exists = () => m()?.kind === "shop" && rowIndex() < total();
-                const shopRow = (): ShopRow | null => (exists() ? m()!.rows[rowIndex()]! : null);
-                const selected = () => exists() && m()!.index === rowIndex();
+                const row = () => shopRows()[slot];
+                const shopRow = (): ShopRow | null => (row() ? m()!.rows[row()!.item]! : null);
+                const selected = () => row() !== undefined && m()!.index === row()!.item;
                 // Buy: unaffordable, capped, or out-of-stock rows are inert
                 // (T2-10 backpack cap / B1 finite stock). Sell: an
                 // unsellable row (B4 — sellList:"disable") stays listed but
@@ -328,33 +437,14 @@ export function DialogBox(props: DialogBoxProps) {
                   if (!r || r.kind !== "item") return false;
                   return m()!.stage === "buy" ? !r.canAfford || r.atCap : !r.sellable;
                 };
-                const leftLabel = () => {
-                  const r = shopRow();
-                  const prefix = selected() ? "> " : "  ";
-                  if (!r) return "";
-                  if (r.kind === "item") {
-                    const name = props.items?.[r.item]?.name ?? r.item;
-                    return `${prefix}${truncateLabel(name, ROW_LABEL_MAX)}`;
-                  }
-                  return `${prefix}${r.kind === "sell" ? "Sell" : r.kind === "leave" ? "Leave" : "Back"}`;
-                };
-                const rightLabel = () => {
-                  const r = shopRow();
-                  if (r?.kind !== "item") return "";
-                  // Finite shop stock (B1) shows next to the price; unlimited
-                  // goods (stock: null, and every sell-stage row) show price
-                  // alone.
-                  const stockSuffix = r.stock !== null ? ` (${r.stock})` : "";
-                  return `${r.price}g${stockSuffix}`;
-                };
                 const rowColor = () => (disabled() ? theme().dim : selected() ? theme().accent : theme().ink);
                 return (
-                  <View class="flex-row justify-between" style={{ height: 14 }} debugName={`rpgkit-shop-row-${row}`}>
-                    <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: 14, height: 14 }}>
-                      {`${leftLabel()}`}
+                  <View class="flex-row justify-between" style={{ height: LIST_ROW_H }} debugName={`rpgkit-shop-row-${slot}`}>
+                    <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}>
+                      {`${row()?.left ?? ""}`}
                     </Text>
-                    <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: 14, height: 14 }}>
-                      {`${rightLabel()}`}
+                    <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}>
+                      {`${row()?.right ?? ""}`}
                     </Text>
                   </View>
                 );
@@ -371,7 +461,7 @@ export function DialogBox(props: DialogBoxProps) {
             the portrait column when the game passes faces. */}
       <Panel
             theme={theme()}
-            style={{ posType: 1, height: 92, insetL: 8, insetR: 8, insetB: 8, display: messageDisplay() }}
+            style={{ posType: 1, height: MESSAGE_BOX_H + extraTextH(), insetL: 8, insetR: 8, insetB: 8, display: messageDisplay() }}
             paperClass="flex-col p-[8]"
             debugName="rpgkit-message-box"
           >
@@ -401,7 +491,7 @@ export function DialogBox(props: DialogBoxProps) {
           style={{
             posType: 1,
             insetL: 20,
-            insetB: BOX_TOP - (theme().rim ? 3 : 2),
+            insetB: BOX_TOP + extraTextH() - (theme().rim ? 3 : 2),
             height: 15,
             flexDir: 0,
             paddingL: 6,

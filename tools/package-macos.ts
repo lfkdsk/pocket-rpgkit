@@ -20,11 +20,12 @@
 // Security > Open Anyway) the first time.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { $ } from "bun";
 import { validateAndResolveBuildPlan } from "../vendor/pocketjs/framework/src/manifest/resolve.ts";
 import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tools/png.ts";
+import { appDirOf, fontLicenseFiles } from "./lib/font-licenses.ts";
 
 if (process.platform !== "darwin") {
   console.error("package-macos: run this on a Mac (the host is built for the local architecture)");
@@ -98,6 +99,9 @@ if (!resolution.ok) {
 }
 const plan = resolution.plan;
 const app = plan.app.output;
+// Glyphs baked from a fallback font are a derivative of it: its license
+// ships in Resources (the pak carries it too, through pak.json).
+for (const file of fontLicenseFiles(appDirOf(root, plan.app.entry))) licenses.push([file, basename(file)]);
 // "Pocket RPG Kit — The Sunstone of Bramble Hollow" -> "The Sunstone of Bramble Hollow"
 name ??= plan.app.title.split(" — ").pop()!;
 const version: string = manifest.version ?? "0.0.0";

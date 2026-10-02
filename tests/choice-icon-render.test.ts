@@ -13,6 +13,11 @@
 //                the text-only box stays byte-identical to its golden
 //                (tests/goldens/ui-default.choices.png), also after an icon
 //                menu has come and gone.
+//   4. WRAP      a label too wide for its row wraps onto more 14 px rows
+//                instead of being cut: no "…" anywhere, every character on
+//                one of the option's rows in order, the option (and the box
+//                above it) taller by the extra rows, the cursor bar over all
+//                of them, and the scrolled-to option whole on screen.
 //
 // The fixture resolves icons with GameView's resolveChoiceIcon
 // (src/ui/choice-icons.ts), so the pixel checks against the exact source
@@ -23,6 +28,8 @@
 // insetB 8; frame 2 + padding 6):
 //   box      x W-260 .. W-12, y H-152 .. H-8
 //   rows     y H-126 + 24 r, 24 px tall, r = 0..3; content from x W-252
+//            (a label on n rows makes its option 14 (n-1) px taller and the
+//            box grows upward by as much)
 //   icon     x W-248 .. W-232 (16 px cell): a 16x32 walker frame shows its
 //            rows 8..31 over the full row, a 16x16 image rows 4..19
 //   label    from x W-226
@@ -36,7 +43,7 @@ import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
 import { DEFAULT_UI_THEME } from "../src/ui/theme.ts";
 import { ICON_ART, ICON_SPRITES } from "./fixtures/ui-theme/icons.ts";
-import { THEMES, type FixtureScene } from "./fixtures/ui-theme/scenes.ts";
+import { MODALS, THEMES, type FixtureScene } from "./fixtures/ui-theme/scenes.ts";
 import { appBundle, appPreflight } from "./helpers/boot.ts";
 
 const preflight = appPreflight("ui-theme");
@@ -45,11 +52,19 @@ const simDescribe = preflight.ok ? describe : describe.skip;
 
 const FIXTURE_DIR = new URL("./fixtures/ui-theme/", import.meta.url);
 const ROW_H = 24;
+/** A wrapped label's extra rows, each adding this much to its option. */
+const LINE_H = 14;
 /** Pinned pixels of the icon-mode box (iconChoices, default theme). */
 const ICON_HASHES: Readonly<Record<string, string>> = {
   "480x272": "c6888635",
   "960x544": "c1c46635",
 };
+
+/** The sim's DevTools tree: debug name, node type, text, children. */
+interface TreeNode { n?: string; t?: string; x?: string; k?: TreeNode[] }
+/** Every text string under `node`, in tree order. */
+const texts = (node: TreeNode | undefined): string[] =>
+  !node ? [] : node.t === "#text" ? [node.x ?? ""] : (node.k ?? []).flatMap(texts);
 
 type Rgb = readonly [number, number, number];
 const rgb = (hex: string): Rgb => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as unknown as Rgb;
@@ -92,15 +107,16 @@ for (const vp of [{ width: 480, height: 272 }, { width: 960, height: 544 }] as c
   };
 
   /** Every opaque pixel of `src` lands at its 1x position in row `r`'s
-   *  icon cell (a 16x32 frame's rows 8..31, a 16x16 image at +4). Returns
-   *  how many opaque pixels were compared. */
-  async function expectIcon(fb: Uint8Array, r: number, src: string): Promise<number> {
+   *  icon cell (a 16x32 frame's rows 8..31, a 16x16 image at +4), the cell's
+   *  top at `cellY` (rowY(r) unless rows above it are taller). Returns how
+   *  many opaque pixels were compared. */
+  async function expectIcon(fb: Uint8Array, r: number, src: string, cellY = rowY(r)): Promise<number> {
     const png = await sprite(src);
-    const top = png.height === 32 ? rowY(r) - 8 : rowY(r) + 4;
+    const top = png.height === 32 ? cellY - 8 : cellY + 4;
     let compared = 0;
     for (let y = 0; y < png.height; y++) {
       const sy = top + y;
-      if (sy < rowY(r) || sy >= rowY(r) + ROW_H) continue;
+      if (sy < cellY || sy >= cellY + ROW_H) continue;
       for (let x = 0; x < png.width; x++) {
         const s = (y * png.width + x) * 4;
         if (png.rgba[s + 3] !== 255) continue;
@@ -125,6 +141,27 @@ for (const vp of [{ width: 480, height: 272 }, { width: 960, height: 544 }] as c
       const node = tree as { n?: string; k?: unknown[] } | null;
       if (!node) return false;
       return node.n === name || (Array.isArray(node.k) && node.k.some((c) => hasNode(c, name)));
+    };
+    const findNode = (tree: unknown, name: string): TreeNode | undefined => {
+      const node = tree as TreeNode | null;
+      if (!node) return undefined;
+      if (node.n === name) return node;
+      for (const child of node.k ?? []) {
+        const hit = findNode(child, name);
+        if (hit) return hit;
+      }
+      return undefined;
+    };
+    /** The drawn label rows of each option in the icon box's window, top to
+     *  bottom: an option's Texts after its image and "?" cell, minus the
+     *  " " placeholders of hidden rows. */
+    const optionRows = (): string[][] => {
+      const paper = findNode(world.getTree(), "rpgkit-choices-icon-box")!.k![0]!;
+      const area = paper.k!.find((c) => c.t === "view")!;
+      return area.k!
+        .filter((c) => c.k?.[0]?.t === "image")
+        .map((option) => option.k!.slice(2).flatMap(texts).filter((text) => text.trim() !== ""))
+        .filter((rows) => rows.length > 0);
     };
     let warn: ReturnType<typeof spyOn>;
     let plainChoices = "";
@@ -223,15 +260,80 @@ for (const vp of [{ width: 480, height: 272 }, { width: 960, height: 544 }] as c
     test("eight icon rows scroll a four-row window that follows the cursor", async () => {
       show({});
       const fb = show({ modal: "iconChoices8" });
-      // index 5 of 8 -> window 4..7, cursor on window row 1.
+      // index 5 of 8 -> window 4..7, cursor on window row 1, whose label
+      // wraps (case 4 below): the box grows upward by its extra rows.
+      const extra = (optionRows()[1]!.length - 1) * LINE_H;
+      const cell = [rowY(0) - extra, rowY(1) - extra, rowY(2), rowY(3)];
       const curator = ICON_ART.curator as Exclude<(typeof ICON_ART)[string], string>;
       const guide = ICON_ART.guide as Exclude<(typeof ICON_ART)[string], string>;
       const alternate = ICON_ART.alternate as Exclude<(typeof ICON_ART)[string], string>;
-      expect(await expectIcon(fb, 0, curator.idle[2])).toBeGreaterThan(150);
-      expect(await expectIcon(fb, 1, guide.idle[3])).toBeGreaterThan(150);
-      expect(await expectIcon(fb, 2, alternate.idle[1])).toBeGreaterThan(150);
-      expect(await expectIcon(fb, 3, curator.walkR[0])).toBeGreaterThan(150);
-      expect(count(fb, DEFAULT_UI_THEME.accent, ROW_X0, ROW_X1, rowY(1), rowY(1) + 1)).toBe(ROW_X1 - ROW_X0);
+      expect(await expectIcon(fb, 0, curator.idle[2], cell[0])).toBeGreaterThan(150);
+      expect(await expectIcon(fb, 1, guide.idle[3], cell[1])).toBeGreaterThan(150);
+      expect(await expectIcon(fb, 2, alternate.idle[1], cell[2])).toBeGreaterThan(150);
+      expect(await expectIcon(fb, 3, curator.walkR[0], cell[3])).toBeGreaterThan(150);
+      expect(count(fb, DEFAULT_UI_THEME.accent, ROW_X0, ROW_X1, cell[1]!, cell[1]! + 1)).toBe(ROW_X1 - ROW_X0);
+    });
+
+    test("a label too wide for its row wraps onto more rows, uncut, under a bar that covers them all", async () => {
+      show({});
+      const fb = show({ modal: "iconChoices8" });
+      const d = DEFAULT_UI_THEME;
+      const options = MODALS.iconChoices8.options;
+      // Nothing in the box is cut short.
+      for (const text of texts(findNode(world.getTree(), "rpgkit-choices-icon-box"))) expect(text).not.toContain("\u2026");
+      // Window 4..7: each option's rows hold its whole label, in order
+      // (a Latin label breaks at spaces, which drop at the break).
+      const rows = optionRows();
+      expect(rows.map((r) => r.join(" "))).toEqual(options.slice(4, 8));
+      const long = rows[1]!;
+      expect(long.length).toBeGreaterThan(1);
+      expect(long.join("").replace(/\s+/g, "")).toBe(options[5]!.replace(/\s+/g, ""));
+      for (const r of [0, 2, 3]) expect(rows[r], `option ${r}`).toHaveLength(1);
+      // The box and the option grow by the extra rows; the box's frame
+      // moves up by as much and stays on screen.
+      const extra = (long.length - 1) * LINE_H;
+      const boxTop = BOX.y0 - extra;
+      expect(boxTop).toBeGreaterThanOrEqual(0);
+      expect(count(fb, d.border, BOX.x0, BOX.x1, boxTop, boxTop + 2)).toBe((BOX.x1 - BOX.x0) * 2);
+      expect(count(fb, d.border, BOX.x0, BOX.x1, BOX.y1 - 2, BOX.y1)).toBe((BOX.x1 - BOX.x0) * 2);
+      // The cursor bar spans every row of the selected option: frame on all
+      // four edges, tint inside down to its last row.
+      const top = rowY(1) - extra;
+      const barH = ROW_H + extra;
+      expect(count(fb, d.accent, ROW_X0, ROW_X1, top, top + 1)).toBe(ROW_X1 - ROW_X0);
+      expect(count(fb, d.accent, ROW_X0, ROW_X1, top + barH - 1, top + barH)).toBe(ROW_X1 - ROW_X0);
+      expect(count(fb, d.accent, ROW_X0, ROW_X0 + 1, top, top + barH)).toBe(barH);
+      expect(count(fb, d.accent, ROW_X1 - 1, ROW_X1, top, top + barH)).toBe(barH);
+      const tint = at(fb, ROW_X1 - 8, top + 12);
+      expect(tint).not.toEqual(rgb(d.paper));
+      expect(at(fb, ROW_X1 - 8, top + barH - 4)).toEqual(tint);
+      expect(count(fb, d.accent, ROW_X0, ROW_X1, top - 1, top)).toBe(0);
+      expect(count(fb, d.accent, ROW_X0, ROW_X1, top + barH, top + barH + 1)).toBe(0);
+      // Every label row is drawn, in accent, inside the bar; no ink there.
+      for (let k = 0; k < long.length; k++) {
+        const y = top + (ROW_H - LINE_H) / 2 + k * LINE_H;
+        expect(count(fb, d.accent, LABEL_X, ROW_X1 - 2, y, y + LINE_H), `label row ${k}`).toBeGreaterThan(15);
+      }
+      expect(count(fb, d.ink, ROW_X0, ROW_X1, top, top + barH)).toBe(0);
+      // No label ink past the content's right edge.
+      for (const c of [d.ink, d.accent]) expect(count(fb, c, ROW_X1, BOX.x1 - 2, boxTop + 2, BOX.y1 - 2), c).toBe(0);
+      // The scrolled-to option is whole: the option below starts under the
+      // bar, the last one still ends above the legend, which still draws.
+      expect(count(fb, d.ink, LABEL_X, ROW_X1, rowY(2), rowY(2) + ROW_H)).toBeGreaterThan(15);
+      expect(count(fb, d.ink, LABEL_X, ROW_X1, rowY(3), rowY(3) + ROW_H)).toBeGreaterThan(15);
+      expect(count(fb, d.dim, ROW_X0, ROW_X1, rowY(4) + 2, BOX.y1 - 8)).toBeGreaterThan(20);
+    });
+
+    test("after a wrapped menu the label rows it added stay hidden and build nothing again", () => {
+      show({ modal: "iconChoices8" });
+      show({});
+      // A one-row menu after it renders exactly as its golden...
+      expect(fnv1a(show({ modal: "iconChoices" }))).toBe(ICON_HASHES[`${W}x${H}`]!);
+      // ...and reopening the wrapped one reuses the rows it mounted.
+      structuralOps = 0;
+      show({});
+      show({ modal: "iconChoices8" });
+      expect(structuralOps).toBe(0);
     });
 
     test("an unknown or uncooked sprite draws the '?' placeholder, warns once, and never throws", async () => {

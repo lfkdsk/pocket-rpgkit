@@ -30,6 +30,7 @@ import type { SessionState } from "../../src/engine/session.ts";
 import { loadProject } from "../../editor/engine/document.ts";
 import { createPlaytestAssets, PLAYTEST_BATTLE_RULES } from "../../editor/engine/playtest-view.ts";
 import { buildPreviewArt, type PreviewTextureOps } from "./art.ts";
+import { documentCodepoints, supplementGlyphs } from "./cjk-glyphs.ts";
 import {
   PREVIEW_FEATURES,
   PREVIEW_PROTOCOL,
@@ -212,6 +213,9 @@ export function PreviewApp() {
       }
       const list = chapterList(chapters);
       unmount();
+      // Bake the document's characters the atlases lack before the view
+      // mounts and measures (cjk-glyphs.ts).
+      const glyphs = supplementGlyphs(documentCodepoints(project));
       const built = art ? buildPreviewArt(project, images, TEXTURE_OPS, loadTileTexture) : null;
       artHandles = built?.handles ?? [];
       const assets = createPlaytestAssets(project, built?.art);
@@ -221,6 +225,7 @@ export function PreviewApp() {
         title: project.title,
         maps: project.maps.map((map) => ({ id: map.id, name: map.name || map.id, width: map.width, height: map.height })),
         start: { map: project.start.map, x: project.start.x, y: project.start.y, dir: project.start.dir },
+        glyphs,
         ...(built ? { art: built.use } : {}),
       };
     },

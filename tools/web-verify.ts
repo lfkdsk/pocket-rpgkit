@@ -1505,6 +1505,18 @@ async function main(): Promise<void> {
       const again = await evaluate<any>(`__previewDemo.loadSample()`);
       expect("preview: channel works after re-allow", again?.maps?.[0]?.id === "yard", JSON.stringify(again));
       const sample = await evaluate<string>(`document.getElementById("sample-project").textContent.trim()`);
+      {
+        // Over postMessage from another origin: a Chinese document reports
+        // its baked characters (the drawing is checked same-origin below).
+        const doc = JSON.parse(sample);
+        doc.maps[0].events[0].pages[0].commands[0].lines = ["园丁：你好。"];
+        const zh = await evaluate<any>(`__previewDemo.loadText(${JSON.stringify(JSON.stringify(doc))})`);
+        expect(
+          "preview: a Chinese document loads over the protocol with its glyphs",
+          zh?.maps?.[0]?.id === "yard" && zh?.glyphs?.added === 6 && zh?.glyphs?.missing === "",
+          JSON.stringify(zh?.glyphs),
+        );
+      }
 
       // ---- wire limits: exact budget accepted, one byte over refused ----
       // The padded document is built in the page (not shipped over CDP); the
@@ -1643,6 +1655,61 @@ async function main(): Promise<void> {
       const direct = await evaluate<any>(`__rpgkitPreview.state()`);
       expect("preview: same-origin direct drive", direct?.map === "yard" && direct?.x === 5 && direct?.y === 5, JSON.stringify(direct));
       await canvasShot("preview-canvas");
+
+      // ---- Chinese text: baked at load from the preview's budgeted faces ----
+      // Two different lines must draw two different pictures (before, both
+      // drew identical missing-glyph boxes); the screenshots are kept for a
+      // human look. The license of the faces is served beside the host.
+      {
+        phase = "preview-chinese";
+        const withLines = (lines: string[]) => {
+          const doc = JSON.parse(sample);
+          doc.maps[0].events[0].pages[0].commands[0].lines = lines;
+          return JSON.stringify(doc);
+        };
+        const talk = async (lines: string[], name: string) => {
+          const load = await evaluate<any>(
+            `(() => { const t = performance.now(); const r = __rpgkitPreview.load(${JSON.stringify(withLines(lines))}); return { ...r, ms: performance.now() - t }; })()`,
+          );
+          await evaluate(`__rpgkitPreview.start({ kind: "tile", map: "yard", x: 5, y: 3, dir: "up" })`);
+          await sleep(300);
+          // Talk with a real key press (an injected input tape would hold the
+          // page in tape playback once it ends).
+          await key("keyDown", "Enter");
+          await sleep(80);
+          await key("keyUp", "Enter");
+          await sleep(2500); // the typewriter finishes
+          const state = await evaluate<any>(`__rpgkitPreview.state()`);
+          const stats = await canvasStats();
+          await canvasShot(name);
+          return { load, state, stats };
+        };
+        const ZH_A = ["园丁：欢迎来到预览的小院子。", "这个世界是一段粘贴进来的文档。"];
+        const ZH_B = ["园丁：明天早上记得给花浇水，", "别忘了关上东边那扇木门。"];
+        const a = await talk(ZH_A, "preview-chinese-a");
+        const b = await talk(ZH_B, "preview-chinese-b");
+        expect(
+          "preview: a Chinese document's characters are baked at load",
+          a.load?.glyphs?.added > 0 && a.load?.glyphs?.missing === "" && b.load?.glyphs?.missing === "",
+          `A ${JSON.stringify(a.load?.glyphs)} in ${Math.round(a.load?.ms)} ms, B ${JSON.stringify(b.load?.glyphs)} in ${Math.round(b.load?.ms)} ms`,
+        );
+        expect(
+          "preview: the Chinese lines are on screen",
+          a.state?.message?.text === ZH_A.join("\n") && b.state?.message?.text === ZH_B.join("\n"),
+          JSON.stringify([a.state?.message, b.state?.message]),
+        );
+        expect("preview: two Chinese lines draw two different pictures", a.stats.hash !== b.stats.hash, `${a.stats.hash} vs ${b.stats.hash}`);
+        const licenses = await evaluate<any>(
+          `Promise.all(["LICENSE-NotoSansCJK.txt", "LICENSE-Inter.txt"].map((f) => fetch(f).then(async (r) => ({ f, ok: r.ok, ofl: (await r.text()).includes("SIL OPEN FONT LICENSE Version 1.1") }))))`,
+        );
+        expect(
+          "preview: the font licenses are served beside the host",
+          Array.isArray(licenses) && licenses.length === 2 && licenses.every((l: any) => l.ok && l.ofl),
+          JSON.stringify(licenses),
+        );
+        phase = "preview-canvas";
+      }
+
       const stop = await evaluate<any>(`__rpgkitPreview.stop()`);
       expect("preview: stop", stop === undefined || stop === null, JSON.stringify(stop));
       const idle = await evaluate<any>(

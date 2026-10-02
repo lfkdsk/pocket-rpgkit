@@ -16,3 +16,6 @@ dist/
 tests/fixtures/*/assets/
 # The save/load fixture copies Sunstone's image metadata with its art.
 tests/fixtures/ks2-save/images.json
+
+# Downloaded font sources (tools/cjk-font.ts)
+.cache/

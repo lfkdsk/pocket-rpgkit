@@ -6,5 +6,21 @@
   {
     "key": "ui:tile.editor-sheet-dun",
     "file": "assets/playtest/sheet-dun.pkts"
+  },
+  {
+    "key": "font:preview-latin",
+    "file": "fonts/Inter-preview.otf"
+  },
+  {
+    "key": "font:preview-cjk",
+    "file": "fonts/NotoSansCJKsc-preview.otf"
+  },
+  {
+    "key": "license:Inter.txt",
+    "file": "fonts/LICENSE-Inter.txt"
+  },
+  {
+    "key": "license:NotoSansCJK.txt",
+    "file": "fonts/LICENSE-NotoSansCJK.txt"
   }
 ]

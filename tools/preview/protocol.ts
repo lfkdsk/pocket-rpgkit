@@ -103,6 +103,10 @@ export interface PreviewLoadResult {
   start: { map: string; x: number; y: number; dir: string };
   /** Present when the load asked for `art`; an optional addition within v1. */
   art?: PreviewArtUse;
+  /** Text the preview baked for this document: `added` distinct characters
+   *  beyond its built-in ones, and the `missing` characters it has no glyph
+   *  for (shown as a missing-glyph box). Absent from hosts that predate it. */
+  glyphs?: { added: number; missing: string };
 }
 
 /** What one image is: a tile sheet (by sheet id, cut into 16px cells) or a

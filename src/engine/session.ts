@@ -73,6 +73,7 @@ import {
   type PendingScene,
   type SwitchState,
   type WorldIdleBlockers,
+  type TextPaginator,
   type WorldOptions,
   type World,
   continueScene,
@@ -338,6 +339,10 @@ export interface SessionOptions {
    *  WorldOptions.onFiberStart). Coverage/QA tools use it to observe pages
    *  whose fibers begin and end inside one tick. */
   onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
+  /** Where a message too long for one box breaks into pages, forwarded to
+   *  every world (see WorldOptions.paginateText). GameView passes the
+   *  dialog box's paginator; without one every message is one page. */
+  paginateText?: TextPaginator;
 }
 
 function visitCondition(c: Condition, found: Set<string>): void {
@@ -629,6 +634,7 @@ export function createSession(
     onFiberStart: options.onFiberStart,
     animations: project.animations,
   };
+  if (options.paginateText) worldOptions.paginateText = options.paginateText;
   assertRegisteredExtensions(extensions, commonExtensionCalls(commonEvents));
   assertBattleRegistered(options.battle ?? null, commonEvents.some((event) => commandsUseBattle(event.commands)));
   assertScenesRegistered(options.scenes ?? {}, (() => {

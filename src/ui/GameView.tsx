@@ -86,8 +86,10 @@ import {
   type BalloonEffectState,
 } from "../engine/screen.ts";
 import { DialogBox } from "./DialogBox.tsx";
+import { createDialogPaginator } from "./dialog-pages.ts";
+import { slotMeasure } from "./text-measure.ts";
 import { resolveChoiceIcon, type ChoiceIconBoxComponent } from "./choice-icons.ts";
-import type { UiTheme } from "./theme.ts";
+import { resolveUiTheme, type UiTheme } from "./theme.ts";
 import type {
   GameAssets,
   GameMapLayerAssets,
@@ -913,6 +915,14 @@ export function GameView(props: GameViewProps) {
   // The host rate selects how many fixed 60 Hz reference ticks each frame
   // folds. Time-bearing commands compile against that fixed reference.
   const hz = simulationHz();
+  // A message longer than the dialog box takes one confirm per page. The
+  // interpreter asks this paginator when a box opens: pages are cut at the
+  // design width with the baked font's advances (the same on every host),
+  // so the confirms a tape needs never depend on the window or the rate.
+  const paginateText = createDialogPaginator(
+    { viewportWidth: SCREEN_W, faces: props.faces, faceWidth: props.faceWidth, rim: !!resolveUiTheme(props.theme).rim },
+    slotMeasure(),
+  );
   // The controller folds the published 60 Hz tape on its source timeline
   // and maps each host frame onto that timeline.
   const attract = props.attractTape !== undefined || props.demo !== undefined
@@ -924,6 +934,7 @@ export function GameView(props: GameViewProps) {
         scenes: props.scenes,
         scene: props.scene,
         immutableState: props.immutableState,
+        paginateText,
       })
     : null;
   const session: Session = attract
@@ -935,6 +946,7 @@ export function GameView(props: GameViewProps) {
         scenes: props.scenes,
         scene: props.scene,
         immutableState: props.immutableState,
+        paginateText,
       });
   startupProfileMark("game-view:session");
   let state: SessionState = attract ? attract.state : startSession(project, session);

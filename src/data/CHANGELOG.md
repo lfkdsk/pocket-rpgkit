@@ -206,7 +206,9 @@ Three optional, backwards-compatible additions from Scout S1 §5–6
   characters. The box still shows 4 rows at a time; past 4 options it
   scrolls a window that follows the live cursor, and a label longer
   than the box truncates with a trailing ellipsis instead of
-  overflowing it.
+  overflowing it. (A runtime change since, with no schema change: the
+  kit's boxes now wrap such a label onto more rows instead of cutting
+  it.)
 - **Variable-operand arithmetic (T2-16, extended for B3):** `variable`'s
   `set` accepts a third shape, `{ op: "copy" | "add" | "sub" | "mul" |
   "div" | "mod", from: id }`, reading another variable's live value

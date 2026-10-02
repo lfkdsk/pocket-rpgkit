@@ -309,6 +309,12 @@ extensions, battles and backdrops show the same visible stand-ins as the
 PocketJS editor's playtest. Art only changes what is drawn: the game plays
 the same with and without it.
 
+Chinese dialogue shows in the play-test: when the game loads the document
+it bakes the characters the document uses from a budgeted Chinese face (the
+3,755 common GB2312 level-1 hanzi plus punctuation). A character outside
+that budget draws as a box, and the panel says which ones (a built game
+bakes its own font and draws them).
+
 Limits:
 
 - A document whose `load` message would exceed the protocol's 4 MiB message

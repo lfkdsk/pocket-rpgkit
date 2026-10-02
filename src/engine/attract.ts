@@ -30,7 +30,7 @@
 // cursors. A no-keyframe replay remains the reference path used by tests.
 
 import type { MapRepository, ProjectSource } from "./types.ts";
-import type { Modal } from "./interpreter.ts";
+import { textModalPage, type Modal, type TextPaginator } from "./interpreter.ts";
 import type { ExtensionOptions } from "./extensions.ts";
 import type { BattleRules } from "./battle.ts";
 import type { SceneRules } from "./scene.ts";
@@ -151,6 +151,9 @@ export interface AttractOptions {
   /** KG1: game-scene reducers keyed by id, forwarded to createSession. */
   scenes?: Record<string, SceneRules>;
   scene?: SceneOptions;
+  /** Message pagination, forwarded to createSession (pure, like the
+   *  registrations above). */
+  paginateText?: TextPaginator;
 }
 
 export interface AttractStatus {
@@ -325,6 +328,7 @@ export class AttractController {
       scenes: opts.scenes,
       scene: opts.scene,
       immutableState: opts.immutableState,
+      paginateText: opts.paginateText,
     });
     this.idleFrames = opts.idleFrames ?? this.hz * 10;
     this.endHoldFrames = opts.endHoldFrames ?? this.timelineHz * 2;
@@ -500,11 +504,13 @@ export class AttractController {
   presentedModal(): Modal | null {
     const modal = this.state.interp.modal;
     if (this.phase !== "attract" || modal?.kind !== "text" || !this.modalPaced) return modal;
+    // A message of several pages types the open one.
+    const { start, end } = textModalPage(modal);
     const revealed = Math.min(
-      modal.total,
-      Math.floor(this.displayTicks * ATTRACT_TYPEWRITER_CPS / this.timelineHz),
+      end,
+      start + Math.floor(this.displayTicks * ATTRACT_TYPEWRITER_CPS / this.timelineHz),
     );
-    return { ...modal, revealed, complete: revealed >= modal.total };
+    return { ...modal, revealed, complete: revealed >= end };
   }
 
   private get modalPaced(): boolean {
@@ -1015,7 +1021,7 @@ export class AttractController {
   private holdFrames(): number {
     const modal = this.state.interp.modal;
     const seconds = modal?.kind === "text"
-      ? attractReadHoldSeconds(modal.total)
+      ? attractReadHoldSeconds(textModalPageLength(modal))
       : modal?.kind === "choices" ? ATTRACT_READ_HOLD_MIN_SECONDS : 0;
     return seconds === 0 ? 0 : Math.max(1, Math.ceil(seconds * this.timelineHz));
   }
@@ -1044,7 +1050,7 @@ export class AttractController {
       if (modal.kind !== "text") {
         this.stage = 3;
         this.readHold = this.holdFrames();
-      } else if (this.displayTicks < Math.max(1, Math.ceil(modal.total * this.timelineHz / ATTRACT_TYPEWRITER_CPS))) {
+      } else if (this.displayTicks < Math.max(1, Math.ceil(textModalPageLength(modal) * this.timelineHz / ATTRACT_TYPEWRITER_CPS))) {
         this.displayTicks++;
         const nextSource = this.tape[this.demoFrame] ?? 0;
         const heldContinues = this.lastFolded !== 0 && (nextSource & this.lastFolded) !== 0;
@@ -1102,4 +1108,10 @@ export class AttractController {
     this.append(0, T_END);
     if (this.endHold >= this.endHoldFrames) this.startAttract();
   }
+}
+
+/** Code points on a text box's open page (the whole text for one page). */
+function textModalPageLength(modal: Extract<Modal, { kind: "text" }>): number {
+  const { start, end } = textModalPage(modal);
+  return end - start;
 }

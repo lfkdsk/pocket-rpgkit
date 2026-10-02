@@ -442,10 +442,14 @@ simDescribe("sunstone — render budget", () => {
     // demo tape providers, timelineFrame and the shared, windowed chapter tape
     // add 2,461 B of opted-in demo code: 777,762 B. Saving the current map's
     // characters, inflating compressed chapter codes, the overlay slot and
-    // the save-input checks add 28,163 B: 805,925 B measured. The ui/demo and
-    // ui/audio input-graph tests separately prove non-opted-in code stays out;
-    // the bound keeps a narrow margin so an accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(808_000);
+    // the save-input checks add 28,163 B: 805,925 B measured. CJK-aware text
+    // layout in the shared boxes (8,921 B) and dialog pages and wrapped list
+    // labels that never cut text (3,357 B) bring it, with the
+    // streamed tile loader, to 822,635 B measured.
+    // The ui/demo and ui/audio input-graph tests separately prove
+    // non-opted-in code stays out; the bound keeps a narrow margin so an
+    // accidental bundle-in still trips it.
+    expect(jsBytes).toBeLessThan(825_000);
   });
 });
 

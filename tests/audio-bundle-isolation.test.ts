@@ -60,10 +60,21 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The optional streamed tile loader (StreamedGameAssets.loadTile, used by the
 // preview page's supplied sheets) adds 183 bytes to the streamed ground and
 // upper layers in Sunstone and the WAV fixture; Meadow is unchanged.
+// CJK-aware text layout (the line breaker, row flow and cached glyph
+// measurer shared by the dialog, battle and save-menu boxes) adds 8,921 shared
+// bytes to Sunstone and the WAV fixture and 8,983 to Meadow; merged with the
+// demo change the three measure 514,512 (Meadow), 789,647 (Sunstone) and
+// 652,604 (WAV fixture). Continuing long messages on further pages and
+// wrapping list labels instead of cutting them (the page state in the
+// reducer, the dialog paginator, row-window helpers) adds 1,489 bytes to
+// Meadow, 3,357 to Sunstone and 2,926 to the WAV fixture.
+// With the save changes, the tile loader and PocketJS #508/#512 merged in,
+// the three measure 516,324 (Meadow), 822,635 (Sunstone) and 657,634 (WAV
+// fixture).
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 502_945;
-const EXPECTED_SUNSTONE_QOA_BYTES = 807_210;
-const EXPECTED_WAV_FIXTURE_BYTES = 642_754;
+const EXPECTED_MEADOW_BYTES = 516_324;
+const EXPECTED_SUNSTONE_QOA_BYTES = 822_635;
+const EXPECTED_WAV_FIXTURE_BYTES = 657_634;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

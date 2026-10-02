@@ -46,6 +46,7 @@ import {
   type AudioTrackState,
 } from "./audio.ts";
 import { TILE } from "./tiles.ts";
+import { scalarLength } from "./text-break.ts";
 import {
   cloneMoveControlState,
   type MoveControlState,
@@ -990,11 +991,47 @@ export interface TextModal {
   kind: "text";
   fiber: string;
   lines: string[];
-  /** Joined text length (the UI renders lines joined with "\n"). */
+  /** Code points of `lines.join("\n")` (one per drawn glyph; equal to the
+   *  string length unless the text has supplementary characters). */
   total: number;
+  /** Code points of the joined text the typewriter has reached. */
   revealed: number;
-  /** True once the typewriter has caught up; confirm then closes the box. */
+  /** True once the typewriter has caught up with the page on screen;
+   *  confirm then turns to the next page or closes the box. */
   complete: boolean;
+  /** Only on a message longer than one box (World.paginateText): the
+   *  code-point offset into `lines.join("\n")` where each page starts,
+   *  beginning with 0. Fixed while the box is open. */
+  pageStarts?: readonly number[];
+  /** The page on screen, an index into pageStarts (present with it). */
+  page?: number;
+}
+
+/** A text box opening on `lines`, with its pages when World.paginateText
+ *  splits it. */
+function openTextModal(w: World, fiber: string, lines: string[]): TextModal {
+  const modal: TextModal = {
+    kind: "text",
+    fiber,
+    lines,
+    total: scalarLength(lines.join("\n")),
+    revealed: 0,
+    complete: false,
+  };
+  const starts = w.paginateText?.(lines);
+  if (starts && starts.length > 1) {
+    modal.pageStarts = starts;
+    modal.page = 0;
+  }
+  return modal;
+}
+
+/** Code points [start, end) of the joined text on the open page. */
+export function textModalPage(m: TextModal): { start: number; end: number } {
+  const starts = m.pageStarts;
+  if (!starts) return { start: 0, end: m.total };
+  const page = m.page ?? 0;
+  return { start: starts[page]!, end: page + 1 < starts.length ? starts[page + 1]! : m.total };
 }
 
 export interface ChoiceModal {
@@ -1072,6 +1109,7 @@ export function modalChanged(a: Modal | null, b: Modal | null): boolean {
     return (
       a.revealed !== b.revealed ||
       a.complete !== b.complete ||
+      a.page !== b.page ||
       a.lines.length !== b.lines.length ||
       a.lines.some((line, i) => line !== b.lines[i])
     );
@@ -1344,6 +1382,8 @@ export interface World {
   messageBlocksPlayer?: boolean;
   /** Opt-in fiber-start trace (see WorldOptions.onFiberStart). */
   onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
+  /** Message pagination (see WorldOptions.paginateText). */
+  paginateText?: TextPaginator;
   /** Project animation catalog (AnimationDef id -> compiled timing), for
    *  mapAnim commands and the UI's frame selection. */
   anims: ReadonlyMap<string, CompiledAnim>;
@@ -1367,7 +1407,18 @@ export interface WorldOptions {
    *  starts, so games that do not install it pay nothing. */
   onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
   animations?: readonly AnimationDef[];
+  /** Where a message too long for one box breaks into pages (the UI's
+   *  dialog-pages.ts createDialogPaginator). Called once when a text box
+   *  opens, with the lines as shown (player name substituted); the answer
+   *  is kept in the modal, so each further page takes one more confirm.
+   *  It must be a pure function of the lines. Absent (headless callers,
+   *  boxes that never wrap): every message is one page. */
+  paginateText?: TextPaginator;
 }
+
+/** Code-point offsets into `lines.join("\n")` where each page of a message
+ *  starts ([0, ...]), or null when it fits one box. */
+export type TextPaginator = (lines: readonly string[]) => readonly number[] | null;
 
 export interface KeyedEvent {
   ev: GameEvent;
@@ -1722,6 +1773,7 @@ export function createWorld(
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
     onFiberStart: options.onFiberStart,
+    paginateText: options.paginateText,
     anims: animsById,
     extensions: options.extensions ?? createExtensionRuntime(),
   };
@@ -3639,26 +3691,49 @@ function runFiber(
       // reveal clock starts on the install frame, not the wait frame, or a
       // queued parallel line would dump its whole text at once (review C09).
       if (!s.modal) f.since = s.frame;
-      const shownLines = substituteLines(ins.lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME);
-      const joined = shownLines.join("\n");
+      // The box keeps the words and pages it opened with; a box installed
+      // now (the slot was busy) asks for them now.
+      const open = s.modal?.kind === "text"
+        ? s.modal
+        : openTextModal(w, f.key, substituteLines(ins.lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME));
+      // The typewriter counts code points (one per drawn glyph), not UTF-16
+      // units: a supplementary character is one step. Same as .length for
+      // text without surrogate pairs. It types the open page only.
+      const total = open.total;
+      const { start, end } = textModalPage(open);
+      const pageLength = end - start;
       // Once a confirm has skipped the typewriter (or it finished naturally)
-      // the box stays full: elapsed-time reveal must not shrink it again.
-      const wasComplete = s.modal?.kind === "text" && s.modal.complete;
-      const timed = wasComplete ? joined.length : revealedChars(joined.length, ins.cps, s.frame - f.since, w.hz);
-      if (input.confirmEdge && timed >= joined.length) {
+      // the page stays full: elapsed-time reveal must not shrink it again.
+      const timed = open.complete ? pageLength : revealedChars(pageLength, ins.cps, s.frame - f.since, w.hz);
+      const next: TextModal = {
+        kind: "text",
+        fiber: f.key,
+        lines: open.lines,
+        total,
+        revealed: 0,
+        complete: false,
+      };
+      if (open.pageStarts) {
+        next.pageStarts = open.pageStarts;
+        next.page = open.page ?? 0;
+      }
+      if (input.confirmEdge && timed >= pageLength) {
+        if (next.pageStarts && next.page! + 1 < next.pageStarts.length) {
+          // Turn the page: its typewriter starts on this frame, like a box
+          // that just opened.
+          next.page!++;
+          next.revealed = end;
+          f.since = s.frame;
+          s.modal = next;
+          return;
+        }
         s.modal = null;
         f.mode = "run";
         top.pc++;
       } else {
-        const complete = input.confirmEdge || timed >= joined.length;
-        s.modal = {
-          kind: "text",
-          fiber: f.key,
-          lines: shownLines,
-          total: joined.length,
-          revealed: complete ? joined.length : timed,
-          complete,
-        };
+        next.complete = input.confirmEdge || timed >= pageLength;
+        next.revealed = start + (next.complete ? pageLength : timed);
+        s.modal = next;
         return;
       }
     } else {
@@ -4168,14 +4243,7 @@ function runFiber(
         f.mode = "text";
         f.since = s.frame;
         const firstLines = substituteLines(ins.lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME);
-        s.modal = {
-          kind: "text",
-          fiber: f.key,
-          lines: firstLines,
-          total: firstLines.join("\n").length,
-          revealed: 0,
-          complete: false,
-        };
+        s.modal = openTextModal(w, f.key, firstLines);
         return;
       case "choices": {
         // Same single-slot rule for the choices box.

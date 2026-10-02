@@ -3,20 +3,31 @@
 // caller's reducer owns the revealed-character count, this component only
 // slices `lines` to it, so a fully-revealed band emits zero repaint once
 // the state stops changing and a rewind to any tick shows exactly the
-// text that tick had revealed.
+// text that tick had revealed. Rows are laid out by ui/text-flow.ts: lines
+// that fit keep their authored rows exactly; a wider line (CJK, a long
+// substituted name) wraps to the band's pixel width. Nothing is cut: a
+// message that needs more than `rows` rows grows the band by a row each
+// (upward, for the usual bottom-anchored band).
 
 import { For, createMemo } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
+import { scalarLength } from "../../engine/text-break.ts";
 import { Panel } from "../Panel.tsx";
+import { flowRows, revealRows } from "../text-flow.ts";
+import { slotMeasure } from "../text-measure.ts";
 import { resolveUiTheme, type UiTheme } from "../theme.ts";
 
 export interface MessageBandProps {
-  /** Up to `rows` (default 2) authored lines, joined with "\n" for reveal
-   *  counting exactly like DialogBox. */
+  /** Authored lines, joined with "\n" for reveal counting exactly like
+   *  DialogBox. Laid out in `rows` (default 2) rows when they fit; more
+   *  rows grow the band. */
   lines: readonly string[];
-  /** Characters of `lines.join("\n")` to show; undefined shows all of it
-   *  (a caller not doing its own typewriter can skip the reducer field). */
+  /** Characters (code points) of `lines.join("\n")` to show; undefined
+   *  shows all of it (a caller not doing its own typewriter can skip the
+   *  reducer field). Same as UTF-16 length for text without supplementary
+   *  characters. */
   revealed?: number;
+  /** Rows the band always has (default 2); a longer message adds rows. */
   rows?: number;
   width?: number;
   /** Legend/hint text right-aligned under the message (e.g. "ok"). Shown
@@ -30,6 +41,9 @@ export interface MessageBandProps {
 const ROW_H = 15;
 const DEFAULT_ROWS = 2;
 const DEFAULT_WIDTH = 300;
+/** Outer width minus the text width: the Panel's 2 px border (its paper is
+ *  inset 2 px per side) plus the paper's 6 px padding per side (p-[6]). */
+const CONTENT_INSET = 16;
 // The Solid universal renderer only patches a Text node's existing content
 // in place (replaceText) when its PREVIOUS value was already a non-empty
 // string; coming from "" it tears the node down and creates a fresh one
@@ -42,29 +56,29 @@ const DEFAULT_WIDTH = 300;
 const BLANK = " ";
 const orBlank = (s: string): string => (s.length > 0 ? s : BLANK);
 
-/** Slice joined "line\nline" text to `revealed` chars, matching DialogBox's
- *  visibleLines: a line whose turn has not come renders empty. */
-function visibleLines(lines: readonly string[], revealed: number): string[] {
-  let left = revealed;
-  return lines.map((line, i) => {
-    if (left <= 0) return "";
-    const take = Math.min(line.length, left);
-    left -= take;
-    if (i < lines.length - 1) left -= 1;
-    return line.slice(0, take);
-  });
+/** Lines compared by content: a caller that re-splits the same message
+ *  every tick (`message.split("\n")`) must not re-run the layout. */
+function sameLines(a: readonly string[], b: readonly string[]): boolean {
+  return a === b || (a.length === b.length && a.every((line, i) => line === b[i]));
 }
 
 export function MessageBand(props: MessageBandProps) {
   const theme = createMemo(() => resolveUiTheme(props.theme));
   const rows = () => props.rows ?? DEFAULT_ROWS;
-  const rowIndices = createMemo(() => Array.from({ length: rows() }, (_, i) => i));
-  const contentWidth = createMemo(() => Math.max(0, (props.width ?? DEFAULT_WIDTH) - 16));
-  const total = createMemo(() => props.lines.join("\n").length);
+  const contentWidth = createMemo(() => Math.max(0, (props.width ?? DEFAULT_WIDTH) - CONTENT_INSET));
+  const lines = createMemo(() => props.lines, undefined, { equals: sameLines });
+  const total = createMemo(() => scalarLength(lines().join("\n")));
   const shown = () => Math.max(0, Math.min(props.revealed ?? total(), total()));
   const complete = () => shown() >= total();
+  // The layout runs when the words or the box change; a typewriter beat
+  // only re-slices the rows it already has.
+  const flow = createMemo(() => flowRows(lines(), contentWidth(), rows(), slotMeasure()));
+  // Every laid-out row gets a Text: a message wider than `rows` rows grows
+  // the band instead of losing its tail.
+  const rowCount = createMemo(() => Math.max(rows(), flow().rows.length));
+  const rowIndices = createMemo(() => Array.from({ length: rowCount() }, (_, i) => i));
   const textLines = createMemo(() => {
-    const visible = visibleLines(props.lines, shown());
+    const visible = revealRows(flow(), shown());
     return rowIndices().map((i) => visible[i] ?? "");
   });
 
@@ -74,7 +88,7 @@ export function MessageBand(props: MessageBandProps) {
       style={{
         posType: 1,
         width: props.width ?? DEFAULT_WIDTH,
-        height: rows() * ROW_H + 12 + 4,
+        height: rowCount() * ROW_H + 12 + 4,
         ...props.style,
       }}
       paperClass="flex-col p-[6]"

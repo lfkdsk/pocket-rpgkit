@@ -1,7 +1,7 @@
 // tools/build-example.ts — build the example apps, the editor and the sim
 // test fixtures against the vendored PocketJS. External-project invocation:
 //
-//   bun tools/build-example.ts                 # every example, the editor, every fixture
+//   bun tools/build-example.ts                 # every example, the editor, every fixture, the preview
 //   bun tools/build-example.ts sunstone grow   # just these
 //   bun tools/build-example.ts editor          # just the editor (build:editor)
 //
@@ -24,10 +24,14 @@ export const EXAMPLES = ["showcase", "meadow", "sunstone", "grow", "wander"] as 
 /** The examples plus the editor app. */
 export const APPS = [...EXAMPLES, "editor"] as const;
 /** Small apps that exist only for the sim suites. */
-export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kg1-name-input", "kau1-audio", "ks2-save", "rmi-play"] as const;
-/** UI theme and Meadow are also built at web densities 2 and 3. The density
- *  regression test uses these variants to compare the same dialog and real
- *  tile art without rebuilding artifacts inside `bun test`. */
+export const FIXTURES = ["ui-theme", "streamed", "event-model", "r2-ui", "kb4-battle", "rpgkit-shot", "km1-move-control", "ka1-anim", "kg1-name-input", "kau1-audio", "ks2-save", "rmi-play", "cjk-text", "no-truncation"] as const;
+/** Kit tools that are apps too: the project preview host (tools/preview),
+ *  which the preview/Studio tests boot in the sim. */
+export const TOOL_APPS = ["preview"] as const;
+/** UI theme, Meadow and the CJK text fixture are also built at web densities
+ *  2 and 3. The density regression tests use these variants to compare the
+ *  same dialog, Chinese glyphs and real tile art without rebuilding
+ *  artifacts inside `bun test`. */
 export const WEB_DENSITY_FIXTURES = [2, 3] as const;
 
 const root = resolve(import.meta.dir, "..");
@@ -41,6 +45,7 @@ function isFixture(name: string): boolean {
 /** The directory holding an app's or fixture's entry, images.json and assets. */
 function appDir(name: string): string {
   if (name === "editor") return join(root, "editor");
+  if ((TOOL_APPS as readonly string[]).includes(name)) return join(root, "tools", name);
   return isFixture(name) ? join(root, "tests", "fixtures", name) : join(root, "examples", name);
 }
 
@@ -59,7 +64,7 @@ async function run(cmd: string[]): Promise<void> {
 
 async function buildExamples(wanted: string[]): Promise<void> {
   mkdirSync(join(root, "dist"), { recursive: true });
-  const known: readonly string[] = [...APPS, ...FIXTURES];
+  const known: readonly string[] = [...APPS, ...FIXTURES, ...TOOL_APPS];
   for (const name of wanted) {
     if (!known.includes(name)) {
       console.error(`build-example: unknown app "${name}" (have: ${known.join(", ")})`);
@@ -79,8 +84,9 @@ async function buildExamples(wanted: string[]): Promise<void> {
       `--outdir=${join(root, "dist")}`,
       `--inputs-file=${join(root, "dist", `${name}.inputs.json`)}`,
     ]);
-    if (name === "ui-theme" || name === "meadow") {
-      for (const density of WEB_DENSITY_FIXTURES) {
+    if (name === "ui-theme" || name === "meadow" || name === "cjk-text" || name === "preview") {
+      // The preview runs at the web site's density 2 only.
+      for (const density of name === "preview" ? [2] : WEB_DENSITY_FIXTURES) {
         await run([
           process.execPath,
           buildTs,

@@ -47,6 +47,15 @@ Messages from other origins are dropped without a reply.
 - `gen-assets.ts` — copies the editor playtest art this app shares into
   `assets/playtest/` and writes `images.json` / `pak.json`. Run it after
   `editor/gen-assets.ts`; the root `bun run gen-assets` does both.
+- `fonts/`, `gen-cjk-font.ts` — the budgeted text faces a loaded document's
+  characters are baked from (a Noto Sans CJK SC subset: GB2312 level-1 hanzi,
+  GB2312 symbols, CJK punctuation and full-width forms; an Inter subset for
+  Latin beyond ASCII) and their licenses, all pak entries. Regenerate with
+  `bun tools/preview/gen-cjk-font.ts` (downloads the pinned Noto source once).
+- `cjk-glyphs.ts`, `atlas-merge.ts`, `glyph-bake.ts` — on `load`, bake the
+  document's characters the atlases lack and swap the merged atlases into
+  the core before the game view mounts. `glyph-bake.ts` is a port of the
+  build's baker, pinned to it byte for byte by `tests/preview-glyphs.test.ts`.
 
 ## Limitations
 
@@ -62,3 +71,6 @@ Messages from other origins are dropped without a reply.
   use the same visible stand-ins as the editor playtest.
 - The host page is a normal player page: keyboard and the on-screen pad also
   reach the loaded project when the iframe has focus.
+- Chinese text draws from the budget above. A character outside it (a rare
+  hanzi, a CJK Extension B character) draws as a box; `load` lists it in
+  `glyphs.missing`. A built game bakes its own font and is not limited.

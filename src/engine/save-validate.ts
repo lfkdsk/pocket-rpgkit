@@ -1417,6 +1417,16 @@ function validateModal(v: unknown, path: string, liveKeys: ReadonlySet<string>):
       return fail(`${path}`, "revealed must be within 0..total");
     }
     if (typeof v.complete !== "boolean") return fail(`${path}.complete`, "boolean required");
+    if (v.pageStarts !== undefined || v.page !== undefined) {
+      const starts = v.pageStarts;
+      if (!Array.isArray(starts) || starts.length < 2 || starts[0] !== 0 ||
+        !starts.every((at, i) => isNonNegInt(at) && at <= (v.total as number) && (i === 0 || at > starts[i - 1]))) {
+        return fail(`${path}.pageStarts`, "ascending page offsets from 0 within total required");
+      }
+      if (!isNonNegInt(v.page) || v.page >= starts.length) {
+        return fail(`${path}.page`, "an index into pageStarts required");
+      }
+    }
     return null;
   }
   if (v.kind === "choices") {

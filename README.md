@@ -747,7 +747,7 @@ earlier resident map within the same host frame.
 
 | op | purpose |
 | --- | --- |
-| `text` | typewriter dialog lines |
+| `text` | typewriter dialog lines; a message longer than the box continues on further pages, one confirm each ([Long text is never cut](#long-text-is-never-cut)) |
 | `choices` | prompt with 2-8 option branches (a scrolling box past 4), an optional cancel branch, and optional per-option sprite icons ([Choice icons](#choice-icons)) |
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
@@ -879,9 +879,10 @@ default, so these commands resume with their owning fiber after battle; modal
 and `worldIdle` behavior is otherwise identical to every other instant
 command.
 
-`choices`, `extChoice`, and `shop` share one 4-row scrolling box
-(`ui/list-window.ts` picks the window from the live cursor; a label past 24
-characters truncates with an ellipsis). A shop sells any owned item at
+`choices`, `extChoice`, and `shop` share one scrolling box of up to four
+items (`ui/list-window.ts` picks the window from the live cursor); a label
+wider than the box wraps onto more rows instead of being cut
+([Long text is never cut](#long-text-is-never-cut)). A shop sells any owned item at
 floor(the item's own `price` / 2)
 unless a goods entry for it overrides that shop's `sellPrice`, and refuses a
 purchase past `system.inventory.maxPerItem` (default 99) or `maxKinds` (default
@@ -1212,9 +1213,13 @@ palette):
 - `StatBar` — an HP/XP bar; its fill width is `barFillWidth(current, max,
   width)`.
 - `CommandGrid` — the MV-style 2×2 battle command grid (Fight/Skill/Guard/Run
-  and similar), with a selected cell and per-cell disabled state.
+  and similar), with a selected cell and per-cell disabled state. Its cells
+  are a fixed 116×22: a label that does not fit one 12 px row wraps to two,
+  then steps down to 10 px (`text-2xs`, one row or two); only a label that
+  two 10 px rows cannot hold is clipped, and the focused cell scrolls it.
 - `ListMenu` — a scrolling skill/item/party list sharing DialogBox's
-  fixed-row window and label truncation, with an optional description line.
+  item window; long labels, the title and the description wrap onto more
+  rows, with an optional description line.
 - `MessageBand` — a standalone typewriter message band (DialogBox's message
   box without the choices/shop/portrait machinery).
 - `SpriteSlot` — one battler image whose position, horizontal shake, flash
@@ -1944,6 +1949,174 @@ opens the text-only box with the labels and logs one warning. Text-only
 choices render exactly as before either way. `DialogBox` takes the same
 component as `choiceIconBox` plus a `choiceIcon` resolver
 (`resolveChoiceIcon` from the same entry).
+
+### Chinese (CJK) text
+
+The kit's boxes lay out Simplified Chinese, and mixed Chinese and Latin text,
+with no change to the project format. Lines are still authored as `text`
+`lines` (at most four, 52 characters each); the box wraps any line wider
+than its pixel width:
+
+- between any two CJK characters (Han, kana, Hangul, CJK and fullwidth
+  punctuation) a row may break; between two Latin characters it may not, so
+  an English word or a number (`Route 1`, `HP 120/120`) is never split, and
+  Latin text still breaks at spaces;
+- kinsoku (the common simplified rules): closing punctuation, `，。！？、；：`,
+  `…`, `—` and small kana never begin a row, opening brackets and quotes
+  never end one; the neighbouring character moves down with them;
+- a line that already fits keeps its authored rows exactly, so Latin
+  dialog renders as before;
+- after the player name is substituted for `{name}`, a page that no longer
+  fits four rows is reflowed as one paragraph; text that still does not fit
+  continues on a second page ([Long text is never cut](#long-text-is-never-cut)).
+
+The typewriter counts code points, one per drawn glyph, so a supplementary
+character such as U+20BB7 appears in one step and is never cut in half.
+Choice options and prompts, shop rows, battle menus, command cells, the
+battle message band and save-menu summaries are measured at their real pixel
+width: fullwidth glyphs are measured as the core draws them (12 px wide at
+`text-xs`), and a label that does not fit wraps instead of running past the
+frame.
+
+The line breaker is plain TypeScript (`breakText`, `paginateText`, `fitText`
+in `pocket-rpgkit/engine`; the kit's own boxes never call `fitText`). An
+importer paginating long messages measures with `createFontMeasure` from
+`tools/lib/font-measure.ts`, which reads the same font files and reproduces
+the baked advances exactly, so its pages lay out as the same rows on the
+device.
+
+**Fonts.** Latin text keeps Inter. Chinese glyphs come from a subset of
+Noto Sans CJK SC (SIL Open Font License) cut to exactly the characters the
+game displays:
+
+```sh
+bun tools/cjk-font.ts --app=<app dir> [--scan=<project file> ...] [--chars=...]
+bun tools/cjk-font.ts --app=<app dir> [--scan=<project file> ...] --check   # offline coverage check
+```
+
+The tool reads the app's display strings decoded, the way the build and
+the runtime see them:
+
+- every string literal, template chunk and JSX text of every module the app
+  entry imports (the app, the kit's fixed UI strings, the framework), with
+  escapes decoded, so `"\u{20BB7}"` counts as 𠮷. The entry is `app.entry`
+  of `<app dir>/pocket.json`, or each `--entry=<file>`;
+- each `--scan` file: a module the same way, a `.json` document (an
+  imported project) by its parsed keys and string values, any other file as
+  text, with `\uXXXX` escapes also decoded;
+- `--chars`.
+
+Text an app builds at run time from pieces (`String.fromCodePoint`, a
+fetched file) is not seen; pass it with `--scan` or `--chars`. The tool
+downloads the pinned source font once (checksum verified, cached in
+`.cache/fonts/` or `$RPGKIT_FONT_CACHE`), takes every character of that
+text that Inter does not have, and writes `fonts/` (the subset, the
+character list, the license notice and a provenance note), `fonts.json` and
+a `pak.json` row beside the app entry. The PocketJS build bakes those
+characters from the subset into the app's font atlases, on Inter's baseline
+and line height. `--check` fails, without network access, when the subset,
+the character list, the license notice or the `pak.json` row does not cover
+the text. `tests/fixtures/cjk-text` is a complete example.
+
+**License.** Glyphs baked from Noto are a derivative of it, so its license
+travels with every build: `fonts/LICENSE-NotoSansCJK.txt` (the font's
+copyright line and the OFL text) is a pak entry, `license:NotoSansCJK.txt`,
+listed in the app's `pak.json`, so the web, desktop and PSP builds all carry
+it inside the pak (a PSP EBOOT embeds the pak). The web site
+(`tools/web.ts`) also copies it beside the game and links it from the player
+page, and the desktop build and the macOS package (`tools/package-macos.ts`)
+copy it beside the pak and into `Resources/`. A generator that rewrites an
+app's `pak.json` must keep the row (`pakManifestWithLicense` in
+`tools/lib/cjk-font.ts`); `--check` reports a missing row.
+
+**Preview and Studio.** The project preview (the Studio play-test) is built
+once for every project, so it cannot bake one project's characters at build
+time. Its pak carries a budgeted Chinese face instead: the 3,755 GB2312
+level-1 hanzi, the GB2312 symbol rows, CJK punctuation and full-width forms
+(4,302 characters Inter lacks, 1.1 MB), plus a 76 KB Inter subset for Latin
+beyond ASCII. When `load` brings a document, the preview bakes the
+characters it uses and its atlases lack, with the build's own baker, and
+swaps the merged atlases into the core before the game view mounts.
+Chinese glyphs come out byte-identical to a build of the same text; Latin
+glyphs beyond ASCII have the build's advances, with a few edge pixels
+shaded differently (the Inter subset is stored as CFF outlines). The same
+document always draws the same picture, whatever was loaded before, and a
+Latin document never parses the fonts. Baking at load took 46 ms for a
+26-character line in headless Chrome, font parsing included; the preview
+bundle is 338 KB larger (the font parser), its density-2 pak 1.2 MB.
+`load` reports `glyphs: { added, missing }`, and Studio names any character
+outside the budget, which the preview draws as a box. A built game bakes its
+own subset and is not limited by the budget.
+
+**Memory.** The build bakes every character into every font slot the app's
+styles use. A CJK glyph takes one atlas cell of the slot (12×15 bytes at
+12 px, 14×18 at 14 px, 16×20 at 16 px) plus an 8-byte map entry, times the
+square of the raster density. A GameView app uses the 12, 14 and 16 px
+slots, so the atlases grow by about 776 bytes per character at density 1
+(PSP) and about 3 KiB at the web's default density 2. An app that bundles
+the battle `CommandGrid` also bakes the grid's 10 px slot (10×13 per glyph):
+138 more bytes per character at density 1 and 528 at density 2. Apps without
+the grid do not bake that slot.
+
+On PSP that size is held twice: the pak is embedded in the EBOOT and stays
+in memory, and the core keeps its own parsed copy of each atlas. So the
+resident cost is about 1,552 bytes per character (about 1,828 with the
+command grid), plus the separate 256 KiB glyph-page cache. The fixture's 196
+Chinese characters add about 148 KiB to its density-1 atlases (about 297 KiB
+resident on PSP); 2,500 characters would add about 1.9 MiB of atlas and
+about 3.7 MiB resident (4.4 MiB with the grid).
+
+**Not used, not paid for.** An app without Chinese text gets no `fonts.json`
+and bakes no CJK atlas. Its pak is not necessarily byte-identical to an
+older kit's, though: the no-truncation work changed shared style records
+(Meadow's pak differs at the same size), and an app that bundles
+`CommandGrid` bakes the new 10 px slot for its own characters (showcase
++18,912 bytes, the battle fixture +14,288). Sunstone's pak is unchanged.
+
+Limits: Simplified Chinese glyphs only (no language-selected Han variants);
+curly quotes, `…` and `—` come from Inter and are proportional; no vertical
+text, ruby or justification; the kit's own fixed words (`Buy`, `Sell`,
+`Gold`, the save menu) are English; the name-input scene is a Latin
+keyboard and there is no input method.
+
+### Long text is never cut
+
+No box in the kit drops characters or adds `…`:
+
+- **Dialog.** A message that needs more than the box's four rows (a long
+  CJK line, a long player name in `{name}`) continues on a second page, and
+  so on. Each page types from its first character, shows `next` when typed,
+  and takes one confirm; the last page's confirm closes the box. Authored
+  line breaks are kept. Where the pages break is decided once, when the box
+  opens, by a pure function of the words (`createDialogPaginator` in
+  `src/ui/dialog-pages.ts`, measured with the baked font) and kept in the
+  open modal (`pageStarts`, `page`), so the number of confirms is reducer
+  state: the same at every host rate and after a rewind; saves never hold
+  an open box. Pages are cut at the 480 px design width whatever the window
+  size; a wider window lays each page out in fewer rows. `GameView` installs
+  the paginator; a session without one (a headless tool, `DialogBox` used
+  on its own) shows every message as one page. A headless tool that needs
+  the device's pages passes `createDialogPaginator({}, createFontMeasure(…))`
+  as `createSession`'s `paginateText`.
+- **Choices and shops.** A prompt, option or item name wider than the box
+  wraps onto more rows (the cursor prefix on its first row, the price on the
+  first row of an item); the whole option takes the selected colour, and the
+  box grows upward, up to five extra rows on a 272 px screen. Past that the
+  window shows fewer items, always the whole selected one. The icon choices
+  box does the same with its 24 px rows, and its cursor bar covers every row
+  of the selected option.
+- **Battle and save menus.** The message band grows by a row per extra row
+  of text. `ListMenu` labels, title and description wrap. A `CommandGrid`
+  cell has a fixed size, so its label wraps onto two rows, then steps down
+  one font size (12 px to 10 px, one row or two; a long word goes down a
+  size whole rather than being split). A bottom cell shows only 20 px, so
+  a label there that would need two 12 px rows goes straight to 10 px. A label that two 10 px rows still
+  cannot hold shows its start, and the focused cell scrolls it sideways (a
+  marquee driven by the tick, so a rewind shows the same frame); unfocused
+  cells show their first characters. Save-menu titles, slot
+  summaries and messages wrap.
+
+Text that already fits renders exactly as before.
 
 ## Target matrix
 

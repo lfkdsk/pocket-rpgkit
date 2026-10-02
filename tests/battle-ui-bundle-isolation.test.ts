@@ -15,6 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { unpack } from "../vendor/pocketjs/framework/compiler/pak.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SUNSTONE_JS = join(ROOT, "dist", "sunstone.js");
@@ -110,7 +111,14 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Hiding an erased event's actor adds 148 shared GameView bytes.
 // The optional streamed tile loader (StreamedGameAssets.loadTile) adds 183
 // shared bytes to the streamed ground and upper layers.
-const EXPECTED_BYTES = 807_210;
+// CJK-aware text layout (line breaker, row flow and cached glyph measurer for
+// the dialog, battle and save-menu boxes) adds 8,921 shared bytes; merged
+// with the demo change Sunstone measures 789,647. Continuing long messages
+// on further pages and wrapping list labels instead of cutting them adds
+// 3,357 shared bytes.
+// With the save changes and the tile loader merged in, Sunstone measures
+// 822,635.
+const EXPECTED_BYTES = 822_635;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
@@ -132,6 +140,15 @@ describe("KB4 does not reach games that never opt into battle", () => {
     ]) {
       expect(text.includes(needle), `sunstone.js unexpectedly contains ${JSON.stringify(needle)}`).toBe(false);
     }
+  });
+
+  maybeTest("sunstone's pak bakes no 10 px atlas: only CommandGrid's shrink stage uses text-2xs", () => {
+    // The 10 px slot (19) is baked only into apps whose styles use it, and
+    // only the battle command grid does; sunstone's atlases stay as they were.
+    const keys = unpack(readFileSync(join(ROOT, "dist", "sunstone.pak"))).map((blob) => blob.key);
+    expect(keys.filter((key) => key.startsWith("ui:font.")).length).toBeGreaterThan(0);
+    expect(keys).not.toContain("ui:font.19");
+    expect(readFileSync(SUNSTONE_JS, "utf8").includes("text-2xs")).toBe(false);
   });
 
   maybeTest("sunstone's bundle text contains none of the name-input scene's identifiers", () => {
