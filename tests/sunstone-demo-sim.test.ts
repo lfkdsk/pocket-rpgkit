@@ -107,6 +107,14 @@ simDescribe("Sunstone opt-in demo menu through the built bundle", () => {
     expect(state().sw).toEqual(beforeStory);
     expect(state().interp.modal).toBeNull();
     expect(demoHook().current()).toMatchObject({ chapter: "cave", map: "cave", autoplay: false, speed: 1 });
+
+    // The fixed-height absolute wrapper anchors the complete 38 px toast
+    // above the 12 px bottom margin. Without its height, layout placed the
+    // panel below the viewport and only its top border leaked onto row 260.
+    const toast = world.render().slice();
+    expect(pixel(toast, 60, 222)).toEqual(rgb(DEFAULT_UI_THEME.border));
+    expect(pixel(toast, 62, 224)).toEqual(rgb(DEFAULT_UI_THEME.paper));
+    expect(treeHasText(world.getTree(), "Warped — story state may not match this map")).toBe(true);
   });
 
   test("the page hook jumps and autoplays through the same frame-safe path", async () => {

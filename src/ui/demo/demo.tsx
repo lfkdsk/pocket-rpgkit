@@ -144,7 +144,11 @@ function DemoMenu(props: { model: Accessor<DemoMenuModel>; theme?: Partial<UiThe
         </View>
       </Show>
       <Show when={!props.model().open && props.model().toast !== null}>
-        <View class="absolute left-0 right-0 flex-row justify-center" style={{ posType: 1, insetB: 12 }} debugName="rpgkit-demo-toast">
+        <View
+          class="absolute left-0 right-0 flex-row justify-center"
+          style={{ posType: 1, insetB: 12, height: 38 }}
+          debugName="rpgkit-demo-toast"
+        >
           <Panel theme={theme()} style={{ posType: 1, width: 360, height: 38 }} paperClass="flex-row justify-center items-center">
             <Text class="text-xs" style={{ textColor: theme().accent, lineHeight: 15, height: 15 }}>
               {props.model().toast ?? ""}
