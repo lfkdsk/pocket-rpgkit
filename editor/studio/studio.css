@@ -379,3 +379,62 @@ kbd {
 .playtest-readout dt.wide { grid-column: 1; }
 .playtest-readout dd[data-field="message"] { grid-column: 2 / -1; white-space: normal; }
 .playtest-hint { margin: 0 10px; color: var(--muted); font-size: 12px; }
+
+/* ---- agent panel ----------------------------------------------------------------- */
+
+/* Docked beside the canvas like the play-test: proposals are read against
+   the map they change. */
+.agent {
+  flex: none;
+  width: 360px;
+  max-width: calc(100% - 240px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 0 10px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+.agent[hidden] { display: none; }
+.agent-header { display: flex; align-items: center; gap: 6px; padding: 8px 8px 0 12px; white-space: nowrap; }
+.agent-header .panel-title { display: inline-flex; align-items: center; gap: 4px; }
+.agent-header .panel-title .icon { width: 13px; height: 13px; color: var(--accent); }
+.agent-run { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--raised); color: var(--muted); }
+.agent-run.running { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.agent-run.done { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.agent-run.error { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.agent-compose { display: flex; flex-direction: column; gap: 6px; padding: 0 10px; }
+.agent-prompt { width: 100%; box-sizing: border-box; resize: vertical; min-height: 72px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); color: var(--text); font: inherit; }
+.agent-prompt:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.agent-prompt:disabled { opacity: 0.55; }
+.agent-actions { display: flex; align-items: center; gap: 8px; }
+.agent-count { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.agent-status { display: flex; align-items: flex-start; gap: 6px; margin: 0 10px; font-size: 12px; color: var(--muted); }
+.agent-status .icon { flex: none; width: 14px; height: 14px; margin-top: 1px; color: var(--warn); }
+.agent-status.error { color: var(--danger); }
+.agent-status.error .icon { color: var(--danger); }
+.agent-proposals { list-style: none; margin: 0; padding: 0 10px; display: flex; flex-direction: column; gap: 8px; }
+.agent-empty { padding: 4px 0; }
+.agent-proposal { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); }
+.agent-proposal.accepted { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.agent-proposal-head, .agent-hunk-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.agent-proposal-title { font-weight: 650; }
+.agent-rationale { margin: 4px 0 0; font-size: 12.5px; }
+.agent-meta { margin: 2px 0 6px; font-size: 11.5px; }
+.agent-hunks { margin: 0; padding: 0 0 0 18px; display: flex; flex-direction: column; gap: 6px; }
+.agent-hunk-summary { font-size: 12.5px; }
+.agent-changes { list-style: none; margin: 2px 0 0; padding: 0; font-size: 11.5px; }
+.agent-change { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-path { margin-right: 6px; font-family: var(--mono); color: var(--muted); }
+.agent-before, .agent-after { font-family: var(--mono); }
+.agent-before { color: var(--danger); }
+.agent-after { color: var(--ok); }
+.agent-badge { flex: none; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); white-space: nowrap; }
+.agent-badge.clean, .agent-badge.accepted, .agent-badge.already-applied { color: var(--ok); }
+.agent-badge.conflict, .agent-badge.partially-applied, .agent-badge.rejected { color: var(--danger); }
+.agent-badge.partly-accepted { color: var(--warn); }
+.agent-problem { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 0; font-size: 12px; color: var(--danger); }
+.agent-problem .icon { flex: none; width: 14px; height: 14px; margin-top: 1px; }
+.agent-proposal-actions { display: flex; gap: 8px; margin-top: 8px; }
+.agent-hint { margin: 0 10px; color: var(--muted); font-size: 12px; }

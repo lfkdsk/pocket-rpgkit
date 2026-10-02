@@ -1,0 +1,24 @@
+{
+  "name": "pocket-rpgkit-studio-desktop",
+  "productName": "Pocket RPG Kit Studio",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Desktop shell for Pocket RPG Kit Studio: local project folders, local agents and rpgkit-check",
+  "license": "MIT",
+  "author": "lfkdsk",
+  "main": "app/main.cjs",
+  "scripts": {
+    "build": "bun build.ts",
+    "start": "electron app/main.cjs",
+    "e2e": "bun e2e/run.ts",
+    "dist": "bun build.ts && electron-builder --publish never",
+    "dist:linux": "bun build.ts && electron-builder --linux dir --publish never",
+    "dist:mac": "bun build.ts && electron-builder --mac --universal --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "playwright-core": "1.63.0"
+  },
+  "trustedDependencies": ["electron"]
+}

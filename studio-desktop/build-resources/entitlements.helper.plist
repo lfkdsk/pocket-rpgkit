@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <!--
+    Entitlements for Contents/Resources/helper/rpgkit-studio-helper, the
+    executable `bun build` compiles; it runs rpgkit-check and the
+    rpgkit-edit MCP server. This is the set Bun documents for codesigning
+    compiled executables under the hardened runtime.
+
+    Required by Bun's JIT (JavaScriptCore): allow-jit and
+    allow-unsigned-executable-memory. The other three are in Bun's list as a
+    precaution: disable-executable-page-protection, allow-dyld-environment-
+    variables and disable-library-validation. Trim this file after a signed
+    test run (`check` with dynamic checks, and an agent run through the MCP
+    server) shows which keys are actually needed.
+  -->
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-executable-page-protection</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

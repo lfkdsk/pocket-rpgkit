@@ -40,6 +40,13 @@ export interface ProjectDirectory {
    * (ideally atomically) provide it; without it a save writes each target
    * directly from the text it already staged once. */
   rename?(from: string, to: string): Promise<void>;
+  /** Replace several files as one transaction: stage every new text,
+   * recheck that each target still holds `expected`, then publish in the
+   * given order and restore the published ones if a later step fails.
+   * Hosts with real files (the desktop app, over editor/api/file.ts) provide
+   * it; saveProjectDirectory then hands it the planned writes instead of
+   * staging through write/rename itself. */
+  commit?(writes: readonly { path: string; text: string; expected: string }[]): Promise<void>;
 }
 
 /** What a directory save compares against: the bytes last read or written. */
@@ -274,6 +281,21 @@ async function saveLocked(dir: ProjectDirectory, baseline: DirectoryBaseline, pa
     if (current === write.text) continue;
     if (current !== write.expected) throw new Error(`${write.path} changed on disk since it was opened; nothing was written`);
     writes.push(write);
+  }
+
+  // 2–4 in one step when the directory has its own transaction.
+  if (dir.commit) {
+    if (writes.length > 0) {
+      try {
+        await dir.commit(writes.map(({ path, text, expected }) => ({ path, text, expected })));
+      } catch (error) {
+        throw new Error(`could not write ${writes.map((write) => write.path).join(", ")} (${message(error)}); the folder still holds the previous version (any file already replaced was put back)`);
+      }
+    }
+    return {
+      written: writes.map((write) => write.path),
+      baseline: { shellPath: baseline.shellPath, shellText: pack.shellText, shards: new Map(pack.shards) },
+    };
   }
 
   // 2. Stage.

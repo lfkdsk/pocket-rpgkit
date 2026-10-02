@@ -3,14 +3,17 @@
 // editor/studio/main.ts — Studio entry: builds the toolbar, panels, status
 // bar and dialogs around the shared StudioApp state and wires shortcuts.
 // Files, storage, checks and preferences go through the StudioHost
-// (host.ts); this page runs on the browser host.
+// (host.ts). The web page runs on the browser host; the desktop app's entry
+// (main-desktop.ts) builds its host first and leaves it in globalThis.
 
+import { AgentReview } from "./agent-model.ts";
+import { mountAgentPanel } from "./agent-panel.ts";
 import { StudioApp, type PaintLayer, type Tool } from "./app.ts";
 import { ArtRegistry, parseTileId } from "./art.ts";
 import { MapCanvas, isTyping } from "./canvas.ts";
 import { h, icon, iconButton, MOD, replace } from "./dom.ts";
 import { StudioFiles } from "./files.ts";
-import type { HostFeature, StudioHost, ThemeChoice } from "./host.ts";
+import type { HostCommand, HostFeature, StudioHost, ThemeChoice } from "./host.ts";
 import { BrowserHost } from "./host-browser.ts";
 import { mountInspector } from "./inspector.ts";
 import { eventCopyOp } from "./inspector-model.ts";
@@ -20,7 +23,7 @@ import { mountMapTree } from "./map-tree.ts";
 import { mountPalette } from "./palette.ts";
 import { schemaProblems, type StudioProblem } from "./problems.ts";
 
-const host: StudioHost = new BrowserHost();
+const host: StudioHost = (globalThis as { studioHost?: StudioHost }).studioHost ?? new BrowserHost();
 const app = new StudioApp();
 const art = new ArtRegistry();
 const files = new StudioFiles(app, art, host);
@@ -63,6 +66,14 @@ mountPalette($("palette"), app, art);
 mountInspector($("inspector"), app);
 const play = new PlayTest(app, host, () => files.examples);
 const playPanel = mountPlayTestPanel($("playtest"), app, play, () => canvas?.canvas.focus());
+const agent = new AgentReview(app, host);
+const agentPanel = mountAgentPanel($("agent"), agent, () => {
+  // The agent and play-test panels share the right-hand dock: one at a time.
+  if (agentPanel.isOpen && play.open) playPanel.close();
+  renderToolbar();
+  // Like the play-test panel: show the whole map once the canvas has resized.
+  requestAnimationFrame(() => requestAnimationFrame(() => canvas?.fit()));
+});
 
 const TOOLS: [Tool, string, string, string][] = [
   ["select", "select", "Select / move events", "V"],
@@ -159,7 +170,7 @@ function renderToolbar(): void {
     h("div", { class: "group" },
       iconButton("image", "Art…", () => openArtDialog(), { disabled: !session, id: "studio-art", text: true }),
       iconButton("play", can("preview").available ? "Play-test the open document" : `Play-test: ${can("preview").reason}`, () => playPanel.open(), { shortcut: `${MOD}+Enter`, disabled: !session || !can("preview").available, id: "studio-play", pressed: play.open }),
-      iconButton("agent", can("agent").available ? "Ask an agent" : `Agent: ${can("agent").reason}`, () => void askAgent(), { disabled: !session || !can("agent").available, id: "studio-agent" }),
+      iconButton("agent", can("agent").available ? "Ask an agent" : `Agent: ${can("agent").reason}`, () => agentPanel.toggle(), { disabled: !session || !can("agent").available, id: "studio-agent", pressed: agentPanel.isOpen }),
       iconButton(effectiveTheme() === "dark" ? "sun" : "moon", effectiveTheme() === "dark" ? "Light theme" : "Dark theme", toggleTheme, { id: "studio-theme" }),
       iconButton("help", "Keyboard shortcuts", () => openShortcuts(), { shortcut: "?" })),
   );
@@ -169,6 +180,7 @@ let playWasOpen = false;
 play.on(() => {
   if (play.open === playWasOpen) return;
   playWasOpen = play.open;
+  if (play.open && agentPanel.isOpen) agentPanel.close();
   renderToolbar();
   // The canvas just gained or lost the panel's width: show the whole map
   // once it has been resized (the resize lands after the next frame).
@@ -182,13 +194,11 @@ function saveLabel(): string {
   return storage.available ? (host.name === "browser" ? "Save in browser" : "Save") : `Save: ${storage.reason}`;
 }
 
-/** Hand the document to a local agent (desktop hosts only). */
-async function askAgent(): Promise<void> {
-  const session = app.session;
-  if (!session) return;
-  const outcome = await host.runAgent({ prompt: "", projectText: session.exportText() });
-  if (!outcome.ok) app.notify("error", outcome.message);
-  else app.notify("ok", `${outcome.proposals.length} proposal${outcome.proposals.length === 1 ? "" : "s"} from the agent.`);
+/** Open the Agent panel at its request box. The host runs the local agent
+ * (desktop hosts only); the panel reviews the proposals it returns. */
+function askAgent(): void {
+  if (!app.session || !can("agent").available) return;
+  agentPanel.open();
 }
 
 // ---- status bar and problems ---------------------------------------------------------
@@ -537,6 +547,39 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+// ---- host menus ---------------------------------------------------------------------------
+
+/** Whether a text field has the focus (Undo there is the field's own). */
+function typingInField(): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable);
+}
+
+/** The desktop app's menu bar. Its shortcuts are the page's own (handled
+ * above); a click on the menu item arrives here. */
+function runHostCommand(command: HostCommand): void {
+  switch (command) {
+    case "open-file": files.openFile(); return;
+    case "open-folder": void files.openDirectory(); return;
+    case "save": void files.save(); return;
+    case "export": void files.download(); return;
+    case "undo": if (typingInField()) document.execCommand("undo"); else app.undo(); return;
+    case "redo": if (typingInField()) document.execCommand("redo"); else app.redo(); return;
+    case "problems": problemsOpen = !problemsOpen; renderProblems(); renderStatus(); return;
+    case "engine-checks":
+      problemsOpen = true;
+      renderProblems();
+      renderStatus();
+      if (can("dynamicChecks").available) void runEngineChecks();
+      return;
+    case "agent": if (app.session && can("agent").available) agentPanel.toggle(); return;
+    case "playtest": if (app.session && can("preview").available) playPanel.open(); return;
+    case "theme": toggleTheme(); return;
+    case "shortcuts": openShortcuts(); return;
+  }
+}
+host.onCommand?.(runHostCommand);
+
 // ---- boot ---------------------------------------------------------------------------------
 
 /** Test and debugging hook: state, timings and coordinate helpers. */
@@ -547,6 +590,9 @@ window.addEventListener("keydown", (event) => {
   host,
   canvas,
   play,
+  agent,
+  agentPanel,
+  askAgent,
   frameStats: () => canvas?.stats,
   cellToClient: (x: number, y: number) => canvas?.cellToClient(x, y),
   tileAt: (x: number, y: number) => {
@@ -563,6 +609,13 @@ await files.loadExamples();
 renderToolbar();
 const params = new URLSearchParams(location.search);
 const requested = params.get("example");
+/** Open what the OS handed the host before Studio started; false if none
+ * opened. */
+async function openInitial(): Promise<boolean> {
+  let any = false;
+  for (const opened of host.initialDocuments?.() ?? []) any = (await files.opened(opened)) || any;
+  return any;
+}
 if (requested) await files.openExample(requested);
-else if (!files.restore()) await files.openExample(files.examples[0]?.id ?? "sunstone");
+else if (!(await openInitial()) && !files.restore()) await files.openExample(files.examples[0]?.id ?? "sunstone");
 document.documentElement.dataset.ready = "1";

@@ -97,6 +97,10 @@ export interface LocalAgentControllerOptions {
   stateDirectory: string;
   adapter?: LocalAgentAdapter;
   configFile?: string;
+  /** The proposal-only MCP server the agent launches. Defaults to this Bun
+   * running tools/rpgkit-edit/mcp.ts --proposal-only from repoRoot; a
+   * compiled host passes its own executable and subcommand instead. */
+  mcpServer?: { command: string; args(projectDir: string): string[] };
   onMessage(message: LocalAgentHostMessage | { t: "proposals"; proposals: unknown[] }): void;
   onProposalsChanged?(): void | Promise<void>;
 }
@@ -372,17 +376,18 @@ export class LocalAgentController {
       } else {
         const projectDir = dirname(realpathSync(resolve(options.projectFile)));
         const server = join(options.repoRoot, "tools", "rpgkit-edit", "mcp.ts");
+        const mcpCommand = options.mcpServer?.command ?? process.execPath;
         const mcp = {
           mcpServers: {
             "rpgkit-edit": {
-              command: process.execPath,
-              args: [server, "--root", projectDir, "--proposal-only"],
+              command: mcpCommand,
+              args: options.mcpServer?.args(projectDir) ?? [server, "--root", projectDir, "--proposal-only"],
             },
           },
         };
         mcpConfigFile = join(options.stateDirectory, "mcp.json");
         atomicWrite(mcpConfigFile, `${JSON.stringify(mcp, null, 2)}\n`);
-        mcpRegistration = `mcp_servers.rpgkit-edit={ command = ${tomlString(process.execPath)}, args = [` +
+        mcpRegistration = `mcp_servers.rpgkit-edit={ command = ${tomlString(mcpCommand)}, args = [` +
           mcp.mcpServers["rpgkit-edit"].args.map(tomlString).join(", ") + "] }";
         const values = this.templateValues(config, "", mcpConfigFile, mcpRegistration, "");
         const command = config.command.map((part) => replaceTemplate(part, values, "agent command"));

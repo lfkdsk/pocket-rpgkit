@@ -57,8 +57,9 @@ const HOST_ONLY: [string, RegExp][] = [
   ["message channels", /\b(?:MessageChannel|BroadcastChannel)\b/],
 ];
 
-/** The browser host: the only files that may use HOST_ONLY APIs. */
-const HOST_IMPLEMENTATIONS = new Set(["host-browser.ts", "host-browser-boot.ts"]);
+/** The hosts: the only files that may use HOST_ONLY APIs. The desktop host
+ * runs in the desktop app's page and reuses the browser's preview iframe. */
+const HOST_IMPLEMENTATIONS = new Set(["host-browser.ts", "host-browser-boot.ts", "host-desktop.ts", "host-desktop-boot.ts"]);
 const SCANNED = /\.(?:ts|tsx|js|html)$/;
 
 /** Source without comments, so prose may name the APIs it avoids. An .html
@@ -94,10 +95,10 @@ describe("Studio host boundary", () => {
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   });
 
-  test("no Studio file outside the browser host calls host-only browser APIs", () => {
+  test("no Studio file outside the hosts calls host-only browser APIs", () => {
     expect(files.length).toBeGreaterThanOrEqual(18);
     expect(files).toContain("index.html");
-    expect(files.filter(isHost).sort()).toEqual(["host-browser-boot.ts", "host-browser.ts"]);
+    expect(files.filter(isHost).sort()).toEqual(["host-browser-boot.ts", "host-browser.ts", "host-desktop-boot.ts", "host-desktop.ts"]);
     const found = Object.fromEntries(files
       .filter((path) => !isHost(path))
       .map((path) => [path, scan(path)])
@@ -177,9 +178,13 @@ describe("Studio host boundary", () => {
 
   test("the UI builds its host in one place and is typed against the interface", () => {
     const main = readFileSync(join(STUDIO, "main.ts"), "utf8");
-    expect(main).toContain("const host: StudioHost = new BrowserHost();");
+    // The web page builds the browser host; the desktop entry builds its host
+    // first and leaves it for main.ts.
+    expect(main).toContain("const host: StudioHost = (globalThis as { studioHost?: StudioHost }).studioHost ?? new BrowserHost();");
     const constructing = files.filter((path) => /new BrowserHost\(/.test(code(readFileSync(join(STUDIO, path), "utf8"), path.endsWith(".html"))));
     expect(constructing).toEqual(["main.ts"]);
+    const desktop = files.filter((path) => /createDesktopHost\(|new DesktopHost\(/.test(code(readFileSync(join(STUDIO, path), "utf8"), path.endsWith(".html"))));
+    expect(desktop.sort()).toEqual(["host-desktop.ts", "main-desktop.ts"]);
     const files_ts = readFileSync(join(STUDIO, "files.ts"), "utf8");
     expect(files_ts).not.toMatch(/host-browser/);
   });

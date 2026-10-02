@@ -37,6 +37,11 @@ desktop host or a device; Studio is the one to use in a browser.
 Add `?example=sunstone`, `?example=meadow` or `?example=sunstone-pack` to
 the URL to open a bundled example directly.
 
+- As a desktop app: [Studio desktop](studio-desktop.md) is the same Studio
+  in an Electron window. It saves project files and folders in place (not
+  only in Chrome and Edge, and single files too), runs local agents whose
+  edits you review as proposals, and runs `rpgkit-check`'s engine checks.
+
 ## Files
 
 | Action | How |
@@ -190,7 +195,10 @@ after every edit for inline projects.
 
 **Run engine checks** (rpgkit-check's dynamic checks, which run the game
 engine) and the agent button in the toolbar are disabled on the web page;
-their tooltips say why. They are reserved for the desktop app.
+their tooltips say why. The [desktop app](studio-desktop.md) has both:
+engine checks add their findings to this list, and the agent button opens
+the Agent panel, where an agent's proposals are reviewed and accepted as
+one undo step each.
 
 ## Keyboard shortcuts
 

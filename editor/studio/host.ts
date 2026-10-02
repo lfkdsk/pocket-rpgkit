@@ -11,6 +11,7 @@
 // can sit on the far side of an IPC bridge.
 
 import type { Project } from "../../src/engine/types.ts";
+import type { LocalAgentEditorContext } from "../agent/types.ts";
 import type { PreviewChapter, StudioPreview } from "./preview.ts";
 import type { StudioProblem } from "./problems.ts";
 
@@ -118,6 +119,9 @@ export interface AgentRequest {
   prompt: string;
   /** Current export bytes the agent should work from. */
   projectText: string;
+  /** The open map and what is selected on it, so "here" and "this NPC" in
+   * the prompt have a meaning. */
+  context?: LocalAgentEditorContext;
 }
 
 export type AgentOutcome =
@@ -127,6 +131,13 @@ export type AgentOutcome =
 // ---- preferences -------------------------------------------------------------------
 
 export type ThemeChoice = "system" | "light" | "dark";
+
+/** Commands from a host's own menus (the desktop app's menu bar). Studio
+ * carries them out, since it owns the document and its history. */
+export type HostCommand =
+  | "open-file" | "open-folder" | "save" | "export"
+  | "undo" | "redo"
+  | "problems" | "engine-checks" | "agent" | "playtest" | "theme" | "shortcuts";
 
 // ---- the host ----------------------------------------------------------------------
 
@@ -169,6 +180,14 @@ export interface StudioHost {
   confirm(message: string): Promise<boolean>;
   /** Called with a probe; the host warns before closing while it is true. */
   guardClose(isDirty: () => boolean): void;
+
+  /** Optional: commands from the host's menus. */
+  onCommand?(listener: (command: HostCommand) => void): () => void;
+  /** Optional: documents the OS handed over before Studio started (command
+   * line, "Open With"); Studio opens them instead of the stored document. */
+  initialDocuments?(): (OpenedProject | { error: string })[];
+  /** Optional: stop the running agent request. */
+  cancelAgent?(): Promise<void>;
 
   theme(): ThemeChoice;
   setTheme(choice: ThemeChoice): void;

@@ -7,6 +7,7 @@ import {
   NEEDS_DESKTOP,
   unavailable,
   type AgentOutcome,
+  type AgentRequest,
   type CheckOutcome,
   type CheckRequest,
   type HostCapabilities,
@@ -256,6 +257,11 @@ export class MemoryHost implements StudioHost {
   themeChoice: ThemeChoice = "system";
   dark = false;
   storageFails = false;
+  /** Answers agent runs when set (and makes the "agent" feature available);
+   * unset, runs answer NEEDS_DESKTOP like the browser host. */
+  agentReply: ((request: AgentRequest) => Promise<AgentOutcome>) | null = null;
+  /** Every agent request received, in order. */
+  agentRequests: AgentRequest[] = [];
   private listeners = new Set<OpenListener>();
   private themeListeners = new Set<() => void>();
 
@@ -269,7 +275,7 @@ export class MemoryHost implements StudioHost {
       localArt: available("Images come from MemoryHost.imagePicks."),
       checks: available("rpgkit-check's static lint, in-process."),
       dynamicChecks: unavailable("Not run in tests."),
-      agent: unavailable(NEEDS_DESKTOP),
+      agent: this.agentReply ? available("Agent runs are answered by MemoryHost.agentReply.") : unavailable(NEEDS_DESKTOP),
       preview: this.playTest ? available("Play-tests run on MemoryHost.playTest.") : unavailable("This host has no game to play-test in."),
     };
   }
@@ -344,8 +350,17 @@ export class MemoryHost implements StudioHost {
     return { ok: true, problems: checkProblems(request.project) };
   }
 
-  async runAgent(): Promise<AgentOutcome> {
-    return { ok: false, code: "NEEDS_DESKTOP", message: NEEDS_DESKTOP };
+  async runAgent(request?: AgentRequest): Promise<AgentOutcome> {
+    if (request) this.agentRequests.push(request);
+    if (!this.agentReply || !request) return { ok: false, code: "NEEDS_DESKTOP", message: NEEDS_DESKTOP };
+    return this.agentReply(request);
+  }
+
+  /** Cancel requests received (the Agent panel's Cancel button). */
+  agentCancels = 0;
+
+  async cancelAgent(): Promise<void> {
+    this.agentCancels++;
   }
 
   async confirm(text: string): Promise<boolean> {

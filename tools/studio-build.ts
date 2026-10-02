@@ -60,6 +60,11 @@ export interface StudioBuildOptions {
   /** Stylesheets concatenated in order into studio.css; a missing file is
    *  skipped. Defaults to editor/studio/studio.css then inspector.css. */
   styles?: readonly string[];
+  /** The host's boot snippet for the placeholder, and any files it loads
+   *  (relative to studio/). Defaults to the browser host's inline script; the
+   *  desktop app passes a script file instead, since its pages forbid inline
+   *  scripts. */
+  boot?: { html: string; files?: Record<string, string> };
 }
 
 export interface StudioExample {
@@ -203,7 +208,7 @@ export function studioPackText(project: Project): string {
 /** The page: the template with the browser host's boot script in place of
  *  the placeholder. `required` (the default template) makes a missing
  *  placeholder an error; more than one is always an error. */
-export function studioPage(template: string, required: boolean, path = "page template"): string {
+export function studioPage(template: string, required: boolean, path = "page template", boot = browserBootScript()): string {
   const parts = template.split(HOST_BOOT_PLACEHOLDER);
   if (parts.length > 2) {
     throw new Error(`studio: ${path} has ${parts.length - 1} host boot placeholders (${HOST_BOOT_PLACEHOLDER}); expected one`);
@@ -212,7 +217,7 @@ export function studioPage(template: string, required: boolean, path = "page tem
     if (required) throw new Error(`studio: ${path} lacks the host boot placeholder ${HOST_BOOT_PLACEHOLDER}`);
     return template;
   }
-  return parts.join(browserBootScript());
+  return parts.join(boot);
 }
 
 async function bundle(entry: string): Promise<Uint8Array> {
@@ -252,7 +257,7 @@ export async function buildStudio(options: StudioBuildOptions): Promise<{ files:
   // leaves it alone.
   const script = await bundle(entry);
   if (!existsSync(template)) throw new Error(`studio: page template not found: ${template}`);
-  const page = studioPage(readFileSync(template, "utf8"), options.template === undefined, template);
+  const page = studioPage(readFileSync(template, "utf8"), options.template === undefined, template, options.boot?.html);
 
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
@@ -260,6 +265,7 @@ export async function buildStudio(options: StudioBuildOptions): Promise<{ files:
   out.write("index.html", page, "index.html");
   out.write("studio.css", concatStyles(styles), "studio.css");
   out.write("studio.js", script, "studio.js");
+  for (const [name, text] of Object.entries(options.boot?.files ?? {})) out.write(name, text, name);
 
   const examples: StudioExample[] = [];
   let packArt: ExampleArt | undefined;

@@ -262,7 +262,9 @@ and a refresh restores the locally saved copy. Nothing is uploaded.
 
 For editing in a browser there is also **Studio**
 ([`docs/studio.md`](docs/studio.md),
-[hosted](https://lfkdsk.github.io/pocketjs-rpgkit/studio/)): a DOM + canvas
+[hosted](https://lfkdsk.github.io/pocketjs-rpgkit/studio/), and as a
+[desktop app](docs/studio-desktop.md) that saves project folders in place,
+runs local agents and runs `rpgkit-check`'s engine checks): a DOM + canvas
 editor with a zoomable canvas, tile palette, inspector forms and a history
 panel. Studio edits through the `editor/api` operations that `rpgkit-edit`
 runs; this PocketJS editor still uses its own reducers and undo/redo in

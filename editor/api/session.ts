@@ -349,6 +349,24 @@ export class EditSession {
     return { ...last, changed: true, diff: patch.changes, patch };
   }
 
+  /** Inline documents only: replace the whole project with `project` (for
+   * example an accepted agent proposal) as one history step. The change runs
+   * through the protocol's `save` operation as a patch from the current
+   * project, so it is validated, serialized preserving untouched bytes and
+   * undone like any other step. An identical project changes nothing. */
+  replaceInline(label: string, project: Project): EditResponse {
+    if (this.state.kind !== "inline") {
+      return failure("replace", "INLINE_ONLY", "a whole-project replacement needs an inline document; sharded packs change map by map");
+    }
+    let patch: EditPatch;
+    try {
+      patch = createEditPatch(this.project(), project);
+    } catch (error) {
+      return failure("replace", "INVALID_PROJECT", error instanceof Error ? error.message : String(error));
+    }
+    return this.run("save", { patch, direction: "forward" }, label);
+  }
+
   private patchBetween(before: DocState, after: DocState): EditPatch {
     if (before.kind === "inline" && after.kind === "inline") {
       return createEditPatch(JSON.parse(before.source), JSON.parse(after.source));

@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "types": ["bun", "node"],
+    "typeRoots": ["../node_modules/@types", "./node_modules/@types"]
+  },
+  "include": ["src", "build.ts", "e2e"],
+  "exclude": ["node_modules", "app", "dist"]
+}

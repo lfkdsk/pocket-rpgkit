@@ -1,0 +1,103 @@
+// studio-desktop/e2e/run.ts — run the desktop app's end-to-end test.
+//
+//   bun run build && bun run e2e
+//
+// Prepares the fixtures (Sunstone as a project folder, an agent config for
+// the kit's offline fake agent, a project with an engine-check finding) under
+// studio-desktop/.e2e/, starts a virtual X display when there is none (Xvfb on
+// PATH, or the XVFB variable), then runs e2e/studio-desktop.test.mjs under
+// Node: Playwright drives Electron from Node, not from Bun.
+//
+// Screenshots go to docs/screenshots/studio-desktop/.
+
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import type { Project } from "../../src/engine/types.ts";
+import { splitProjectMaps } from "../../tools/lib/map-project.ts";
+
+const HERE = resolve(import.meta.dir, "..");
+const KIT = resolve(HERE, "..");
+const WORK = join(HERE, ".e2e");
+
+if (!existsSync(join(HERE, "app", "main.cjs"))) {
+  console.error("studio-desktop e2e: app/ is not built; run `bun run build` first");
+  process.exit(1);
+}
+
+rmSync(WORK, { recursive: true, force: true });
+mkdirSync(WORK, { recursive: true });
+
+// Sunstone as a project folder: project.json plus one file per map.
+const sunstone = JSON.parse(readFileSync(join(KIT, "examples", "sunstone", "data", "sunstone.json"), "utf8")) as Project;
+const split = splitProjectMaps(sunstone);
+const folder = join(WORK, "sunstone");
+mkdirSync(folder, { recursive: true });
+writeFileSync(join(folder, "project.json"), split.shellText);
+for (const entry of split.entries) {
+  mkdirSync(dirname(join(folder, entry.path)), { recursive: true });
+  writeFileSync(join(folder, entry.path), entry.text);
+}
+
+// A single-file project rpgkit-check's engine checks have something to say about.
+const broken = join(WORK, "broken.json");
+copyFileSync(join(KIT, "tests", "fixtures", "rpgkit-check", "broken.json"), broken);
+
+// The kit's offline fake agent: it reads the real prompt, talks to the
+// proposal-only MCP server (the app's helper) and creates one proposal.
+const agentConfig = join(WORK, "agent.json");
+writeFileSync(agentConfig, `${JSON.stringify({
+  adapter: "custom",
+  name: "offline fake agent",
+  command: [process.execPath, join(KIT, "tests", "fixtures", "fake-local-agent.ts")],
+  mcpRegistration: "claude-json",
+  workingDirectory: "{{projectDir}}",
+  timeoutMs: 60_000,
+  env: { FAKE_AGENT_MODE: "success" },
+}, null, 2)}\n`);
+
+function which(name: string): string | null {
+  const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" });
+  return found.status === 0 ? found.stdout.trim() : null;
+}
+
+let xvfb: ChildProcess | null = null;
+let display = process.env.DISPLAY;
+if (process.platform === "linux" && !display) {
+  const binary = process.env.XVFB ?? which("Xvfb");
+  if (!binary) {
+    console.error("studio-desktop e2e: no DISPLAY and no Xvfb; install xvfb or set XVFB to its path");
+    process.exit(1);
+  }
+  display = `:${90 + Math.floor(Math.random() * 400)}`;
+  xvfb = spawn(binary, [display, "-screen", "0", "1600x1000x24", "-nolisten", "tcp"], { stdio: "ignore" });
+  await Bun.sleep(800);
+}
+
+const node = process.env.NODE ?? which("node");
+if (!node) {
+  console.error("studio-desktop e2e: Node.js is needed to run Playwright");
+  process.exit(1);
+}
+
+let code = 1;
+try {
+  const test = spawnSync(node, ["--test", "--test-concurrency=1", "--test-force-exit", "--test-reporter", process.env.STUDIO_E2E_REPORTER ?? "spec", join(HERE, "e2e", "studio-desktop.test.mjs")], {
+    cwd: HERE,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      ...(display ? { DISPLAY: display } : {}),
+      STUDIO_E2E_WORK: WORK,
+      STUDIO_E2E_FOLDER: folder,
+      STUDIO_E2E_BROKEN: broken,
+      STUDIO_E2E_AGENT_CONFIG: agentConfig,
+      STUDIO_E2E_SHOTS: join(KIT, "docs", "screenshots", "studio-desktop"),
+    },
+  });
+  code = test.status ?? 1;
+} finally {
+  xvfb?.kill("SIGTERM");
+  if (code === 0 && !process.env.STUDIO_E2E_KEEP) rmSync(WORK, { recursive: true, force: true });
+}
+process.exit(code);

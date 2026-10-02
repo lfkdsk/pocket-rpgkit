@@ -6,7 +6,7 @@
 // call the shared protocol and surface its errors.
 
 import type { CommandAddress } from "../engine/commands.ts";
-import type { MapDef, TileId } from "../../src/engine/types.ts";
+import type { MapDef, Project, TileId } from "../../src/engine/types.ts";
 import { EditSession, type SessionOperation, type SessionProblem } from "../api/session.ts";
 import type { EditCommandName, EditResponse } from "../api/types.ts";
 
@@ -140,6 +140,18 @@ export class StudioApp {
     return response;
   }
 
+  /** Replace the whole inline project (an accepted agent proposal) as a
+   * single undo step. */
+  replaceProject(label: string, project: Project): EditResponse | undefined {
+    if (!this.session) return undefined;
+    const started = performance.now();
+    const response = this.session.replaceInline(label, project);
+    this.lastOpMs = performance.now() - started;
+    if (response.ok && response.changed) this.reconcileView();
+    this.after(response);
+    return response;
+  }
+
   private after(response: EditResponse): void {
     if (!response.ok) {
       this.notify("error", response.error.message);
@@ -167,7 +179,14 @@ export class StudioApp {
   }
 
   private afterHistory(): void {
-    // The open map or selected event may have disappeared or been renamed.
+    if (!this.session) return;
+    this.reconcileView();
+    this.refreshProblems();
+    this.emit("history");
+  }
+
+  /** The open map or selected event may have disappeared or been renamed. */
+  private reconcileView(): void {
     const session = this.session;
     if (!session) return;
     if (!session.maps().some((map) => map.id === this.mapId)) this.mapId = session.maps()[0]?.id ?? "";
@@ -177,8 +196,6 @@ export class StudioApp {
       if (!event) this.selection = { kind: "none" };
       else if (selection.page >= event.pages.length) this.selection = { kind: "event", eventId: event.id, page: 0 };
     }
-    this.refreshProblems();
-    this.emit("history");
   }
 
   refreshProblems(): void {

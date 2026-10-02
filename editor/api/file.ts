@@ -53,7 +53,7 @@ function ioFailure(
 
 export class WriteConflictError extends Error {}
 
-interface AtomicReplacement {
+export interface AtomicReplacement {
   path: string;
   text: string;
   expectedSource: string;
@@ -128,6 +128,15 @@ function atomicWriteMany(replacements: readonly AtomicReplacement[]): void {
     for (const replacement of staged) rmSync(replacement.temporary, { force: true });
     throw error;
   }
+}
+
+/** Replace several files of one project with atomicWriteMany's guarantees:
+ * every output staged first, every input rechecked, published in the given
+ * order (shards first, the shell last), already-published files restored if a
+ * later rename fails. Desktop hosts saving a project folder in place call it
+ * under withProjectFileLock(shell), the lock the CLI and MCP server take. */
+export function atomicWriteProjectFiles(replacements: readonly AtomicReplacement[]): void {
+  atomicWriteMany(replacements);
 }
 
 /** Atomically replace one project file only while its source bytes still

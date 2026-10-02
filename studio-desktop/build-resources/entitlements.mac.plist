@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <!--
+    Entitlements for the Studio app and the Electron helper apps inside it
+    (electron-builder uses this file for both entitlements and
+    entitlementsInherit). Under the hardened runtime V8 needs MAP_JIT, and
+    that is all Electron itself needs; @electron/osx-sign's default and
+    renderer/GPU entitlements carry only this key from the code-signing set.
+
+    No App Sandbox: Studio spawns a user-installed agent CLI and reopens
+    folders by path, which the sandbox would block. Spawning child processes
+    needs no entitlement under the hardened runtime.
+  -->
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+  </dict>
+</plist>

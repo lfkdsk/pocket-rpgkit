@@ -1,0 +1,98 @@
+# electron-builder config for Pocket RPG Kit Studio.
+#
+# `bun run build` fills app/ (main and preload bundles, the Studio site, the
+# preview player page and the compiled helper). electron-builder packs app/
+# into app.asar and copies the helper next to it, outside the archive, so it
+# can be spawned and signed as its own Mach-O file.
+#
+#   bun run dist:mac     # universal dmg + zip (signed when a Developer ID is available)
+#   bun run dist:linux   # unpacked Linux app in dist/linux-unpacked
+
+appId: io.github.lfkdsk.pocket-rpgkit.studio
+productName: Pocket RPG Kit Studio
+
+directories:
+  app: app
+  output: dist
+  buildResources: build-resources
+
+# Relative to directories.app. The helper ships as an extra resource below.
+files:
+  - "**/*"
+  - "!helper/**"
+  # app/ has no dependencies, but electron-builder also searches the kit's
+  # Bun workspace above it for node_modules; none of those belong in the app.
+  - "!**/node_modules/**/*"
+
+# Relative to this directory. In the packaged app the main process finds the
+# helper at <resourcesPath>/helper/rpgkit-studio-helper.
+extraResources:
+  - from: app/helper
+    to: helper
+
+asar: true
+# No native modules, and app/package.json has no dependencies, so there is
+# nothing to rebuild and no node_modules to ship.
+npmRebuild: false
+
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  enableCookieEncryption: true
+  loadBrowserProcessSpecificV8Snapshot: false
+  grantFileProtocolExtraPrivileges: false
+
+# No update feed in the first desktop release. With a provider here,
+# electron-builder would also write latest-mac.yml for electron-updater.
+publish: null
+
+mac:
+  category: public.app-category.developer-tools
+  artifactName: pocket-rpgkit-studio-${version}-${arch}.${ext}
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  # electron-builder gives every nested Mach-O file entitlementsInherit; it
+  # has no per-binary entitlements. A local signed build therefore signs the
+  # helper with the app's entitlements. The CI workflow signs the helper with
+  # build-resources/entitlements.helper.plist before packaging (see
+  # scripts/ci-mac-signing.sh) and passes -c.mac.signIgnore for it.
+  binaries:
+    - Contents/Resources/helper/rpgkit-studio-helper
+  # The helper is already universal (build.ts lipo's the arm64 and x64
+  # builds), so the universal merge must copy it rather than lipo it.
+  x64ArchFiles: Contents/Resources/helper/rpgkit-studio-helper
+  # Notarization runs only when APPLE_API_KEY, APPLE_API_KEY_ID and
+  # APPLE_API_ISSUER are all set, and @electron/notarize staples the app.
+  # Without them electron-builder logs "skipped macOS notarization".
+  notarize: true
+  extendInfo:
+    NSDocumentsFolderUsageDescription: Studio opens and saves the projects you choose in your Documents folder.
+    NSDesktopFolderUsageDescription: Studio opens and saves the projects you choose on your Desktop.
+  fileAssociations:
+    - ext: json
+      name: Pocket RPG Kit project
+      role: Editor
+      rank: Alternate
+
+dmg:
+  # The workflow signs, notarizes and staples the dmg after the build, so
+  # the dmg's own blockmap would be stale. Updates use the zip.
+  sign: false
+  writeUpdateInfo: false
+
+linux:
+  category: Development
+  artifactName: pocket-rpgkit-studio-${version}-${arch}.${ext}
+  target:
+    - dir
+    - AppImage
