@@ -18,6 +18,7 @@ import {
   getCommand,
   getCommandList,
   ifBranchPath,
+  loopBodyPath,
   pathAfterDelete,
   sceneBranchPath,
   type CommandAddress,
@@ -40,6 +41,8 @@ const CATEGORY_OF: Readonly<Record<string, CommandCategory>> = {
   if: "flow",
   battle: "flow",
   scene: "flow",
+  loop: "flow",
+  break: "flow",
   wait: "flow",
   exit: "flow",
   erase: "flow",
@@ -111,6 +114,7 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   common: "Common event",
   mapAnim: "Map animation",
   stopAnim: "Stop animation",
+  break: "Break loop",
 };
 
 /** "screenFade" → "Screen fade". */
@@ -165,7 +169,7 @@ export function filterPickerEntries(query: string, entries: readonly PickerEntry
 // ---- branches -------------------------------------------------------------------
 
 export interface BranchTarget {
-  /** Stable key: then, else, option1…, cancel, win, lose, escape, done. */
+  /** Stable key: then, else, option1…, cancel, win, lose, escape, done, body. */
   key: string;
   label: string;
   path: CommandListPath;
@@ -212,6 +216,8 @@ export function commandBranchTargets(command: Command, address: CommandAddress):
       return ([["done", "onDone", "Done"], ["cancel", "onCancel", "Cancel"]] as const).map(
         ([key, property, label]) => ({ key, label, path: sceneBranchPath(address, key), present: Array.isArray(value[property]) }),
       );
+    case "loop":
+      return [{ key: "body", label: "Loop body", path: loopBodyPath(address), present: true }];
     default:
       return [];
   }

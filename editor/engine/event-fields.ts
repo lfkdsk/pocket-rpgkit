@@ -53,7 +53,9 @@ export type FieldEdit<T> =
   | { ok: false; error: string };
 
 const DIRS = ["down", "left", "right", "up"] as const;
-const TRIGGERS = ["action", "playerTouch", "autorun", "parallel"] as const;
+// eventTouch is last so the long-standing action → playerTouch → autorun →
+// parallel cycle order is unchanged; cycling from parallel reaches it.
+const TRIGGERS = ["action", "playerTouch", "autorun", "parallel", "eventTouch"] as const;
 const MOVE_TYPES = ["static", "random", "approach"] as const;
 const BOOLS = ["true", "false"] as const;
 const VAR_MODES = [
@@ -469,7 +471,10 @@ export function commandFields(
     case "erase":
     case "exit":
     case "lockInput":
-    case "unlockInput": return [];
+    case "unlockInput":
+    case "break":
+    // A loop's only payload is its body, edited as a nested command branch.
+    case "loop": return [];
     case "moveControl": {
       const fields = [
         field("target", "TARGET", target(command.target)),
@@ -1296,7 +1301,9 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
     case "pauseBgm":
     case "resumeBgm":
     case "saveBgm":
-    case "replayBgm": break;
+    case "replayBgm":
+    case "loop":
+    case "break": break;
   }
   return bad(`field ${key} is not editable for ${command.op}`);
 }

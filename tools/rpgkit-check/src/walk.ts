@@ -11,6 +11,7 @@
 //   [2, "cancel", 0]         ... the cancel branch, cmd 0
 //   [2, "onWin", 0]          command 2 is `battle`; its onWin branch, cmd 0
 //   [2, "onDone", 0]         command 2 is `scene`; its onDone branch, cmd 0
+//   [2, "commands", 0]       command 2 is `loop`; its body, cmd 0
 //   [3, "common", "heal", 0] command 3 calls common event "heal"; its cmd 0
 //
 // `extChoice` has no static branches (the option list comes from a live
@@ -49,6 +50,9 @@ export function walkCommands(
       case "scene":
         if (command.onDone) walkCommands(command.onDone, visit, [...here, "onDone"]);
         if (command.onCancel) walkCommands(command.onCancel, visit, [...here, "onCancel"]);
+        break;
+      case "loop":
+        walkCommands(command.commands, visit, [...here, "commands"]);
         break;
       default:
         break;

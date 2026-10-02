@@ -120,7 +120,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 822,635.
 // The additive world-layout schema contributes only its newly compatible
 // 64-byte schema identity (72 bundled bytes); its validator stays excluded.
-const EXPECTED_BYTES = 822_707;
+// The loop/break commands, the eventTouch trigger and the {v:} text token
+// add 8,587 shared interpreter/session/save-check bytes: 718 for the token,
+// 4,982 for loop/break and the eventTouch scan, 2,887 for contact detection.
+// Merged with everything above, Sunstone measures 831,224.
+const EXPECTED_BYTES = 831_224;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

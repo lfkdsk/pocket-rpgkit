@@ -77,7 +77,11 @@ export interface Sheet {
 
 // --- events ----------------------------------------------------------------
 
-export type Trigger = "action" | "playerTouch" | "autorun" | "parallel";
+/** `eventTouch` is RPG Maker's Event Touch: on a blocking page it fires
+ *  when the player's step is refused by the event's body (a bump) or when
+ *  the event's own movement step is refused by the player's body; on a
+ *  non-blocking page it fires on entry, like playerTouch. */
+export type Trigger = "action" | "playerTouch" | "eventTouch" | "autorun" | "parallel";
 
 /** A route target other than the mover itself: "player" or another map
  *  event by id (MV Set Movement Route on any event). */
@@ -268,6 +272,9 @@ export interface ChoiceIcon {
 }
 
 export type Command =
+  /** Lines may hold `{name}` (the player's name) and, when the project sets
+   *  `system.textVariables`, `{v:<id>}` (variable `id`'s value). Tokens are
+   *  expanded when the box opens. */
   | { op: "text"; lines: string[]; cps?: number }
   | {
       op: "choices";
@@ -360,6 +367,15 @@ export type Command =
   | { op: "replayBgm" }
   | { op: "erase" }
   | { op: "exit" }
+  /** Run `commands` again and again until a `break` inside them (at any
+   *  depth of if/choices/battle/scene blocks, but not inside a called common
+   *  event) leaves the loop. A pass that reaches no waiting command still
+   *  yields to the next frame after a bounded amount of work, so a loop
+   *  never stalls the host. */
+  | { op: "loop"; commands: Command[] }
+  /** Leave the innermost enclosing `loop`; outside any loop it ends the
+   *  current page or common event (RPG Maker Break Loop parity). */
+  | { op: "break" }
   | { op: "common"; id: string }
   /** T2-10 shop: a goods list plus buy/sell. `id` namespaces this shop's
    *  persisted stock counters (SessionState.sw.shopStock) so two shops
@@ -716,12 +732,16 @@ export interface AnimationDef {
  *  is optional and its absence keeps the v1 behavior. */
 export interface ProjectSystem {
   /** While ANY fiber's text or choices box is open — a parallel page's
-   *  included — the player cannot move and no action or playerTouch page
-   *  starts, so the confirm that advances the box never also talks to the
+   *  included — the player cannot move and no action, playerTouch or
+   *  eventTouch page starts, so the confirm that advances the box never also talks to the
    *  faced event (MV $gameMessage.isBusy, Tuxemon's dialog state swallows
    *  input). autorun and parallel pages keep running. Default false: v1
    *  holds the player only for a blocking fiber or a choices box. */
   messageBlocksPlayer?: boolean;
+  /** Expand `{v:<id>}` tokens in text lines and choice prompts/rows with the
+   *  live value of variable `id` (0 when unset). Off by default, so text
+   *  authored before the token existed keeps showing its braces verbatim. */
+  textVariables?: boolean;
   /** Engine-level backpack tunables (T2-10/B1). */
   inventory?: {
     /** Max count of a single item id the backpack holds; default 99

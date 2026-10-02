@@ -74,10 +74,17 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The additive world-layout schema keeps the immediately preceding schema
 // identity compatible, adding one 64-byte hash literal (72 bundled bytes) to
 // every engine consumer; world-layout validation remains out of these apps.
+// The loop/break commands, the eventTouch trigger and the {v:} text token
+// add shared interpreter/session bytes to every bundle: 718 for the token,
+// 4,140 for compiling and running loop/break and scanning eventTouch pages
+// (Sunstone 4,982: it also carries the save checks for the new
+// instructions), and 2,887 for detecting bumps and refused steps.
+// Merged with everything above, the three measure 524,071, 831,224 and
+// 665,381.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 516_396;
-const EXPECTED_SUNSTONE_QOA_BYTES = 822_707;
-const EXPECTED_WAV_FIXTURE_BYTES = 657_706;
+const EXPECTED_MEADOW_BYTES = 524_071;
+const EXPECTED_SUNSTONE_QOA_BYTES = 831_224;
+const EXPECTED_WAV_FIXTURE_BYTES = 665_381;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

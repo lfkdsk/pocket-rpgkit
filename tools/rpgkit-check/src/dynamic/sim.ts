@@ -10,7 +10,7 @@
 
 import type { BattleCompletion, BattleRules } from "../../../../src/engine/battle.ts";
 import type { SceneRules } from "../../../../src/engine/scene.ts";
-import type { Command, Dir, MapDef, Project } from "../../../../src/engine/types.ts";
+import type { Command, Dir, MapDef, Page, Project } from "../../../../src/engine/types.ts";
 import {
   createSession,
   isSessionWorldIdle,
@@ -30,6 +30,29 @@ import { flattenPageCondition } from "../conditions.ts";
 import { walkCommands } from "../walk.ts";
 
 export const CHECK_HZ = 60;
+
+/** How the player starts a page by hand, or null when the player cannot
+ *  (autorun/parallel):
+ *    "action"      stand in the rect or on a neighbor facing it, confirm;
+ *    "playerTouch" step ONTO a rect cell (fires on entry) — also an
+ *                  eventTouch page that does not block (it fires on entry);
+ *    "bump"        an eventTouch page that blocks: stand on a neighbor and
+ *                  press the direction toward the rect, so the player's step
+ *                  is refused by the event's body. */
+export type TouchMode = "action" | "playerTouch" | "bump";
+
+export function pageTouchMode(page: Page): TouchMode | null {
+  switch (page.trigger) {
+    case "action":
+      return "action";
+    case "playerTouch":
+      return "playerTouch";
+    case "eventTouch":
+      return page.blocks === true ? "bump" : "playerTouch";
+    default:
+      return null;
+  }
+}
 
 /** Default battle isolation declines the encounter. This preserves the
  *  generic checker's historical behavior when no game contract is loaded. */

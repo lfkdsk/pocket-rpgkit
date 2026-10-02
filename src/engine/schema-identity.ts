@@ -24,13 +24,17 @@
 /** SHA-256 of canonical src/data/schema.json. A test derives it from the file
  * so schema edits cannot leave it stale; keeping the literal avoids hashing
  * the schema at startup. */
-export const MAP_SCHEMA_HASH = "ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2";
+export const MAP_SCHEMA_HASH = "ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611";
 
 /** Earlier schema identities whose shells and saves remain loadable, newest
  * first. Each entry names the change that superseded it.
  *
  * History of cleared lists (each break refuses every identity before it):
- * - `c0588207…` → current only added optional world layout data, so it is listed.
+ * - `ed562c6f…` → current only added commands (`loop`, `break`), a trigger
+ *   (`eventTouch`) and an optional system field (`textVariables`), so it is
+ *   listed.
+ * - `c0588207…` → `ed562c6f…` only added optional world layout data, so it is
+ *   listed.
  * - `0b9fff5b…` → `c0588207…` only added an optional field, so it is listed.
  * - `47cf3d8f…` → `0b9fff5b…` added the `scene` command, but the same change
  *   made a parallel page's queued battle drop when the page stops being
@@ -45,6 +49,8 @@ export const MAP_SCHEMA_HASH = "ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87
  * tests/fixtures/schema-compat keeps a refused fixture and a recorded
  * counterexample for each of these. */
 export const MAP_SCHEMA_COMPATIBLE_HASHES: readonly string[] = Object.freeze([
+  // superseded by: `loop` / `break` commands, `eventTouch` trigger, `system.textVariables`
+  "ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2",
   // superseded by: optional `worldLayout` project data
   "c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06",
   // superseded by: optional `icon` on choices options

@@ -446,10 +446,13 @@ simDescribe("sunstone — render budget", () => {
     // layout in the shared boxes (8,921 B) and dialog pages and wrapped list
     // labels that never cut text (3,357 B) bring it, with the
     // streamed tile loader, to 822,635 B measured.
+    // The loop/break commands, the eventTouch trigger and the {v:} text
+    // token add shared interpreter/session/save-check code: 831,224 B
+    // measured.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(825_000);
+    expect(jsBytes).toBeLessThan(834_000);
   });
 });
 

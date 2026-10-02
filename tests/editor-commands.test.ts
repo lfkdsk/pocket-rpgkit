@@ -19,7 +19,11 @@ import {
   getCommandList,
   ifBranchPath,
   insertCommand,
+  isEditableCommand,
   isEditableCondition,
+  loopBodyPath,
+  commandAddressKey,
+  commandPathKey,
   moveCommand,
   moveStepSummary,
   pageConditionClauses,
@@ -159,6 +163,56 @@ describe("editor command tree", () => {
       switchCommand("cancelled"),
       { op: "text", lines: ["cancelled"] },
     ]);
+  });
+
+  test("treats a loop body as a command container with break as an owned leaf", () => {
+    expect(defaultCommand("loop")).toEqual({ op: "loop", commands: [] });
+    expect(defaultCommand("break")).toEqual({ op: "break" });
+    expect(isEditableCommand({ op: "loop", commands: [] })).toBe(true);
+    expect(isEditableCommand({ op: "break" })).toBe(true);
+    expect(commandSummary({ op: "loop", commands: [{ op: "break" }] })).toBe("Loop (1 command)");
+    expect(commandSummary({ op: "break" })).toBe("Break loop");
+
+    // Insert a loop, then a text and a break into its body; nothing mutates.
+    const original: Command[] = [{ op: "text", lines: ["before"] }];
+    const snapshot = JSON.stringify(original);
+    let commands = insertCommand(original, root(1), defaultCommand("loop"));
+    const body = loopBodyPath(root(1));
+    expect(commandPathKey(body)).toBe("l1:body");
+    expect(commandAddressKey(commandAddress(body, 0))).toBe("l1:body#0");
+    commands = insertCommand(commands, commandAddress(body, 0), { op: "text", lines: ["HP {v:hp}"] });
+    commands = insertCommand(commands, commandAddress(body, 1), { op: "break" });
+    expect(JSON.stringify(original)).toBe(snapshot);
+    expect(commands[1]).toEqual({ op: "loop", commands: [{ op: "text", lines: ["HP {v:hp}"] }, { op: "break" }] });
+
+    // The body flattens one level deeper, under a "Body" branch, in order.
+    const rows = flattenCommands(commands);
+    expect(rows.map((row) => [row.key, row.command.op, row.depth, row.branch ?? null])).toEqual([
+      ["root#0", "text", 0, null],
+      ["root#1", "loop", 0, null],
+      ["l1:body#0", "text", 1, "Body"],
+      ["l1:body#1", "break", 1, "Body"],
+    ]);
+    expect(rows.every((row) => !row.readOnly)).toBe(true);
+
+    // Nested containers inside a loop body keep composing.
+    const ifInLoop = insertCommand(commands, commandAddress(body, 1), defaultCommand("if"));
+    const thenPath = [...body, { kind: "if", index: 1, branch: "then" } as const];
+    const withNested = insertCommand(ifInLoop, commandAddress(thenPath, 0), { op: "break" });
+    expect(flattenCommands(withNested).find((row) => row.depth === 2)?.key).toBe("l1:body/i1:then#0");
+
+    // Move the break out of the body to the root, then back, then delete.
+    const movedOut = moveCommand(commands, commandAddress(body, 1), root(0));
+    expect(movedOut.map((command) => command.op)).toEqual(["break", "text", "loop"]);
+    expect(getCommandList(movedOut, loopBodyPath(root(2)))).toEqual([{ op: "text", lines: ["HP {v:hp}"] }]);
+    const movedBack = moveCommand(movedOut, root(0), commandAddress(loopBodyPath(root(2)), 0));
+    expect(getCommandList(movedBack, loopBodyPath(root(1)))?.map((command) => command.op)).toEqual(["break", "text"]);
+    // A loop cannot be moved into its own body.
+    expect(moveCommand(commands, root(1), commandAddress(body, 0))).toBe(commands);
+    const deleted = deleteCommand(commands, commandAddress(body, 0));
+    expect(getCommandList(deleted, body)).toEqual([{ op: "break" }]);
+    // A loop segment on a non-loop command does not resolve.
+    expect(getCommandList(commands, loopBodyPath(root(0)))).toBeNull();
   });
 
   test("updates, copies, deletes and moves nested commands with structural sharing", () => {

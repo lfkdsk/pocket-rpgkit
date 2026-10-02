@@ -1,9 +1,11 @@
 // tools/rpgkit-check/src/dynamic/explore.ts — headless exploration coverage.
 //
 // Drives the real engine from the project start with a deterministic
-// "explore" strategy: walk to every reachable action/playerTouch event on
-// the current map (BFS on the engine's own passage table with live
-// character bodies), trigger it, auto-advance dialogs (choices pick option
+// "explore" strategy: walk to every reachable action/playerTouch/eventTouch
+// event on the current map (BFS on the engine's own passage table with live
+// character bodies), trigger it (confirm while facing an action event, step
+// onto a touch tile, or walk into a blocking eventTouch body from a
+// neighbor — a bump), auto-advance dialogs (choices pick option
 // 0), and when the map is exhausted, walk into a static transfer to reach
 // the next map. Reports which event pages executed and which never did,
 // with a reason.
@@ -40,7 +42,7 @@ import {
 import type { Command, Dir, GameEvent, Project } from "../../../../src/engine/types.ts";
 import { makeFinding, type CheckReport, type Finding, type FindingLocation } from "../finding.ts";
 import { anyProjectCommand, collectProjectOp } from "../walk.ts";
-import { CHECK_HZ, checkConditionContext, checkSessionOptions } from "./sim.ts";
+import { CHECK_HZ, checkConditionContext, checkSessionOptions, pageTouchMode } from "./sim.ts";
 
 // Dir4/Facing order: 0 down, 1 left, 2 up, 3 right.
 const DIRS: readonly Dir[] = ["down", "left", "up", "right"];
@@ -66,6 +68,12 @@ const FACE_FROM_NEIGHBOR: Record<Dir, Dir> = {
  *  delayed autorun/parallel that flips a page condition after a wait must
  *  run out first. */
 const IDLE_QUIET_TICKS = 30;
+
+/** Frames a bump target holds the direction toward a blocking eventTouch
+ *  body before giving up (the refused step fires on the first tick; the
+ *  margin covers a turn and an arriving step). Below the 24-frame blocked
+ *  detector, so a bump is never mistaken for a stale path. */
+const BUMP_FRAMES = 12;
 
 /** Ops that change page-condition inputs (switches/variables/items/gold/
  *  selfSwitches/tileProperties/appearances) or restructure the world
@@ -143,11 +151,14 @@ interface Target {
   eventKey: string;
   map: string;
   event: GameEvent;
-  kind: "action" | "playerTouch";
+  /** action: face + confirm; playerTouch: step onto (also a non-blocking
+   *  eventTouch); bump: press `face` toward a blocking eventTouch body. */
+  kind: "action" | "playerTouch" | "bump";
   /** Tile to stand on. */
   x: number;
   y: number;
-  /** For action neighbors: the direction to face before confirming. */
+  /** For action neighbors: the direction to face before confirming. For a
+   *  bump: the direction to walk into the body. */
   face?: Dir;
   /** Static transfer target in the active page (map-exit targets). */
   transferTo?: string;
@@ -273,6 +284,7 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
   let randomWalk = false;
   let heldSince = -1; // frame when the current held direction started moving us
   let pendingTouch: Target | null = null; // playerTouch target entered this frame
+  let bumpHeld = 0; // frames the current bump target has pushed into the body
 
   const ext = (): ExtensionScope => ({ runtime: session.extensions, ext: state.ext });
   // Live passage: the authored table plus this visit's runtime tileProperty
@@ -379,7 +391,7 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
       activePagesObserved.add(pageKey);
       const s = stats.get(key);
       if ((s?.pages[active.index] ?? 0) === 0 &&
-        (active.page.trigger === "action" || active.page.trigger === "playerTouch") &&
+        pageTouchMode(active.page) !== null &&
         !noticedUnfired.has(pageKey)) {
         noticedUnfired.add(pageKey);
         newUnfiredTriggerable = true;
@@ -398,15 +410,16 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
     const px = state.move.tx;
     const py = state.move.ty;
 
-    // Tiles that would teleport the player away (active playerTouch pages
-    // with a transfer). Pathing to a normal event routes AROUND them, so
+    // Tiles that would teleport the player away (active playerTouch or
+    // non-blocking eventTouch pages with a transfer — both fire on entry).
+    // Pathing to a normal event routes AROUND them, so
     // the explorer does not bounce between a map and its return transfer;
     // pathing to a transfer target itself still walks onto the tile.
     const transferTiles = new Set<number>();
     for (const ev of map.events ?? []) {
       const active = activePage(ev, state.sw, map.id, state.move.facing, ext(), ctx);
       if (active) activePagesObserved.add(`${map.id}/${ev.id}#${active.index}`);
-      if (!active || active.page.trigger !== "playerTouch") continue;
+      if (!active || pageTouchMode(active.page) !== "playerTouch") continue;
       if (!collectProjectOp(project, active.page.commands, "transfer").some((c) => typeof c.map === "string")) continue;
       const origin = eventOrigin(ev, state.chars);
       const w = ev.w ?? 1;
@@ -429,7 +442,8 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
       const active = activePage(ev, state.sw, map.id, state.move.facing, ext(), ctx);
       if (!active) continue;
       activePagesObserved.add(`${key}#${active.index}`);
-      if (active.page.trigger !== "action" && active.page.trigger !== "playerTouch") continue;
+      const mode = pageTouchMode(active.page);
+      if (mode === null) continue;
       const origin = eventOrigin(ev, state.chars);
       const w = ev.w ?? 1;
       const h = ev.h ?? 1;
@@ -469,7 +483,19 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
         for (let dx = 0; dx < w; dx++) {
           const cx = origin.x + dx;
           const cy = origin.y + dy;
-          if (active.page.trigger === "playerTouch") {
+          if (mode === "bump") {
+            // A blocking eventTouch fires when the player's step is refused
+            // by the body: stand on a neighbor and walk into the rect.
+            for (const dir of DIRS) {
+              const nx = cx + DX[dir]!;
+              const ny = cy + DY[dir]!;
+              if (isStandable(t, nx, ny)) {
+                consider({ eventKey: key, map: map.id, event: ev, kind: "bump", x: nx, y: ny, face: FACE_FROM_NEIGHBOR[dir], transferTo, activePage: active.index });
+              }
+            }
+            continue;
+          }
+          if (mode === "playerTouch") {
             // Do not target the tile the player is already standing on:
             // the engine's touch latch only fires on entry, so standing on
             // the same cell cannot re-trigger it (it would self-loop).
@@ -553,7 +579,19 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
     } else if (target && confirmCooldown === 0) {
       const onTarget = state.move.tx === target.x && state.move.ty === target.y;
       if (onTarget) {
-        if (target.kind === "action") {
+        if (target.kind === "bump") {
+          // Walk into the body: the refused step fires the page. Hold for a
+          // bounded number of frames, then let the planner move on (a fiber
+          // start clears it sooner, below).
+          buttons = DIR_BUTTON[target.face ?? "down"]!;
+          if (bumpHeld === 0) attempted.add(target.eventKey);
+          bumpHeld++;
+          if (bumpHeld >= BUMP_FRAMES) {
+            target = null;
+            bumpHeld = 0;
+            replanIn = 1;
+          }
+        } else if (target.kind === "action") {
           if (target.face !== undefined && state.move.facing !== DIR_INDEX[target.face]) {
             turnDir = target.face;
           } else {
@@ -638,7 +676,15 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
       visitedTiles.add(tileKey);
       progress = true;
     }
-    if (fiberStarts > prevFiberStarts) progress = true;
+    if (fiberStarts > prevFiberStarts) {
+      progress = true;
+      // The bump fired the page (or something else started): stop pushing.
+      if (target?.kind === "bump" && bumpHeld > 0) {
+        target = null;
+        bumpHeld = 0;
+        replanIn = 1;
+      }
+    }
     if (progress) lastProgress = frame;
 
     // Blocked detector: holding a direction but the tile has not changed
@@ -687,6 +733,7 @@ export function checkExplore(project: Project, options: ExploreOptions = {}): Ex
     const armed = allAccountedFor() && idle && frame - idleSince < IDLE_QUIET_TICKS;
     if (armed || replanIn <= 0 || (!target && path.length === 0 && !randomWalk)) {
       const planned = plan(armed);
+      bumpHeld = 0;
       target = planned.target;
       path = planned.path;
       randomWalk = planned.randomWalk;

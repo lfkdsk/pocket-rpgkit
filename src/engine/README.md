@@ -111,6 +111,29 @@ Conventions:
   to another re-fires; standing still never does, and leaving clears the
   latch. `action` fires when the faced tile or the player's own tile is
   inside the rectangle.
+- **Event Touch (`eventTouch`, RPG Maker MV parity):** a *contact* is (a) a
+  player step refused because this event's character body holds the
+  target cell — the d-pad mover, or a player move route / pathTo /
+  approach step — or (b) this event's own step (route, path, approach
+  movement, random step) refused because the player's body holds the
+  target cell. Only the body counts: a wall or dirBlock edge that would
+  refuse the step anyway is no contact, and a `through` mover never makes
+  one. Contacts are detected in the movement phase of a reference tick
+  (mover, then characters, then the player route) and passed as
+  `InterpInput.touchContacts`; the interpreter phase of the **same** tick
+  starts the page. Any `eventTouch` page of a contacting event fires on a
+  contact; a non-blocking (`blocks` not true) page additionally fires on
+  entry exactly like `playerTouch` (same per-cell latch, same facing turn
+  edge). Gates are playerTouch's: no running main fiber and no box
+  holding the player. Contacts join the event-id-ordered scan with every
+  other blocking trigger, so the first qualifying page starts the single
+  main fiber. Contacts are not latched: a direction held into a blocking
+  eventTouch NPC bumps again — and re-fires — once its page's fiber ends.
+  `playerTouch` is unchanged (a blocking playerTouch page never fires on a
+  bump). Contacts are per-tick input, never state, so saves are unaffected;
+  `createWorld` sets `World.hasEventTouch` and the session skips detection
+  on maps without an eventTouch page. Wander exits (`control: wander`) are
+  filtered, not attempted, so they make no contact.
 - **Compound and facing conditions:** a page condition's
   `all: Condition[]` is an AND of the same conditions `if` accepts
   (including a switch demanded OFF and a `{kind:"facing", dir}` test); it
@@ -184,7 +207,7 @@ Conventions:
   (from `project.system.messageBlocksPlayer`) makes any open text/choices
   box hold the player, a PARALLEL page's included:
   `messageHoldsPlayer(world, state)` is then true, the mover must not run,
-  and the trigger scan starts no action or playerTouch page, so the
+  and the trigger scan starts no action, playerTouch or eventTouch page, so the
   confirm that advances the box never also starts the faced event.
   `autorun`/`parallel` pages keep running. Off by default (v1).
 - **Screen presentation:** `screenFade`, `screenTint`, `screenFlash`,
@@ -227,7 +250,7 @@ Conventions:
   camera focus, balloon frame age, and persistent layers all round-trip in
   saves and attract rewind. Older saves omit `screen` and retain the zero-cost
   path: `session.ts` skips screen advancement entirely while it is absent.
-- `isBusy(state)` is true while a blocking (action / playerTouch / autorun)
+- `isBusy(state)` is true while a blocking (action / playerTouch / eventTouch / autorun)
   fiber runs. The mover freezes for its whole duration. PARALLEL pages run
   concurrently and never set busy (only the message hold above can make
   their box hold the player).
@@ -266,6 +289,55 @@ Conventions:
   `Number.isSafeInteger` is refused with a typed `SaveError` before
   `restoreSessionSnapshot` ever runs, so a hand-crafted file cannot
   reintroduce a value normal play can no longer produce.
+
+## Event Touch, loops and text tokens
+
+### Event Touch
+
+The trigger's contract is the **Event Touch** bullet under the conventions
+above: contacts come from the movement phase of a reference tick and start
+the page in the same tick's trigger scan, in event-id order with the other
+blocking triggers.
+
+### Loops and labels
+
+`compile` lowers `loop` inline: the body, then a `repeat` back-edge to the
+body's first instruction (the only backward jump the bytecode has). A
+`break` in the same program frame as its loop is a forward `jmp` to the
+loop end. A `break` inside a branch program (a `choices` option or cancel,
+a `battle` result, a `scene` result: each runs as its own stack frame) is
+`{ op: "break", up, to }`: pop `up` frames, then set the loop frame's pc to
+`to`. A `break` outside any loop is `{ up: depth, to: null }`, which ends the
+page or common-event body. Common events compile on their own, so a
+`break` never crosses a `common` call. When a `break` leaves a battle or
+scene result branch before it reached the completion transfer the session
+appended (`transfer.completion`), that transfer still runs.
+
+At a `repeat` the fiber yields to the next tick, staying in `run` mode at
+the loop start, once it has taken `LOOP_YIELD_STEPS` (1,000) steps in this
+tick or the shared `RUNAWAY_STEP_LIMIT` budget is down to that many. A loop
+alone therefore never records the runaway error. Programs without a loop
+pay nothing: the check runs only at a `repeat`. `save-validate.ts` accepts
+`repeat` only as a backward (or self) jump and checks `break`'s shape; the
+runtime refuses a `break` that would pop past the fiber's stack.
+
+Labels and jump-to-label (RPG Maker 118/119) are not supported. MV jumps
+anywhere in the flat command list, including into the middle of a choice
+branch; here branches are separate programs entered only through their
+command, so such jumps have no equivalent, and the editor's command tree
+is structured. The common shapes lower without them: a backward jump to a
+label at the top of a block is a `loop` whose last command is the jump's
+condition followed by `break`; a forward jump past a block is an `if`
+around the block, or `break`/`exit` when it goes to the end.
+
+### Text tokens
+
+`player-name.ts` expands `{name}` and, when `World.textVariables` is set
+from `project.system.textVariables`, `{v:<id>}` in one left-to-right pass
+that never rescans its output. The interpreter expands a text box's lines
+and a choice box's prompt and rows once, when the box opens; while it stays
+up the modal keeps those strings, so the typewriter total, the reveal and
+the dialog's wrapping all work on the expanded text.
 
 ## P1④ session (multi-map) fold
 
@@ -405,8 +477,8 @@ an application that packages a shell calls it after writing the shell to disk,
 so a stale or hand-edited declared hash fails the build instead of shipping.
 
 `onFiberStart` fires once when a page fiber starts, for every trigger:
-`parallel` fibers report `parallel: true`; `autorun`, `action`, and
-`playerTouch` fibers report `false`. The arguments are the event key, the
+`parallel` fibers report `parallel: true`; `autorun`, `action`,
+`playerTouch`, and `eventTouch` fibers report `false`. The arguments are the event key, the
 selected page's index, and that flag. It fires in the same tick the fiber
 starts — including fibers that begin and end inside one tick — so a coverage
 tool can observe instant pages that leave no residual fiber. Pages with zero

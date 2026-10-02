@@ -131,6 +131,43 @@ describe("branches and the visible tree", () => {
       .toEqual(["win", "lose", "escape"]);
     expect(commandBranchTargets({ op: "scene", id: "x" } as Command, { path: [], index: 0 }).map((t) => t.key)).toEqual(["done", "cancel"]);
     expect(commandBranchTargets({ op: "wait", seconds: 1 }, { path: [], index: 0 })).toEqual([]);
+    expect(commandBranchTargets({ op: "loop", commands: [] }, { path: [], index: 2 })).toEqual([
+      { key: "body", label: "Loop body", path: [{ kind: "loop", index: 2, branch: "body" }], present: true },
+    ]);
+    expect(commandBranchTargets({ op: "break" }, { path: [], index: 0 })).toEqual([]);
+  });
+
+  test("loop and break are flow ops in the picker; a loop body is an insertion target and a tree branch", () => {
+    expect([commandCategory("loop"), commandCategory("break")]).toEqual(["flow", "flow"]);
+    expect(opLabel("loop")).toBe("Loop");
+    expect(opLabel("break")).toBe("Break loop");
+    expect(filterPickerEntries("loop").map((entry) => entry.op).slice(0, 2)).toEqual(["loop", "break"]);
+
+    const session = open();
+    const ref: PageRef = { map: "village", event: "merchant", page: 0 };
+    const commands = () => eventOf(session, "village", "merchant").pages[0]!.commands;
+    const loopAt = commands().length;
+    const addLoop = insertCommandOp(ref, insertionAddress(commands(), undefined)!, { op: "loop", commands: [] });
+    expect(session.run(addLoop.command, addLoop.args).ok).toBe(true);
+    const loopAddress: CommandAddress = { path: [], index: loopAt };
+    for (const command of [{ op: "text", lines: ["Again?"] }, { op: "break" }] as Command[]) {
+      const into = insertionAddress(commands(), loopAddress, "body")!;
+      expect(into.path).toEqual([{ kind: "loop", index: loopAt, branch: "body" }]);
+      const insert = insertCommandOp(ref, into, command);
+      expect(session.run(insert.command, insert.args).ok).toBe(true);
+    }
+    expect(commands()[loopAt]).toEqual({ op: "loop", commands: [{ op: "text", lines: ["Again?"] }, { op: "break" }] });
+    const items = commandTreeItems(commands(), flattenCommands(commands()));
+    const tail = items.slice(items.findIndex((item) => item.key === `root#${loopAt}`));
+    expect(tail.map((item) => item.kind === "branch" ? `[${item.label}]@${item.depth}` : `${item.key}@${item.depth}`)).toEqual([
+      `root#${loopAt}@0`,
+      "[Loop body]@1",
+      `l${loopAt}:body#0@1`,
+      `l${loopAt}:body#1@1`,
+    ]);
+    const del = deleteCommandOp(ref, { path: [{ kind: "loop", index: loopAt, branch: "body" }], index: 0 });
+    expect(session.run(del.command, del.args).ok).toBe(true);
+    expect(commands()[loopAt]).toEqual({ op: "loop", commands: [{ op: "break" }] });
   });
 
   test("insertion address: after, into a branch, or at the end", () => {

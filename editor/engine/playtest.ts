@@ -206,11 +206,26 @@ interface CommandScan {
   battles?: Set<string>;
   backdrops?: Set<string>;
   scenes?: Set<string>;
+  /** project.system.textVariables: `{v:<id>}` in text lines, choices
+   *  prompts/options and extChoice prompts names a variable. */
+  textVariables?: boolean;
+}
+
+/** Same token grammar as the runtime's expandTextTokens (src/engine/player-name.ts). */
+const TEXT_VARIABLE_TOKEN = /\{v:([^{}]*)\}/g;
+
+function addTextVariables(value: string, scan: CommandScan): void {
+  if (!scan.textVariables || !value.includes("{v:")) return;
+  for (const match of value.matchAll(TEXT_VARIABLE_TOKEN)) {
+    if (match[1]) scan.variables.add(match[1]);
+  }
 }
 
 function addCommands(commands: readonly Command[], scan: CommandScan): void {
   for (const command of commands) {
-    if (command.op === "switch") scan.switches.add(command.id);
+    if (command.op === "text") {
+      for (const line of command.lines) addTextVariables(line, scan);
+    } else if (command.op === "switch") scan.switches.add(command.id);
     else if (command.op === "variable") {
       scan.variables.add(command.id);
       if ("from" in command.set) scan.variables.add(command.set.from);
@@ -223,6 +238,7 @@ function addCommands(commands: readonly Command[], scan: CommandScan): void {
     } else if (command.op === "ext") scan.extensions?.add(`command ${command.call}`);
     else if (command.op === "extChoice") {
       scan.extensions?.add(`choice ${command.call}`);
+      addTextVariables(command.prompt, scan);
       for (const id of Object.values(command.write ?? {})) scan.variables.add(id);
     } else if (command.op === "screenBackdrop" && typeof command.variant === "string") {
       scan.backdrops?.add(`${command.layer}/${command.variant}`);
@@ -231,8 +247,14 @@ function addCommands(commands: readonly Command[], scan: CommandScan): void {
       addCommands(command.then, scan);
       addCommands(command.else ?? [], scan);
     } else if (command.op === "choices") {
-      for (const option of command.options) addCommands(option.commands, scan);
+      addTextVariables(command.prompt, scan);
+      for (const option of command.options) {
+        addTextVariables(option.text, scan);
+        addCommands(option.commands, scan);
+      }
       addCommands(command.cancel?.commands ?? [], scan);
+    } else if (command.op === "loop") {
+      addCommands(command.commands, scan);
     } else if (command.op === "battle") {
       scan.battles?.add(JSON.stringify(command.setup));
       addCommands(command.onWin ?? [], scan);
@@ -255,6 +277,7 @@ function scanProject(project: Project): Required<CommandScan> {
     battles: new Set<string>(),
     backdrops: new Set<string>(),
     scenes: new Set<string>(),
+    textVariables: project.system?.textVariables === true,
   };
   for (const common of project.commonEvents ?? []) {
     if (common.conditionSwitch) scan.switches.add(common.conditionSwitch);

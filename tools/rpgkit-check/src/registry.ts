@@ -226,8 +226,9 @@ const CHECK_TOOL_DEFS: CheckTool[] = [
   {
     name: "rpgkit-explore",
     description:
-      "Headless exploration coverage: from the project start, walk to every reachable action/playerTouch " +
-      "event (BFS on the engine's passage table with live bodies), trigger it, auto-advance dialogs " +
+      "Headless exploration coverage: from the project start, walk to every reachable action/playerTouch/" +
+      "eventTouch event (BFS on the engine's passage table with live bodies), trigger it (a blocking " +
+      "eventTouch page is bumped from a neighbor), auto-advance dialogs " +
       "(choices pick option 0), and follow static transfers to the next map. Returns which event pages " +
       "ran and which never did, with a reason.",
     inputSchema: {

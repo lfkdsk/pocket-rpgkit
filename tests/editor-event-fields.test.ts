@@ -110,6 +110,30 @@ describe("event inspector command fields", () => {
     ]);
   });
 
+  test("loop and break have no fields; text tokens survive field round trips", () => {
+    for (const op of ["loop", "break"] as const) {
+      const command = defaultCommand(op);
+      expect(commandFields(command), op).toEqual([]);
+      const [row] = commandInspectorRows([command]);
+      expect({ supported: row!.supported, readOnly: row!.readOnly }, op).toEqual({ supported: true, readOnly: false });
+      const result = editCommandField(command, "commands", "[]");
+      expect(result.ok, op).toBe(false);
+    }
+    const lines = "Gold: {v:gold} for {name}\n{v:} {v:a.b-c} {x}";
+    const text = edit(defaultCommand("text"), "lines", lines);
+    expect(text).toEqual({ op: "text", lines: ["Gold: {v:gold} for {name}", "{v:} {v:a.b-c} {x}"] });
+    expect(commandFields(text)[0]!.value).toBe(lines);
+    let choices = edit(defaultCommand("choices"), "prompt", "Pay {v:price}?");
+    choices = edit(choices, "option:0", "Yes ({v:gold} left)");
+    expect(choices).toMatchObject({ prompt: "Pay {v:price}?", options: [{ text: "Yes ({v:gold} left)" }, { text: "Option 2" }] });
+    // The 52-character limit measures the raw, unexpanded text.
+    expect(editCommandField(defaultCommand("text"), "lines", `${"x".repeat(46)}{v:id}`).ok).toBe(true);
+    expect(editCommandField(defaultCommand("text"), "lines", `${"x".repeat(47)}{v:id}`).ok).toBe(false);
+    const project = projectWith([text, choices, { op: "loop", commands: [{ op: "break" }] }]);
+    project.system = { textVariables: true };
+    expect(validateProject(project)).toEqual([]);
+  });
+
   test("edits text, choices, switches and both variable operand forms", () => {
     expect(edit(defaultCommand("text"), "lines", "Hello\ntraveller")).toEqual({ op: "text", lines: ["Hello", "traveller"] });
     let choices = edit(defaultCommand("choices"), "optionCount", "3");
@@ -405,6 +429,21 @@ describe("event inspector page and condition fields", () => {
     expect(page.moveRoute).toEqual({ steps: ["moveRight", "turnTowardPlayer"], repeat: false, skippable: false });
     expect(pageRouteFieldDescriptors(page).at(-1)?.value).toBe("moveRight,turnTowardPlayer");
     expect(validateProject(projectWith([], page))).toEqual([]);
+  });
+
+  test("cycles the trigger through eventTouch last and wraps to action", () => {
+    let page: Page = { trigger: "action", commands: [] };
+    const seen: string[] = [page.trigger];
+    for (let i = 0; i < 5; i++) {
+      const result = editPageField(page, "trigger", nextFieldValue(pageFieldDescriptors(page)[0]!));
+      if (!result.ok) throw new Error(result.error);
+      page = result.value;
+      seen.push(page.trigger);
+    }
+    expect(seen).toEqual(["action", "playerTouch", "autorun", "parallel", "eventTouch", "action"]);
+    const touched = editPageField(page, "trigger", "eventTouch");
+    expect(touched.ok && touched.value.trigger).toBe("eventTouch");
+    expect(validateProject(projectWith([], { trigger: "eventTouch", blocks: true }))).toEqual([]);
   });
 
   test("adds, edits and deletes AND conditions while preserving unrelated payloads", () => {

@@ -123,7 +123,7 @@ describe("newer editor commands roundtrip through the runtime", () => {
 
       const command = loaded.project.maps[0]!.events![0]!.pages[0]!.commands[0]!;
       expect(command).toEqual(authored);
-      expect(compile([command])[0]?.op).toBe(entry.op);
+      expect<string | undefined>(compile([command])[0]?.op).toBe(entry.op);
 
       let started = false;
       let extensionCalls = 0;

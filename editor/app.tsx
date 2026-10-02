@@ -141,6 +141,7 @@ import {
   getCommandList,
   ifBranchPath,
   insertCommand,
+  loopBodyPath,
   moveCommand,
   sceneBranchPath,
   updateCommand,
@@ -1898,6 +1899,8 @@ export function EditorApp(): JSX.Element {
         } else if (selectedRow.command.op === "scene"
           && (branchText === "done" || branchText === "cancel")) {
           path = sceneBranchPath(selectedRow.address, branchText);
+        } else if (selectedRow.command.op === "loop" && branchText === "body") {
+          path = loopBodyPath(selectedRow.address);
         }
         const list = path ? getCommandList(page.commands, path) : null;
         if (!path || !list) {

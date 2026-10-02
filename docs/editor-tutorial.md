@@ -112,8 +112,9 @@ The event inspector opens on a new event.
 ![The Greeter's first page in the event inspector](screenshots/editor-tutorial/04-event-inspector.png)
 
 The `@option1` / `@option2` suffixes insert into a choices branch; with a
-selected `if` row, `@then` / `@else` work the same way, and a battle row
-accepts `@win` / `@lose` / `@escape`.
+selected `if` row, `@then` / `@else` work the same way, a battle row
+accepts `@win` / `@lose` / `@escape`, a scene row `@done` / `@cancel`, and a
+`loop` row `@body` (e.g. `break@body` adds the command that leaves the loop).
 
 ### Page 2: the reward, gated so it can happen only once
 

@@ -44,6 +44,13 @@
 //   lint/scene-id                   a scene id used by the document; scene
 //                                   rules are code-side, so the id is listed
 //                                   for a registration review (info)
+//   lint/text-variable-token-off    a text/choices string carries `{v:<id>}`
+//                                   but system.textVariables is off, so the
+//                                   token prints verbatim (warning). With it
+//                                   on, each token counts as a variable READ
+//   lint/break-outside-loop         a `break` not inside any `loop` body: it
+//                                   ends the page / common event (legal, RPG
+//                                   Maker parity) — listed for review (info)
 
 import type {
   Command,
@@ -157,6 +164,32 @@ function notePageConditionReads(
   }
 }
 
+/** `{v:<id>}` text tokens (src/engine/player-name.ts TEXT_TOKEN): the id
+ *  runs to the next closing brace. */
+const TEXT_VARIABLE_TOKEN = /\{v:([^{}]*)\}/g;
+
+/** The variable ids `{v:<id>}` tokens in `text` name, in order. */
+export function textVariableIds(text: string): string[] {
+  if (!text.includes("{v:")) return [];
+  return [...text.matchAll(TEXT_VARIABLE_TOKEN)].map((m) => m[1]!);
+}
+
+/** The player-visible strings of one command that the runtime expands
+ *  tokens in: text lines, a choices prompt and its option rows, an
+ *  extChoice prompt (its rows come from the extension at runtime). */
+function commandTexts(command: Command): string[] {
+  switch (command.op) {
+    case "text":
+      return command.lines;
+    case "choices":
+      return [command.prompt, ...command.options.map((option) => option.text)];
+    case "extChoice":
+      return [command.prompt];
+    default:
+      return [];
+  }
+}
+
 function tileSheet(id: string): string | null {
   const dot = id.indexOf(".");
   return dot > 0 ? id.slice(0, dot) : null;
@@ -172,6 +205,7 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
   const spriteIds = new Set(project.sprites ? Object.keys(project.sprites) : []);
   const mapIds = new Set(project.maps.map((m) => m.id));
   const commonIds = new Set((project.commonEvents ?? []).map((c) => c.id));
+  const textVariables = project.system?.textVariables === true;
 
   const switches = new Map<string, Usage>();
   const variables = new Map<string, Usage>();
@@ -265,6 +299,22 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
     walkCommands(commands, (command, path) => {
       commandCount++;
       const cloc = { ...loc, commandPath: path };
+      // `{v:<id>}` tokens: with system.textVariables each is a live READ of
+      // the variable; without it the braces print verbatim.
+      const tokenIds = commandTexts(command).flatMap(textVariableIds);
+      if (tokenIds.length > 0) {
+        if (textVariables) {
+          for (const id of tokenIds) note(variables, id, "reads", cloc);
+        } else {
+          findings.push(makeFinding(
+            "lint/text-variable-token-off",
+            "warning",
+            `${command.op} text holds ${tokenIds.map((id) => `{v:${id}}`).join(", ")} but system.textVariables is off, so the token prints verbatim`,
+            "set project.system.textVariables to true to expand {v:<id>} to the variable's value, or remove the token",
+            cloc,
+          ));
+        }
+      }
       switch (command.op) {
         case "switch":
           note(switches, command.id, "writes", cloc);
@@ -498,6 +548,21 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           break;
         case "scene":
           if (!sceneIds.has(command.id)) sceneIds.set(command.id, cloc);
+          break;
+        case "break":
+          // A loop body is walked under the "commands" tag (walk.ts); the
+          // tree here never inlines common events, so a break in a common
+          // event called from a loop is correctly "outside" (a break does
+          // not cross the call: it ends the common event).
+          if (!path.includes("commands")) {
+            findings.push(makeFinding(
+              "lint/break-outside-loop",
+              "info",
+              "break is not inside any loop; it ends the current page or common event here",
+              "legal (RPG Maker parity) — keep it as an early exit, or wrap the commands it should leave in a loop",
+              cloc,
+            ));
+          }
           break;
         default:
           break;

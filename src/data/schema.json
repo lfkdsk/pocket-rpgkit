@@ -21,7 +21,8 @@
       "additionalProperties": false,
       "description": "Project-wide runtime options. Every field is optional; an absent field keeps the v1 behavior.",
       "properties": {
-        "messageBlocksPlayer": { "type": "boolean", "description": "While any fiber's text or choices box is open (a parallel page's included), the player cannot move and no action or playerTouch page starts; autorun and parallel pages keep running. Default false." },
+        "messageBlocksPlayer": { "type": "boolean", "description": "While any fiber's text or choices box is open (a parallel page's included), the player cannot move and no action, playerTouch or eventTouch page starts; autorun and parallel pages keep running. Default false." },
+        "textVariables": { "type": "boolean", "description": "Expand {v:<id>} tokens in text lines and choice prompts/rows with the live value of variable id (0 when unset). Default false: braces show verbatim." },
         "inventory": {
           "type": "object",
           "additionalProperties": false,
@@ -441,7 +442,7 @@
       "required": ["trigger", "commands"],
       "properties": {
         "condition": { "$ref": "#/$defs/pageCondition" },
-        "trigger": { "enum": ["action", "playerTouch", "autorun", "parallel"] },
+        "trigger": { "enum": ["action", "playerTouch", "eventTouch", "autorun", "parallel"], "description": "eventTouch: on a blocking page, fires when the player's step is refused by this event's body or this event's step is refused by the player's body; on a non-blocking page, fires on entry like playerTouch." },
         "sprite": { "type": ["string", "null"], "description": "Key in project.sprites; null = no character (touch trigger tile only)." },
         "blocks": { "type": "boolean", "description": "true = the event body blocks movement (closed gates); default false = below-characters, walkable, touch fires on entry (MV priorityType 0 semantics)." },
         "moveType": { "enum": ["static", "random", "approach"] },
@@ -906,6 +907,17 @@
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "replayBgm" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "erase" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "exit" } } },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "commands"],
+          "description": "Repeat commands until a break inside them leaves the loop.",
+          "properties": {
+            "op": { "const": "loop" },
+            "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } }
+          }
+        },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "description": "Leave the innermost loop; outside a loop, end the current page or common event.", "properties": { "op": { "const": "break" } } },
         {
           "type": "object",
           "additionalProperties": false,

@@ -7,7 +7,8 @@
 // command stack, the typewriter clock and every gameplay value.
 //
 // Fibers
-//   main       — at most one action / playerTouch / AUTORUN fiber. While it
+//   main       — at most one action / playerTouch / eventTouch / AUTORUN
+//                fiber. While it
 //                runs the game is "busy" (P1② freezes player movement, the
 //                UI freezes its camera) and no new blocking trigger starts.
 //   parallels  — PARALLEL pages run concurrently in their own fibers, in
@@ -36,7 +37,7 @@ import {
   type ExtensionReadContext,
   type ExtensionRuntime,
 } from "./extensions.ts";
-import { DEFAULT_PLAYER_NAME, substituteLines, substitutePlayerName } from "./player-name.ts";
+import { DEFAULT_PLAYER_NAME, expandTextLines, expandTextTokens } from "./player-name.ts";
 import {
   advanceAudioStateInPlace,
   audioStateEmpty,
@@ -102,6 +103,17 @@ export const TICK_HZ = 60;
  *  only reject malformed control flow earlier. Exceeding the budget records
  *  a fatal state instead of throwing or hanging the host frame loop. */
 export const RUNAWAY_STEP_LIMIT = 10000;
+/** A `loop` back-edge yields its fiber to the next tick once the fiber has
+ *  run this many steps in the current tick, or once the shared budget is
+ *  down to this many, so a loop alone never trips RUNAWAY_STEP_LIMIT nor
+ *  stalls the host frame. A short wait-less counting loop still completes
+ *  within one tick (MV parity). A wait-less loop that runs past one slice is
+ *  frame-paced: it advances one slice per interpreter tick, so its iteration
+ *  count per virtual second depends on the tick rate it is folded at (the
+ *  host rate for a World compiled at that hz; Session folds a fixed
+ *  reference clock), like MV's per-frame freeze check. A loop whose passes
+ *  `wait` is rate-independent. */
+export const LOOP_YIELD_STEPS = 1000;
 /** Maximum number of nested choice/common program frames. This bounds a
  * wait-interleaved recursive common event across host frames as well as an
  * in-frame recursion before it reaches the step budget. */
@@ -535,6 +547,12 @@ export type Instr =
   | { op: "selfSwitch"; key: SelfKey; value: boolean }
   | { op: "if"; cond: Condition; onFalse: number }
   | { op: "jmp"; to: number }
+  /** Loop back-edge: the only backward jump (to the loop's first instr). */
+  | { op: "repeat"; to: number }
+  /** Break out of a loop across branch frames: pop `up` stack frames, then
+   *  set the new top frame's pc to `to` (null = that program's end). A break
+   *  in the same frame as its loop compiles to a forward `jmp` instead. */
+  | { op: "break"; up: number; to: number | null }
   | { op: "wait"; frames: number }
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }
@@ -562,6 +580,10 @@ export type Instr =
       y: TransferCoordinate;
       dir: TransferDirection;
       fadeFrames: number;
+      /** Set only on the battle/scene completion transfer continueBattle /
+       *  continueScene append to a result branch: a `break` that leaves that
+       *  branch still performs it (see the "break" run-loop case). */
+      completion?: true;
     }
   | { op: "moveRoute"; target: RouteTarget; wait: boolean; route: MoveRoute }
   | { op: "moveControl"; target: RouteTarget; control: MoveControl }
@@ -655,15 +677,69 @@ function choiceIconEquals(a: ChoiceIcon | null | undefined, b: ChoiceIcon | null
 
 const DEFAULT_CPS = 30;
 
+/** The innermost `loop` enclosing the commands being compiled. `depth` is
+ *  the branch depth of the program that holds the loop body (0 = the page or
+ *  common-event root; a choices/battle/scene branch compiles one deeper,
+ *  because it runs as its own stack frame). Break instructions are recorded
+ *  here and patched to the loop end once the body has been compiled. */
+interface LoopScope {
+  depth: number;
+  jumps: Extract<Instr, { op: "jmp" }>[];
+  breaks: Extract<Instr, { op: "break" }>[];
+}
+
 export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
+  return compileScoped(cmds, hz, null, 0);
+}
+
+/** compile() with the loop context of the enclosing program. A called
+ *  common event always compiles from compile() (no loop, depth 0), so a
+ *  `break` inside it can never leave the caller's loop. */
+function compileScoped(
+  cmds: readonly Command[],
+  hz: number,
+  outerLoop: LoopScope | null,
+  depth: number,
+): Prog {
   const out: Prog = [];
   const emit = (ins: Instr): number => {
     out.push(ins);
     return out.length - 1;
   };
-  const walk = (list: readonly Command[]): void => {
+  const walk = (list: readonly Command[], loop: LoopScope | null = outerLoop): void => {
+    // Shadows the public compile(): every branch program compiled below
+    // (choices option/cancel, battle and scene results) runs as its own stack
+    // frame one level deeper and inherits the enclosing loop.
+    const compile = (branch: readonly Command[], branchHz: number): Prog =>
+      compileScoped(branch, branchHz, loop, depth + 1);
     for (const c of list) {
       switch (c.op) {
+        case "loop": {
+          const start = out.length;
+          const scope: LoopScope = { depth, jumps: [], breaks: [] };
+          walk(c.commands, scope);
+          emit({ op: "repeat", to: start });
+          const end = out.length;
+          for (const jmp of scope.jumps) jmp.to = end;
+          for (const brk of scope.breaks) brk.to = end;
+          break;
+        }
+        case "break": {
+          if (loop === null) {
+            // No enclosing loop: end the program root (MV Break Loop skips
+            // to the end of the list).
+            emit({ op: "break", up: depth, to: null });
+          } else if (loop.depth === depth) {
+            const jmp: Extract<Instr, { op: "jmp" }> = { op: "jmp", to: -1 };
+            loop.jumps.push(jmp);
+            emit(jmp);
+          } else {
+            const brk: Extract<Instr, { op: "break" }> = { op: "break", up: depth - loop.depth, to: -1 };
+            loop.breaks.push(brk);
+            emit(brk);
+          }
+          break;
+        }
         case "text":
           emit({ op: "text", lines: c.lines, cps: c.cps ?? DEFAULT_CPS });
           break;
@@ -693,10 +769,10 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
         case "if": {
           const at = out.length;
           emit({ op: "if", cond: c.if, onFalse: -1 });
-          walk(c.then);
+          walk(c.then, loop);
           const jmpAt = emit({ op: "jmp", to: -1 });
           const elseAt = out.length;
-          if (c.else) walk(c.else);
+          if (c.else) walk(c.else, loop);
           const endAt = out.length;
           (out[at] as Extract<Instr, { op: "if" }>).onFalse = elseAt;
           (out[jmpAt] as Extract<Instr, { op: "jmp" }>).to = endAt;
@@ -934,7 +1010,7 @@ export function compile(cmds: readonly Command[], hz: number = TICK_HZ): Prog {
       }
     }
   };
-  walk(cmds);
+  walk(cmds, outerLoop);
   return out;
 }
 
@@ -985,6 +1061,14 @@ export interface InterpInput {
    *  fold just switched on. Omitted by low-level callers that never drain
    *  requests. */
   liveChars?: Readonly<Record<string, { pageIndex: number }>>;
+  /** eventTouch contacts detected in THIS reference tick's movement phase
+   *  (event ids, any order, duplicates allowed): events whose body refused
+   *  the player's step (a bump) or whose own step the player's body
+   *  refused. An eventTouch page of a listed event starts in this tick's
+   *  trigger scan under the playerTouch gates (no running main fiber, no
+   *  box holding the player). The session sets it only on a map with an
+   *  eventTouch page and only when a contact happened; omitted otherwise. */
+  touchContacts?: readonly string[];
 }
 
 export interface TextModal {
@@ -1368,6 +1452,10 @@ export interface World {
    *  the session then builds InterpInput.liveEventCells so the command can
    *  resolve the target's live character. Zero cost when unused. */
   needsMapAnimTarget?: boolean;
+  /** True when some page of the map has trigger "eventTouch": the session
+   *  then detects bump/contact events in its movement phase and passes them
+   *  as InterpInput.touchContacts. Maps without one pay nothing. */
+  hasEventTouch?: boolean;
   /** Project item catalog (id -> Item), for a shop's price fallback
    *  (goods entries without their own `price` use the item's own) and its
    *  sell price fallback (floor(item.price / 2) when a shop has no
@@ -1380,6 +1468,8 @@ export interface World {
   /** Project.system.messageBlocksPlayer: an open box of any fiber holds
    *  the player (messageHoldsPlayer). */
   messageBlocksPlayer?: boolean;
+  /** Project.system.textVariables: text and choices expand {v:<id>}. */
+  textVariables?: boolean;
   /** Opt-in fiber-start trace (see WorldOptions.onFiberStart). */
   onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
   /** Message pagination (see WorldOptions.paginateText). */
@@ -1396,11 +1486,12 @@ export interface World {
  *  extension handlers. */
 export interface WorldOptions {
   messageBlocksPlayer?: boolean;
+  textVariables?: boolean;
   extensions?: ExtensionRuntime;
   items?: readonly Item[];
   inventory?: { maxPerItem?: number; maxKinds?: number };
   /** Opt-in fiber-start trace. Called once for every page fiber that
-   *  starts (parallel/autorun/action/playerTouch), including fibers that
+   *  starts (parallel/autorun/action/playerTouch/eventTouch), including fibers that
    *  begin and end inside the same tick — so a coverage tool can observe
    *  instant pages that leave no residual fiber to inspect. Absent by
    *  default: the call sites are only reached when a fiber actually
@@ -1465,7 +1556,8 @@ export interface InterpState {
   modal: Modal | null;
   /** Erased event keys, for the rest of this map visit. */
   erased: Record<string, true>;
-  /** playerTouch latches: set on entry, cleared once the player leaves. */
+  /** playerTouch (and non-blocking eventTouch) entry latches: set on
+   *  entry, cleared once the player leaves. */
   touched: Record<string, true>;
   /** Cross-event input lock. While true the mover ignores the
    *  d-pad and action presses start no event; autorun/parallel still fold.
@@ -1728,10 +1820,12 @@ export function createWorld(
   const eventsById = new Map(orderedEvents.map((ev) => [ev.id, ev]));
   const cellEvents = new Map<number, GameEvent[]>();
   const alwaysScanEvents: GameEvent[] = [];
+  let hasEventTouch = false;
   for (const ev of orderedEvents) {
     if (ev.pages.some((page) => page.trigger === "autorun" || page.trigger === "parallel")) {
       alwaysScanEvents.push(ev);
     }
+    hasEventTouch ||= ev.pages.some((page) => page.trigger === "eventTouch");
     const w = ev.w ?? 1;
     const h = ev.h ?? 1;
     const x0 = Math.max(0, ev.x);
@@ -1769,9 +1863,11 @@ export function createWorld(
     needsTilePropertyContext: (contextFlags & CONTEXT_TILE_PROPERTIES) !== 0,
     needsMovementControlPath,
     needsMapAnimTarget: (contextFlags & CONTEXT_MAP_ANIM_TARGET) !== 0,
+    ...(hasEventTouch ? { hasEventTouch } : {}),
     items: itemsById,
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
+    textVariables: options.textVariables === true,
     onFiberStart: options.onFiberStart,
     paginateText: options.paginateText,
     anims: animsById,
@@ -1788,7 +1884,7 @@ export function isBusy(_s: InterpState): boolean {
 /** True while an open text or choices box holds the player: the project
  *  set system.messageBlocksPlayer and a box is open, whichever fiber owns
  *  it — a PARALLEL page's included. The mover then ignores the d-pad and
- *  no action / playerTouch page starts, so the confirm that advances the
+ *  no action / playerTouch / eventTouch page starts, so the confirm that advances the
  *  box never also starts the faced event; autorun and parallel pages keep
  *  running. Without the option only a blocking fiber (isBusy) or a
  *  choices box holds the player (v1). */
@@ -2242,6 +2338,12 @@ function triggerCandidates(s: InterpState, w: World, input: InterpInput): GameEv
       if (ev && (cell.x !== ev.x || cell.y !== ev.y)) displaced.push(id);
     }
   }
+  // eventTouch contacts may stand anywhere relative to the player (a bumped
+  // NPC ahead, an NPC refused one cell behind), so merge them like moved
+  // events; the merge below dedupes and restores id order.
+  if (input.touchContacts) {
+    for (const id of input.touchContacts) displaced.push(id);
+  }
   if (displaced.length === 0) return base;
 
   const displacedKey = JSON.stringify(displaced);
@@ -2520,6 +2622,31 @@ function scanTriggers(
       const turnEdge = turned && !moved && pageReadsFacing(page);
       if (stepEdge || turnEdge) {
         ownInterpRecord(s, "touched")[key] = true;
+        w.onFiberStart?.(key, index, false);
+        s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
+        selectionContext = { ...selectionContext, worldIdle: false };
+      }
+    } else if (page.trigger === "eventTouch") {
+      // RPG Maker Event Touch, under the playerTouch gates. A contact from
+      // this tick's movement phase (the player's step refused by this
+      // event's body, or this event's step refused by the player's body)
+      // fires any eventTouch page. It is not latched: a direction held into
+      // a blocking eventTouch NPC bumps again, and so re-fires, once the
+      // page's fiber ends (MV parity).
+      if (held) continue;
+      let fire = input.touchContacts !== undefined && input.touchContacts.includes(ev.id);
+      let latch = false;
+      if (!fire && page.blocks !== true) {
+        // A non-blocking page is stood on: it fires on entry exactly like
+        // playerTouch, sharing its per-cell latch.
+        const r = rectOf(ev);
+        if (!r || !cellInRect(input.playerCell, r)) continue;
+        const stepEdge = moved && !s.touched[key];
+        const turnEdge = turned && !moved && pageReadsFacing(page);
+        fire = latch = stepEdge || turnEdge;
+      }
+      if (fire) {
+        if (latch) ownInterpRecord(s, "touched")[key] = true;
         w.onFiberStart?.(key, index, false);
         s.main = startFiber(s, key, index, false, w.pagePrograms.get(key)![index]!);
         selectionContext = { ...selectionContext, worldIdle: false };
@@ -3640,6 +3767,15 @@ export function clearStaleEventAppearances(
   if (emptyRecord(appearances)) delete s.eventAppearances;
 }
 
+/** One box string with its text tokens expanded from live state. */
+function boxText(s: InterpState, w: World, text: string): string {
+  return expandTextTokens(text, s.sw.playerName ?? DEFAULT_PLAYER_NAME, w.textVariables ? s.sw.variables : null);
+}
+
+function boxLines(s: InterpState, w: World, lines: readonly string[]): string[] {
+  return expandTextLines(lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME, w.textVariables ? s.sw.variables : null);
+}
+
 function runFiber(
   s: InterpState,
   w: World,
@@ -3648,6 +3784,9 @@ function runFiber(
   budget: StepBudget,
   extension: MutableExtensionScope,
 ): void {
+  // Steps this call has taken = budgetAtEntry - budget.remaining (read only
+  // at a loop back-edge; see LOOP_YIELD_STEPS).
+  const budgetAtEntry = budget.remaining;
   // Resolve already-suspending commands first; on resume the fiber falls
   // through into the run loop so the instant commands after a wait/text/
   // choice apply on the same frame the player released them.
@@ -3692,10 +3831,12 @@ function runFiber(
       // queued parallel line would dump its whole text at once (review C09).
       if (!s.modal) f.since = s.frame;
       // The box keeps the words and pages it opened with; a box installed
-      // now (the slot was busy) asks for them now.
+      // now (the slot was busy) asks for them now. Tokens are expanded when
+      // the box opens, then paged: a variable written while the box is up
+      // does not retype it (RPG Maker converts escapes once).
       const open = s.modal?.kind === "text"
         ? s.modal
-        : openTextModal(w, f.key, substituteLines(ins.lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME));
+        : openTextModal(w, f.key, boxLines(s, w, ins.lines));
       // The typewriter counts code points (one per drawn glyph), not UTF-16
       // units: a supplementary character is one step. Same as .length for
       // text without surrogate pairs. It types the open page only.
@@ -3748,12 +3889,11 @@ function runFiber(
       // First frame after opening installs the modal; later frames keep the
       // player's cursor index.
       if (!s.modal || s.modal.kind !== "choices") {
-        const name = s.sw.playerName ?? DEFAULT_PLAYER_NAME;
         const opened: ChoiceModal = {
           kind: "choices",
           fiber: f.key,
-          prompt: substitutePlayerName(ins.prompt, name),
-          options: ins.texts.map((text) => substitutePlayerName(text, name)),
+          prompt: boxText(s, w, ins.prompt),
+          options: ins.texts.map((text) => boxText(s, w, text)),
           index: 0,
           cancellable: ins.cancel !== null,
         };
@@ -3811,7 +3951,7 @@ function runFiber(
         s.modal = {
           kind: "choices",
           fiber: f.key,
-          prompt: substitutePlayerName(ins.prompt, s.sw.playerName ?? DEFAULT_PLAYER_NAME),
+          prompt: boxText(s, w, ins.prompt),
           options: options.map((option) => option.label),
           keys: options.map((option) => option.key),
           enabled: options.map((option) => option.enabled),
@@ -3949,6 +4089,41 @@ function runFiber(
       case "jmp":
         top.pc = ins.to;
         break;
+      case "repeat":
+        top.pc = ins.to;
+        // Yield at the back-edge: the fiber stays in "run" mode with its pc
+        // at the loop start and resumes on the next tick (main and parallel
+        // fibers in "run" mode are re-entered by every stepInterp).
+        if (budgetAtEntry - budget.remaining >= LOOP_YIELD_STEPS ||
+            budget.remaining <= LOOP_YIELD_STEPS) {
+          return;
+        }
+        break;
+      case "break": {
+        if (!Number.isInteger(ins.up) || ins.up < 0 || ins.up >= f.stack.length) {
+          s.error = { kind: "runaway", message: `interpreter: malformed break in ${f.key}` };
+          return;
+        }
+        // A break leaving a battle/scene result branch still performs the
+        // completion transfer appended to that branch.
+        let completion: Instr | null = null;
+        for (let i = 0; i < ins.up; i++) {
+          const popped = f.stack.shift()!;
+          const last = popped.prog[popped.prog.length - 1];
+          if (last?.op === "transfer" && last.completion && popped.pc < popped.prog.length) {
+            completion = last;
+          }
+        }
+        const target = f.stack[0]!;
+        const to = ins.to ?? target.prog.length;
+        if (!Number.isInteger(to) || to < 0 || to > target.prog.length) {
+          s.error = { kind: "runaway", message: `interpreter: malformed break in ${f.key}` };
+          return;
+        }
+        target.pc = to;
+        if (completion) f.stack.unshift({ prog: [completion], pc: 0 });
+        break;
+      }
       case "switch":
       case "variable":
       case "selfSwitch":
@@ -4242,7 +4417,7 @@ function runFiber(
         if (s.modal) return;
         f.mode = "text";
         f.since = s.frame;
-        const firstLines = substituteLines(ins.lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME);
+        const firstLines = boxLines(s, w, ins.lines);
         s.modal = openTextModal(w, f.key, firstLines);
         return;
       case "choices": {
@@ -4252,8 +4427,8 @@ function runFiber(
         const opened: ChoiceModal = {
           kind: "choices",
           fiber: f.key,
-          prompt: substitutePlayerName(ins.prompt, s.sw.playerName ?? DEFAULT_PLAYER_NAME),
-          options: ins.texts.map((text) => substitutePlayerName(text, s.sw.playerName ?? DEFAULT_PLAYER_NAME)),
+          prompt: boxText(s, w, ins.prompt),
+          options: ins.texts.map((text) => boxText(s, w, text)),
           index: 0,
           cancellable: ins.cancel !== null,
         };
@@ -4275,7 +4450,7 @@ function runFiber(
         s.modal = {
           kind: "choices",
           fiber: f.key,
-          prompt: substitutePlayerName(ins.prompt, s.sw.playerName ?? DEFAULT_PLAYER_NAME),
+          prompt: boxText(s, w, ins.prompt),
           options: options.map((option) => option.label),
           keys: options.map((option) => option.key),
           enabled: options.map((option) => option.enabled),
@@ -4442,6 +4617,9 @@ export function stepInterpWithExtensionsInPlace(
     w.extensions.immutableConditions && w.extensions.deterministicConditions &&
     s.pendingBattles.length === 0 &&
     (s.pendingScenes?.length ?? 0) === 0 &&
+    // An eventTouch contact is a one-tick edge the idle signature does not
+    // capture: never skip (or memoize) the scan of a tick that carries one.
+    (input.touchContacts === undefined || input.touchContacts.length === 0) &&
     (!input.confirmEdge || s.main !== null || s.inputLocked || messageHoldsPlayer(w, s));
   const canSleep = canCacheScan && parallelKeys!.length === 0;
   const sleeping = canSleep ? idleScans.get(w) : undefined;
@@ -4644,6 +4822,7 @@ export function continueBattle(
         y: transfer.y,
         dir: transfer.dir,
         fadeFrames: transfer.fadeFrames,
+        completion: true,
       });
     }
     top.pc++;
@@ -4687,6 +4866,7 @@ export function continueScene(
         y: transfer.y,
         dir: transfer.dir,
         fadeFrames: transfer.fadeFrames,
+        completion: true,
       });
     }
     top.pc++;

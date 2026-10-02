@@ -29,6 +29,8 @@ bun tests/fixtures/schema-compat/witness.ts "$dir" <case>   # $dir as above
 
 | Directory | Written by | Loads | Counterexample |
 | --- | --- | --- | --- |
+| `gen-ed562c6f` | `2f8b60ab` | yes | |
+| `gen-c0588207` | `1c1d3ea2` | yes | |
 | `gen-0b9fff5b` | `d4353eef` | yes | |
 | `gen-47cf3d8f` | `ee84c7b3` | no | `stale-parallel-battle`: a battle queued by a parallel page whose page went inactive still started |
 | `gen-8ffba1d4` | `c93a1ec7` | no | |

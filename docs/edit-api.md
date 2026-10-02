@@ -129,14 +129,20 @@ Command keys address the recursive command tree:
 | `c2:cancel#0` | command 0 in the cancel branch of the `choices` at index 2 |
 | `b2:win#0` | command 0 in the win branch of the `battle` at index 2 (`b2:lose#…`, `b2:escape#…`) |
 | `s2:done#0` | command 0 in the `onDone` branch of the `scene` at index 2 (`s2:cancel#…` for `onCancel`) |
+| `l2:body#0` | command 0 in the body of the `loop` at index 2 |
+
+Segments nest left to right with `/`: `l0:body/i1:then#0` is command 0 in
+the `then` branch of the `if` at index 1 of the body of the `loop` at root
+index 0.
 
 The structured form used by the command-editing args is
 `{ "path": [ …segments ], "index": n }`, where each segment is one of
 `{ "kind": "if", "index": n, "branch": "then"|"else" }`,
 `{ "kind": "choices", "index": n, "branch": "option", "option": n }`,
 `{ "kind": "choices", "index": n, "branch": "cancel" }`,
-`{ "kind": "battle", "index": n, "branch": "win"|"lose"|"escape" }`, or
-`{ "kind": "scene", "index": n, "branch": "done"|"cancel" }`.
+`{ "kind": "battle", "index": n, "branch": "win"|"lose"|"escape" }`,
+`{ "kind": "scene", "index": n, "branch": "done"|"cancel" }`, or
+`{ "kind": "loop", "index": n, "branch": "body" }`.
 For inserts, `index` may equal the addressed list's length.
 
 ## Sharded `ProjectShell` documents
@@ -525,7 +531,7 @@ $ bun run rpgkit-edit delete-event --file examples/sunstone/data/sunstone.json -
 
 Args: `map`, `event`, `page` (a full page object), `index` (optional,
 0..page count; default appends). A page requires `trigger`
-(`action`/`playerTouch`/`autorun`/`parallel`) and `commands`; optional fields
+(`action`/`playerTouch`/`eventTouch`/`autorun`/`parallel`) and `commands`; optional fields
 are `condition`, `sprite` (string or null), `blocks`, `moveType`,
 `moveRoute`, `moveSpeed` (1–6), `moveFrequency` (1–5), `directionFix`,
 `through`, `facingMode`, and `dir`. Higher index means higher runtime
@@ -572,6 +578,26 @@ that op and payload are valid.
 $ bun run rpgkit-edit insert-command --file examples/sunstone/data/sunstone.json --dry-run \
     --json '{"map":"village","event":"boy","page":0,"address":{"path":[],"index":0},"command":{"op":"text","lines":["Hi there!"]}}'
 {"ok":true,"changed":true,"addresses":["map:village/event:boy/page:0/command:root#0"],"result":{"op":"text","lines":["Hi there!"]}}
+```
+
+A `loop` repeats its `commands` body until a `break` inside it (at any depth
+of if/choices/battle/scene branches) leaves the loop; a `break` outside any
+loop ends the current page or common event. A loop may be inserted with its
+body already filled:
+
+```sh
+$ bun run rpgkit-edit insert-command --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"village","event":"boy","page":0,"address":{"path":[],"index":0},"command":{"op":"loop","commands":[{"op":"text","lines":["Again, {name}?"]},{"op":"break"}]}}'
+{"ok":true,"changed":true,"addresses":["map:village/event:boy/page:0/command:root#0"],"result":{"op":"loop","commands":[{"op":"text","lines":["Again, {name}?"]},{"op":"break"}]}}
+```
+
+Once that loop exists at root index 0, a later insert addresses its body with
+a `loop` segment (`index` 1 here is the slot before the `break`):
+
+```sh
+$ bun run rpgkit-edit insert-command --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"village","event":"boy","page":0,"address":{"path":[{"kind":"loop","index":0,"branch":"body"}],"index":1},"command":{"op":"wait","seconds":1}}'
+{"ok":true,"changed":true,"addresses":["map:village/event:boy/page:0/command:l0:body#1"],"result":{"op":"wait","seconds":1}}
 ```
 
 ### `delete-command`
@@ -634,12 +660,23 @@ The movement, presentation, modal, extension, and battle forms use:
 | `ext` | `call`, `args` (JSON) |
 | `extChoice` | `call`, `args` (JSON), `prompt`, `cancel`, `write` (JSON object or `(unset)`) |
 | `battle` | `setup` (JSON) |
+| `scene` | `id`, `args` (JSON or `(unset)`) |
 
 Audio fields are `id`, `volume`, and `pitch` for `playBgm`, `playBgs`, and
 `playSe`; `playMe` also has `duration`; `fadeoutBgm` and `fadeoutBgs` have
 `duration`. `stopBgm`, `pauseBgm`, `resumeBgm`, `saveBgm`, `replayBgm`,
-`erase`, `exit`, `lockInput`, and `unlockInput` are supported but have no
-parameter fields.
+`erase`, `exit`, `lockInput`, `unlockInput`, and `break` are supported but
+have no parameter fields. `loop` has no parameter fields either: its only
+payload is its `commands` body, edited with `insert-command`/`delete-command`
+at `loop` body addresses.
+
+Text lines (`text.lines`), the `choices` `prompt` and `option:<i>` labels,
+and the `extChoice` `prompt` are stored verbatim. They may hold `{name}` (the player's name) and, when the
+project sets `system.textVariables: true`, `{v:<variable-id>}` (that
+variable's live value, 0 when unset); without the flag the braces show
+verbatim. Tokens are expanded only at runtime, so the 52-character limit
+applies to the raw authored text. The edit API has no operation for
+`project.system` fields; set `textVariables` in the project JSON directly.
 
 Changing `if.kind` installs a schema-valid default condition. The remaining
 condition fields are prefixed with `if.`:
@@ -708,13 +745,16 @@ variants, animation instance ids, and extension calls. These remain
 suggestions rather than closed enums because games can supply presentation
 layers and registered extensions outside project JSON.
 
-For nested insertion, the desktop add prompt accepts `<op>@win`,
-`<op>@lose`, and `<op>@escape` when a `battle` is selected. API clients use
-the structured battle path documented under [Addresses](#addresses).
+For nested insertion, the desktop add prompt accepts `<op>@then`/`@else`
+for an `if`, `@option<n>`/`@cancel` for `choices`, `@win`, `@lose`, and
+`@escape` for a `battle`, `@done`/`@cancel` for a `scene`, and `@body` for a
+`loop` (for example `break@body`). API clients use the structured paths
+documented under [Addresses](#addresses).
 `extChoice` does not contain authored command branches: its rows are returned
 dynamically by the registered provider, and `write` only names result
-variables. There is no generic `scene` command in the current schema;
-`battle` is the authored command for the existing battle scene.
+variables. `scene` opens a game-registered scene by `id`; its optional
+`onDone`/`onCancel` branches are authored command lists, and `battle` remains
+the authored command for the built-in battle scene.
 
 ```sh
 $ bun run rpgkit-edit update-command --file examples/sunstone/data/sunstone.json --dry-run \

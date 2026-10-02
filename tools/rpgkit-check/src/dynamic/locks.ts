@@ -138,6 +138,14 @@ function forceLockBranch(
           ...(onEscape ? { onEscape } : {}),
         });
       }
+    } else if (command.op === "loop") {
+      // A loop body is a SEQUENCE, not a choice between arms: it is forced
+      // exactly like the page root (the target's guards selected, sibling
+      // locks dropped) and kept as a loop, so its break/repeat behavior —
+      // and an unlock later in the body — stay live in the run. A lock held
+      // across an endless (break-less) wait-less repeat is never observed
+      // released and is reported, as the player never regains control.
+      out.push({ ...command, commands: forceLockBranch(project, command.commands, target, forcedCommons, expanding) });
     } else if (command.op === "common") {
       const common = project.commonEvents?.find((c) => c.id === command.id);
       if (common && !expanding.has(command.id) && containsProjectCommand(project, common.commands, target)) {
@@ -323,6 +331,10 @@ function checkPage(
 interface LockFlowState {
   unresolved: ReadonlySet<number>;
   terminated: boolean;
+  /** A `break` ran: the rest of the innermost loop body is skipped. The
+   *  enclosing `loop` turns it back into a live state after the loop; a
+   *  common event or the page root ends there instead. */
+  broken?: boolean;
 }
 
 /** Prove each individual lock on at least one executable control-flow path
@@ -340,7 +352,7 @@ function localResolution(project: Project, commands: readonly Command[]): "local
   const dedupe = (states: readonly LockFlowState[]): LockFlowState[] => {
     const unique = new Map<string, LockFlowState>();
     for (const state of states) {
-      const key = `${state.terminated}:${[...state.unresolved].sort((a, b) => a - b).join(",")}`;
+      const key = `${state.terminated}:${state.broken === true}:${[...state.unresolved].sort((a, b) => a - b).join(",")}`;
       unique.set(key, state);
     }
     return [...unique.values()];
@@ -357,7 +369,7 @@ function localResolution(project: Project, commands: readonly Command[]): "local
     for (const command of sequence) {
       const outputs: LockFlowState[] = [];
       for (const state of states) {
-        if (state.terminated) {
+        if (state.terminated || state.broken) {
           outputs.push(state);
           continue;
         }
@@ -382,10 +394,40 @@ function localResolution(project: Project, commands: readonly Command[]): "local
           if (command.onLose) outputs.push(...run(command.onLose, [state], expanding));
           if (command.onEscape) outputs.push(...run(command.onEscape, [state], expanding));
           if (!command.onWin && !command.onLose && !command.onEscape) outputs.push(state);
+        } else if (command.op === "break") {
+          outputs.push({ ...state, broken: true });
+        } else if (command.op === "loop") {
+          // The body runs one or more times; only a break (or a transfer)
+          // leaves it. Iterate the body to a fixpoint over the finite set
+          // of flow states: each pass's fall-through states feed the next
+          // pass, broken states exit the loop as live states. A loop with
+          // no reachable break yields no live state, so nothing after it
+          // runs — a lock taken before an endless loop is never resolved
+          // by a later unlock.
+          const seen = new Set<string>();
+          const keyOf = (s: LockFlowState) => [...s.unresolved].sort((a, b) => a - b).join(",");
+          let pending: LockFlowState[] = [state];
+          for (const p of pending) seen.add(keyOf(p));
+          while (pending.length > 0) {
+            const next: LockFlowState[] = [];
+            for (const out of run(command.commands, pending, expanding)) {
+              if (out.broken) outputs.push({ unresolved: out.unresolved, terminated: false });
+              else if (out.terminated) outputs.push(out);
+              else if (!seen.has(keyOf(out))) {
+                seen.add(keyOf(out));
+                next.push(out);
+              }
+            }
+            pending = next;
+          }
         } else if (command.op === "common") {
           const common = project.commonEvents?.find((c) => c.id === command.id);
           if (common && !expanding.has(command.id)) {
-            outputs.push(...run(common.commands, [state], new Set(expanding).add(command.id)));
+            // A break does not cross the call: inside the common event (and
+            // outside any loop there) it ends the common event only.
+            for (const out of run(common.commands, [state], new Set(expanding).add(command.id))) {
+              outputs.push(out.broken ? { unresolved: out.unresolved, terminated: false } : out);
+            }
           } else {
             outputs.push(state);
           }

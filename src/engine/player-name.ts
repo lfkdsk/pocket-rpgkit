@@ -31,3 +31,40 @@ export function substitutePlayerName(text: string, name: string): string {
 export function substituteLines(lines: readonly string[], name: string): string[] {
   return lines.map((line) => substitutePlayerName(line, name));
 }
+
+// --- text tokens ------------------------------------------------------------
+//
+// With Project.system.textVariables a text or choices string may also carry
+// `{v:<id>}`: the live value of variable `id` (0 when unset, the RPG Maker
+// \V[n] default). {name} and {v:…} are expanded in ONE left-to-right pass
+// and the result is never rescanned, so a name or a string variable that
+// itself contains a token prints it literally. Expansion runs once, when the
+// box opens; the dialog box wraps and pages the expanded text.
+
+/** A `{v:<id>}` token: the id runs to the next closing brace. */
+const TEXT_TOKEN = /\{name\}|\{v:([^{}]*)\}/g;
+
+/** Expand {name} and, when `variables` is given, {v:<id>} tokens. Without
+ *  `variables` this is exactly substitutePlayerName. */
+export function expandTextTokens(
+  text: string,
+  name: string,
+  variables: Readonly<Record<string, number | string>> | null,
+): string {
+  if (variables === null) return substitutePlayerName(text, name);
+  if (!text.includes("{")) return text;
+  return text.replace(TEXT_TOKEN, (_token, id: string | undefined) => {
+    if (id === undefined) return name;
+    const value = Object.prototype.hasOwnProperty.call(variables, id) ? variables[id] : undefined;
+    return value === undefined ? "0" : String(value);
+  });
+}
+
+/** Apply expandTextTokens to every line of a text page. */
+export function expandTextLines(
+  lines: readonly string[],
+  name: string,
+  variables: Readonly<Record<string, number | string>> | null,
+): string[] {
+  return lines.map((line) => expandTextTokens(line, name, variables));
+}

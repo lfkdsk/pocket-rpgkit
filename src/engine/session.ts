@@ -95,6 +95,7 @@ import {
 } from "./battle.ts";
 import type { SceneInput, SceneRules } from "./scene.ts";
 import {
+  charBlocksPlayer,
   charsPageRevision,
   charsPositionRevision,
   createChars,
@@ -357,6 +358,8 @@ function visitCommands(commands: readonly Command[], found: Set<string>): void {
       visitCondition(command.if, found);
       visitCommands(command.then, found);
       if (command.else) visitCommands(command.else, found);
+    } else if (command.op === "loop") {
+      visitCommands(command.commands, found);
     } else if (command.op === "choices") {
       for (const option of command.options) visitCommands(option.commands, found);
       if (command.cancel) visitCommands(command.cancel.commands, found);
@@ -377,6 +380,7 @@ function commandsUseBattle(commands: readonly Command[]): boolean {
     if (command.op === "if" && (
       commandsUseBattle(command.then) || commandsUseBattle(command.else ?? [])
     )) return true;
+    if (command.op === "loop" && commandsUseBattle(command.commands)) return true;
     if (command.op === "choices" && (
       command.options.some((option) => commandsUseBattle(option.commands)) ||
       commandsUseBattle(command.cancel?.commands ?? [])
@@ -408,6 +412,8 @@ function sceneIdsInCommands(commands: readonly Command[], found: Set<string>): v
     if (command.op === "if") {
       sceneIdsInCommands(command.then, found);
       if (command.else) sceneIdsInCommands(command.else, found);
+    } else if (command.op === "loop") {
+      sceneIdsInCommands(command.commands, found);
     } else if (command.op === "choices") {
       for (const option of command.options) sceneIdsInCommands(option.commands, found);
       if (command.cancel) sceneIdsInCommands(command.cancel.commands, found);
@@ -628,6 +634,7 @@ export function createSession(
   const commonEvents = [...(project.commonEvents ?? [])];
   const worldOptions: WorldOptions = {
     messageBlocksPlayer: project.system?.messageBlocksPlayer === true,
+    textVariables: project.system?.textVariables === true,
     extensions,
     items: project.items,
     inventory: project.system?.inventory,
@@ -907,6 +914,34 @@ function tableWithBodiesLegacy(base: PassageTable, chars: CharsState): PassageTa
     if (ch.moving) add(ch.tx + DX[ch.stepDir], ch.ty + DY[ch.stepDir]);
   }
   return stampBlockedCells(base, cells);
+}
+
+/** eventTouch scratch list: ids of events in contact with the player during
+ *  the current reference tick. Cleared at the start of each tick on a map
+ *  with an eventTouch page and lent to the interpreter for that tick only,
+ *  so detection allocates nothing. Transient: never saved or snapshotted. */
+const TOUCH_CONTACTS: string[] = [];
+
+/** The player's step from (x,y) toward `dir` was refused this tick: record
+ *  every character whose blocking body holds the target cell, provided the
+ *  terrain itself allows the crossing (the body, not a wall, refused it).
+ *  Callers reach this only on a refused step of a non-through player. */
+function notePlayerBump(
+  base: PassageTable,
+  chars: CharsState,
+  x: number,
+  y: number,
+  dir: Dir4,
+  settings: Readonly<Record<string, ResolvedMoveSettings>> | undefined,
+  out: string[],
+): void {
+  if (!canStepFrom(base, x, y, dir)) return;
+  const tx = x + DX[dir];
+  const ty = y + DY[dir];
+  for (const id in chars.chars) {
+    const ch = chars.chars[id]!;
+    if (charBlocksPlayer(ch, tx, ty, settings?.[ch.id]?.through === true)) out.push(ch.id);
+  }
 }
 
 function motionOf(
@@ -1945,6 +1980,14 @@ function stepReferenceTick(
     s.interp = continueExternal(s.interp, waiter);
   }
   const passage = sessionPassageTable(sess, s);
+  // eventTouch contacts gathered by this tick's movement phase (mover,
+  // characters, player route) and read by this tick's trigger scan. Maps
+  // without an eventTouch page skip detection entirely.
+  let contacts: string[] | undefined;
+  if (world.hasEventTouch === true) {
+    contacts = TOUCH_CONTACTS;
+    contacts.length = 0;
+  }
 
   // 2. Mover — frozen while a blocking fiber runs, the player's own forced
   //    route is driving, a choices box (including one owned by a PARALLEL
@@ -1967,12 +2010,17 @@ function stepReferenceTick(
         ? passage
         : tableWithBodiesLegacy(passage, s.chars);
       Object.assign(s.move, stepMovementLegacy(s.move, input.buttons, table, sess.cfg));
+      // A held direction that left the mover resting and disengaged is a
+      // refused step (blocked at rest, or no continuation on arrival).
+      const dir = contacts && !s.move.moving && !s.move.walking ? dirFromButtons(input.buttons) : null;
+      if (dir !== null) notePlayerBump(passage, s.chars, s.move.tx, s.move.ty, dir, undefined, contacts!);
     }
     const playerPlace = {
       tx: s.move.tx,
       ty: s.move.ty,
       destX: s.move.moving ? s.move.tx + DX[s.move.stepDir] : s.move.tx,
       destY: s.move.moving ? s.move.ty + DY[s.move.stepDir] : s.move.ty,
+      contacts,
     };
     const locked = new Set<string>();
     if (s.interp.main) locked.add(eventIdOf(s.interp.main.key, s.mapId));
@@ -2022,6 +2070,10 @@ function stepReferenceTick(
             faceMovement: canFace(playerSettings, false),
           },
         ));
+        const dir = contacts && !playerSettings.through && !s.move.moving && !s.move.walking
+          ? dirFromButtons(input.buttons)
+          : null;
+        if (dir !== null) notePlayerBump(passage, s.chars, s.move.tx, s.move.ty, dir, eventSettings, contacts!);
       }
     }
 
@@ -2031,6 +2083,7 @@ function stepReferenceTick(
       destX: s.move.moving ? s.move.tx + DX[s.move.stepDir] : s.move.tx,
       destY: s.move.moving ? s.move.ty + DY[s.move.stepDir] : s.move.ty,
       through: playerSettings.through,
+      contacts,
     };
     const locked = new Set<string>();
     if (s.interp.main) locked.add(eventIdOf(s.interp.main.key, s.mapId));
@@ -2072,7 +2125,7 @@ function stepReferenceTick(
   }
   s.sw = s.interp.sw;
   if (s.playerRoute) {
-    stepPlayerRoute(s, sess, playerRouteSettings, playerRouteEventSettings);
+    stepPlayerRoute(s, sess, playerRouteSettings, playerRouteEventSettings, contacts);
   }
 
   // 4. Interpreter — only displaced NPC cells need to supplement the
@@ -2101,6 +2154,7 @@ function stepReferenceTick(
     worldIdleBlockers: sessionWorldIdleBlockers(s),
     liveChars: s.chars.chars,
   };
+  if (contacts !== undefined && contacts.length > 0) interpInput.touchContacts = contacts;
   s.ext = stepInterpWithExtensionsInPlace(
     world,
     s.interp,
@@ -2379,6 +2433,7 @@ function stepPlayerRoute(
   sess: Session,
   settings: ResolvedMoveSettings,
   eventSettings: Readonly<Record<string, ResolvedMoveSettings>> | undefined,
+  contacts?: string[],
 ): void {
   const r = s.playerRoute!;
   const cfg = sess.cfg;
@@ -2475,7 +2530,7 @@ function stepPlayerRoute(
       return;
     }
     if ("pathTo" in step || "approach" in step) {
-      stepPlayerPath(s, sess, table, settings, step, advance);
+      stepPlayerPath(s, sess, table, settings, step, advance, eventSettings, contacts);
       return;
     }
     advance(); // unknown object step: skip defensively
@@ -2536,7 +2591,10 @@ function stepPlayerRoute(
     // Blocked: the source cell's exit or the target's reverse entry is
     // dirBlocked, or the target terrain is unenterable. Retry on the next
     // reference tick, unless the route is skippable (MV MoveRoute
-    // "skip if cannot move").
+    // "skip if cannot move"). A body refusal is an eventTouch bump.
+    if (contacts && !settings.through) {
+      notePlayerBump(sessionPassageTable(sess, s), s.chars, m.tx, m.ty, dir, eventSettings, contacts);
+    }
     if (r.skippable) endPlayerRoute(s);
     return;
   }
@@ -2573,6 +2631,8 @@ function stepPlayerPath(
   settings: ResolvedMoveSettings,
   step: Extract<MoveStep, { pathTo: unknown }> | Extract<MoveStep, { approach: unknown }>,
   advance: () => boolean,
+  eventSettings?: Readonly<Record<string, ResolvedMoveSettings>>,
+  contacts?: string[],
 ): void {
   const r = s.playerRoute!;
   const m = s.move;
@@ -2674,6 +2734,9 @@ function stepPlayerPath(
     ? !inMapBounds(table.width, table.height, tx, ty)
     : !canStepFrom(table, m.tx, m.ty, dir);
   if (blocked) {
+    if (contacts && !settings.through) {
+      notePlayerBump(sessionPassageTable(sess, s), s.chars, m.tx, m.ty, dir, eventSettings, contacts);
+    }
     plan.blockedTicks++;
     if (plan.blockedTicks < PATH_REPLAN_TICKS) return;
     if (r.pathRetriesLeft! <= 0) { endPlayerRoute(s); return; }

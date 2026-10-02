@@ -719,6 +719,10 @@ simDescribe("editor budget", () => {
     // The editor's embedded WorldLayout schema and project support add
     // 5,620 B: measured 1,418,569 B. Runtime consumers only pay for the
     // compatible schema identity recorded by the isolation tests.
-    expect(js).toBeLessThan(1_425_000);
+    // The loop/break commands, the eventTouch trigger and the {v:} text
+    // token (shared engine code, the embedded schema, and the editor's
+    // loop-body paths, picker entries and token scan) join it: measured
+    // 1,430,125 B.
+    expect(js).toBeLessThan(1_436_000);
   });
 });

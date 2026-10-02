@@ -39,6 +39,7 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611` | `loop` / `break` commands, `eventTouch` trigger, `system.textVariables` | additive |
 | `ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2` | optional `worldLayout` with topology identity, connected components, placements, seams and per-portal opening compatibility | additive |
 | `c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06` | optional `icon` on `choices` options | additive |
 | `0b9fff5b478b87e0dcae1f37044a444043c735339ca45245bdbbb9e2e36e7ab5` | `scene` command; a battle queued by a parallel page is dropped when that page stops being active before the battle starts (it used to start anyway) | breaking |
@@ -614,6 +615,37 @@ v1.0/v1.1 document stays valid; the new command is optional.
   identity changed; the change is additive, so existing sharded shells and
   their saves keep loading without a rebuild (see
   [Schema identities](#schema-identities)).
+
+## v1 amendment — 2026-10-01 (loops, Event Touch, variable text tokens)
+
+- New commands `loop` (`{ op: "loop", commands: Command[] }`) and `break`
+  (`{ op: "break" }`). `break` leaves the innermost enclosing loop from any
+  depth of `if`, `choices`, `battle` and `scene` blocks inside its body; it
+  does not cross a `common` call; outside any loop it ends the current page
+  or common event (RPG Maker Break Loop). A loop pass that never waits
+  yields its fiber to the next tick once the fiber has taken 1,000
+  interpreter steps in a tick, so a loop never records the runaway error.
+  Compiled programs gain the `repeat` (loop back-edge) and `break`
+  instructions, which saves taken inside a loop carry; the result-branch
+  completion transfer a session appends after a battle or scene carries
+  `completion: true`. Older runtimes refuse saves holding either.
+- New page trigger `eventTouch` (RPG Maker Event Touch). On a
+  `blocks: true` page it fires when a player step (d-pad, player move route,
+  path step) is refused by the event's body, or the event's own step
+  (route, path, approach or random movement) is refused by the player's
+  body; terrain that would refuse the step anyway is no contact. On a
+  non-blocking page it fires on entry exactly like `playerTouch`. Contacts
+  start the page in the same reference tick, in event-id order with the
+  other blocking triggers, under the `playerTouch` gates. They are not
+  latched (a held direction re-fires after the page ends) and are never
+  saved. `playerTouch` is unchanged.
+- New optional `system.textVariables`: text lines, `choices` prompts and
+  rows and `extChoice` prompts expand `{v:<id>}` to variable `id`'s value
+  (`0` when unset), in one pass with `{name}`, once when the box opens.
+  Without the option the braces show verbatim, as before.
+- Every existing document stays valid and behaves identically. The schema
+  identity changed; the change is additive, so existing sharded shells and
+  their saves keep loading (see [Schema identities](#schema-identities)).
 
 ## v1 amendment — 2026-10-01 (compatible schema identities)
 

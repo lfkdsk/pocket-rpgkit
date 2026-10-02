@@ -215,6 +215,51 @@ describe("rpgkit-edit file and CLI adapter", () => {
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
+  test("CLI authors a loop, fills its body through loop-segment addresses, and edits inside it", () => {
+    const file = tempFile("cli-loop");
+    const at = { map: "village", event: "boy", page: 0 };
+    const body = (index: number) => ({ path: [{ kind: "loop", index: 0, branch: "body" }], index });
+    const loop = runCliJson("insert-command", file, { ...at, address: { path: [], index: 0 }, command: { op: "loop", commands: [] } });
+    expect(loop.exitCode).toBe(0);
+    expect(loop.body.addresses).toEqual(["map:village/event:boy/page:0/command:root#0"]);
+    const text = runCliJson("insert-command", file, { ...at, address: body(0), command: { op: "text", lines: ["Gold left: {v:gold}"] } });
+    expect(text.exitCode).toBe(0);
+    expect(text.body.addresses).toEqual(["map:village/event:boy/page:0/command:l0:body#0"]);
+    expect(runCliJson("insert-command", file, { ...at, address: body(1), command: { op: "break" } }).exitCode).toBe(0);
+    const edited = runCliJson("update-command", file, { ...at, address: body(0), field: "lines", value: "{name} has {v:gold}G" });
+    expect(edited.body).toMatchObject({ ok: true, result: { op: "text", lines: ["{name} has {v:gold}G"] } });
+
+    const listed = runCliJson("list-commands", file, at);
+    expect(listed.body.result.map((row: any) => [row.key, row.depth, row.branch ?? null, row.summary])).toEqual([
+      ["root#0", 0, null, "Loop (2 commands)"],
+      ["l0:body#0", 1, "Body", "Text: {name} has {v:gold}G"],
+      ["l0:body#1", 1, "Body", "Break loop"],
+      ["root#1", 0, null, expect.stringMatching(/^Text: BOY:/)],
+    ]);
+    // A listed commandAddress is a reusable insert/delete address.
+    expect(listed.body.result[2].commandAddress).toEqual(body(1));
+    const project = JSON.parse(readFileSync(file, "utf8")) as Project;
+    expect(mapById(project, "village")!.events!.find((event) => event.id === "boy")!.pages[0]!.commands[0]).toEqual({
+      op: "loop",
+      commands: [{ op: "text", lines: ["{name} has {v:gold}G"] }, { op: "break" }],
+    });
+    expect(runCliJson("validate", file, {}).body).toMatchObject({ ok: true, result: { valid: true, errors: [] } });
+
+    // break has no fields; a loop segment on a non-loop or with a bad branch is refused.
+    const before = readFileSync(file, "utf8");
+    expect(runCliJson("update-command", file, { ...at, address: body(1), field: "id", value: "x" }))
+      .toMatchObject({ exitCode: 1, body: { ok: false, error: { code: "INVALID_COMMAND_FIELD" } } });
+    expect(runCliJson("insert-command", file, { ...at, address: { path: [{ kind: "loop", index: 0, branch: "then" }], index: 0 }, command: { op: "break" } }))
+      .toMatchObject({ exitCode: 1, body: { ok: false, error: { code: "INVALID_ARGUMENT" } } });
+    expect(runCliJson("insert-command", file, { ...at, address: { path: [{ kind: "loop", index: 1, branch: "body" }], index: 0 }, command: { op: "break" } }))
+      .toMatchObject({ exitCode: 1, body: { ok: false, error: { code: "COMMAND_ADDRESS_NOT_FOUND" } } });
+    expect(readFileSync(file, "utf8")).toBe(before);
+
+    const deleted = runCliJson("delete-command", file, { ...at, address: body(0) });
+    expect(deleted.body).toMatchObject({ ok: true, result: { deleted: { op: "text" } } });
+    expect(runCliJson("list-commands", file, at).body.result.map((row: any) => row.key)).toEqual(["root#0", "l0:body#0", "root#1"]);
+  });
+
   for (const entry of CLI_MUTATIONS) {
     describe(`CLI ${entry.command}`, () => {
       test("--dry-run returns a patch-v1 patch and leaves the file bytes unchanged", () => {

@@ -8,7 +8,10 @@
 //      plus runtime tileProperty overrides, stamped with live character
 //      bodies), routing around OTHER transfer tiles so the searcher is not
 //      teleported away mid-walk;
-//   2. trigger the target event (action: face + confirm; playerTouch: the
+//   2. trigger the target event (action: face + confirm; bump — an
+//      eventTouch page that blocks — : hold the direction toward the body
+//      for one block so the refused step fires it; playerTouch or a
+//      non-blocking eventTouch: the
 //      entry already fired it);
 //   3. ride out until the world is idle: text boxes confirm themselves,
 //      shops are dismissed, battles step under the registered rules, and a
@@ -49,7 +52,7 @@ import type { BattleInput } from "../../../../src/engine/battle.ts";
 import type { Dir4 } from "../../../../src/engine/passability.ts";
 import type { Facing, GameEvent, JsonValue, Project } from "../../../../src/engine/types.ts";
 import { collectProjectOp } from "../walk.ts";
-import { checkConditionContext } from "./sim.ts";
+import { checkConditionContext, pageTouchMode } from "./sim.ts";
 import { BTN_CIRCLE, BTN_CROSS, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_UP, stateHash } from "./reach-witness.ts";
 
 // 0 down, 1 left, 2 up, 3 right (Facing/Dir4 order).
@@ -241,7 +244,10 @@ function reconstruct(
 
 export interface MacroTarget {
   eventKey: string;
-  kind: "action" | "playerTouch";
+  /** action: face + confirm; playerTouch: step onto (also a non-blocking
+   *  eventTouch); bump: from a neighbor, walk into a blocking eventTouch
+   *  body (`face` is the direction toward it). */
+  kind: "action" | "playerTouch" | "bump";
   /** Tile to stand on. */
   x: number;
   y: number;
@@ -286,7 +292,7 @@ export function planTargets(
   const transferTiles = new Set<number>();
   for (const ev of map.events ?? []) {
     const active = activePage(ev, state.sw, map.id, state.move.facing, ext(), ctx);
-    if (!active || active.page.trigger !== "playerTouch") continue;
+    if (!active || pageTouchMode(active.page) !== "playerTouch") continue;
     if (!collectProjectOp(project, active.page.commands, "transfer").some((c) => typeof c.map === "string")) continue;
     const origin = eventOrigin(ev, state.chars);
     const w = ev.w ?? 1;
@@ -308,8 +314,8 @@ export function planTargets(
   for (const ev of map.events ?? []) {
     const active = activePage(ev, state.sw, map.id, state.move.facing, ext(), ctx);
     if (!active) continue;
-    const trig = active.page.trigger;
-    if (trig !== "action" && trig !== "playerTouch") continue;
+    const trig = pageTouchMode(active.page);
+    if (trig === null) continue;
     const key = `${map.id}/${ev.id}`;
     // Whether the same page is active under EVERY facing: a page that is not
     // must be triggered with the facing that activated it.
@@ -371,6 +377,20 @@ export function planTargets(
         const cx = origin.x + dx;
         const cy = origin.y + dy;
         if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) continue;
+        if (trig === "bump") {
+          // A blocking eventTouch fires when the player's step is refused by
+          // the body: stand on a neighbor and walk into the rect. The bump
+          // turns the player toward the event, so a facing-bound page only
+          // takes neighbors whose bump facing keeps the same page active.
+          for (const dir of DIRS) {
+            const nx = cx + DX[dir]!;
+            const ny = cy + DY[dir]!;
+            const face = FACE_FROM_NEIGHBOR[dir]! as Facing;
+            if (facingBound && activePage(ev, state.sw, map.id, face, ext(), ctx)?.index !== active.index) continue;
+            if (isStandable(t, nx, ny)) consider(nx, ny, face, reconstruct(parent, safeTable, px, py, nx, ny));
+          }
+          continue;
+        }
         if (trig === "playerTouch") {
           // The touch latch fires on entry only; the tile the player stands
           // on cannot re-trigger it.
@@ -545,7 +565,7 @@ function observe(run: MacroRun, s: SessionState, idle: boolean, mark: number, bl
       blockEnd &&
       idle &&
       !run.ctx.knownPages.has(key) &&
-      (active.page.trigger === "action" || active.page.trigger === "playerTouch")
+      pageTouchMode(active.page) !== null
     ) {
       const snap: TransientSnapshot = {
         state: deepClone(s),
@@ -750,6 +770,12 @@ export function executeMacro(
     const confirm = step(run, { hold: 0, confirm: true });
     if (confirm === "budget") return finishEarly();
     for (const { state: st, mark, blockEnd } of confirm) observe(run, st, false, mark, blockEnd);
+  } else if (target.kind === "bump") {
+    // Walk into the blocking body for one block: the step is refused and
+    // the eventTouch page fires (the ride-out below picks it up).
+    const bump = step(run, { hold: DIR_BUTTON[target.face ?? 0]! });
+    if (bump === "budget") return finishEarly();
+    for (const { state: st, mark, blockEnd } of bump) observe(run, st, false, mark, blockEnd);
   }
   // playerTouch: the entry fired during the walk.
 

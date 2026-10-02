@@ -18,7 +18,7 @@ import { MAX_FIBER_STACK_DEPTH } from "./interpreter.ts";
 import { extensionCallNameValid, jsonValueProblem } from "./extensions.ts";
 
 const INTEGER_OPS = new Set([
-  "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp",
+  "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp", "repeat", "break",
   "wait", "gold", "item", "se",
   "playBgm", "fadeoutBgm", "stopBgm", "pauseBgm", "resumeBgm",
   "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm",
@@ -555,16 +555,13 @@ function validateProg(prog: unknown, path: string): string | null {
           const ce = validateCondition(ins.cond, `${here}.cond`);
           if (ce) return ce;
         }
-        // The structured command vocabulary (engine/types.ts Command) has
-        // no loop: compile() emits onFalse STRICTLY AFTER the IF and
+        // compile() emits onFalse STRICTLY AFTER the IF and
         // pc=length is the "past the end" sentinel (the run loop pops the
         // frame). A backward/self edge is therefore compiler-impossible,
         // and accepting one lets a checksum-valid save enter a cycle the
         // runtime can only stop via the runaway backstop (review 1274 B1).
-        // Forward edges alone make every run-mode advance strictly
-        // increasing in pc: a fiber that neither suspends (wait/text/
-        // choices/external) nor pops cannot exist in a save this gate
-        // accepts.
+        // The only backward edge is a `loop` back-edge ("repeat"), whose
+        // runtime yields the fiber at most every LOOP_YIELD_STEPS steps.
         if (typeof ins.onFalse !== "number" || !Number.isInteger(ins.onFalse) ||
           ins.onFalse <= i || ins.onFalse > prog.length) {
           return fail(`${here}.onFalse`, "forward integer target after the if required");
@@ -578,6 +575,24 @@ function validateProg(prog: unknown, path: string): string | null {
         if (typeof ins.to !== "number" || !Number.isInteger(ins.to) ||
           ins.to <= i || ins.to > prog.length) {
           return fail(`${here}.to`, "forward integer target after the jmp required");
+        }
+        break;
+      case "repeat":
+        // A loop back-edge targets its loop's first instruction, at or
+        // before itself (an empty loop repeats onto itself).
+        if (!isNonNegInt(ins.to) || ins.to > i) {
+          return fail(`${here}.to`, "loop start at or before the repeat required");
+        }
+        break;
+      case "break":
+        // Frame-relative: the runtime refuses a break whose `up` exceeds the
+        // live stack or whose target lies past the target program.
+        if (!isNonNegInt(ins.up)) return fail(`${here}.up`, "non-negative integer required");
+        if (ins.to !== null && !isNonNegInt(ins.to)) {
+          return fail(`${here}.to`, "non-negative integer or null required");
+        }
+        if (ins.up === 0 && ins.to !== null && (ins.to <= i || ins.to > prog.length)) {
+          return fail(`${here}.to`, "forward integer target after the break required");
         }
         break;
       case "wait":
@@ -663,6 +678,9 @@ function validateProg(prog: unknown, path: string): string | null {
           if (e) return e;
         }
         if (!isFiniteNumber(ins.fadeFrames)) return fail(`${here}.fadeFrames`, "number required");
+        if (ins.completion !== undefined && ins.completion !== true) {
+          return fail(`${here}.completion`, "true or absent required");
+        }
         break;
       }
       case "moveRoute": {

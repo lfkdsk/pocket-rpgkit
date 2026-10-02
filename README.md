@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-nexus/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 47 commands), map-character motion,
+  event interpreter (pages, triggers, 49 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -284,8 +284,8 @@ What it does today:
   resize and name events;
 - add, delete, copy and reorder pages; edit triggers, sprites, facing,
   blocking, autonomous/basic route motion, and flat/compound conditions;
-- inspect recursive command trees with visible `if`, choices, battle and
-  scene branches; structurally edit the built-in authoring commands while
+- inspect recursive command trees with visible `if`, choices, battle,
+  scene and loop branches; structurally edit the built-in authoring commands while
   preserving `shop`, `ext`, `battle`, `scene`, and advanced route payloads
   read-only;
 - pick a transfer command's destination on the canvas (PICK button, then
@@ -765,11 +765,11 @@ interpreter do not consume it. When present in a sharded project it is kept in
 the shell, so both the layout and its `topologyHash` are covered by
 `mapManifestHash` and therefore by save/content identity.
 
-### The 47 commands
+### The 49 commands
 
 | op | purpose |
 | --- | --- |
-| `text` | typewriter dialog lines; a message longer than the box continues on further pages, one confirm each ([Long text is never cut](#long-text-is-never-cut)) |
+| `text` | typewriter dialog lines; a message longer than the box continues on further pages, one confirm each ([Long text is never cut](#long-text-is-never-cut)); `{name}` and, with `system.textVariables`, `{v:<id>}` tokens ([Text tokens](#text-tokens)) |
 | `choices` | prompt with 2-8 option branches (a scrolling box past 4), an optional cancel branch, and optional per-option sprite icons ([Choice icons](#choice-icons)) |
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
@@ -801,6 +801,8 @@ the shell, so both the layout and its `topologyHash` are covered by
 | `saveBgm` / `replayBgm` | snapshot and restore BGM id, volume, pitch, and virtual position |
 | `erase` | remove this event for the rest of the map visit |
 | `exit` | end this fiber |
+| `loop` | repeat its `commands` until a `break` leaves it ([Loops](#loops)) |
+| `break` | leave the innermost `loop`; outside a loop, end the current page or common event |
 | `common` | run a common event's command list |
 | `lockInput` / `unlockInput` | cross-event input lock; freezes the mover and action but not autorun/parallel |
 | `place` | relocate the player, `"this"`, or a named event to a tile, optionally facing a direction |
@@ -811,6 +813,40 @@ the shell, so both the layout and its `topologyHash` are covered by
 | `extChoice` | open a scrolling choice box whose live rows and optional selection effect come from a namespaced pure extension |
 | `battle` | park the event in a game-registered battle scene, then run its optional win/lose/escape branch |
 | `scene` | park the event in a game-registered scene by namespaced id (PC, journal, name input, …), then run its optional onDone/onCancel branch; the scene can write variables, switches, items, gold and the player name |
+
+#### Loops
+
+`{ "op": "loop", "commands": [...] }` runs its body again and again (RPG
+Maker Loop / Repeat Above). `{ "op": "break" }` leaves the innermost loop
+from anywhere inside its body: nested `if` blocks and the branches of
+`choices`, `battle` and `scene` included. A called common event is its own
+program, so a `break` inside one never leaves the caller's loop; a `break`
+outside any loop ends the current page or common event (RPG Maker Break Loop
+parity). A loop is ordinary fiber state: it saves, loads and rewinds with
+the session, and a parallel page waiting inside a loop can be saved. A pass
+that waits (`wait`, a text box, a waited route) is paced in virtual time,
+so it runs identically at every host rate. A pass that never waits still
+cannot stall a frame: once its fiber has taken 1,000 interpreter steps in
+one tick (or the tick's shared 10,000-step budget is nearly spent) the
+fiber yields at the loop's end and continues on the next tick. Such a
+busy loop therefore advances one slice per tick, and how many passes it
+makes per virtual second depends on the tick rate, like RPG Maker's
+per-frame freeze check; a short counting loop still finishes in the tick it
+starts. Labels and jumps (RPG Maker Label / Jump to Label) are not
+supported: see [Loops and labels](src/engine/README.md#loops-and-labels).
+
+#### Text tokens
+
+Text lines, `choices` prompts and rows, and `extChoice` prompts expand
+`{name}` (the player's name). A project that sets `system.textVariables:
+true` also expands `{v:<id>}` to variable `id`'s value (`0` when unset; a
+string value prints as is). Tokens are expanded once, when the box opens:
+a variable written while the box is up does not retype it. Expansion is a
+single pass, so a name or value that itself contains a token prints it
+literally. The typewriter counts the expanded text, and the dialog box
+wraps and pages the expanded text. The option is off by default so text
+written before the token existed keeps its braces; `rpgkit-check` warns
+(`lint/text-variable-token-off`) when a project uses `{v:` without it.
 
 Every timed screen command uses virtual seconds and has optional `wait`.
 Waiting parks only the issuing fiber while other event fibers and the map keep
@@ -917,8 +953,16 @@ whether such a row still lists dimmed (`"disable"`, default, MV parity) or is
 omitted (`"hide"`, Tuxemon parity).
 
 Triggers: `action` (confirm on the faced or occupied tile),
-`playerTouch` (on cell entry), `autorun` (blocking, restarts after it
-finishes), `parallel` (concurrent fiber per active page). An event may
+`playerTouch` (on cell entry), `eventTouch` (RPG Maker Event Touch: on a
+`blocks: true` page, when the player walks into the event's body or the
+event's own step is refused by the player's body; on a non-blocking page, on
+entry like `playerTouch`), `autorun` (blocking, restarts after it
+finishes), `parallel` (concurrent fiber per active page). Contacts are found
+in the movement phase of a tick and start the page in the same tick's
+trigger scan, under the `playerTouch` gates and in event-id order with the
+other triggers; a direction held into an `eventTouch` NPC fires it again
+once its page finishes, as in RPG Maker. See
+[Event Touch](src/engine/README.md#event-touch). An event may
 occupy a rectangle (`w`/`h`, default 1×1): touch fires on entry into any
 cell and action fires when the faced or occupied cell is inside it. A page
 condition may use the flat fields or `all: Condition[]` (AND); a

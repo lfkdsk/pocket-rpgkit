@@ -686,6 +686,13 @@ function collectInbound(
       if (cmd.onLose) for (const c of cmd.onLose) collectInbound(project, c, mapId, loc, pageKey, observedPages, triggeredPages, inbound, expanding);
       if (cmd.onEscape) for (const c of cmd.onEscape) collectInbound(project, c, mapId, loc, pageKey, observedPages, triggeredPages, inbound, expanding);
       break;
+    case "scene":
+      if (cmd.onDone) for (const c of cmd.onDone) collectInbound(project, c, mapId, loc, pageKey, observedPages, triggeredPages, inbound, expanding);
+      if (cmd.onCancel) for (const c of cmd.onCancel) collectInbound(project, c, mapId, loc, pageKey, observedPages, triggeredPages, inbound, expanding);
+      break;
+    case "loop":
+      for (const c of cmd.commands) collectInbound(project, c, mapId, loc, pageKey, observedPages, triggeredPages, inbound, expanding);
+      break;
     case "common": {
       if (expanding.has(cmd.id)) break;
       const common = project.commonEvents?.find((e) => e.id === cmd.id);

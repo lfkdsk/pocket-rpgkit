@@ -44,14 +44,16 @@ a guard test.
   facing, appearance, tile-property overrides, `worldIdle`, `bgmPlaying`, and
   extension predicates.
 - **Commands**: the inspector shows the recursive command tree with indented
-  `if`/`else`, choices/cancel, battle-result, and scene done/cancel branches.
+  `if`/`else`, choices/cancel, battle-result, scene done/cancel and loop-body
+  branches.
   It can add, delete, copy and reorder commands, and edit every command kind
   in the current project schema, including movement control, presentation,
   shops, map animations, audio, extensions, battle processing and game
   scenes. In the add prompt, type an op such as `text`; with a selected
   parent, `text@then`, `text@else`, `text@option1`, `text@cancel`,
   `text@win`/`text@lose`/`text@escape` (battle), or `text@done`/`text@cancel`
-  (scene) inserts directly into that branch.
+  (scene), or `break@body` (a selected `loop`) inserts directly into that
+  branch.
 - **Undo/redo**: every edit is one `editor/api` operation and one history
   step, 64 steps deep. A paint drag previews cell by cell and commits as one
   `paint-cells` (or, for PASS-mode edges, `paint-edges`) operation when it
@@ -198,9 +200,12 @@ Field text uses these common spellings:
   document cannot enumerate.
 
 Only authored command arrays form branches. `if`, ordinary `choices`, `battle`,
-and `scene` expose their respective branch lists. Select a battle and use
+`scene` and `loop` expose their respective branch lists. Select a battle and use
 `<op>@win`, `<op>@lose`, or `<op>@escape` to insert into its result branches;
-select a scene and use `<op>@done` or `<op>@cancel`.
+select a scene and use `<op>@done` or `<op>@cancel`; select a `loop` and use
+`<op>@body` to insert into its body. `break` has no fields. Text lines may hold
+`{name}` and `{v:<id>}` tokens; the 52-character limit applies to the line as
+written, before expansion.
 `extChoice` is not an authored branch container: its rows come dynamically
 from the registered extension provider, while `write` describes optional
 result variables.

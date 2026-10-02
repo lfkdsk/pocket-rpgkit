@@ -19,7 +19,8 @@ export type CommandListPathSegment =
   | { readonly kind: "choices"; readonly index: number; readonly branch: "option"; readonly option: number }
   | { readonly kind: "choices"; readonly index: number; readonly branch: "cancel" }
   | { readonly kind: "battle"; readonly index: number; readonly branch: "win" | "lose" | "escape" }
-  | { readonly kind: "scene"; readonly index: number; readonly branch: "done" | "cancel" };
+  | { readonly kind: "scene"; readonly index: number; readonly branch: "done" | "cancel" }
+  | { readonly kind: "loop"; readonly index: number; readonly branch: "body" };
 
 export type CommandListPath = readonly CommandListPathSegment[];
 
@@ -66,7 +67,13 @@ export function sceneBranchPath(
   return [...parent.path, { kind: "scene", index: parent.index, branch }];
 }
 
+/** The body of a `loop` command. */
+export function loopBodyPath(parent: CommandAddress): CommandListPath {
+  return [...parent.path, { kind: "loop", index: parent.index, branch: "body" }];
+}
+
 function segmentKey(segment: CommandListPathSegment): string {
+  if (segment.kind === "loop") return `l${segment.index}:body`;
   if (segment.kind === "if") return `i${segment.index}:${segment.branch}`;
   if (segment.kind === "battle") return `b${segment.index}:${segment.branch}`;
   if (segment.kind === "scene") return `s${segment.index}:${segment.branch}`;
@@ -132,6 +139,8 @@ export const EDITABLE_COMMAND_OPS = [
   "extChoice",
   "battle",
   "scene",
+  "loop",
+  "break",
 ] as const;
 
 export type EditableCommandOp = (typeof EDITABLE_COMMAND_OPS)[number];
@@ -281,6 +290,12 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
       break;
     case "scene":
       command = { op, id: "game.scene" };
+      break;
+    case "loop":
+      command = { op, commands: [] };
+      break;
+    case "break":
+      command = { op };
       break;
   }
   return command as CommandOf<Op>;
@@ -470,6 +485,12 @@ export function commandSummary(command: unknown): string {
       return `Battle ${jsonPreview(command.setup)}`;
     case "scene":
       return `Scene ${text(command.id)}`;
+    case "loop": {
+      const count = Array.isArray(command.commands) ? command.commands.length : 0;
+      return `Loop (${count} command${count === 1 ? "" : "s"})`;
+    }
+    case "break":
+      return "Break loop";
     default:
       return `Unknown command${typeof command.op === "string" ? ` (${command.op})` : ""}`;
   }
@@ -531,6 +552,12 @@ function childBranches(command: Command, address: CommandAddress): ChildBranch[]
         children.push({ path: battleBranchPath(address, branch), label, commands: commands as Command[] });
       }
     }
+  } else if (value.op === "loop") {
+    children.push({
+      path: loopBodyPath(address),
+      label: "Body",
+      commands: Array.isArray(value.commands) ? value.commands as Command[] : [],
+    });
   } else if (value.op === "scene") {
     for (const [branch, property, label] of [
       ["done", "onDone", "Done"],
@@ -547,7 +574,7 @@ function childBranches(command: Command, address: CommandAddress): ChildBranch[]
 
 /** Pre-order flattening: a container appears before all of its branches, and
  * branches appear in authored order (then/else, options/cancel,
- * win/lose/escape). */
+ * win/lose/escape, a loop's body). */
 export function flattenCommands(commands: readonly Command[]): FlatCommandRow[] {
   const rows: FlatCommandRow[] = [];
 
@@ -607,6 +634,10 @@ function branchOf(command: Command, segment: CommandListPathSegment): BranchRef 
     if (!validIndex(segment.option) || segment.option >= command.options.length) return null;
     return { commands: command.options[segment.option]!.commands, present: true };
   }
+  if (segment.kind === "loop") {
+    if (command.op !== "loop" || segment.branch !== "body") return null;
+    return { commands: Array.isArray(command.commands) ? command.commands : EMPTY_COMMANDS, present: true };
+  }
   if (segment.kind === "scene") {
     if (command.op !== "scene") return null;
     const commands = segment.branch === "done" ? command.onDone : command.onCancel;
@@ -646,6 +677,10 @@ function replaceBranch(
     const options = command.options.slice();
     options[segment.option] = { ...options[segment.option]!, commands };
     return { ...command, options };
+  }
+  if (segment.kind === "loop") {
+    if (command.op !== "loop" || segment.branch !== "body") return null;
+    return { ...command, commands };
   }
   if (segment.kind === "scene") {
     if (command.op !== "scene") return null;

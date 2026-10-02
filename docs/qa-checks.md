@@ -90,7 +90,8 @@ envelope is:
 
 `loc` fields are all optional; `commandPath` interleaves indexes and branch
 tags (`then`, `else`, `options`, `cancel`, `onWin`, `onLose`, `onEscape`,
-`onDone`, `onCancel`, `common`). A finding about a choices option's own
+`onDone`, `onCancel`, `commands` for a `loop` body, `common`). Every check
+descends into `loop` bodies like any other branch. A finding about a choices option's own
 field ends in a field tag after the option index (`[2, "options", 1, "icon"]`).
 `shot` returns an array instead of the envelope (see below).
 
@@ -106,8 +107,12 @@ field ends in a field tag after the option index (`[2, "options", 1, "icon"]`).
 
 Args: `file` only. Pure function of the document: switch/variable use,
 provably-dead pages, missing references (including declared audio ids),
-empty choices, and static map reachability. `summary` adds `maps`, `events`,
-`pages`, `commands`, and per-severity counts. A missing id in a declared
+empty choices, and static map reachability. With `system.textVariables` on,
+every `{v:<id>}` token in a `text` line, a `choices` prompt or option, or an
+`extChoice` prompt counts as a read of variable `id` (so the variable is not a
+dead write, and an id nothing sets is reported as
+`lint/variable-read-never-set`). `summary` adds `maps`, `events`, `pages`,
+`commands`, and per-severity counts. A missing id in a declared
 `project.audio` table is retained as an `audio-missing` warning with its
 exact command location. It is not an error because a project may
 intentionally package only part of its host audio; the warning still keeps
@@ -123,7 +128,13 @@ $ bun run rpgkit-check lint --file examples/sunstone/data/sunstone.json
 Args: `file`, `frames` (number, default `12000`). Every page containing a
 `lockInput` (including inside called common events) is instrumented and run
 in isolation on the real engine; the lock must be released by `unlockInput`
-or a map transfer within the frame budget.
+or a map transfer within the frame budget. A `loop` around the lock is kept
+(its body forced like the page root), so a body that unlocks later in the
+same pass releases it, while a lock re-taken in the same frame by a wait-less
+`break`-less loop is never observed released and is reported. The static
+release hint treats a loop body as running one or more times (iterated to a
+fixpoint); only a `break` (or a transfer) leaves it, and a `break` inside a
+called common event ends that common event, not the caller's loop.
 
 `summary`: `pages`, `lockCommands`, `dynamicChecks`, `unlocked`,
 `transferred`, `unresolved`, `errors`. `rows` carries one entry per checked
@@ -155,7 +166,11 @@ scan runs `windowFrames × 2` frames per map, entering each map at a
 collected transfer landing or its centre, auto-advancing dialogs and
 rotating the d-pad. A row is flagged when input is locked for the whole
 window, a busy fiber makes no world progress for the whole window, or the
-interpreter throws.
+interpreter throws. A `loop` with no `break` on an autorun or player-started
+page keeps the main fiber busy forever: when its passes change nothing it is a
+`freeze/blocking-fiber` (the player never regains control — a real
+soft-lock). A polling loop on a parallel page does not hold the main fiber and
+is not flagged.
 
 `summary`: `maps`, `windowFrames`, `scannedFramesPerMap`, `permanentLocks`,
 `permanentBlockingFibers`, `errors`, `flagged`. `rows` (flagged entries
@@ -254,7 +269,13 @@ editor's play-test debugger.
 Args: `file`, `frames` (number, default `6000`), `stuckFrames` (number,
 default `600`). A headless player walks the game, auto-answering choices,
 and reports which event pages never ran. This is a coverage tool, not a
-player: story-gated events are reported, not failures.
+player: story-gated events are reported, not failures. `action` pages are
+confirmed from inside the rect or facing it from a neighbor; `playerTouch`
+pages and non-blocking `eventTouch` pages are stepped onto (they fire on
+entry); a blocking (`blocks: true`) `eventTouch` page is bumped — the explorer
+stands on a neighbor and holds the direction toward the body, so the refused
+step fires it. `reach` drives the same three trigger modes (a bump holds the
+direction for one 6-tick block).
 
 `summary`: `frames`, `framesRun`, `mapsVisited`, `mapsTotal`,
 `eventsTotal`, `eventsTriggered`, `eventsNeverTriggered`, `triggersTotal`,
@@ -344,6 +365,8 @@ prerequisite is a thrown error (exit 2).
 | `lint/tileproperty-out-of-bounds` | error | a `tileProperty` command (throws at runtime) or condition (always false) addresses a cell outside the host map | move the cell inside the map or remove the clause |
 | `lint/map-unreachable` | warning | no sequence of literal-id transfers reaches the map from the start map | dynamic transfers can still reach it; add a transfer path or remove the map |
 | `lint/choices-empty` | error or warning | a choices modal with no options and no cancel (error), or empty branches (warning) | add an option or a cancel branch; give branches commands or remove them |
+| `lint/text-variable-token-off` | warning | a `text` line, `choices` prompt/option, or `extChoice` prompt holds a `{v:<id>}` token but `system.textVariables` is off, so the braces print verbatim | set `project.system.textVariables` to `true`, or remove the token |
+| `lint/break-outside-loop` | info | a `break` is not inside any `loop` body (a `break` does not cross a `common` call) | legal (RPG Maker parity): it ends the current page or common event; keep it as an early exit or wrap the commands it should leave in a `loop` |
 | `lint/scene-id` | info | a scene id is used by the document but has no registration in it | scene rules are code-side (`SessionOptions.scenes`); register `SceneRules` for it (the kit ships `nameInputRules` for `rpgkit.nameInput`) or fix the id — an unregistered id throws at session startup |
 
 ### `locks`

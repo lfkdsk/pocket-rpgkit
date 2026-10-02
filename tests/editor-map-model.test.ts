@@ -484,6 +484,24 @@ describe("map property edits", () => {
     expect((scene.onCancel![0] as Extract<Command, { op: "transfer" }>).map).toBe("b2");
   });
 
+  test("rename follows transfers inside a loop body", () => {
+    const project = makeProject();
+    const evt = project.maps[0]!.events![0]!;
+    evt.pages[0]!.commands.push({
+      op: "loop",
+      commands: [{ op: "if", if: { kind: "switch", id: "go" }, then: [transferTo("b"), { op: "break" }] }],
+    });
+    const refs = mapReferences(project, "b");
+    expect(refs.filter((ref) => ref.command.startsWith("l4:")).map((ref) => ref.command)).toEqual(["l4:body/i0:then#0"]);
+    const r = renameMap(selectMap(createEditorState(project), 1), "b2");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const exported = exportProject(r.state);
+    expect(mapReferences(exported, "b")).toEqual([]);
+    const loop = exported.maps[0]!.events![0]!.pages[0]!.commands.find((c) => c.op === "loop") as Extract<Command, { op: "loop" }>;
+    expect(loop.commands[0]).toMatchObject({ then: [{ op: "transfer", map: "b2" }, { op: "break" }] });
+  });
+
   test("mapReferences identifies every same-page and common transfer by stable command address", () => {
     const refs = mapReferences(makeProject(), "b");
     expect(refs).toEqual([

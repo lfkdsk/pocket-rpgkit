@@ -592,6 +592,11 @@ export interface PlayerPlace {
   destY: number;
   /** A through player is not an obstacle to NPC motion. */
   through?: boolean;
+  /** eventTouch out-list: when present, every character whose attempted
+   *  step this tick is refused by the PLAYER's body (and by nothing the
+   *  terrain says) appends its id. The session passes it only on maps with
+   *  an eventTouch page. */
+  contacts?: string[];
 }
 
 export interface CharStepOptions {
@@ -687,6 +692,25 @@ function occupantBlocks(
     if (o.moving && tx === o.tx + DX[o.stepDir] && ty === o.ty + DY[o.stepDir]) return true;
   }
   return false;
+}
+
+/** After occupantBlocks refused ch's step into (tx,ty): record an eventTouch
+ *  contact when the player's body is the reason. The terrain must allow the
+ *  crossing (the same edge test occupantBlocks applies first), so a wall
+ *  beside the player never counts. No-op without a contacts list. */
+function noteContact(
+  ch: CharState,
+  tx: number,
+  ty: number,
+  exit: Dir4,
+  table: PassageTable,
+  player: PlayerPlace,
+  through: boolean,
+): void {
+  const out = player.contacts;
+  if (out === undefined || through || player.through) return;
+  if ((tx !== player.tx || ty !== player.ty) && (tx !== player.destX || ty !== player.destY)) return;
+  if (canStepFrom(table, ch.tx, ch.ty, exit)) out.push(ch.id);
 }
 
 /** True when a character's body keeps the PLAYER out of (tx,ty): the
@@ -1060,6 +1084,7 @@ function stepPath(
   const tx = ch.tx + DX[dir];
   const ty = ch.ty + DY[dir];
   if (occupantBlocks(ch, tx, ty, dir, table, player, others, settings, allSettings)) {
+    noteContact(ch, tx, ty, dir, table, player, settings.through);
     if (canFace(settings, false)) ch.facing = dir;
     ch.stepDir = dir;
     plan.blockedTicks++;
@@ -1187,6 +1212,7 @@ function stepRoute(
   const tx = ch.tx + DX[dir];
   const ty = ch.ty + DY[dir];
   if (occupantBlocks(ch, tx, ty, dir, table, player, others, settings, options.settings)) {
+    noteContact(ch, tx, ty, dir, table, player, settings.through);
     if (canFace(settings, false)) ch.facing = dir;
     ch.stepDir = dir;
     if (route.skippable) releaseRoute(ch, finishedWaiters);
@@ -1246,6 +1272,7 @@ function randomStep(
     // The 8-tick step is its own pacing; no extra think delay on a move.
     return;
   }
+  noteContact(ch, tx, ty, dir, table, player, settings.through);
   ch.thinkIn = Math.max(THINK_BEATS, delay); // blocked: re-roll later
 }
 
@@ -1274,6 +1301,8 @@ function approachStep(
       ch.thinkIn = frequencyDelay(settings.frequency);
       return;
     }
+    // MV moveTowardCharacter: each refused attempt checks Event Touch.
+    noteContact(ch, tx, ty, dir, table, player, settings.through);
   }
   if (order[0] !== undefined) {
     if (canFace(settings, false)) ch.facing = order[0];
@@ -1462,6 +1491,7 @@ function stepRouteLegacy(
   const tx = ch.tx + DX[dir];
   const ty = ch.ty + DY[dir];
   if (occupantBlocksLegacy(ch, tx, ty, dir, table, player, others)) {
+    noteContact(ch, tx, ty, dir, table, player, false);
     ch.facing = dir;
     ch.stepDir = dir;
     if (route.skippable) releaseRoute(ch, finishedWaiters);
@@ -1495,6 +1525,7 @@ function randomStepLegacy(
     commitStepLegacy(ch, dir, cfg);
     return;
   }
+  noteContact(ch, tx, ty, dir, table, player, false);
   ch.thinkIn = THINK_BEATS;
 }
 
@@ -1519,6 +1550,7 @@ function approachStepLegacy(
       commitStepLegacy(ch, dir, cfg);
       return;
     }
+    noteContact(ch, tx, ty, dir, table, player, false);
   }
   if (order[0] !== undefined) {
     ch.facing = order[0];

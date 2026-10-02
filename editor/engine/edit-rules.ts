@@ -10,6 +10,7 @@ import {
   choiceBranchPath,
   commandAddressKey,
   ifBranchPath,
+  loopBodyPath,
   sceneBranchPath,
   ROOT_COMMAND_PATH,
   type CommandListPath,
@@ -803,6 +804,8 @@ export function mapReferences(project: Project, mapId: string): MapReference[] {
       } else if (command.op === "scene") {
         scan(command.onDone, ctx, sceneBranchPath(address, "done"));
         scan(command.onCancel, ctx, sceneBranchPath(address, "cancel"));
+      } else if (command.op === "loop") {
+        scan(command.commands, ctx, loopBodyPath(address));
       }
     });
   };
@@ -840,6 +843,8 @@ function rewriteTransferMapIds(project: Project, oldId: string, newId: string): 
       } else if (command.op === "scene") {
         scan(command.onDone);
         scan(command.onCancel);
+      } else if (command.op === "loop") {
+        scan(command.commands);
       }
     }
   };

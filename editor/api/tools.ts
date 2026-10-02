@@ -89,6 +89,8 @@ const address = {
           { type: "object", additionalProperties: false, required: ["kind", "index", "branch", "option"], properties: { kind: { const: "choices" }, index: { type: "integer", minimum: 0 }, branch: { const: "option" }, option: { type: "integer", minimum: 0 } } },
           { type: "object", additionalProperties: false, required: ["kind", "index", "branch"], properties: { kind: { const: "choices" }, index: { type: "integer", minimum: 0 }, branch: { const: "cancel" } } },
           { type: "object", additionalProperties: false, required: ["kind", "index", "branch"], properties: { kind: { const: "battle" }, index: { type: "integer", minimum: 0 }, branch: { enum: ["win", "lose", "escape"] } } },
+          { type: "object", additionalProperties: false, required: ["kind", "index", "branch"], properties: { kind: { const: "scene" }, index: { type: "integer", minimum: 0 }, branch: { enum: ["done", "cancel"] } } },
+          { type: "object", additionalProperties: false, required: ["kind", "index", "branch"], properties: { kind: { const: "loop" }, index: { type: "integer", minimum: 0 }, branch: { const: "body" } } },
         ],
       },
     },
@@ -109,7 +111,7 @@ const pageValue = {
   required: ["trigger", "commands"],
   properties: {
     condition: { type: "object", description: "PageCondition object." },
-    trigger: { enum: ["action", "playerTouch", "autorun", "parallel"] },
+    trigger: { enum: ["action", "playerTouch", "eventTouch", "autorun", "parallel"] },
     sprite: { type: ["string", "null"] },
     blocks: { type: "boolean" },
     moveType: { enum: ["static", "random", "approach"] },

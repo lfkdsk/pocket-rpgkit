@@ -203,6 +203,28 @@ describe("editor playtest diagnostics", () => {
     });
   });
 
+  test("catalogs ids inside loop bodies and {v:} text tokens only when textVariables is on", () => {
+    const p = project([
+      {
+        op: "loop",
+        commands: [
+          { op: "text", lines: ["You have {v:coins} coins, {name}.", "{v:} {notatoken}"] },
+          { op: "choices", prompt: "Spend {v:price}?", options: [
+            { text: "Yes ({v:stock} left)", commands: [{ op: "switch", id: "loop.bought", value: true }, { op: "break" }] },
+            { text: "No", commands: [{ op: "break" }] },
+          ] },
+          { op: "extChoice", call: "game.pick", args: null, prompt: "Pick {v:slot}" },
+        ],
+      },
+    ]);
+    // The catalog reads the authored tree; the live state only needs the map.
+    const plain = project();
+    const state = startSession(plain, createSession(plain));
+    expect(playtestDebugCatalog(p, state)).toMatchObject({ switches: ["gate.open", "loop.bought"], variables: [] });
+    const withTokens: Project = { ...p, system: { textVariables: true } };
+    expect(playtestDebugCatalog(withTokens, state).variables).toEqual(["coins", "price", "slot", "stock"]);
+  });
+
   test("reports deterministic fallbacks for nested extensions, battles and backdrops", () => {
     const p = project([
       {
