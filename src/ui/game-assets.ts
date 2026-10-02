@@ -18,6 +18,13 @@ export interface StreamedGameAssets {
   margin?: number;
   /** Texture loads per layer per frame (default unlimited). */
   loadBudget?: number;
+  /** Optional tile loader for the ground and upper streams, called with a
+   *  ref's key and index when a tile enters the window, in place of
+   *  PocketJS loadTileTexture. It returns a texture handle the layer later
+   *  frees with freeTileTexture, or -1 for nothing. Hosts that make tiles
+   *  at run time (the preview page's supplied sheets) use it; baked games
+   *  omit it. Render-only: never part of reducer state. */
+  loadTile?: (key: string, index: number) => number;
 }
 
 /** One prepackaged eager variant of a named map layer. Switching variants

@@ -5,7 +5,7 @@
 import type { BattleRules } from "../../src/engine/battle.ts";
 import type { SceneRules } from "../../src/engine/scene.ts";
 import type { JsonValue, Project, TileId } from "../../src/engine/types.ts";
-import type { GameAssets, GameScreenLayerAssets } from "../../src/ui/game-assets.ts";
+import type { GameAssets, GameScreenLayerAssets, NpcArt } from "../../src/ui/game-assets.ts";
 import {
   PLAYTEST_NPC_SRC,
   PLAYTEST_PLAYER,
@@ -13,16 +13,38 @@ import {
 } from "./playtest-assets.ts";
 import { diagnosePlaytestProject, playtestSceneIds } from "./playtest.ts";
 
-function tileRef(tile: TileId): string | null {
-  if (tile === null) return null;
-  const dot = tile.lastIndexOf(".");
-  if (dot < 1) return null;
-  const refs = PLAYTEST_SHEET_REFS[tile.slice(0, dot)];
-  const cell = Number(tile.slice(dot + 1));
-  return refs && Number.isInteger(cell) && cell >= 0 ? refs[cell] ?? null : null;
+/** Art a host supplies at run time in place of the editor's stand-ins (the
+ *  preview page builds it from the images a frontend sends). Render-only:
+ *  it changes what is drawn, never the session. */
+export interface PlaytestArt {
+  /** Sheet id -> its runtime tile key and cell count. Cell `n` of the sheet
+   *  streams as the ref `${key}#${n}`; cells past `cells` draw nothing. */
+  sheets?: Readonly<Record<string, { key: string; cells: number }>>;
+  /** Sprite id -> art that replaces (or fills in for) the stand-in. */
+  sprites?: Readonly<Record<string, NpcArt>>;
+  /** Loads the runtime tile keys (and delegates every other key);
+   *  becomes StreamedGameAssets.loadTile. */
+  loadTile?: (key: string, index: number) => number;
 }
 
-export function createPlaytestAssets(project: Project): GameAssets {
+function tileRefs(art: PlaytestArt | undefined): (tile: TileId) => string | null {
+  const sheets = art?.sheets;
+  return (tile) => {
+    if (tile === null) return null;
+    const dot = tile.lastIndexOf(".");
+    if (dot < 1) return null;
+    const sheet = tile.slice(0, dot);
+    const cell = Number(tile.slice(dot + 1));
+    if (!Number.isInteger(cell) || cell < 0) return null;
+    const supplied = sheets && Object.prototype.hasOwnProperty.call(sheets, sheet) ? sheets[sheet] : undefined;
+    if (supplied) return cell < supplied.cells ? `${supplied.key}#${cell}` : null;
+    const refs = PLAYTEST_SHEET_REFS[sheet];
+    return refs ? refs[cell] ?? null : null;
+  };
+}
+
+export function createPlaytestAssets(project: Project, art?: PlaytestArt): GameAssets {
+  const tileRef = tileRefs(art);
   const ground: Record<string, readonly (string | null)[]> = {};
   const upper: Record<string, readonly (string | null)[]> = {};
   const columns: Record<string, number> = {};
@@ -69,9 +91,9 @@ export function createPlaytestAssets(project: Project): GameAssets {
     maxActors,
     world,
     order: project.maps.map((map) => map.id),
-    npcSrc: PLAYTEST_NPC_SRC,
+    npcSrc: art?.sprites ? { ...PLAYTEST_NPC_SRC, ...art.sprites } : PLAYTEST_NPC_SRC,
     player: PLAYTEST_PLAYER,
-    stream: { chunkPx: 16, ground, upper, columns, margin: 0 },
+    stream: { chunkPx: 16, ground, upper, columns, margin: 0, ...(art?.loadTile ? { loadTile: art.loadTile } : {}) },
     layers,
   };
 }

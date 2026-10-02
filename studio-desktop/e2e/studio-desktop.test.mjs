@@ -20,10 +20,11 @@ const require = createRequire(import.meta.url);
 const ELECTRON = require("electron");
 const WORK = process.env.STUDIO_E2E_WORK;
 const FOLDER = process.env.STUDIO_E2E_FOLDER;
+const ART_FOLDER = process.env.STUDIO_E2E_ART_FOLDER;
 const BROKEN = process.env.STUDIO_E2E_BROKEN;
 const AGENT_CONFIG = process.env.STUDIO_E2E_AGENT_CONFIG;
 const SHOTS = process.env.STUDIO_E2E_SHOTS;
-if (!WORK || !FOLDER || !BROKEN || !AGENT_CONFIG || !SHOTS) throw new Error("run this through e2e/run.ts");
+if (!WORK || !FOLDER || !ART_FOLDER || !BROKEN || !AGENT_CONFIG || !SHOTS) throw new Error("run this through e2e/run.ts");
 const PROFILE = join(WORK, "profile");
 mkdirSync(SHOTS, { recursive: true });
 
@@ -270,6 +271,43 @@ describe("Studio desktop", () => {
     assert.ok(codes.some((code) => code.startsWith("lint/")), JSON.stringify(codes));
     await shot("engine-checks");
     console.log(`# problems after engine checks: ${codes.join(", ")}`);
+  });
+
+  test("a project folder's own art is drawn on the canvas and in the play-test", async () => {
+    await answerDialogs({ open: ART_FOLDER, box: 0 });
+    await openMenuItem("Open folder");
+    await page.waitForFunction(() => window.__studio.files.target?.name === "sunstone-art/", null, { timeout: 15_000 });
+    await page.waitForFunction(() => window.__studio.art.sheetStatus("town").source === "project" && window.__studio.art.spriteStatus("wiz").source === "project", null, { timeout: 15_000 });
+    const status = await studio(() => ({ town: window.__studio.art.sheetStatus("town"), wiz: window.__studio.art.spriteStatus("wiz"), dun: window.__studio.art.sheetStatus("dun") }));
+    assert.equal(status.town.from, "art/sheets/town.png");
+    assert.equal(status.wiz.from, "assets/npc/wiz.png");
+    assert.equal(status.dun.source, "bundled", "a sheet the folder has no art for keeps the bundled art");
+    await studio(() => { window.__studio.app.openMap("village"); window.__studio.canvas.fit(); });
+    await page.waitForTimeout(300);
+    const wiz = await studio(() => {
+      const event = window.__studio.app.currentMap().events.find((item) => item.pages.some((p) => p.sprite === "wiz"));
+      const point = window.__studio.cellToClient(event.x, event.y);
+      const canvas = document.querySelector(".map-canvas");
+      const rect = canvas.getBoundingClientRect();
+      const scale = canvas.width / rect.width;
+      return [...canvas.getContext("2d").getImageData(Math.round((point.x - rect.left) * scale), Math.round((point.y - rect.top) * scale), 1, 1).data].slice(0, 3);
+    });
+    assert.ok(Math.abs(wiz[0] - 236) <= 3 && Math.abs(wiz[1] - 64) <= 3 && Math.abs(wiz[2] - 200) <= 3, `wiz pixel ${wiz}`);
+    await shot("project-art");
+    // The play-test gets the same images.
+    await page.keyboard.press("v");
+    await clickCell(9, 7);
+    await page.click("#studio-play");
+    await page.waitForFunction(() => (window.__studio.play.status === "running" && window.__studio.play.readings > 0) || window.__studio.play.status === "error", null, { timeout: 40_000 });
+    const play = await studio(() => ({ status: window.__studio.play.status, error: window.__studio.play.error, art: window.__studio.play.art, note: window.__studio.play.artNote }));
+    assert.equal(play.status, "running", JSON.stringify(play));
+    assert.equal(play.art?.kind, "project", JSON.stringify(play));
+    assert.equal(play.art.used, 2, JSON.stringify(play));
+    assert.equal(play.note, null);
+    await page.waitForTimeout(800);
+    await shot("playtest-project-art");
+    await page.click("#playtest-close");
+    console.log(`# project art: town from ${status.town.from}, wiz from ${status.wiz.from}, wiz pixel ${wiz}; play-test used ${play.art.used} images`);
   });
 
   test("the play-test panel starts the game from the selected cell", async () => {

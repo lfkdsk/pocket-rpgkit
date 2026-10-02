@@ -28,7 +28,7 @@ const operation = {
   properties: {
     command: {
       enum: [
-        "update-map", "paint-tile", "paint-rect", "fill-region", "paint-passage",
+        "update-map", "move-map", "paint-tile", "paint-rect", "fill-region", "paint-passage",
         "add-event", "update-event", "delete-event", "add-page", "update-page",
         "delete-page", "insert-command", "delete-command", "update-command",
       ],

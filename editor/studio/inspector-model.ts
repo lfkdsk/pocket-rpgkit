@@ -11,12 +11,14 @@ import {
   battleBranchPath,
   choiceBranchPath,
   commandAddressKey,
+  commandPathKey,
   commandSummary,
   defaultCommand,
   EDITABLE_COMMAND_OPS,
   getCommand,
   getCommandList,
   ifBranchPath,
+  pathAfterDelete,
   sceneBranchPath,
   type CommandAddress,
   type CommandListPath,
@@ -304,6 +306,35 @@ export function commandMoveOps(
   return { ops: [deleteCommandOp(ref, address), insertCommandOp(ref, to, command)], to };
 }
 
+/** Ops that move the command at `from` so it lands in insertion slot `slot`
+ * (an address in the tree BEFORE the move: `slot.index` may equal the list's
+ * length). Null when the drop changes nothing (dropping a command just
+ * before or after itself) or is illegal (into its own descendants, a slot
+ * that does not resolve). `to` is the command's address after the move.
+ *
+ * The transaction deletes first, so the insert address is rebased onto the
+ * tree without the command: a later slot in the same list moves up by one,
+ * and so does a branch of a later sibling (moveCommand's semantics). */
+export function commandDropOps(
+  ref: PageRef,
+  commands: readonly Command[],
+  from: CommandAddress,
+  slot: CommandAddress,
+): { ops: SessionOperation[]; to: CommandAddress } | null {
+  const command = getCommand(commands, from);
+  const list = getCommandList(commands, slot.path);
+  if (!command || !list || !Number.isInteger(slot.index) || slot.index < 0 || slot.index > list.length) return null;
+  const path = pathAfterDelete(slot.path, from);
+  if (!path) return null;
+  let index = slot.index;
+  if (commandPathKey(slot.path) === commandPathKey(from.path)) {
+    if (index === from.index || index === from.index + 1) return null;
+    if (index > from.index) index--;
+  }
+  const to: CommandAddress = { path, index };
+  return { ops: [deleteCommandOp(ref, from), insertCommandOp(ref, to, command)], to };
+}
+
 /** Insert a deep copy of the command immediately after it. */
 export function commandCopyOp(
   ref: PageRef,
@@ -441,6 +472,13 @@ export function eventCopyOp(map: MapDef, event: GameEvent): { op: SessionOperati
   copy.x = cell.x;
   copy.y = cell.y;
   return { op: { command: "add-event", args: { map: map.id, event: copy } }, id: copy.id };
+}
+
+// ---- maps -----------------------------------------------------------------------
+
+/** The `move-map` op for dragging map `id` to final position `index`. */
+export function mapMoveOp(id: string, index: number): SessionOperation {
+  return { command: "move-map", args: { map: id, index } };
 }
 
 // ---- map cells ------------------------------------------------------------------

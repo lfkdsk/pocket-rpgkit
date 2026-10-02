@@ -64,6 +64,18 @@ describe("browser sharded editor pack host", () => {
     });
   });
 
+  test("keeps a pack's image assets when it serializes the pack again", () => {
+    const source = fixture(2);
+    const assets = { "art/sheets/town.png": { type: "image/png", data: "iVBORw0KGgo=" } };
+    const withArt = `${JSON.stringify({ kind: SHARDED_PACK_KIND, shell: source.shell, shards: source.shards, assets }, null, 2)}\n`;
+    expect(BrowserProjectPack.parse(withArt).serialize()).toBe(withArt);
+    // A pack without assets keeps its spelling: no empty "assets" record.
+    const plain = `${JSON.stringify({ kind: SHARDED_PACK_KIND, shell: source.shell, shards: source.shards }, null, 2)}\n`;
+    expect(BrowserProjectPack.parse(plain).serialize()).toBe(plain);
+    const bad = JSON.stringify({ kind: SHARDED_PACK_KIND, shell: source.shell, shards: source.shards, assets: { "../x.png": { type: "image/png", data: "" } } });
+    expect(() => BrowserProjectPack.parse(bad)).toThrow();
+  });
+
   test("catalogues 263 entries without sending any shard text until map-read", () => {
     const source = fixture();
     const pack = BrowserProjectPack.parse(source.text);

@@ -24,6 +24,9 @@ import { MAX_PACK_BYTES, openFileProblem, PNG_HEADER_BYTES, pngProblem, utf8Byte
 import { checkProblems } from "./problems.ts";
 import { isStagingPath, openDirectoryProject, saveDirectoryTarget, type ProjectDirectory } from "./project-directory.ts";
 import type {
+  PreviewArtImage,
+  PreviewArtMessage,
+  PreviewArtResult,
   PreviewChapter,
   PreviewLoadResult,
   PreviewOutcome,
@@ -33,6 +36,7 @@ import type {
   StudioPreview,
 } from "./preview.ts";
 import type { Project } from "../../src/engine/types.ts";
+import { parsePreviewArt, PreviewArtStage, PreviewError } from "../../tools/preview/protocol.ts";
 
 type OpenListener = (opened: OpenedProject | { error: string }) => void;
 
@@ -60,6 +64,13 @@ export class MemoryPreview implements StudioPreview {
   /** Make the next request of this type fail with this code and message. */
   failNext: { type: string; code: string; message: string } | null = null;
   connected = false;
+  /** What the page's ready event lists in `features` (set ["art"] to take
+   * project art). */
+  pageFeatures: string[] = [];
+  /** The complete images each `load` with art used. */
+  loadedArt: PreviewArtImage[][] = [];
+  /** Staged like the preview host stages `art` requests. */
+  private staging = new PreviewArtStage();
   private position: PreviewStartResult | null = null;
   private frame = 0;
   private releaseListeners = new Set<() => void>();
@@ -79,13 +90,32 @@ export class MemoryPreview implements StudioPreview {
     return { ok: true, value: undefined };
   }
 
-  async load(documentText: string, chapters: readonly PreviewChapter[]): Promise<PreviewOutcome<PreviewLoadResult>> {
-    this.calls.push("load");
+  features(): readonly string[] {
+    return this.connected ? this.pageFeatures : [];
+  }
+
+  async sendArt(message: PreviewArtMessage): Promise<PreviewOutcome<PreviewArtResult>> {
+    this.calls.push(`art:${message.kind}:${message.id}:${message.offset}`);
     if (!this.connected) return { ok: false, code: "disconnected", message: "not connected" };
+    const failed = this.failure("art");
+    if (failed) return failed;
+    try {
+      return { ok: true, value: this.staging.add(parsePreviewArt({ ...message })) };
+    } catch (error) {
+      return { ok: false, code: error instanceof PreviewError ? error.code : "internal", message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async load(documentText: string, chapters: readonly PreviewChapter[], options?: { art?: boolean }): Promise<PreviewOutcome<PreviewLoadResult>> {
+    this.calls.push(options?.art ? "load:art" : "load");
+    if (!this.connected) return { ok: false, code: "disconnected", message: "not connected" };
+    const images = options?.art ? this.staging.take() : [];
+    this.staging.clear();
     const failed = this.failure("load");
     if (failed) return failed;
     this.loaded.push(documentText);
     this.chapters.push(chapters);
+    if (options?.art) this.loadedArt.push(images);
     const project = JSON.parse(documentText) as Project;
     return {
       ok: true,
@@ -93,6 +123,7 @@ export class MemoryPreview implements StudioPreview {
         title: project.title,
         maps: project.maps.map((map) => ({ id: map.id, name: map.name ?? map.id, width: map.width, height: map.height })),
         start: { map: project.start.map, x: project.start.x, y: project.start.y, dir: project.start.dir },
+        ...(options?.art ? { art: { used: images.length, skipped: [] } } : {}),
       },
     };
   }
@@ -126,6 +157,7 @@ export class MemoryPreview implements StudioPreview {
     this.calls.push("stop");
     const failed = this.failure("stop");
     if (failed) return failed;
+    this.staging.clear();
     this.position = null;
     return { ok: true, value: undefined };
   }
@@ -151,9 +183,12 @@ export class MemoryPreview implements StudioPreview {
   }
 }
 
-/** A ProjectDirectory over a Map of POSIX paths to text. */
+/** A ProjectDirectory over a Map of POSIX paths to text, plus binary files
+ * (art) in `binary`. */
 export class MemoryDirectory implements ProjectDirectory {
   readonly files: Map<string, string>;
+  /** Binary files by path; readBytes also reads text files as UTF-8. */
+  readonly binary = new Map<string, Uint8Array>();
   /** Paths whose bytes a write or rename replaced or created, in order.
    * Temporary files staged by a save (isStagingPath) are left out. */
   writes: string[] = [];
@@ -190,7 +225,7 @@ export class MemoryDirectory implements ProjectDirectory {
   }
 
   async listRoot(): Promise<string[]> {
-    return [...this.files.keys()].filter((path) => !path.includes("/"));
+    return [...this.files.keys(), ...this.binary.keys()].filter((path) => !path.includes("/"));
   }
 
   private async pass(op: "read" | "write" | "rename" | "remove", path: string): Promise<void> {
@@ -206,10 +241,19 @@ export class MemoryDirectory implements ProjectDirectory {
     return text;
   }
 
+  async readBytes(path: string): Promise<Uint8Array> {
+    await this.pass("read", path);
+    const bytes = this.binary.get(path) ?? (this.files.has(path) ? new TextEncoder().encode(this.files.get(path)!) : undefined);
+    if (bytes === undefined) throw new Error(`no file ${path}`);
+    this.reads.push(path);
+    return bytes.slice();
+  }
+
   async size(path: string): Promise<number> {
+    const bytes = this.binary.get(path);
     const text = this.files.get(path);
-    if (text === undefined) throw new Error(`no file ${path}`);
-    return this.sizes.get(path) ?? utf8Bytes(text);
+    if (bytes === undefined && text === undefined) throw new Error(`no file ${path}`);
+    return this.sizes.get(path) ?? bytes?.length ?? utf8Bytes(text!);
   }
 
   async write(path: string, text: string): Promise<void> {

@@ -4,9 +4,12 @@ import { join } from "node:path";
 import type { Command, GameEvent, MapDef, Page } from "../src/engine/types.ts";
 import { EditSession } from "../editor/api/session.ts";
 import {
+  commandPathKey,
+  defaultCommand,
   EDITABLE_COMMAND_OPS,
   flattenCommands,
   getCommand,
+  moveCommand,
   pageConditionClauses,
   type CommandAddress,
 } from "../editor/engine/commands.ts";
@@ -20,6 +23,7 @@ import {
   commandBranchTargets,
   commandCategory,
   commandCopyOp,
+  commandDropOps,
   commandMoveOps,
   commandTreeItems,
   conditionSource,
@@ -30,6 +34,7 @@ import {
   filterPickerEntries,
   insertCommandOp,
   insertionAddress,
+  mapMoveOp,
   nextFreeCell,
   opLabel,
   pageCopyOp,
@@ -344,5 +349,113 @@ describe("protocol op lists: one history step each, undo restores the bytes", ()
     const occupied = (map.events ?? []).filter((event) => event.x === copy.x && event.y === copy.y);
     expect(occupied).toEqual([]);
     expect(eventCopyOp(session.map("village")!, elder).id).toBe("elder-copy-2");
+  });
+});
+
+describe("drag and drop", () => {
+  const text = (line: string): Command => ({ op: "text", lines: [line] });
+  // root: A, if1 { then: T0 T1, else: E0 }, B, if3 { then: U0 }, C
+  const LIST: Command[] = [
+    text("A"),
+    { ...defaultCommand("if"), then: [text("T0"), text("T1")], else: [text("E0")] } as Command,
+    text("B"),
+    { ...defaultCommand("if"), then: [text("U0")] } as Command,
+    text("C"),
+  ];
+  const ref: PageRef = { map: "village", event: "merchant", page: 0 };
+  const ifBranch = (index: number, branch: "then" | "else") => [{ kind: "if", index, branch }] as const;
+  const root = (index: number): CommandAddress => ({ path: [], index });
+  const lines = (commands: readonly Command[]): unknown[] =>
+    commands.map((command) => command.op === "text"
+      ? (command as { lines: string[] }).lines[0]
+      : { then: lines((command as { then: Command[] }).then), else: lines((command as { else?: Command[] }).else ?? []) });
+
+  /** A session whose merchant page holds LIST, saved as the baseline. */
+  function staged(): { session: EditSession; commands: () => Command[] } {
+    const session = open();
+    const page = eventOf(session, "village", "merchant").pages[0]!;
+    const op = updatePageOp(ref, { ...page, commands: LIST });
+    expect(session.run(op.command, op.args).ok).toBe(true);
+    return { session, commands: () => eventOf(session, "village", "merchant").pages[0]!.commands };
+  }
+
+  /** Apply the drop as one transaction; it must equal the engine's
+   * moveCommand and leave the command at `to`. */
+  function drop(from: CommandAddress, slot: CommandAddress): { to: CommandAddress; after: Command[] } {
+    const { session, commands } = staged();
+    const before = commands();
+    const result = commandDropOps(ref, before, from, slot)!;
+    expect(result).not.toBeNull();
+    expect(result.ops.map((op) => op.command)).toEqual(["delete-command", "insert-command"]);
+    const expected = commandPathKey(from.path) === commandPathKey(slot.path)
+      ? moveCommand(before, from, result.to.index)
+      : moveCommand(before, from, slot);
+    expectOneUndoableStep(session, () => session.transaction("Move command", result.ops));
+    session.transaction("Move command", result.ops);
+    expect(session.history().length).toBe(2);
+    const after = commands();
+    expect(after).toEqual(expected);
+    expect(getCommand(after, result.to)).toEqual(getCommand(before, from)!);
+    return { to: result.to, after };
+  }
+
+  test("same list forward lands one before the slot", () => {
+    const { to, after } = drop(root(0), root(3));
+    expect(to).toEqual(root(2));
+    expect(lines(after)).toEqual([{ then: ["T0", "T1"], else: ["E0"] }, "B", "A", { then: ["U0"], else: [] }, "C"]);
+  });
+
+  test("same list backward lands at the slot", () => {
+    const { to, after } = drop(root(4), root(1));
+    expect(to).toEqual(root(1));
+    expect(lines(after)).toEqual(["A", "C", { then: ["T0", "T1"], else: ["E0"] }, "B", { then: ["U0"], else: [] }]);
+  });
+
+  test("dropping just before or after itself changes nothing", () => {
+    const { commands } = staged();
+    expect(commandDropOps(ref, commands(), root(2), root(2))).toBeNull();
+    expect(commandDropOps(ref, commands(), root(2), root(3))).toBeNull();
+    expect(commandDropOps(ref, commands(), root(4), root(5))).toBeNull();
+    expect(commandDropOps(ref, commands(), { path: ifBranch(1, "then"), index: 1 }, { path: ifBranch(1, "then"), index: 2 })).toBeNull();
+  });
+
+  test("into a branch of a later sibling rebases the branch path", () => {
+    const { to, after } = drop(root(0), { path: ifBranch(3, "then"), index: 1 });
+    expect(to).toEqual({ path: ifBranch(2, "then"), index: 1 });
+    expect(lines(after)).toEqual([{ then: ["T0", "T1"], else: ["E0"] }, "B", { then: ["U0", "A"], else: [] }, "C"]);
+  });
+
+  test("into a branch of an earlier sibling keeps the path", () => {
+    const { to, after } = drop(root(4), { path: ifBranch(1, "else"), index: 0 });
+    expect(to).toEqual({ path: ifBranch(1, "else"), index: 0 });
+    expect(lines(after)).toEqual(["A", { then: ["T0", "T1"], else: ["C", "E0"] }, "B", { then: ["U0"], else: [] }]);
+  });
+
+  test("out of a branch to the root and between branches", () => {
+    const out = drop({ path: ifBranch(1, "then"), index: 0 }, root(5));
+    expect(out.to).toEqual(root(5));
+    expect(lines(out.after)).toEqual(["A", { then: ["T1"], else: ["E0"] }, "B", { then: ["U0"], else: [] }, "C", "T0"]);
+    const across = drop({ path: ifBranch(1, "else"), index: 0 }, { path: ifBranch(3, "then"), index: 0 });
+    expect(across.to).toEqual({ path: ifBranch(3, "then"), index: 0 });
+    expect(lines(across.after)).toEqual(["A", { then: ["T0", "T1"], else: [] }, "B", { then: ["E0", "U0"], else: [] }, "C"]);
+  });
+
+  test("refuses drops into its own branches and slots that do not resolve", () => {
+    const { commands } = staged();
+    expect(commandDropOps(ref, commands(), root(1), { path: ifBranch(1, "then"), index: 0 })).toBeNull();
+    expect(commandDropOps(ref, commands(), root(1), { path: ifBranch(1, "else"), index: 1 })).toBeNull();
+    expect(commandDropOps(ref, commands(), root(0), root(6))).toBeNull();
+    expect(commandDropOps(ref, commands(), root(0), root(-1))).toBeNull();
+    expect(commandDropOps(ref, commands(), root(0), { path: ifBranch(0, "then"), index: 0 })).toBeNull();
+    expect(commandDropOps(ref, commands(), root(9), root(0))).toBeNull();
+  });
+
+  test("map move is one undoable step", () => {
+    const session = open();
+    const op = mapMoveOp("cave", 0);
+    expect(op).toEqual({ command: "move-map", args: { map: "cave", index: 0 } });
+    expectOneUndoableStep(session, () => session.run(op.command, op.args));
+    session.run(op.command, op.args);
+    expect(session.maps().map((map) => map.id)).toEqual(["cave", "village", "forest"]);
   });
 });

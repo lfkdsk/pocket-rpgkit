@@ -3,16 +3,20 @@
 // This player page embeds the real engine: a postMessage `load` hands it an
 // rpgkit-project/v1 document, which it validates through the editor's
 // document gate (editor/engine/document.ts), dresses in the editor playtest
-// art (editor/engine/playtest-view.ts) and plays through the production
-// GameView. The demo seam (src/ui/demo) gives the protocol host the same
-// validated warp and tape paths as the in-game demo menu, so `start` and
-// `input` reuse demo machinery rather than a second implementation.
+// art (editor/engine/playtest-view.ts), or in the project's own images when
+// the frontend staged them with `art` (./art.ts), and plays through the
+// production GameView. The demo seam (src/ui/demo) gives the protocol host
+// the same validated warp and tape paths as the in-game demo menu, so
+// `start` and `input` reuse demo machinery rather than a second
+// implementation.
 //
 // See docs/protocols.md (Preview protocol) and tools/web/preview-demo.html
 // (the reference frontend).
 
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
-import { mount } from "@pocketjs/framework";
+import { getOps, mount, registerTexture } from "@pocketjs/framework";
+import { loadTileTexture } from "../../vendor/pocketjs/framework/src/tiles.ts";
+import { PSM } from "../../vendor/pocketjs/contracts/spec/spec.ts";
 import { Text, View } from "@pocketjs/framework/components";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { GameView, type BattleSceneViewProps } from "../../src/ui/GameView.tsx";
@@ -25,12 +29,17 @@ import type { Dir, Project } from "../../src/engine/types.ts";
 import type { SessionState } from "../../src/engine/session.ts";
 import { loadProject } from "../../editor/engine/document.ts";
 import { createPlaytestAssets, PLAYTEST_BATTLE_RULES } from "../../editor/engine/playtest-view.ts";
+import { buildPreviewArt, type PreviewTextureOps } from "./art.ts";
 import {
+  PREVIEW_FEATURES,
   PREVIEW_PROTOCOL,
   PREVIEW_VERSION,
+  PreviewArtStage,
   PreviewError,
   dispatchPreviewMessage,
+  parsePreviewArt,
   previewAllowlist,
+  type PreviewArtResult,
   type PreviewBackend,
   type PreviewMessage,
   type PreviewLoadResult,
@@ -73,7 +82,9 @@ declare global {
 /** Same-page test/driver bridge, mirroring __rpgkitDemo. Every call uses the
  *  same validated paths as the postMessage protocol. */
 interface RpgkitPreviewHook {
-  load(document: unknown, chapters?: unknown): PreviewLoadResult;
+  load(document: unknown, chapters?: unknown, art?: boolean): PreviewLoadResult;
+  /** One `art` request's fields (kind, id, width, height, offset, rgba). */
+  art(fields: Record<string, unknown>): PreviewArtResult;
   start(target: PreviewStartTarget): PreviewStartResult;
   state(): PreviewStateResult;
   input(buttons: number, frames?: number): void;
@@ -85,6 +96,13 @@ interface Run {
   assets: GameAssets;
   chapters: ReadonlyMap<string, DemoChapter>;
 }
+
+/** Texture operations on the running PocketJS host (RGBA8 uploads). */
+const TEXTURE_OPS: PreviewTextureOps = {
+  upload: (rgba, width, height) => getOps().uploadTexture(rgba, width, height, PSM.PSM_8888),
+  free: (handle) => getOps().freeTexture?.(handle),
+  register: registerTexture,
+};
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -166,9 +184,23 @@ export function PreviewApp() {
   const [run, setRun] = createSignal<Run | null>(null);
   const [notice, setNotice] = createSignal("Waiting for a project document…");
   let host: GameViewDemoHost | null = null;
+  const staging = new PreviewArtStage();
+  /** Sprite textures of the mounted run, freed when it goes. */
+  let artHandles: number[] = [];
+
+  /** Unmount the running game, then free its textures. */
+  const unmount = (): void => {
+    host = null;
+    setRun(null);
+    for (const handle of artHandles) TEXTURE_OPS.free(handle);
+    artHandles = [];
+  };
 
   const backend: PreviewBackend = {
-    load(document, chapters) {
+    load(document, chapters, art) {
+      // Whatever happens, this load ends the staging round.
+      const images = art ? staging.take() : [];
+      staging.clear();
       const text = typeof document === "string" ? document : JSON.stringify(document);
       const loaded = loadProject(text);
       if (loaded.errors.length > 0) {
@@ -178,17 +210,23 @@ export function PreviewApp() {
       if (!Array.isArray(project.maps)) {
         throw new PreviewError("bad-document", "sharded projects (mapIndex) are not supported; paste an inline document");
       }
-      const assets = createPlaytestAssets(project);
       const list = chapterList(chapters);
-      host = null;
-      setRun(null);
+      unmount();
+      const built = art ? buildPreviewArt(project, images, TEXTURE_OPS, loadTileTexture) : null;
+      artHandles = built?.handles ?? [];
+      const assets = createPlaytestAssets(project, built?.art);
       setRun({ project, assets, chapters: list });
       setNotice(`Loaded “${project.title}”`);
       return {
         title: project.title,
         maps: project.maps.map((map) => ({ id: map.id, name: map.name || map.id, width: map.width, height: map.height })),
         start: { map: project.start.map, x: project.start.x, y: project.start.y, dir: project.start.dir },
+        ...(built ? { art: built.use } : {}),
       };
+    },
+
+    art(slice) {
+      return staging.add(slice);
     },
 
     start(target) {
@@ -240,14 +278,15 @@ export function PreviewApp() {
     },
 
     stop() {
-      host = null;
-      setRun(null);
+      staging.clear();
+      unmount();
       setNotice("Stopped. Waiting for a project document…");
     },
   };
 
   const hook: RpgkitPreviewHook = {
-    load: (document, chapters) => backend.load(document, chapters),
+    load: (document, chapters, art) => backend.load(document, chapters, art === true),
+    art: (fields) => backend.art(parsePreviewArt(fields)),
     start: (target) => backend.start(target),
     state: () => backend.state(),
     input: (buttons, frames) => backend.input(buttons, frames ?? 1),
@@ -278,7 +317,7 @@ export function PreviewApp() {
     win.addEventListener("message", onMessage);
     onCleanup(() => win.removeEventListener("message", onMessage));
     if (win.parent !== win) {
-      win.parent.postMessage({ protocol: PREVIEW_PROTOCOL, type: "event", event: "ready", version: PREVIEW_VERSION }, "*");
+      win.parent.postMessage({ protocol: PREVIEW_PROTOCOL, type: "event", event: "ready", version: PREVIEW_VERSION, features: [...PREVIEW_FEATURES] }, "*");
     }
   });
 

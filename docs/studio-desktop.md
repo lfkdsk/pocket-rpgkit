@@ -181,7 +181,9 @@ bun run build
 bun run e2e        # needs a display; starts Xvfb itself when DISPLAY is unset (or set XVFB to its path)
 ```
 
-`e2e/run.ts` prepares the fixtures (Sunstone as a project folder, an agent
+`e2e/run.ts` prepares the fixtures (Sunstone as a project folder, the same
+folder with its own art (an autumn `art/sheets/town.png` and a recoloured
+`assets/npc/wiz.png`), an agent
 config for the kit's offline fake agent `tests/fixtures/fake-local-agent.ts`,
 and `tests/fixtures/rpgkit-check/broken.json`). Then
 `e2e/studio-desktop.test.mjs` drives the built app with Playwright's
@@ -199,6 +201,8 @@ process; everything after them is the real app. The tests check:
   server, and accepting it is one undo step;
 - engine checks find `reach/transfer-target-missing` and it joins the
   problems list;
+- the art folder opens with its own town sheet and wizard sprite on the
+  canvas (checked by pixel), and the play-test uses both images;
 - the play-test starts the game at the selected cell, and the game frame
   cannot reach the bridge;
 - closing with unsaved changes asks; Cancel keeps the window and Discard

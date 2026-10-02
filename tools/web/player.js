@@ -322,6 +322,9 @@ export class BrowserProjectPack {
     this.shell = parsed.shell;
     this.catalog = parsed.catalog;
     this.shards = new Map(shards);
+    /** Images the pack carries (Studio's project art); kept as they came
+     * so a re-exported pack still has them. */
+    this.assets = [];
   }
 
   static parse(text) {
@@ -334,7 +337,13 @@ export class BrowserProjectPack {
       if (typeof shard !== "string") throw new Error(`pack shard ${JSON.stringify(entry)} is not text`);
       shards.set(entry, shard);
     }
-    return new BrowserProjectPack(envelope.shell, shards);
+    const pack = new BrowserProjectPack(envelope.shell, shards);
+    for (const [path, asset] of Object.entries(envelope.assets ?? {})) {
+      packEntry(path);
+      if (!record(asset) || asset.type !== "image/png" || typeof asset.data !== "string") throw new Error(`pack asset ${JSON.stringify(path)} is not a PNG entry`);
+      pack.assets.push([path, { type: asset.type, data: asset.data }]);
+    }
+    return pack;
   }
 
   projectMessage(request) {
@@ -405,7 +414,7 @@ export class BrowserProjectPack {
   }
 
   serialize() {
-    return packText(this.shellText, [...this.catalog.keys()].map((entry) => [entry, this.shards.get(entry)]));
+    return packText(this.shellText, [...this.catalog.keys()].map((entry) => [entry, this.shards.get(entry)]), this.assets);
   }
 }
 

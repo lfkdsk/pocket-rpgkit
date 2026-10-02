@@ -17,7 +17,7 @@ import type { Project } from "../../src/engine/types.ts";
 /** A document read by the main process. `token` names the file or folder it
  * came from; the page never sees the real path. */
 export type OpenReply =
-  | { text: string; label: string; fileName: string; target?: { kind: "file" | "directory"; name: string; token: string } }
+  | { text: string; label: string; fileName: string; target?: { kind: "file" | "directory"; name: string; token: string }; notes?: string[] }
   | { error: string };
 
 export interface RecentEntry {

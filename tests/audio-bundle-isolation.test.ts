@@ -57,6 +57,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // cleanup add 323 shared bytes to each bundle.
 // Hiding an erased event's actor in GameView adds 148 bytes to Sunstone and
 // the WAV fixture (Meadow does not mount GameView).
+// The optional streamed tile loader (StreamedGameAssets.loadTile, used by the
+// preview page's supplied sheets) adds 183 bytes to the streamed ground and
+// upper layers in Sunstone and the WAV fixture; Meadow is unchanged.
 // Re-measure after every shared-path change.
 const EXPECTED_MEADOW_BYTES = 502_945;
 const EXPECTED_SUNSTONE_QOA_BYTES = 807_210;

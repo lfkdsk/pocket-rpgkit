@@ -77,9 +77,24 @@ export function mountPlayTestPanel(root: HTMLElement, app: StudioApp, play: Play
 
   const renderNotice = () => {
     const message = play.blocked ?? play.error;
-    notice.hidden = !message;
-    notice.className = `playtest-notice ${play.blocked ? "blocked" : "error"}`;
-    replace(notice, message ? [icon("warn"), h("span", { id: "playtest-error" }, message)] : null);
+    // The art note is a warning, not an error: the game still plays.
+    const note = message ? null : play.artNote;
+    notice.hidden = !message && !note;
+    notice.className = `playtest-notice ${play.blocked || note ? "blocked" : "error"}`;
+    replace(notice, message
+      ? [icon("warn"), h("span", { id: "playtest-error" }, message)]
+      : note ? [icon("warn"), h("span", { id: "playtest-art-note" }, note)] : null);
+  };
+
+  /** "Game art: project (12 images)" or "Game art: stand-ins". */
+  const artText = (): [string, string] => {
+    const art = play.art;
+    if (!art || art.kind === "stand-ins") return ["stand-ins", play.artNote ?? "The game draws the editor's stand-in art."];
+    const text = `project (${art.used} image${art.used === 1 ? "" : "s"}${art.skipped.length ? `, ${art.skipped.length} kept stand-ins` : ""})`;
+    const tip = art.skipped.length
+      ? `Kept stand-ins for: ${art.skipped.map((skip) => `${skip.kind} ${skip.id} (${skip.reason})`).join("; ")}`
+      : "The game draws the project's own sheets and sprites; anything else uses stand-ins.";
+    return [text, tip];
   };
 
   const renderControls = () => {
@@ -140,14 +155,17 @@ export function mountPlayTestPanel(root: HTMLElement, app: StudioApp, play: Play
           ["message", "Message", state.message ? state.message.text.replace(/\n/g, " ⏎ ") || state.message.kind : "—"],
         ]
       : [];
+    const [art, artTip] = artText();
     readout.hidden = !state;
-    replace(readout, rows.map(([id, label, text]) => [h("dt", { class: id === "message" ? "wide" : "" }, label), h("dd", { dataset: { field: id }, class: id === "message" ? "" : "mono", title: text }, text)]));
+    replace(readout,
+      rows.map(([id, label, text]) => [h("dt", { class: id === "message" ? "wide" : "" }, label), h("dd", { dataset: { field: id }, class: id === "message" ? "" : "mono", title: text }, text)]),
+      state ? [h("dt", { class: "wide" }, "Game art"), h("dd", { dataset: { field: "art" }, title: artTip }, art)] : null);
   };
 
   const renderHint = () => {
     replace(hint, play.status === "running"
       ? ["Click the game, then use the arrow keys and Enter / Z. ", h("kbd", null, "Esc"), " returns the keyboard to the editor."]
-      : app.session?.kind === "pack" ? "Sharded packs are put together into one document for the play-test." : "The game runs the open document in the real engine, with the editor's stand-in art.");
+      : app.session?.kind === "pack" ? "Sharded packs are put together into one document for the play-test." : "The game runs the open document in the real engine, with the project's own art where Studio has it and stand-ins elsewhere.");
   };
 
   const renderAll = () => {

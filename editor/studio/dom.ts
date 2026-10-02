@@ -130,3 +130,13 @@ export function iconButton(
   button.dataset.tip = tip;
   return button;
 }
+
+/** A friendly empty panel: an icon, one line on what is missing, a hint on
+ * how to get it, and optionally the button that does it. */
+export function emptyState(iconName: string, title: string, hint: string, action?: { label: string; onClick: () => void; id?: string }): HTMLElement {
+  return h("div", { class: "empty-state", "data-role": "empty-state" },
+    h("div", { class: "empty-icon" }, icon(iconName)),
+    h("div", { class: "empty-title" }, title),
+    h("div", { class: "empty-hint" }, hint),
+    action ? h("button", { type: "button", class: "text-button empty-action", ...(action.id ? { dataset: { action: action.id } } : {}), onclick: action.onClick }, action.label) : null);
+}

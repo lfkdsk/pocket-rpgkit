@@ -10,7 +10,7 @@ import { StudioApp } from "../editor/studio/app.ts";
 import { ArtRegistry } from "../editor/studio/art.ts";
 import { StudioFiles } from "../editor/studio/files.ts";
 import { MemoryHost } from "../editor/studio/host-memory.ts";
-import { chaptersFor, PlayTest, previewDocument, PREVIEW_LIMITS } from "../editor/studio/preview.ts";
+import { chaptersFor, PlayTest, previewArtMessages, previewArtProblem, previewDocument, PREVIEW_ART_SLICE_BYTES, PREVIEW_LIMITS, type PreviewArtImage } from "../editor/studio/preview.ts";
 import { PREVIEW_PROTOCOL, previewMessageBytes } from "../tools/preview/protocol.ts";
 import { studioPackText } from "../tools/studio-build.ts";
 import type { Project } from "../src/engine/types.ts";
@@ -198,5 +198,133 @@ describe("Studio play-test controller", () => {
     expect(play.status).toBe("closed");
     expect(game.calls.at(-1)).toBe("disconnect");
     expect(game.connected).toBe(false);
+  });
+});
+
+// ---- project art ----------------------------------------------------------------
+
+function art(kind: "sheet" | "sprite", id: string, width: number, height: number): PreviewArtImage {
+  return { kind, id, width, height, rgba: new Uint8Array(width * height * 4).fill(kind === "sheet" ? 0x40 : 0x80) };
+}
+
+/** A studio whose game page advertises the "art" feature, with a provider
+ * returning `images` (and counting its calls). */
+function artStudio(images: () => readonly PreviewArtImage[]) {
+  const setup = studio();
+  setup.game.pageFeatures = ["art"];
+  const provided = { calls: 0 };
+  setup.play.setArtProvider(async () => {
+    provided.calls++;
+    return images();
+  });
+  return { ...setup, provided };
+}
+
+describe("Studio play-test with the project's art", () => {
+  test("a page that lists \"art\" gets the images, then a load with art", async () => {
+    const { play, game, provided } = artStudio(() => [art("sheet", "town", 352, 192), art("sprite", "wiz", 16, 16)]);
+    await play.openIn(SLOT);
+    expect(game.calls).toEqual([`connect:${SLOT}`, "art:sheet:town:0", "art:sprite:wiz:0", "load:art", "start:village:9:9:up", "state", "focus"]);
+    expect(provided.calls).toBe(1);
+    expect(game.loadedArt[0]!.map((image) => `${image.kind}:${image.id}:${image.width}x${image.height}`)).toEqual(["sheet:town:352x192", "sprite:wiz:16x16"]);
+    expect(game.loadedArt[0]![0]!.rgba).toEqual(art("sheet", "town", 352, 192).rgba);
+    expect(play.art).toEqual({ kind: "project", images: 2, used: 2, skipped: [] });
+    expect(play.artNote).toBeNull();
+    expect(play.status).toBe("running");
+  });
+
+  test("without the feature, or without a provider, nothing changes: no art requests, a plain load", async () => {
+    const old = artStudio(() => [art("sheet", "town", 16, 16)]);
+    old.game.pageFeatures = [];
+    await old.play.openIn(SLOT);
+    expect(old.game.calls).toEqual([`connect:${SLOT}`, "load", "start:village:9:9:up", "state", "focus"]);
+    expect(old.provided.calls).toBe(0);
+    expect(old.play.art).toEqual({ kind: "stand-ins" });
+
+    const none = studio();
+    none.game.pageFeatures = ["art"];
+    await none.play.openIn(SLOT);
+    expect(none.game.calls).toEqual([`connect:${SLOT}`, "load", "start:village:9:9:up", "state", "focus"]);
+    expect(none.play.art).toEqual({ kind: "stand-ins" });
+
+    const empty = artStudio(() => []);
+    await empty.play.openIn(SLOT);
+    expect(empty.game.calls).toEqual([`connect:${SLOT}`, "load", "start:village:9:9:up", "state", "focus"]);
+    expect(empty.provided.calls).toBe(1);
+  });
+
+  test("an image larger than one slice goes in order, in slices that fit a message", async () => {
+    const big = art("sheet", "town", 1024, 1024); // 4 MiB
+    const messages = previewArtMessages(big);
+    expect(messages.map((message) => message.offset)).toEqual([0, PREVIEW_ART_SLICE_BYTES]);
+    const { play, game } = artStudio(() => [big]);
+    await play.openIn(SLOT);
+    expect(game.calls.slice(1, 4)).toEqual(["art:sheet:town:0", `art:sheet:town:${PREVIEW_ART_SLICE_BYTES}`, "load:art"]);
+    expect(game.loadedArt[0]![0]!.rgba).toEqual(big.rgba);
+  });
+
+  test("art over the limits plays with stand-ins and says why", async () => {
+    // Five 2048x1024 sheets: 40 MiB, over the 32 MiB staging limit.
+    const { play, game } = artStudio(() => [1, 2, 3, 4, 5].map((n) => art("sheet", `s${n}`, 2048, 1024)));
+    await play.openIn(SLOT);
+    expect(game.calls).toEqual([`connect:${SLOT}`, "load", "start:village:9:9:up", "state", "focus"]);
+    expect(play.status).toBe("running");
+    expect(play.art).toEqual({ kind: "stand-ins" });
+    expect(play.artNote).toBe("Project art too large for the play-test (40.0 MiB; at most 32.0 MiB); using stand-in art.");
+  });
+
+  test("the pre-flight check covers count, side and byte length", () => {
+    expect(previewArtProblem([art("sheet", "town", 16, 16)])).toBeNull();
+    const many = Array.from({ length: PREVIEW_LIMITS.maxArtImages + 1 }, (_, i) => art("sprite", `s${i}`, 1, 1));
+    expect(previewArtProblem(many)).toMatch(/1025 images and the play-test takes at most 1024/);
+    expect(previewArtProblem([art("sheet", "wide", PREVIEW_LIMITS.maxArtSide + 16, 16)])).toMatch(/4112×16 .* at most 4096 px a side/);
+    expect(previewArtProblem([{ ...art("sprite", "odd", 16, 16), rgba: new Uint8Array(10) }])).toMatch(/not a 16×16 RGBA image/);
+  });
+
+  test("a refused art slice plays on with stand-ins; a lost game fails the play", async () => {
+    const refused = artStudio(() => [art("sheet", "town", 16, 16), art("sprite", "wiz", 16, 16)]);
+    refused.game.failNext = { type: "art", code: "too-large", message: "at most 1024 images are staged at once" };
+    await refused.play.openIn(SLOT);
+    expect(refused.game.calls).toEqual([`connect:${SLOT}`, "art:sheet:town:0", "load", "start:village:9:9:up", "state", "focus"]);
+    expect(refused.play.status).toBe("running");
+    expect(refused.play.art).toEqual({ kind: "stand-ins" });
+    expect(refused.play.artNote).toBe("Could not send the project art (at most 1024 images are staged at once); using stand-in art.");
+
+    const lost = artStudio(() => [art("sheet", "town", 16, 16)]);
+    lost.game.failNext = { type: "art", code: "disconnected", message: "The game was closed." };
+    await lost.play.openIn(SLOT);
+    expect(lost.play.status).toBe("error");
+    expect(lost.play.error).toBe("Could not send the project art: The game was closed.");
+    lost.game.calls = [];
+    await lost.play.play();
+    expect(lost.game.calls[0]).toBe(`connect:${SLOT}`);
+  });
+
+  test("a provider that fails plays with stand-ins and says why", async () => {
+    const { play, game } = artStudio(() => {
+      throw new Error("the art folder is gone");
+    });
+    await play.openIn(SLOT);
+    expect(game.calls).toContain("load");
+    expect(play.status).toBe("running");
+    expect(play.artNote).toBe("Could not read the project art (the art folder is gone); using stand-in art.");
+  });
+
+  test("Restart sends the same art again; Reload asks the provider afresh; Close forgets it", async () => {
+    let width = 16;
+    const { play, game, provided } = artStudio(() => [art("sheet", "town", width, 16)]);
+    await play.openIn(SLOT);
+    width = 32;
+    game.calls = [];
+    await play.restart();
+    expect(game.calls).toEqual(["art:sheet:town:0", "load:art", "start:village:9:9:up", "state", "focus"]);
+    expect(game.loadedArt[1]![0]!.width).toBe(16);
+    expect(provided.calls).toBe(1);
+    await play.play(play.target);
+    expect(provided.calls).toBe(2);
+    expect(game.loadedArt[2]![0]!.width).toBe(32);
+    play.close();
+    expect(play.art).toBeNull();
+    expect(play.artNote).toBeNull();
   });
 });

@@ -19,9 +19,9 @@ bun run rpgkit-edit <command> --file <project.json> [--json '<args>'] [--dry-run
 
 The commands are `open`, `list-maps`, `list-events`, `list-pages`,
 `list-commands`, `update-map`, `add-map`, `duplicate-map`, `delete-map`,
-`paint-tile`, `paint-rect`, `fill-region`, `paint-passage`, `paint-cells`,
-`paint-edges`, `add-event`, `update-event`, `delete-event`, `add-page`,
-`update-page`, `delete-page`, `insert-command`, `delete-command`,
+`move-map`, `paint-tile`, `paint-rect`, `fill-region`, `paint-passage`,
+`paint-cells`, `paint-edges`, `add-event`, `update-event`, `delete-event`,
+`add-page`, `update-page`, `delete-page`, `insert-command`, `delete-command`,
 `update-command`, `validate`, `save`, `propose`, `list-proposals`,
 `show-proposal`, and `withdraw-proposal`.
 
@@ -142,7 +142,7 @@ For inserts, `index` may equal the addressed list's length.
 ## Sharded `ProjectShell` documents
 
 The CLI and MCP tools accept the same commands for an inline document and a
-`ProjectShell`, except the four structural commands listed below. The shell
+`ProjectShell`, except the five structural commands listed below. The shell
 remains the catalog and content-identity record; map payloads stay in the
 files named by `mapIndex[].entry`.
 
@@ -151,10 +151,11 @@ files named by `mapIndex[].entry`.
   shard. Its raw SHA-256, id and dimensions must match the index entry.
 - `validate` loads every shard. Renaming a map id also loads every shard so
   literal transfers in other maps can follow the rename.
-- `add-map`, `duplicate-map`, `delete-map`, and `paint-edges` fail with
-  `UNSUPPORTED_FOR_SHELL` before any shard is read. Patch-v1 keeps every
-  `mapIndex` entry stable (so a reverse patch can reacquire the same files),
-  and sheet `dirEdges` are project-global shell data. `paint-cells` loads only
+- `add-map`, `duplicate-map`, `delete-map`, `move-map`, and `paint-edges`
+  fail with `UNSUPPORTED_FOR_SHELL` before any shard is read. Patch-v1 keeps
+  every `mapIndex` entry stable and in place (so a reverse patch can
+  reacquire the same files; map order is the `mapIndex` order), and sheet
+  `dirEdges` are project-global shell data. `paint-cells` loads only
   its target shard, like `paint-tile`.
 - An effective mutation canonicalizes only byte-changed map payloads, updates
   their index metadata/checksums, refreshes `mapSchemaHash` and
@@ -189,6 +190,48 @@ as one RFC 6901 token. Thus `maps/town.json` appears as
 patch; map ids may change. A sharded patch hash covers the shell plus exactly
 the shard payloads involved in that operation, while the shell manifest
 commits the checksums of untouched shards.
+
+### Sharded packs and their art
+
+Browser front-ends exchange a sharded project as one
+`rpgkit-edit/sharded-pack-v1` file: the shell text and every shard text as
+JSON strings (`editor/api/pack.ts`, format in `editor/api/pack-format.ts`).
+A pack may also carry the project's own art in an optional `assets` object,
+written after `shards`:
+
+```json
+{
+  "kind": "rpgkit-edit/sharded-pack-v1",
+  "shell": "<shell JSON text>",
+  "shards": { "maps/town.json": "<shard JSON text>" },
+  "assets": {
+    "art/sheets/town.png": { "type": "image/png", "data": "<base64>" },
+    "assets/npc/wiz.png": { "type": "image/png", "data": "<base64>" }
+  }
+}
+```
+
+- Each key is the relative path the project names the image by: a sprite's
+  `src` or `sheet`, an animation's `sheet`, or a conventional path such as
+  `art/sheets/<sheet id>.png` (see [`studio.md`](studio.md), "Project art").
+  Keys follow the shard-entry rule: portable POSIX-relative paths, no
+  absolute paths, `..`, `.`, empty segments, backslashes or control
+  characters.
+- Each value has exactly `type` (only `"image/png"`) and `data` (the file's
+  bytes in standard padded base64, with no whitespace and zero unused bits).
+  The data must decode to a PNG whose header passes the local-PNG limits.
+- Limits: at most 4,096 images, each at most 16 MiB and 8,192 px on a side
+  (16,777,216 pixels), and at most 32 MiB of images in total, decoded. The
+  whole pack text stays capped at 64 MiB. An image's size is checked from
+  its base64 length before it is decoded.
+- A malformed key, value, type, base64 text or PNG is refused with
+  `INVALID_PACK`; a pack over a count or size limit with `TOO_LARGE`.
+
+Assets are opaque to editing: no operation changes them, undo and redo do
+not touch them, and a re-serialized pack writes them back unchanged in the
+same order. `assets` is written only when it has at least one image, so a
+pack without art keeps exactly the bytes it had before assets existed, and
+readers that predate assets (the browser player) ignore the field.
 
 ## Read commands
 
@@ -334,6 +377,21 @@ $ bun run rpgkit-edit delete-map --file examples/sunstone/data/sunstone.json --d
 $ bun run rpgkit-edit delete-map --file examples/sunstone/data/sunstone.json --dry-run \
     --json '{"map":"village"}'
 {"ok":false,"command":"delete-map","error":{"code":"MAP_DELETE_REFUSED","message":"map village cannot be deleted: cannot delete the start map","path":"$.map",…}}
+```
+
+### `move-map`
+
+Args: `map` and `index` (required). Moves the map so it ends up at the
+zero-based position `index` of `maps` (`0` … map count − 1); every other map
+keeps its relative order. Ids do not change, so the start map and transfers
+are unaffected. Moving a map to its current position succeeds with
+`changed:false`. An out-of-range `index` is `INVALID_ARGUMENT`. `result` is
+`{ map, from, to }`.
+
+```sh
+$ bun run rpgkit-edit move-map --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"cave","index":0}'
+{"ok":true,"changed":true,"addresses":["map:cave"],"patch":{…},"result":{"map":"cave","from":2,"to":0}}
 ```
 
 ### `paint-tile`
@@ -735,7 +793,7 @@ editor, not in these four commands.
 - `createdAt` is optional. When present it is an ISO UTC timestamp; when
   omitted the command supplies the current time.
 - `hunks` and every hunk's `operations` must be non-empty. Operations may use
-  `update-map`, `paint-tile`, `paint-rect`, `fill-region`, `paint-passage`,
+  `update-map`, `move-map`, `paint-tile`, `paint-rect`, `fill-region`, `paint-passage`,
   `add-event`, `update-event`, `delete-event`, `add-page`, `update-page`,
   `delete-page`, `insert-command`, `delete-command`, or `update-command`.
   Read commands, `save`, and proposal commands cannot be nested in a hunk.
@@ -930,6 +988,7 @@ that root after symlink resolution. Mutating tools also take `dryRun`.
 | `rpgkit_map_add` | `add-map` | `file` | `map`, `name`, `width`, `height`, `sheets`, `fill`, `after`, `dryRun` |
 | `rpgkit_map_duplicate` | `duplicate-map` | `file`, `map` | `dryRun` |
 | `rpgkit_map_delete` | `delete-map` | `file`, `map` | `dryRun` |
+| `rpgkit_map_move` | `move-map` | `file`, `map`, `index` | `dryRun` |
 | `rpgkit_tile_paint` | `paint-tile` | `file`, `map`, `x`, `y`, `tile` | `layer`, `dryRun` |
 | `rpgkit_tile_rect` | `paint-rect` | `file`, `map`, `x`, `y`, `width`, `height`, `tile` | `layer`, `dryRun` |
 | `rpgkit_tile_fill` | `fill-region` | `file`, `map`, `x`, `y`, `tile` | `layer`, `dryRun` |

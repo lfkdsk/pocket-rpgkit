@@ -83,6 +83,7 @@ describe("rpgkit-edit MCP protocol", () => {
     { name: "rpgkit_map_add", args: (file) => ({ file, dryRun: true, map: "market", width: 4, height: 4, after: "village" }) },
     { name: "rpgkit_map_duplicate", args: (file) => ({ file, dryRun: true, map: "forest" }) },
     { name: "rpgkit_map_delete", args: (file) => ({ file, dryRun: true, map: "cave" }) },
+    { name: "rpgkit_map_move", args: (file) => ({ file, dryRun: true, map: "cave", index: 0 }) },
     { name: "rpgkit_event_add", args: (file) => ({ file, dryRun: true, map: "village", event: { id: "mcp-event", x: 9, y: 8, pages: [{ trigger: "action", commands: [] }] } }) },
     { name: "rpgkit_event_update", args: (file) => ({ file, dryRun: true, map: "village", event: "elder", changes: { name: "MCP Elder" } }) },
     { name: "rpgkit_event_delete", args: (file) => ({ file, dryRun: true, map: "village", event: "elder" }) },

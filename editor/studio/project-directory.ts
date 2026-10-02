@@ -10,17 +10,32 @@
 // first and rolls back on a failed replacement (see saveProjectDirectory).
 // The directory itself is an interface, so the browser host (File System
 // Access handles), a desktop host (node:fs) and tests (a Map) share this code.
+//
+// When the host can read binary files, opening also embeds the project's own
+// art (the PNGs project-art.ts says it references) in the pack's `assets`, so
+// Studio can draw it and a downloaded pack carries it. Art is only ever read:
+// saving writes the shell and changed shards, never images.
 
-import { assertPackEntry, parseShardedPack, serializeShardedPack } from "../api/pack.ts";
+import { assertPackEntry, parseShardedPack, serializeShardedPack, type PackAsset } from "../api/pack.ts";
+import { encodeBase64 } from "../api/pack-format.ts";
 import {
+  MAX_PACK_ASSET_BYTES,
+  MAX_PACK_ASSETS,
+  MAX_PACK_BYTES,
+  MAX_PNG_BYTES,
+  PNG_HEADER_BYTES,
   packFileProblem,
+  pngProblem,
   projectFileProblem,
+  readPngSize,
   shardCountProblem,
   shardProblem,
   utf8Bytes,
 } from "../api/limits.ts";
 import { loadValidatedProjectShell, sourceDeclaresProjectShell } from "../api/sharded.ts";
+import type { AnimationDef, Sheet, SpriteDef } from "../../src/engine/types.ts";
 import type { OpenedProject, SaveOutcome, SaveTarget } from "./host.ts";
+import { projectArtRefs } from "./project-art.ts";
 
 /** POSIX-relative paths inside one project directory. */
 export interface ProjectDirectory {
@@ -28,8 +43,12 @@ export interface ProjectDirectory {
   /** File names (not directories) directly inside the root. */
   listRoot(): Promise<string[]>;
   read(path: string): Promise<string>;
+  /** A file's bytes, for the project's art. Hosts that can read binary
+   * files provide it; without it a folder opens without its art. */
+  readBytes?(path: string): Promise<Uint8Array>;
   /** A file's size in bytes, read before the file itself so oversized
-   * input is refused without loading it. */
+   * input is refused without loading it. Rejects when there is no such
+   * file. */
   size(path: string): Promise<number>;
   /** Replace `path`, or create it if it does not exist yet (staging writes
    * new temporary files next to their targets). */
@@ -57,10 +76,15 @@ export interface DirectoryBaseline {
 }
 
 export interface OpenedDirectory {
-  /** A sharded pack holding the shell and every shard, for EditSession. */
+  /** A sharded pack holding the shell, every shard and the art found, for
+   * EditSession. */
   packText: string;
   baseline: DirectoryBaseline;
   shardCount: number;
+  /** Paths of the art embedded in the pack, as the project names them. */
+  art: string[];
+  /** What happened to the project's art (readProjectArt), for the user. */
+  notes: string[];
 }
 
 /** The shell names Studio looks for, in order. */
@@ -137,14 +161,137 @@ export async function openProjectDirectory(dir: ProjectDirectory): Promise<Opene
       throw new Error(`${dir.name}: cannot read shard ${path} (${message(error)})`);
     }
   }
-  const packText = serializeShardedPack(shellText, shell.mapIndex, shards);
-  const packed = packFileProblem(utf8Bytes(packText), `${what} as one sharded pack`);
+  let packText = serializeShardedPack(shellText, shell.mapIndex, shards);
+  const packBytes = utf8Bytes(packText);
+  const packed = packFileProblem(packBytes, `${what} as one sharded pack`);
   if (packed !== null) throw new Error(`${dir.name}: ${packed}`);
+  const art = await readProjectArt(dir, shellPath, shell, packBytes);
+  let notes = art.notes;
+  if (art.assets.size > 0) {
+    const withArt = serializeShardedPack(shellText, shell.mapIndex, shards, art.assets);
+    // readProjectArt keeps a margin, so this only guards its arithmetic.
+    if (packFileProblem(utf8Bytes(withArt, MAX_PACK_BYTES)) === null) packText = withArt;
+    else {
+      art.assets.clear();
+      notes = ["The folder's art did not fit in the pack and was not loaded."];
+    }
+  }
   return {
     packText,
     baseline: { shellPath, shellText, shards },
     shardCount: shards.size,
+    art: [...art.assets.keys()],
+    notes,
   };
+}
+
+/** Pack bytes one asset adds besides its base64 data: its key and the
+ * two-space JSON around it (about 60), rounded up, plus the `assets` object
+ * itself once. */
+const ASSET_OVERHEAD = 64;
+const ASSETS_OVERHEAD = 32;
+/** Names a note lists before "and N more". */
+const NOTE_NAMES = 5;
+
+function listNames(names: readonly string[]): string {
+  const shown = names.slice(0, NOTE_NAMES).join(", ");
+  return names.length > NOTE_NAMES ? `${shown} and ${names.length - NOTE_NAMES} more` : shown;
+}
+
+/** Find and read the art a project references (projectArtRefs) in `dir`.
+ * Each candidate path is looked up relative to the shell's folder, then,
+ * when the shell sits in a subfolder, relative to the root; the first that
+ * exists is the ref's file. Assets are keyed by the candidate as the project
+ * names it, so resolveProjectArt over the pack's asset keys finds them. A
+ * file's size is checked before it is read and its PNG header after.
+ *
+ * Nothing here fails the open: art that is missing, unreadable, too large,
+ * not a PNG, or that would push the pack past its asset or byte limits
+ * (`packBytes` is the pack's size without art) is left out and counted in
+ * the notes. When no art is found at all, or without `dir.readBytes` (then
+ * no art is read), there are no notes. */
+export async function readProjectArt(
+  dir: ProjectDirectory,
+  shellPath: string,
+  globals: { sheets?: readonly Sheet[]; sprites?: Readonly<Record<string, SpriteDef>>; animations?: readonly AnimationDef[] },
+  packBytes = 0,
+): Promise<{ assets: Map<string, PackAsset>; notes: string[] }> {
+  const assets = new Map<string, PackAsset>();
+  const refs = projectArtRefs(globals);
+  if (!dir.readBytes || refs.length === 0) return { assets, notes: [] };
+  const base = shellPath.slice(0, shellPath.lastIndexOf("/") + 1);
+  const sizes = new Map<string, number | null>();
+  const probe = async (path: string): Promise<number | null> => {
+    if (!sizes.has(path)) sizes.set(path, await dir.size(path).then((bytes) => (Number.isFinite(bytes) ? bytes : null), () => null));
+    return sizes.get(path)!;
+  };
+  const missing = new Set<string>();
+  const skipped: string[] = [];
+  const handled = new Set<string>();
+  let total = 0;
+  let budget = packBytes + ASSETS_OVERHEAD;
+  for (const ref of refs) {
+    let found: { key: string; path: string; bytes: number } | undefined;
+    for (const candidate of ref.candidates) {
+      for (const path of base === "" ? [candidate] : [`${base}${candidate}`, candidate]) {
+        const bytes = await probe(path);
+        if (bytes !== null) {
+          found = { key: candidate, path, bytes };
+          break;
+        }
+      }
+      if (found) break;
+    }
+    if (!found) {
+      missing.add(ref.candidates[0] ?? `${ref.kind} ${ref.id}`);
+      continue;
+    }
+    const { key, path } = found;
+    if (handled.has(key)) continue;
+    handled.add(key);
+    const fits = (bytes: number) =>
+      assets.size < MAX_PACK_ASSETS &&
+      total + bytes <= MAX_PACK_ASSET_BYTES &&
+      budget + utf8Bytes(JSON.stringify(key)) + Math.ceil(bytes / 3) * 4 + ASSET_OVERHEAD <= MAX_PACK_BYTES;
+    if (found.bytes > MAX_PNG_BYTES) {
+      skipped.push(`${key} (too large)`);
+      continue;
+    }
+    if (!fits(found.bytes)) {
+      skipped.push(`${key} (pack full)`);
+      continue;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await dir.readBytes(path);
+    } catch {
+      skipped.push(`${key} (unreadable)`);
+      continue;
+    }
+    const header = bytes.subarray(0, PNG_HEADER_BYTES);
+    if (pngProblem(key, bytes.length, header) !== null) {
+      const size = readPngSize(header);
+      skipped.push(`${key} (${size === null || size.width === 0 || size.height === 0 ? "not a PNG" : "too large"})`);
+      continue;
+    }
+    if (!fits(bytes.length)) {
+      skipped.push(`${key} (pack full)`);
+      continue;
+    }
+    assets.set(key, { type: "image/png", data: encodeBase64(bytes) });
+    total += bytes.length;
+    budget += utf8Bytes(JSON.stringify(key)) + Math.ceil(bytes.length / 3) * 4 + ASSET_OVERHEAD;
+  }
+  // A folder without any of its art (say, one drawn with Studio's bundled
+  // art) is not worth a notice listing everything it lacks.
+  const notes: string[] = [];
+  if (assets.size === 0 && skipped.length === 0) return { assets, notes };
+  if (assets.size > 0) notes.push(`Loaded ${assets.size} art file${assets.size === 1 ? "" : "s"} from the folder.`);
+  if (missing.size > 0) {
+    notes.push(`${missing.size} referenced art file${missing.size === 1 ? " is" : "s are"} missing: ${listNames([...missing])}.`);
+  }
+  if (skipped.length > 0) notes.push(`Skipped ${skipped.length} art file${skipped.length === 1 ? "" : "s"}: ${listNames(skipped)}.`);
+  return { assets, notes };
 }
 
 /** Marks the temporary siblings a save stages: `<target>.rpgkit-save-<id>.tmp`. */
@@ -253,6 +400,8 @@ export function withDirectoryLock<T>(dir: ProjectDirectory, task: () => Promise<
 }
 
 async function saveLocked(dir: ProjectDirectory, baseline: DirectoryBaseline, packText: string): Promise<SavedDirectory> {
+  // The pack's assets are the folder's own art, read at open; a save never
+  // writes them back.
   const pack = parseShardedPack(packText);
   const before = new Set(baseline.shards.keys());
   const after = new Set(pack.shards.keys());
@@ -389,6 +538,7 @@ export async function openDirectoryProject(dir: ProjectDirectory): Promise<Opene
       label: dir.name,
       fileName: `${dir.name.replace(/\/$/, "")}-pack.json`,
       target: { kind: "directory", name: dir.name, ref },
+      ...(opened.notes.length > 0 ? { notes: opened.notes } : {}),
     };
   } catch (error) {
     return { error: `Could not open ${dir.name}: ${message(error)}` };

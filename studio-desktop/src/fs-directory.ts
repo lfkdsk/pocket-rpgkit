@@ -78,6 +78,11 @@ export class FsDirectory implements ProjectDirectory {
     return readFile(this.resolve(path), "utf8");
   }
 
+  async readBytes(path: string): Promise<Uint8Array> {
+    const data = await readFile(this.resolve(path));
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+
   async size(path: string): Promise<number> {
     return (await stat(this.resolve(path))).size;
   }

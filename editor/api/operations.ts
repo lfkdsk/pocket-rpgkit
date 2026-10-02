@@ -105,6 +105,7 @@ const WRITE_COMMANDS: ReadonlySet<EditCommandName> = new Set([
   "add-map",
   "duplicate-map",
   "delete-map",
+  "move-map",
   "paint-tile",
   "paint-rect",
   "fill-region",
@@ -133,6 +134,7 @@ const ARGUMENT_KEYS: Record<EditCommandName, readonly string[]> = {
   "add-map": ["map", "name", "width", "height", "sheets", "fill", "after"],
   "duplicate-map": ["map"],
   "delete-map": ["map"],
+  "move-map": ["map", "index"],
   "paint-tile": ["map", "layer", "x", "y", "tile"],
   "paint-rect": ["map", "layer", "x", "y", "width", "height", "tile"],
   "fill-region": ["map", "layer", "x", "y", "tile"],
@@ -594,7 +596,10 @@ const ABSENT: PatchValue = Object.freeze({ exists: false });
 
 /** Deterministic, non-overlapping structural diff. Same-length arrays are
  * compared per element (tile edits stay small); a length change replaces the
- * array as one reversible unit (event/page/command insertion stays atomic). */
+ * array as one reversible unit (event/page/command insertion stays atomic).
+ * When a same-length array of id-keyed objects is only reordered (move-map),
+ * each slot whose id changed is replaced whole: a field-level diff between
+ * two different objects would lose their property order on replay. */
 export function diffJson(before: unknown, after: unknown, path = ""): EditChange[] {
   const changes: EditChange[] = [];
   diffInto(before, after, path, changes);
@@ -628,13 +633,19 @@ function diffInto(before: unknown, after: unknown, path: string, changes: EditCh
         changed = known.changed as number[];
         for (const index of changed) diffInto(before[index], after[index], `${path}/${index}`, changes, trace);
       } else {
+        const reordered = isIdPermutation(before, after);
         changed = [];
         for (let index = 0; index < before.length; index++) {
           const value = before[index];
           const next = after[index];
           if (value === next) continue;
           changed.push(index);
-          diffInto(value, next, `${path}/${index}`, changes, trace);
+          const child = `${path}/${index}`;
+          if (reordered && (value as { id: string }).id !== (next as { id: string }).id) {
+            changes.push({ path: child, before: present(value), after: present(next) });
+          } else {
+            diffInto(value, next, child, changes, trace);
+          }
         }
       }
       if (trace) {
@@ -677,6 +688,24 @@ function groundCellsOnly(map: MapDef, base: MapDef, trace: DiffTrace): boolean {
     if (tile !== null && typeof tile !== "string") return false;
   }
   return true;
+}
+
+/** Same-length arrays of objects with unique string ids, holding the same
+ * ids in a different order. */
+function isIdPermutation(before: unknown[], after: unknown[]): boolean {
+  const ids = (items: unknown[]): string[] | null => {
+    const out: string[] = [];
+    for (const item of items) {
+      if (!isRecord(item) || typeof item.id !== "string") return null;
+      out.push(item.id);
+    }
+    return new Set(out).size === out.length ? out : null;
+  };
+  const a = ids(before);
+  const b = ids(after);
+  if (!a || !b || a.every((id, index) => id === b[index])) return false;
+  const set = new Set(a);
+  return b.every((id) => set.has(id));
 }
 
 export function semanticHash(value: unknown): string {
@@ -1275,6 +1304,21 @@ function mutate(command: EditCommandName, project: Project, args: Record<string,
       project: exportProject(result.state),
       addresses: [mapAddress(mapId)],
       result: { deleted: cloneJson(map), references },
+    };
+  }
+
+  if (command === "move-map") {
+    const mapId = stringArg(args, "map");
+    const { map, index: from } = findMap(project, mapId);
+    const to = integerArg(args, "index", { min: 0, max: project.maps.length - 1 })!;
+    // Ids are unchanged, so the start map and transfers need no rewrite.
+    const edited = cloneJson(project);
+    edited.maps.splice(from, 1);
+    edited.maps.splice(to, 0, cloneJson(map));
+    return {
+      project: edited,
+      addresses: [mapAddress(mapId)],
+      result: { map: mapId, from, to },
     };
   }
 

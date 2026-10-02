@@ -252,6 +252,11 @@ Meadow. It does not import new assets.
 }
 ```
 
+A pack may also carry an optional `assets` record of PNG images (project art
+that [Studio](../docs/studio.md#art) draws). This editor does not draw them,
+but keeps them: a pack saved or downloaded here still carries its assets.
+The format and limits are in [the edit API docs](../docs/edit-api.md).
+
 A pack must contain exactly the safe relative entries its shell indexes.
 The browser sends the catalog first and answers individual map reads lazily.
 SAVE updates only supplied dirty shards in the in-memory pack and stores the

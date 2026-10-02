@@ -109,7 +109,7 @@ the first folder, its notice names that folder, and the project now open
 is not marked as saved. Download still produces a complete pack.
 
 Sharded packs keep their map catalog fixed: Studio disables adding,
-duplicating, deleting, renaming and resizing maps, and editing one-way edges
+duplicating, deleting, renaming, resizing and reordering maps, and editing one-way edges
 (they live on project-wide tile sheets), each with a note saying why. Use
 the inline project or `rpgkit-edit` for those. Schema validation of a whole
 pack reads every shard, so it runs when you press **Validate all shards**
@@ -120,7 +120,10 @@ in the problems list.
 - **Toolbar**: file actions, undo/redo, tools, layer switch, overlays, zoom,
   **Art…**, theme, shortcuts. Every button has a tooltip with its shortcut.
 - **Maps** (left): every map, with a filter box. The list is virtualized, so
-  packs with hundreds of maps scroll smoothly.
+  packs with hundreds of maps scroll smoothly. Drag a map up or down to
+  change the map order (Alt+↑/↓ moves the open map one place); a line shows
+  where it will land, and the drop is one `move-map` step. A sharded pack's
+  map order is its fixed map index, so there the rows only open maps.
 - **Tiles** (left): the sheets the current map declares, with a recently-used
   strip and a size control. With the passage or edges layer active this
   panel shows those brushes instead.
@@ -131,7 +134,13 @@ in the problems list.
   conditions and command tree. **History** lists every step.
 - **Status bar**: map, hovered cell, selection, protocol time of the last
   edit, save state, and the problem count. Click the count to open the
-  problems list; click a problem to jump to its map, event and page.
+  problems list; click a problem to jump to its map, event and page: the
+  canvas glides to the event and pulses around it, and the inspector
+  flashes the event.
+
+Empty panels say what is missing and offer the next step: an event list
+with no events offers the event tool, an empty page offers **Add command**,
+a map filter with no match offers **Clear filter**.
 
 Light and dark themes follow the system setting until you pick one with the
 theme button. Below 900 px the panels stack under the canvas.
@@ -140,7 +149,7 @@ theme button. Below 900 px the panels stack under the canvas.
 
 | Tool | Key | What it does |
 | --- | --- | --- |
-| Select | V | Select an event (drag to move it) or a cell |
+| Select | V | Select an event or a cell. Drag an event to move it: its old place fades, the event is drawn at the drop cell with its coordinates, and the frame turns red when it would share a cell with another event; Esc cancels. The drop is one `update-event` step |
 | Brush | B | Paint a free-form stroke; right-drag erases |
 | Rectangle | R | Paint a rectangle |
 | Fill | F | Flood-fill a region of equal tiles (ground and upper) |
@@ -170,7 +179,15 @@ with its own fields; any schema condition kind can be added.
 
 The command tree shows the page's commands indented by branch, with a colour
 bar per kind (flow, message, state, movement, presentation, audio) and
-collapsible branches. Select a command to edit its fields in a form; the
+collapsible branches. Drag a command to move it: the upper half of a row
+drops before it, the lower half after it (or into its first branch when
+that is open), a branch header at the top of that branch, and the space
+under the last row at the end of the page. A line shows the drop place;
+Esc cancels. A command cannot be dropped into its own branches. The move is
+one step (`delete-command` then `insert-command` in one transaction), and
+the moved command stays selected. Alt+↑/↓ moves the selected command by one.
+
+![Dragging the elder's first line into the Farewell branch](screenshots/studio/studio-drag-command.png) Select a command to edit its fields in a form; the
 field rules are the same ones the PocketJS editor and `update-command` use
 ([`editor/engine/event-fields.ts`](../editor/engine/event-fields.ts)), so
 every command and condition in the current schema is editable. **Add
@@ -186,6 +203,31 @@ and lets you choose a local PNG for it. The file is used only in this page:
 it is not uploaded, not saved, and does not change the project. Ids without
 art draw as hatched, numbered placeholders in a colour derived from the id,
 so tiles stay distinguishable.
+
+### Project art
+
+A project can keep its own art next to it. When Studio opens a project
+folder it looks, relative to the shell file (then the folder root), for the
+PNGs the project references: tile sheet `S` at `art/sheets/S.png`, then
+`sheets/S.png`; an image sprite at its `src`, then `art/sprites/<id>.png`; a
+walker sprite at its `sheet`, then `art/sprites/<id>.png`; an animation at
+its `sheet`. Paths that are absolute, contain `..` or backslashes, or are
+not `.png` files are ignored, as are legacy walker sprites with one atlas
+per facing. The art found is carried in the pack Studio edits (its optional
+`assets`, see [`edit-api.md`](edit-api.md), "Sharded packs and their art"),
+so **Download** of a folder yields a self-contained pack with its art; saving
+the folder writes only the shell and changed map files, never art. Art that
+is missing, not a PNG or over the limits below is skipped; when the folder
+has any of its art, the open notice says how many files were loaded and
+which were missing or skipped.
+Studio draws the project's own art when it opens a folder or a pack that
+carries art. It comes before bundled example art with the same id; ids the
+project has no art for keep the bundled art or the placeholder. **Art…**
+lists each id's source ("project" with its path). A single project JSON
+file brings no art. The play-test gets the same images (see
+[Play-test](#play-test)).
+
+![A project folder with its own (autumn) town sheet and wizard sprite](screenshots/studio/studio-project-art.png)
 
 ## Problems
 
@@ -213,9 +255,12 @@ one undo step each.
 | = and -, 0 | Zoom in and out, fit |
 | Space+drag, middle-drag, Shift+wheel | Pan |
 | Delete, Ctrl/⌘+D | Delete or duplicate the selected event |
-| Esc | Clear the selection; in the play-test, give the keyboard back to the editor |
+| Drag a map, Alt+↑/↓ in the map list | Reorder maps |
+| Drag a command, Alt+↑/↓ in the command tree | Move a command |
+| Drag an event (select or event tool) | Move an event |
+| Esc | Cancel a drag, else clear the selection; in the play-test, give the keyboard back to the editor |
 | Ctrl/⌘+Enter | Play-test (from the selected cell unless the panel's Start says otherwise) |
-| ? | Show the shortcuts |
+| ? | Show the shortcuts panel (grouped by File, Edit, Tools and layers, View, Maps and commands, Play-test) |
 
 ## Play-test
 
@@ -240,7 +285,8 @@ have to be saved first; the game gets the current export bytes.
 Below the game, a readout refreshes four times a second from the protocol's
 `state`: map, position (and whether the player is moving), facing, frame
 number, event pages running, the event in the main slot, gold, and the open
-message box.
+message box. Its **Game art** line says what the game draws: "project (12
+images)" or "stand-ins".
 
 **Keyboard.** Click the game to give it the keyboard (it also takes it when
 it starts): arrow keys walk, Enter, Z or A confirms, B or Backspace cancels.
@@ -249,10 +295,19 @@ page Esc also cancels; in Studio it is reserved for leaving the game.)
 
 ![The play-test panel, dark theme](screenshots/studio/studio-playtest-dark.png)
 
-What the game shows is the editor's stand-in art: the preview page bundles
-the PocketJS editor's playtest palette, so sheets it does not bake draw as
-blanks, and unregistered extensions, battles and backdrops show the same
-visible stand-ins as the PocketJS editor's playtest.
+**Art.** The game draws the project's own art where Studio has it: the
+tile sheets and sprites you picked from your computer and the images in a
+project folder are sent to the game with the document (the protocol's
+[`art` messages](protocols.md#project-art)). Sheets are cut into 16 px
+cells; image sprites are drawn as they are; walker sheets are cut into the
+same twelve frames the asset baker makes. Everything else keeps the stand-in
+art the preview page bundles (the PocketJS editor's playtest palette): the
+bundled examples' art, sheets with no image (drawn blank), and images the
+game cannot use, such as a sheet that is not a whole number of 16 px cells
+or a sprite over 512 px (hover the Game art line to see which). Unregistered
+extensions, battles and backdrops show the same visible stand-ins as the
+PocketJS editor's playtest. Art only changes what is drawn: the game plays
+the same with and without it.
 
 Limits:
 
@@ -262,6 +317,10 @@ Limits:
 - Sharded packs and folders are put together into one inline document for
   the play-test (the protocol accepts only inline documents), so the same
   4 MiB limit applies to the whole project.
+- Project art over the protocol's art limits (1,024 images, 32 MiB of
+  pixels, 4,096 px a side) is not sent: the game plays with stand-in art and
+  the panel says why. A preview page from before project art plays with
+  stand-ins.
 - Starting at a cell uses the host's checked warp: the cell must be inside
   the map, standable and free of events; otherwise the panel shows the
   host's reason.
@@ -273,7 +332,8 @@ Limits:
 ## Limits
 
 - Play-test: see [Play-test](#play-test).
-- Walker sprites without a chosen PNG show a placeholder badge.
+- Sprites without art (no project file, no bundled art, no chosen PNG)
+  show a placeholder badge.
 - Sharded packs: see [Sharded packs](#sharded-packs).
 - Browser storage holds one saved document per site origin; download a copy
   for backups.
@@ -303,6 +363,9 @@ them.
 | Cells on one map | 256 × 256 | the project schema's width/height maximum |
 | Local PNG file | 16 MiB | file size before reading |
 | Local PNG dimensions | 8,192 px per side, 16,777,216 pixels | from the 24-byte PNG header, before decoding |
+| Art images a pack carries (its `assets`) | 4,096 | pack reader; folder open skips the rest |
+| One art image in a pack or folder | 16 MiB, and the local PNG dimensions | pack reader from the base64 length before decoding; a folder's file size before reading |
+| All art images in a pack, decoded | 32 MiB (the pack itself stays within 64 MiB) | pack reader; folder open skips art past either limit |
 
 Sizes are UTF-8 bytes. A folder's shell is the only file read before the
 limits are checked, and it too is refused unread over 32 MiB. Studio edits a
@@ -360,7 +423,13 @@ edits), `tests/studio-host.test.ts` (the host boundary; open, save,
 restore, export and folder saves on the in-memory host),
 `tests/studio-directory-save.test.ts` (folder saves with injected write
 failures leave the old version), `tests/studio-import-limits.test.ts`,
-`tests/studio-inspector-model.test.ts`, `tests/studio-build.test.ts`,
-`tests/studio-playtest.test.ts` (what the play-test sends, on the in-memory
-host) and the browser run `bun tools/studio-verify.ts`, which also regenerates the
-screenshots in `docs/screenshots/studio/`.
+`tests/studio-inspector-model.test.ts` (including where a dragged command
+lands), `tests/edit-move-map.test.ts`, `tests/studio-pack-assets.test.ts`
+(project art conventions, packs with assets, art read from folders),
+`tests/studio-build.test.ts`,
+`tests/studio-playtest.test.ts` (what the play-test sends, art included, on
+the in-memory host), `tests/preview-art-sim.test.ts` (the preview page draws
+supplied art and plays the same without it) and the browser run
+`bun tools/studio-verify.ts`, which drags maps, commands and events, opens a
+folder with its own art and plays it, and regenerates the screenshots in
+`docs/screenshots/studio/`.

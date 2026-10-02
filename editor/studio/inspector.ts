@@ -39,7 +39,7 @@ import {
 } from "../engine/event-fields.ts";
 import type { EventEditorResources } from "../engine/event-resources.ts";
 import type { Selection, StudioApp } from "./app.ts";
-import { h, icon, replace, type Child } from "./dom.ts";
+import { emptyState, h, icon, replace, type Child } from "./dom.ts";
 import {
   addPageOp,
   cellInfo,
@@ -47,6 +47,7 @@ import {
   commandBranchTargets,
   commandCategory,
   commandCopyOp,
+  commandDropOps,
   commandMoveOps,
   commandTreeItems,
   conditionSource,
@@ -138,6 +139,31 @@ function schedule(callback: () => void): void {
   setTimeout(callback, 0);
 }
 
+/** Pixels a press on a command row moves before it becomes a drag. */
+const DRAG_THRESHOLD = 4;
+const DROP_CLASSES = ["drop-before", "drop-after"] as const;
+
+/** The command tree as last rendered, for drag and drop. */
+interface TreeContext {
+  ref: PageRef;
+  commands: readonly Command[];
+  items: TreeItem<FlatCommandRow>[];
+}
+
+/** A press on a command row, and once it moves, the drop slot under the
+ * pointer (an insertion address in the tree before the move). */
+interface CommandDrag {
+  tree: TreeContext;
+  from: CommandAddress;
+  key: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dragging: boolean;
+  slot: CommandAddress | null;
+  marked: HTMLElement | null;
+}
+
 class Inspector {
   private pending = new Set<string>();
   private scheduled = false;
@@ -156,6 +182,10 @@ class Inspector {
   private sessions = 0;
   /** Scroll the selected command row into view after the next render. */
   private revealSelected = false;
+  private treeContext: TreeContext | null = null;
+  private commandDrag: CommandDrag | null = null;
+  /** Swallow the click that ends a drag. */
+  private suppressRowClick = false;
 
   constructor(private root: HTMLElement, private app: StudioApp) {
     root.classList.add("ins-root");
@@ -191,7 +221,7 @@ class Inspector {
       const editing = active instanceof HTMLElement && this.root.contains(active) &&
         (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement);
       if (editing && !structural) return;
-      if (this.currentSignature() === this.signature && !reasons.has("load")) return;
+      if (this.currentSignature() === this.signature && !reasons.has("load") && !this.app.pulse) return;
     }
     this.render();
   }
@@ -224,6 +254,8 @@ class Inspector {
     const treeScroll = this.root.querySelector<HTMLElement>(".ins-tree")?.scrollTop ?? 0;
 
     this.signature = this.currentSignature();
+    // The rows a highlight came from are about to be replaced.
+    this.app.highlight = null;
     replace(this.root, this.content());
 
     this.root.scrollTop = scrollTop;
@@ -242,6 +274,10 @@ class Inspector {
           }
         }
       }
+    }
+    if (this.app.pulse && this.app.selection.kind === "event") {
+      this.app.pulse = false;
+      this.root.querySelector(".ins-section")?.classList.add("flash");
     }
     if (this.revealSelected) {
       this.revealSelected = false;
@@ -493,7 +529,7 @@ class Inspector {
       selection.kind === "cell" ? this.cellView(map, selection) : null,
       this.section(`Events (${events.length})`, null,
         events.length === 0
-          ? h("p", { class: "ins-muted" }, "No events on this map. Use the event tool to place one.")
+          ? emptyState("event", "No events on this map", "Pick the event tool (N) and click a cell to place one.", { label: "Event tool", id: "empty-event-tool", onClick: () => this.app.setTool("event") })
           : h("ul", { class: "ins-event-list" }, events.map((event) =>
             h("li", null, h("button", {
               type: "button",
@@ -501,6 +537,8 @@ class Inspector {
               "data-action": "select-event",
               "data-key": event.id,
               onclick: () => this.app.select({ kind: "event", eventId: event.id, page: 0 }),
+              onmouseenter: () => { this.app.highlight = event.id; this.app.emit("view"); },
+              onmouseleave: () => { this.app.highlight = null; this.app.emit("view"); },
             }, h("span", { class: "ins-mono" }, event.id), event.name ? h("span", { class: "ins-muted" }, ` ${event.name}`) : null,
             h("span", { class: "ins-muted ins-right" }, `(${event.x}, ${event.y})`))))),
       ),
@@ -776,6 +814,7 @@ class Inspector {
     const items = commandTreeItems(page.commands, rows, (key) => collapsedCommands.has(this.collapseKey(ref, key)));
     const selectedKey = selected ? commandAddressKey(selected) : "";
     const selectedList = selected ? getCommandList(page.commands, selected.path) : null;
+    this.treeContext = { ref, commands: page.commands, items };
     const toolbar = [
       this.button("add-command", "Add command", () => {
         this.pickerOpen = !this.pickerOpen;
@@ -797,6 +836,7 @@ class Inspector {
       tabindex: "0",
       "aria-label": "Commands",
       "data-role": "command-tree",
+      onpointerdown: (event: PointerEvent) => this.pressCommand(event),
       onkeydown: (event: KeyboardEvent) => {
         const target = event.target as HTMLElement;
         if (target.closest("input, select, textarea, button")) return;
@@ -812,12 +852,23 @@ class Inspector {
           const next = adjacentCommand(items, selected, event.key === "ArrowUp" ? -1 : 1);
           this.revealSelected = true;
           if (next) this.selectCommand(ref, next);
+        } else if (event.key === "Escape" && this.commandDrag?.dragging) {
+          this.endCommandDrag(false);
         } else if (event.key === "Escape" && selected) {
           this.selectCommand(ref, undefined);
         }
       },
     }, items.length === 0
-      ? h("div", { class: "ins-muted ins-tree-empty" }, "No commands on this page yet. Use “Add command”.")
+      ? emptyState("plus", "No commands on this page yet", "Commands run in order when the page triggers. Drag them to reorder.", {
+        label: "Add command",
+        id: "empty-add-command",
+        onClick: () => {
+          this.pickerOpen = true;
+          this.pickerQuery = "";
+          this.render();
+          this.root.querySelector<HTMLInputElement>("[data-field='command-picker']")?.focus();
+        },
+      })
       : items.map((item) => this.treeRow(item, ref, selectedKey)));
 
     const picker = this.pickerOpen ? this.picker(page, ref, selected) : null;
@@ -831,7 +882,7 @@ class Inspector {
   private treeRow(item: TreeItem<FlatCommandRow>, ref: PageRef, selectedKey: string): HTMLElement {
     const indent = `--depth:${item.depth}`;
     if (item.kind === "branch") {
-      return h("div", { class: "ins-branch", style: indent, role: "presentation" },
+      return h("div", { class: "ins-branch", style: indent, role: "presentation", "data-key": item.key },
         h("span", null, item.label),
         item.empty ? h("span", { class: "ins-muted" }, " — empty") : null,
       );
@@ -870,8 +921,12 @@ class Inspector {
       "data-key": item.key,
       "data-op": typeof row.command.op === "string" ? row.command.op : "",
       "data-category": category,
-      title: row.summary,
+      title: `${row.summary}\nDrag to move; Alt+↑/↓ moves by one`,
       onclick: () => {
+        if (this.suppressRowClick) {
+          this.suppressRowClick = false;
+          return;
+        }
         this.selectCommand(ref, row.address);
         this.root.querySelector<HTMLElement>(".ins-tree")?.focus({ preventScroll: true });
       },
@@ -881,6 +936,108 @@ class Inspector {
     h("span", { class: "ins-summary" }, rowSummary(label, row.summary)),
     row.readOnly ? h("span", { class: "ins-badge warn" }, "read-only") : null,
     );
+  }
+
+  // ---- command drag and drop ------------------------------------------------------
+
+  private pressCommand(event: PointerEvent): void {
+    if (event.button !== 0 || !this.treeContext) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button")) return;
+    const key = target.closest<HTMLElement>(".ins-row")?.dataset.key;
+    const item = this.treeContext.items.find((entry) => entry.kind === "command" && entry.key === key);
+    if (!key || item?.kind !== "command") return;
+    this.commandDrag = {
+      tree: this.treeContext, from: item.row.address, key, pointerId: event.pointerId,
+      startX: event.clientX, startY: event.clientY, dragging: false, slot: null, marked: null,
+    };
+    window.addEventListener("pointermove", this.onDragMove);
+    window.addEventListener("pointerup", this.onDragUp);
+    window.addEventListener("pointercancel", this.onDragCancel);
+  }
+
+  private onDragMove = (event: PointerEvent): void => {
+    const drag = this.commandDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.dragging) {
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_THRESHOLD) return;
+      drag.dragging = true;
+      this.root.classList.add("command-dragging");
+      this.root.querySelector<HTMLElement>(`.ins-row[data-key="${CSS.escape(drag.key)}"]`)?.classList.add("dragging");
+    }
+    event.preventDefault();
+    const drop = this.dropAt(drag, event.clientX, event.clientY);
+    if (drag.marked) drag.marked.classList.remove(...DROP_CLASSES, "drop-root");
+    drag.marked = drop?.element ?? null;
+    drag.slot = drop && commandDropOps(drag.tree.ref, drag.tree.commands, drag.from, drop.slot) ? drop.slot : null;
+    if (drop && drag.slot) drop.element.classList.add(drop.position === "before" ? "drop-before" : "drop-after", ...(drop.root ? ["drop-root"] : []));
+    // Near an edge, scroll the tree, and the inspector when the tree runs
+    // past the panel.
+    for (const scroller of [this.root.querySelector<HTMLElement>(".ins-tree"), this.root]) {
+      if (!scroller) continue;
+      const rect = scroller.getBoundingClientRect();
+      if (event.clientY < rect.top + 20) scroller.scrollTop -= 8;
+      else if (event.clientY > rect.bottom - 20) scroller.scrollTop += 8;
+    }
+  };
+
+  private onDragUp = (event: PointerEvent): void => {
+    if (this.commandDrag && event.pointerId === this.commandDrag.pointerId) this.endCommandDrag(true);
+  };
+
+  private onDragCancel = (): void => this.endCommandDrag(false);
+
+  private endCommandDrag(commit: boolean): void {
+    const drag = this.commandDrag;
+    this.commandDrag = null;
+    window.removeEventListener("pointermove", this.onDragMove);
+    window.removeEventListener("pointerup", this.onDragUp);
+    window.removeEventListener("pointercancel", this.onDragCancel);
+    if (!drag?.dragging) return;
+    this.suppressRowClick = true;
+    setTimeout(() => { this.suppressRowClick = false; }, 0);
+    this.root.classList.remove("command-dragging");
+    drag.marked?.classList.remove(...DROP_CLASSES, "drop-root");
+    this.root.querySelector(".ins-row.dragging")?.classList.remove("dragging");
+    if (!commit || !drag.slot) return;
+    const { ref, commands } = drag.tree;
+    const plan = commandDropOps(ref, commands, drag.from, drag.slot);
+    if (plan && this.app.transaction("Move command", plan.ops)?.ok) {
+      this.expandTo(ref, plan.to);
+      this.revealSelected = true;
+      this.selectCommand(ref, plan.to);
+    }
+  }
+
+  /** The drop slot under the pointer and the row that shows it: the upper
+   * half of a command row inserts before it, the lower half after it (or at
+   * the top of its first branch when that is open), a branch header at the
+   * top of that branch, and the empty space under the rows at the end of
+   * the page. */
+  private dropAt(drag: CommandDrag, x: number, y: number): { slot: CommandAddress; element: HTMLElement; position: "before" | "after"; root?: boolean } | null {
+    const tree = this.root.querySelector<HTMLElement>(".ins-tree");
+    const under = document.elementFromPoint(x, y);
+    if (!tree || !under || !tree.contains(under)) return null;
+    const element = under.closest<HTMLElement>(".ins-row, .ins-branch");
+    const { items, commands } = drag.tree;
+    if (!element) {
+      const rows = tree.querySelectorAll<HTMLElement>(".ins-row, .ins-branch");
+      const last = rows[rows.length - 1];
+      if (!last || y < last.getBoundingClientRect().bottom) return null;
+      return { slot: { path: [], index: commands.length }, element: last, position: "after", root: true };
+    }
+    const item = items.find((entry) => entry.key === element.dataset.key);
+    if (!item) return null;
+    if (item.kind === "branch") return { slot: { path: item.path, index: 0 }, element, position: "after" };
+    const rect = element.getBoundingClientRect();
+    const address = item.row.address;
+    if (y < rect.top + rect.height / 2) return { slot: address, element, position: "before" };
+    if (item.hasChildren && !item.collapsed) {
+      const branch = commandBranchTargets(item.row.command, address).find((target) => target.present);
+      const header = element.nextElementSibling as HTMLElement | null;
+      if (branch && header?.classList.contains("ins-branch")) return { slot: { path: branch.path, index: 0 }, element: header, position: "after" };
+    }
+    return { slot: { path: address.path, index: address.index + 1 }, element, position: "after" };
   }
 
   private picker(page: Page, ref: PageRef, selected: CommandAddress | undefined): HTMLElement {

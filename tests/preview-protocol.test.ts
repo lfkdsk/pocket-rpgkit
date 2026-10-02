@@ -4,12 +4,16 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  PREVIEW_ART_SLICE_BYTES,
   PREVIEW_ECHO_LIMIT,
   PREVIEW_LIMITS,
   PREVIEW_PROTOCOL,
+  PreviewArtStage,
   PreviewError,
+  decodePreviewBase64,
   dispatchPreviewMessage,
   echoPreviewValue,
+  encodePreviewBase64,
   isAllowedOrigin,
   parsePreviewMessage,
   previewAllowlist,
@@ -53,9 +57,13 @@ function fakeBackend(): PreviewBackend & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
-    load(document) {
-      calls.push(`load:${typeof document === "string" ? "text" : "object"}`);
+    load(document, _chapters, art) {
+      calls.push(`load:${typeof document === "string" ? "text" : "object"}${art ? ":art" : ""}`);
       return LOAD_RESULT;
+    },
+    art(slice) {
+      calls.push(`art:${slice.kind}:${slice.id}:${slice.offset}:${slice.bytes.length}`);
+      return { received: slice.offset + slice.bytes.length, complete: false, staged: 1 };
     },
     start(target) {
       calls.push(`start:${target.kind}`);
@@ -736,5 +744,184 @@ describe("every preview reply leaves through the same byte budget", () => {
     };
     const notice = { protocol: PREVIEW_PROTOCOL, type: "stop" };
     expect(dispatchPreviewMessage(notice, SELF, allow, backend)).toBeNull();
+  });
+});
+
+// ---- project art -----------------------------------------------------------------
+
+/** One `art` request for `bytes` at `offset` of a width x height image. */
+function artMsg(fields: { kind?: string; id?: string; width?: number; height?: number; offset?: number; bytes?: Uint8Array; rgba?: unknown }) {
+  const { bytes, ...rest } = fields;
+  return msg({
+    type: "art",
+    kind: "sheet",
+    id: "town",
+    width: 2,
+    height: 1,
+    offset: 0,
+    ...(bytes ? { rgba: encodePreviewBase64(bytes) } : {}),
+    ...rest,
+  });
+}
+
+function codeOf(run: () => unknown): string | undefined {
+  try {
+    run();
+  } catch (error) {
+    return error instanceof PreviewError ? error.code : "thrown";
+  }
+  return undefined;
+}
+
+const pixels = (n: number, seed = 1): Uint8Array => Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed) & 255);
+
+describe("preview art base64", () => {
+  test("round-trips every tail length and matches the platform encoder", () => {
+    for (let n = 0; n < 12; n++) {
+      const bytes = pixels(n, n);
+      const text = encodePreviewBase64(bytes);
+      expect(text).toBe(Buffer.from(bytes).toString("base64"));
+      expect(decodePreviewBase64(text)).toEqual(bytes);
+    }
+    const big = pixels(100_003);
+    expect(encodePreviewBase64(big, 7, 50_000)).toBe(Buffer.from(big.subarray(7, 50_000)).toString("base64"));
+  });
+
+  test("decoding is strict: padding, alphabet and length", () => {
+    for (const bad of ["A", "AB=", "AB=C", "A===", "=AAA", "AA-_", "AA\nA", "QUJD RA==", "QQ=", "Q\u00e9==", "QUJ=QUJD"]) {
+      expect(decodePreviewBase64(bad)).toBeNull();
+    }
+    expect(decodePreviewBase64("")).toEqual(new Uint8Array(0));
+  });
+});
+
+describe("preview art parsing", () => {
+  test("an art request parses into its decoded slice; it needs a requestId", () => {
+    const parsed = parsePreviewMessage(artMsg({ bytes: pixels(8) }));
+    expect(parsed.type).toBe("art");
+    expect(parsed.slice).toEqual({ kind: "sheet", id: "town", width: 2, height: 1, offset: 0, bytes: pixels(8) });
+    const { requestId: _id, ...noId } = artMsg({ bytes: pixels(8) });
+    expect(() => parsePreviewMessage(noId)).toThrow(/art needs a requestId/);
+  });
+
+  test("load takes an optional boolean art flag", () => {
+    expect(parsePreviewMessage(msg({ type: "load", document: "{}" })).useArt).toBe(false);
+    expect(parsePreviewMessage(msg({ type: "load", document: "{}", art: true })).useArt).toBe(true);
+    expect(parsePreviewMessage(msg({ type: "load", document: "{}", art: false })).useArt).toBe(false);
+    expect(codeOf(() => parsePreviewMessage(msg({ type: "load", document: "{}", art: "yes" })))).toBe("bad-message");
+  });
+
+  test("shape problems are bad-message", () => {
+    const bad = (fields: Parameters<typeof artMsg>[0]) => codeOf(() => parsePreviewMessage(artMsg(fields)));
+    expect(bad({ kind: "tile", bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ id: "", bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ id: "x".repeat(PREVIEW_LIMITS.maxArtIdBytes + 1), bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ width: 0, bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ height: 1.5, bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ offset: -4, bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ offset: 8, bytes: pixels(8) })).toBe("bad-message");
+    expect(bad({ rgba: 42 })).toBe("bad-message");
+    expect(bad({ rgba: "" })).toBe("bad-message");
+  });
+
+  test("bad base64 is refused with bad-message", () => {
+    expect(() => parsePreviewMessage(artMsg({ rgba: "not base64!" }))).toThrow(/not valid base64/);
+    expect(codeOf(() => parsePreviewMessage(artMsg({ rgba: "QUJD" + "=" })))).toBe("bad-message");
+  });
+
+  test("a slice that runs past the image is refused with bad-message", () => {
+    expect(() => parsePreviewMessage(artMsg({ bytes: pixels(9) }))).toThrow(/overflows the 8-byte image/);
+    expect(() => parsePreviewMessage(artMsg({ offset: 4, bytes: pixels(5) }))).toThrow(/overflows/);
+    expect(parsePreviewMessage(artMsg({ offset: 4, bytes: pixels(4) })).slice?.offset).toBe(4);
+  });
+
+  test("an image over the side or byte limits is refused with too-large", () => {
+    const side = PREVIEW_LIMITS.maxArtSide;
+    expect(codeOf(() => parsePreviewMessage(artMsg({ width: side + 1, bytes: pixels(4) })))).toBe("too-large");
+    expect(codeOf(() => parsePreviewMessage(artMsg({ height: side + 1, bytes: pixels(4) })))).toBe("too-large");
+    // 4096 x 4096 x 4 is 64 MiB, over the 32 MiB staging budget.
+    expect(codeOf(() => parsePreviewMessage(artMsg({ width: side, height: side, bytes: pixels(4) })))).toBe("too-large");
+    expect(parsePreviewMessage(artMsg({ width: side, height: 2048, bytes: pixels(4) })).slice?.width).toBe(side);
+  });
+
+  test("a full-size slice fits in one message", () => {
+    const bytes = pixels(PREVIEW_ART_SLICE_BYTES);
+    const message = artMsg({ width: 1024, height: 1024, bytes });
+    expect(previewMessageBytes(message)).toBeLessThan(PREVIEW_LIMITS.maxMessageBytes);
+    expect(parsePreviewMessage(message).slice?.bytes.length).toBe(PREVIEW_ART_SLICE_BYTES);
+  });
+
+  test("dispatch runs art on the backend and replies with its result; load passes the art flag", () => {
+    const backend = fakeBackend();
+    const allow = previewAllowlist(SELF, "");
+    const reply = dispatchPreviewMessage(artMsg({ bytes: pixels(4) }), SELF, allow, backend);
+    expect(reply).toEqual({ protocol: PREVIEW_PROTOCOL, type: "reply", requestId: "r1", ok: true, result: { received: 4, complete: false, staged: 1 } });
+    dispatchPreviewMessage(msg({ type: "load", document: "{}", art: true }), SELF, allow, backend);
+    dispatchPreviewMessage(msg({ type: "load", document: "{}" }), SELF, allow, backend);
+    expect(backend.calls).toEqual(["art:sheet:town:0:4", "load:text:art", "load:text"]);
+    const bad = dispatchPreviewMessage(artMsg({ rgba: "%%%%" }), SELF, allow, backend);
+    expect(bad).toMatchObject({ requestId: "r1", ok: false, error: { code: "bad-message" } });
+    expect(backend.calls).toHaveLength(3);
+  });
+});
+
+describe("preview art staging", () => {
+  const slice = (id: string, width: number, height: number, offset: number, bytes: Uint8Array, kind: "sheet" | "sprite" = "sheet") =>
+    ({ kind, id, width, height, offset, bytes });
+
+  test("slices fill an image in order; take() returns only complete images and empties the stage", () => {
+    const stage = new PreviewArtStage();
+    const full = pixels(16);
+    expect(stage.add(slice("a", 2, 2, 0, full.subarray(0, 6)))).toEqual({ received: 6, complete: false, staged: 1 });
+    expect(stage.add(slice("a", 2, 2, 6, full.subarray(6)))).toEqual({ received: 16, complete: true, staged: 1 });
+    stage.add(slice("b", 2, 2, 0, full.subarray(0, 4)));
+    stage.add(slice("a", 1, 1, 0, pixels(4), "sprite"));
+    expect(stage.size).toBe(3);
+    expect(stage.reserved).toBe(16 + 16 + 4);
+    const taken = stage.take();
+    expect(taken.map((image) => `${image.kind}:${image.id}`)).toEqual(["sheet:a", "sprite:a"]);
+    expect(taken[0]!.rgba).toEqual(full);
+    expect(stage.size).toBe(0);
+    expect(stage.reserved).toBe(0);
+    expect(stage.take()).toEqual([]);
+  });
+
+  test("a slice at the wrong offset, a different size or without a first slice is bad-message", () => {
+    const stage = new PreviewArtStage();
+    expect(codeOf(() => stage.add(slice("a", 2, 2, 4, pixels(4))))).toBe("bad-message");
+    stage.add(slice("a", 2, 2, 0, pixels(4)));
+    expect(() => stage.add(slice("a", 2, 2, 8, pixels(4)))).toThrow(/next slice at offset 4, not 8/);
+    expect(() => stage.add(slice("a", 4, 1, 4, pixels(4)))).toThrow(/started at 2x2/);
+    // A refused slice leaves the image where it was.
+    expect(stage.add(slice("a", 2, 2, 4, pixels(12)))).toMatchObject({ received: 16, complete: true });
+  });
+
+  test("offset 0 starts an image afresh, releasing its old bytes", () => {
+    const stage = new PreviewArtStage();
+    stage.add(slice("a", 2, 2, 0, pixels(16)));
+    expect(stage.add(slice("a", 1, 1, 0, pixels(2)))).toEqual({ received: 2, complete: false, staged: 1 });
+    expect(stage.reserved).toBe(4);
+    expect(stage.take()).toEqual([]);
+  });
+
+  test("more than maxArtImages images is too-large; clear() frees them", () => {
+    const stage = new PreviewArtStage();
+    for (let i = 0; i < PREVIEW_LIMITS.maxArtImages; i++) stage.add(slice(`s${i}`, 1, 1, 0, pixels(4)));
+    expect(codeOf(() => stage.add(slice("one-more", 1, 1, 0, pixels(4))))).toBe("too-large");
+    // Restarting an image already staged is not a new image.
+    expect(stage.add(slice("s0", 1, 1, 0, pixels(4))).staged).toBe(PREVIEW_LIMITS.maxArtImages);
+    stage.clear();
+    expect(stage.add(slice("one-more", 1, 1, 0, pixels(4))).staged).toBe(1);
+  });
+
+  test("more than maxArtBytes staged is too-large", () => {
+    const stage = new PreviewArtStage();
+    const quarter = PREVIEW_LIMITS.maxArtBytes / 4; // 2048 x 1024 x 4
+    for (let i = 0; i < 4; i++) stage.add(slice(`big${i}`, 2048, 1024, 0, pixels(4)));
+    expect(stage.reserved).toBe(4 * quarter);
+    expect(() => stage.add(slice("tiny", 1, 1, 0, pixels(4)))).toThrow(/at most 33554432 are staged/);
+    // Replacing a staged image counts only the difference.
+    expect(stage.add(slice("big0", 1024, 1024, 0, pixels(4))).staged).toBe(4);
+    expect(stage.add(slice("tiny", 1, 1, 0, pixels(4))).staged).toBe(5);
   });
 });

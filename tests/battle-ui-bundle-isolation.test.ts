@@ -108,6 +108,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // text in UTF-8 bytes. PocketJS #508's opt-in model-trace guards and #512's
 // retired console-bridge cleanup add another 323 shared bytes.
 // Hiding an erased event's actor adds 148 shared GameView bytes.
+// The optional streamed tile loader (StreamedGameAssets.loadTile) adds 183
+// shared bytes to the streamed ground and upper layers.
 const EXPECTED_BYTES = 807_210;
 
 describe("KB4 does not reach games that never opt into battle", () => {

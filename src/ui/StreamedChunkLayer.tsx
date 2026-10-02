@@ -53,6 +53,8 @@ export interface StreamedChunkLayerProps {
   margin?: number;
   /** Loads per frame for this layer. Omit for no limit; zero pauses uploads. */
   loadBudget?: number;
+  /** Tile loader used in place of loadTileTexture (StreamedGameAssets.loadTile). */
+  loadTile?: (key: string, index: number) => number;
   /** While false, the layer's per-frame residency sync pauses (the subtree
    *  stays mounted and hidden). Omit for always active. */
   active?: Accessor<boolean>;
@@ -251,7 +253,7 @@ export function StreamedChunkLayer(props: StreamedChunkLayerProps): SolidJSX.Ele
       const y = Math.floor(index / columns);
       jump(node, "translateX", x * props.chunkPx);
       jump(node, "translateY", y * props.chunkPx);
-      const handle = loadTileTexture(ref.key, ref.index);
+      const handle = (props.loadTile ?? loadTileTexture)(ref.key, ref.index);
       if (handle >= 0) {
         getOps().setImage(node.id, handle);
         uploads++;

@@ -7,6 +7,7 @@ import { EditSession } from "../api/session.ts";
 import type { StudioApp } from "./app.ts";
 import type { ArtRegistry } from "./art.ts";
 import type { OpenedProject, SaveTarget, StudioExample, StudioHost } from "./host.ts";
+import { projectArtRefs, resolveProjectArt } from "./project-art.ts";
 
 export type { StudioExample } from "./host.ts";
 
@@ -34,6 +35,8 @@ export class StudioFiles {
    * pressed, which need not be the one open now. Null for storage saves. */
   savingTo: string | null = null;
   private saveQueue: Promise<unknown> = Promise.resolve();
+  /** Sheet and sprite ids drawn with the open document's own art. */
+  projectArt = 0;
 
   constructor(private app: StudioApp, private art: ArtRegistry, readonly host: StudioHost) {
     host.onOpen((opened) => void this.opened(opened));
@@ -47,12 +50,30 @@ export class StudioFiles {
     }
   }
 
-  /** Load bundled art for every sheet/sprite id the document uses that a
-   * bundled example provides (art is keyed by id, as in the PocketJS editor). */
-  private attachBundledArt(): void {
+  /** Load art for every sheet and sprite id the document uses: the
+   * project's own PNGs when it carries them (a folder, or a pack with
+   * assets; see project-art.ts), else what a bundled example provides for
+   * that id (art is keyed by id, as in the PocketJS editor). Returns how
+   * many ids got project art. */
+  private attachArt(): number {
     const session = this.app.session;
-    if (!session) return;
+    if (!session) return 0;
     this.art.clear();
+    const assets = session.assets();
+    const project = { sheets: new Set<string>(), sprites: new Set<string>() };
+    if (assets.size > 0) {
+      const refs = projectArtRefs({ sheets: session.sheets(), sprites: session.sprites() });
+      for (const { ref, path } of resolveProjectArt(refs, (candidate) => assets.has(candidate))) {
+        const url = `data:image/png;base64,${assets.get(path)!.data}`;
+        if (ref.kind === "sheet") {
+          project.sheets.add(ref.id);
+          void this.art.loadProjectSheet(ref.id, path, url);
+        } else if (ref.kind === "sprite") {
+          project.sprites.add(ref.id);
+          void this.art.loadProjectSprite(ref.id, path, url);
+        }
+      }
+    }
     const sheets = new Map<string, string>();
     const sprites = new Map<string, string>();
     for (const example of this.examples) {
@@ -61,12 +82,13 @@ export class StudioFiles {
     }
     for (const sheet of session.sheets()) {
       const url = sheets.get(sheet.id);
-      if (url) void this.art.loadBundledSheet(sheet.id, url);
+      if (url && !project.sheets.has(sheet.id)) void this.art.loadBundledSheet(sheet.id, url);
     }
     for (const id of Object.keys(session.sprites())) {
       const url = sprites.get(id);
-      if (url) void this.art.loadBundledSprite(id, url);
+      if (url && !project.sprites.has(id)) void this.art.loadBundledSprite(id, url);
     }
+    return project.sheets.size + project.sprites.size;
   }
 
   /** Open document text; returns false (with a visible error) if invalid. */
@@ -85,7 +107,7 @@ export class StudioFiles {
     this.lastSavedAt = null;
     this.lastSavedWhere = null;
     this.app.load(session, { label, savesTo: target ? target.name : "storage" });
-    this.attachBundledArt();
+    this.projectArt = this.attachArt();
     return true;
   }
 
@@ -100,7 +122,9 @@ export class StudioFiles {
     if (ok) {
       const kind = this.app.session?.kind === "pack" ? "sharded pack" : "project";
       const where = opened.target ? ` Save writes back into ${opened.target.name}.` : "";
-      this.app.notify("info", `Opened ${kind} ${opened.label}.${where}`);
+      const art = this.projectArt > 0 ? ` Using the project's own art for ${this.projectArt} sheet and sprite id${this.projectArt === 1 ? "" : "s"}.` : "";
+      this.app.notify("info", `Opened ${kind} ${opened.label}.${where}${art}`);
+      for (const note of opened.notes ?? []) this.app.notify("info", note);
     }
     return ok;
   }

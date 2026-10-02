@@ -65,6 +65,12 @@ export class StudioApp {
   view: ViewState = { zoom: 2, panX: 0, panY: 0 };
   visible: LayerVisibility = { ground: true, upper: true, events: true, passage: false, grid: true };
   hover: { x: number; y: number } | null = null;
+  /** Set when a jump (from the problems list) should flash the inspector's
+   * event section on its next render; the inspector clears it. */
+  pulse = false;
+  /** An event the pointer is over outside the canvas (the inspector's event
+   * list); the canvas outlines it. */
+  highlight: string | null = null;
   notices: Notice[] = [];
   problems: SessionProblem[] = [];
   /** Wall-clock milliseconds of the last protocol call (status bar). */
@@ -116,6 +122,7 @@ export class StudioApp {
   openMap(id: string): void {
     if (id === this.mapId) return;
     this.mapId = id;
+    this.highlight = null;
     this.selection = { kind: "none" };
     this.emit("map");
   }

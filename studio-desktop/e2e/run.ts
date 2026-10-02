@@ -2,7 +2,8 @@
 //
 //   bun run build && bun run e2e
 //
-// Prepares the fixtures (Sunstone as a project folder, an agent config for
+// Prepares the fixtures (Sunstone as a project folder, the same folder with
+// its own art (an autumn town sheet and a recoloured sprite), an agent config for
 // the kit's offline fake agent, a project with an engine-check finding) under
 // studio-desktop/.e2e/, starts a virtual X display when there is none (Xvfb on
 // PATH, or the XVFB variable), then runs e2e/studio-desktop.test.mjs under
@@ -15,6 +16,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { dirname, join, resolve } from "node:path";
 import type { Project } from "../../src/engine/types.ts";
 import { splitProjectMaps } from "../../tools/lib/map-project.ts";
+import { autumn, encodePng } from "../../tools/lib/png-encode.ts";
+import { decodePng } from "../../vendor/pocketjs/framework/compiler/pak.ts";
 
 const HERE = resolve(import.meta.dir, "..");
 const KIT = resolve(HERE, "..");
@@ -38,6 +41,22 @@ for (const entry of split.entries) {
   mkdirSync(dirname(join(folder, entry.path)), { recursive: true });
   writeFileSync(join(folder, entry.path), entry.text);
 }
+
+// The same project with its own art, found by Studio's folder conventions:
+// art/sheets/<sheet id>.png and an image sprite's `src` path.
+const artFolder = join(WORK, "sunstone-art");
+mkdirSync(join(artFolder, "art", "sheets"), { recursive: true });
+mkdirSync(join(artFolder, "assets", "npc"), { recursive: true });
+writeFileSync(join(artFolder, "project.json"), split.shellText);
+for (const entry of split.entries) {
+  mkdirSync(dirname(join(artFolder, entry.path)), { recursive: true });
+  writeFileSync(join(artFolder, entry.path), entry.text);
+}
+const town = decodePng(new Uint8Array(readFileSync(join(KIT, "examples", "sunstone", "assets", "src", "town-tiles.png"))));
+writeFileSync(join(artFolder, "art", "sheets", "town.png"), encodePng(town.width, town.height, autumn(town.rgba)));
+const wiz = new Uint8Array(16 * 16 * 4);
+for (let i = 0; i < wiz.length; i += 4) wiz.set([236, 64, 200, 255], i);
+writeFileSync(join(artFolder, "assets", "npc", "wiz.png"), encodePng(16, 16, wiz));
 
 // A single-file project rpgkit-check's engine checks have something to say about.
 const broken = join(WORK, "broken.json");
@@ -90,6 +109,7 @@ try {
       ...(display ? { DISPLAY: display } : {}),
       STUDIO_E2E_WORK: WORK,
       STUDIO_E2E_FOLDER: folder,
+      STUDIO_E2E_ART_FOLDER: artFolder,
       STUDIO_E2E_BROKEN: broken,
       STUDIO_E2E_AGENT_CONFIG: agentConfig,
       STUDIO_E2E_SHOTS: join(KIT, "docs", "screenshots", "studio-desktop"),

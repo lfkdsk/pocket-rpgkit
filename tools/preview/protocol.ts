@@ -28,7 +28,26 @@ export const PREVIEW_LIMITS = {
   maxChapterTapeLength: 36_000,
   /** A `requestId`, in UTF-8 bytes. */
   maxRequestIdBytes: 128,
+  /** Images staged by `art` requests at once (complete or not). */
+  maxArtImages: 1024,
+  /** Raw RGBA bytes staged at once: the sum of width*height*4 over every
+   *  staged image, counted when its first slice arrives. */
+  maxArtBytes: 32 * 1024 * 1024,
+  /** Longest side of one staged image, in pixels. */
+  maxArtSide: 4096,
+  /** An art image id, in UTF-8 bytes. */
+  maxArtIdBytes: 256,
 } as const;
+
+/** Raw bytes a frontend puts in one `art` slice. Base64 inflates them by
+ *  4/3, so a slice stays well under maxMessageBytes. A host accepts any
+ *  slice size that fits the message budget. */
+export const PREVIEW_ART_SLICE_BYTES = 2 * 1024 * 1024;
+
+/** Optional capabilities a host lists in its `ready` event (`features`). A
+ *  frontend uses a feature only when the host lists it; a host without the
+ *  list (an older page) has none. */
+export const PREVIEW_FEATURES = ["art"] as const;
 
 export type PreviewErrorCode =
   | "bad-message"
@@ -61,10 +80,63 @@ export interface PreviewMapSummary {
   height: number;
 }
 
+/** An image a frontend supplied with `art` that the host could not use;
+ *  the game keeps its stand-in for it. */
+export interface PreviewArtSkip {
+  kind: PreviewArtKind;
+  id: string;
+  reason: string;
+}
+
+/** What a `load` with `art: true` did with the staged images. */
+export interface PreviewArtUse {
+  /** Complete staged images the game now draws. */
+  used: number;
+  /** Complete staged images it could not use (incomplete ones are not
+   *  listed: they were never part of the load). */
+  skipped: PreviewArtSkip[];
+}
+
 export interface PreviewLoadResult {
   title: string;
   maps: PreviewMapSummary[];
   start: { map: string; x: number; y: number; dir: string };
+  /** Present when the load asked for `art`; an optional addition within v1. */
+  art?: PreviewArtUse;
+}
+
+/** What one image is: a tile sheet (by sheet id, cut into 16px cells) or a
+ *  sprite (by sprite id: an image sprite, or a walker's whole sheet). */
+export type PreviewArtKind = "sheet" | "sprite";
+
+/** One validated `art` request: `bytes` land at byte `offset` of the
+ *  image's width*height*4 RGBA8 buffer. */
+export interface PreviewArtSlice {
+  kind: PreviewArtKind;
+  id: string;
+  width: number;
+  height: number;
+  offset: number;
+  bytes: Uint8Array;
+}
+
+/** The reply to an `art` request. */
+export interface PreviewArtResult {
+  /** Bytes of this image received so far. */
+  received: number;
+  /** Whether every byte of this image has arrived. */
+  complete: boolean;
+  /** Images staged now, complete or not. */
+  staged: number;
+}
+
+/** A complete staged image. */
+export interface PreviewArtImage {
+  kind: PreviewArtKind;
+  id: string;
+  width: number;
+  height: number;
+  rgba: Uint8Array;
 }
 
 export type PreviewStartTarget =
@@ -113,8 +185,12 @@ export interface PreviewStateResult {
 /** The host side of the protocol. The preview app implements it; tests use
  *  a fake. Every method either returns its result or throws PreviewError. */
 export interface PreviewBackend {
-  /** Validate and mount a project document (JSON text or an object). */
-  load(document: unknown, chapters?: unknown): PreviewLoadResult;
+  /** Validate and mount a project document (JSON text or an object). With
+   *  `art`, the complete staged images replace stand-in art; either way the
+   *  staging area is emptied. */
+  load(document: unknown, chapters?: unknown, art?: boolean): PreviewLoadResult;
+  /** Stage one slice of a project image for the next `load`. */
+  art(slice: PreviewArtSlice): PreviewArtResult;
   /** Warp to a tile, or restore a chapter supplied with `load`. */
   start(target: PreviewStartTarget): PreviewStartResult;
   /** Read the running session's summary. */
@@ -351,11 +427,196 @@ function parseStart(msg: Record<string, unknown>): PreviewStartTarget {
   return { kind: "tile", map: msg.map, x: msg.x as number, y: msg.y as number, dir };
 }
 
+// ---- art ----------------------------------------------------------------------
+
+const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_VALUE = (() => {
+  const table = new Int16Array(128).fill(-1);
+  for (let i = 0; i < BASE64.length; i++) table[BASE64.charCodeAt(i)] = i;
+  return table;
+})();
+
+/** Standard base64 (RFC 4648 alphabet, with `=` padding) of
+ *  `bytes[start..end)`. */
+export function encodePreviewBase64(bytes: Uint8Array, start = 0, end = bytes.length): string {
+  const parts: string[] = [];
+  let chunk = "";
+  let i = start;
+  for (; i + 3 <= end; i += 3) {
+    const n = (bytes[i]! << 16) | (bytes[i + 1]! << 8) | bytes[i + 2]!;
+    chunk += BASE64[n >> 18]! + BASE64[(n >> 12) & 63]! + BASE64[(n >> 6) & 63]! + BASE64[n & 63]!;
+    if (chunk.length >= 8192) {
+      parts.push(chunk);
+      chunk = "";
+    }
+  }
+  const rest = end - i;
+  if (rest === 1) {
+    const n = bytes[i]! << 16;
+    chunk += `${BASE64[n >> 18]!}${BASE64[(n >> 12) & 63]!}==`;
+  } else if (rest === 2) {
+    const n = (bytes[i]! << 16) | (bytes[i + 1]! << 8);
+    chunk += `${BASE64[n >> 18]!}${BASE64[(n >> 12) & 63]!}${BASE64[(n >> 6) & 63]!}=`;
+  }
+  parts.push(chunk);
+  return parts.join("");
+}
+
+/** Strict standard base64: a multiple of 4 characters from the RFC 4648
+ *  alphabet, `=` only as the final one or two. Returns null for anything
+ *  else (whitespace, the URL-safe alphabet, missing padding). */
+export function decodePreviewBase64(text: string): Uint8Array | null {
+  if (text.length % 4 !== 0) return null;
+  let pad = 0;
+  if (text.endsWith("==")) pad = 2;
+  else if (text.endsWith("=")) pad = 1;
+  const out = new Uint8Array((text.length / 4) * 3 - pad);
+  let o = 0;
+  for (let i = 0; i < text.length; i += 4) {
+    const last = i + 4 === text.length;
+    let n = 0;
+    for (let k = 0; k < 4; k++) {
+      const code = text.charCodeAt(i + k);
+      let value: number;
+      if (code === 61 /* = */ && last && k >= 4 - pad) value = 0;
+      else value = code < 128 ? BASE64_VALUE[code]! : -1;
+      if (value < 0) return null;
+      n = (n << 6) | value;
+    }
+    out[o++] = (n >> 16) & 255;
+    if (o < out.length) out[o++] = (n >> 8) & 255;
+    if (o < out.length) out[o++] = n & 255;
+  }
+  return out;
+}
+
+/** Validate the fields of one `art` request (the wire message, or the same
+ *  fields through the page's test hook). Size bounds are `too-large`, shape
+ *  problems `bad-message`. */
+export function parsePreviewArt(msg: Record<string, unknown>): PreviewArtSlice {
+  const kind = msg.kind;
+  if (kind !== "sheet" && kind !== "sprite") {
+    throw new PreviewError("bad-message", `art kind must be "sheet" or "sprite", got ${echoPreviewValue(kind)}`);
+  }
+  const id = msg.id;
+  if (typeof id !== "string" || id.length === 0) throw new PreviewError("bad-message", "art needs a non-empty id");
+  if (!utf8BytesWithin(id, PREVIEW_LIMITS.maxArtIdBytes)) {
+    throw new PreviewError("bad-message", `art id must be at most ${PREVIEW_LIMITS.maxArtIdBytes} bytes`);
+  }
+  for (const side of ["width", "height"] as const) {
+    const value = msg[side];
+    if (!Number.isInteger(value) || (value as number) < 1) {
+      throw new PreviewError("bad-message", `art ${side} must be a positive integer, got ${echoPreviewValue(value)}`);
+    }
+    if ((value as number) > PREVIEW_LIMITS.maxArtSide) {
+      throw new PreviewError("too-large", `art ${side} ${value as number} is over the ${PREVIEW_LIMITS.maxArtSide}-pixel limit`);
+    }
+  }
+  const width = msg.width as number;
+  const height = msg.height as number;
+  const total = width * height * 4;
+  if (total > PREVIEW_LIMITS.maxArtBytes) {
+    throw new PreviewError("too-large", `art ${width}x${height} needs ${total} bytes; at most ${PREVIEW_LIMITS.maxArtBytes} are staged`);
+  }
+  const offset = msg.offset;
+  if (!Number.isInteger(offset) || (offset as number) < 0 || (offset as number) >= total) {
+    throw new PreviewError("bad-message", `art offset must be an integer from 0 to ${total - 1}, got ${echoPreviewValue(offset)}`);
+  }
+  if (typeof msg.rgba !== "string" || msg.rgba.length === 0) {
+    throw new PreviewError("bad-message", "art rgba must be a non-empty base64 string");
+  }
+  const bytes = decodePreviewBase64(msg.rgba);
+  if (!bytes || bytes.length === 0) throw new PreviewError("bad-message", "art rgba is not valid base64");
+  if ((offset as number) + bytes.length > total) {
+    throw new PreviewError("bad-message", `art slice of ${bytes.length} bytes at offset ${offset as number} overflows the ${total}-byte image`);
+  }
+  return { kind, id, width, height, offset: offset as number, bytes };
+}
+
+interface StagedArt {
+  image: PreviewArtImage;
+  received: number;
+}
+
+/** The host's staging area for `art`: images by kind and id, filled slice
+ *  by slice in order. A first slice (offset 0) starts the image afresh;
+ *  every later slice must continue exactly where the previous one ended,
+ *  with the same size. `load` takes the complete images; `load` without
+ *  art and `stop` discard everything. */
+export class PreviewArtStage {
+  private staged = new Map<string, StagedArt>();
+  private bytes = 0;
+
+  /** Images staged now, complete or not. */
+  get size(): number {
+    return this.staged.size;
+  }
+
+  /** Raw bytes reserved by the staged images. */
+  get reserved(): number {
+    return this.bytes;
+  }
+
+  add(slice: PreviewArtSlice): PreviewArtResult {
+    const key = `${slice.kind}:${slice.id}`;
+    const total = slice.width * slice.height * 4;
+    let entry = this.staged.get(key);
+    if (slice.offset === 0) {
+      const freed = entry ? entry.image.rgba.length : 0;
+      if (!entry && this.staged.size >= PREVIEW_LIMITS.maxArtImages) {
+        throw new PreviewError("too-large", `at most ${PREVIEW_LIMITS.maxArtImages} images are staged at once`);
+      }
+      if (this.bytes - freed + total > PREVIEW_LIMITS.maxArtBytes) {
+        throw new PreviewError("too-large", `staged art would need ${this.bytes - freed + total} bytes; at most ${PREVIEW_LIMITS.maxArtBytes} are staged`);
+      }
+      this.bytes -= freed;
+      this.staged.delete(key);
+      entry = {
+        image: { kind: slice.kind, id: slice.id, width: slice.width, height: slice.height, rgba: new Uint8Array(total) },
+        received: 0,
+      };
+      this.staged.set(key, entry);
+      this.bytes += total;
+    } else {
+      if (!entry) {
+        throw new PreviewError("bad-message", `art ${slice.kind} ${echoPreviewValue(slice.id)} has no first slice (offset 0) staged`);
+      }
+      if (entry.image.width !== slice.width || entry.image.height !== slice.height) {
+        throw new PreviewError("bad-message", `art ${slice.kind} ${echoPreviewValue(slice.id)} was started at ${entry.image.width}x${entry.image.height}, not ${slice.width}x${slice.height}`);
+      }
+      if (slice.offset !== entry.received) {
+        throw new PreviewError("bad-message", `art ${slice.kind} ${echoPreviewValue(slice.id)} expects its next slice at offset ${entry.received}, not ${slice.offset}`);
+      }
+    }
+    entry.image.rgba.set(slice.bytes, slice.offset);
+    entry.received = slice.offset + slice.bytes.length;
+    return { received: entry.received, complete: entry.received === total, staged: this.staged.size };
+  }
+
+  /** The complete images, in staging order; empties the stage. */
+  take(): PreviewArtImage[] {
+    const complete: PreviewArtImage[] = [];
+    for (const entry of this.staged.values()) {
+      if (entry.received === entry.image.rgba.length) complete.push(entry.image);
+    }
+    this.clear();
+    return complete;
+  }
+
+  clear(): void {
+    this.staged.clear();
+    this.bytes = 0;
+  }
+}
+
 export interface PreviewRequest {
-  type: "load" | "start" | "state" | "input" | "stop";
+  type: "load" | "art" | "start" | "state" | "input" | "stop";
   requestId?: string;
   document?: unknown;
   chapters?: unknown;
+  /** `load.art`: use the staged images. */
+  useArt?: boolean;
+  slice?: PreviewArtSlice;
   start?: PreviewStartTarget;
   buttons?: number;
   frames?: number;
@@ -379,8 +640,11 @@ export function parsePreviewMessage(data: unknown): PreviewRequest {
   switch (msg.type) {
     case "load":
       if (msg.document === undefined) throw new PreviewError("bad-message", "load needs a document");
+      if (msg.art !== undefined && typeof msg.art !== "boolean") throw new PreviewError("bad-message", "load art must be a boolean");
       checkChapterLimits(msg.chapters);
-      return { type: "load", requestId: requireId("load", requestId), document: msg.document, chapters: msg.chapters };
+      return { type: "load", requestId: requireId("load", requestId), document: msg.document, chapters: msg.chapters, useArt: msg.art === true };
+    case "art":
+      return { type: "art", requestId: requireId("art", requestId), slice: parsePreviewArt(msg) };
     case "start":
       return { type: "start", requestId: requireId("start", requestId), start: parseStart(msg) };
     case "state":
@@ -407,7 +671,9 @@ export function parsePreviewMessage(data: unknown): PreviewRequest {
 function runBackend(backend: PreviewBackend, request: PreviewRequest): unknown {
   switch (request.type) {
     case "load":
-      return backend.load(request.document, request.chapters);
+      return backend.load(request.document, request.chapters, request.useArt);
+    case "art":
+      return backend.art(request.slice!);
     case "start":
       return backend.start(request.start!);
     case "state":

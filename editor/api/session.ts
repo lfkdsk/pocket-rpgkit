@@ -35,7 +35,7 @@ import {
   SHARDED_DOCUMENT_KIND,
 } from "./sharded.ts";
 import { semanticEqual } from "../engine/document.ts";
-import { parseShardedPack, serializeShardedPack, SHARDED_PACK_KIND, sourceDeclaresShardedPack } from "./pack.ts";
+import { parseShardedPack, serializeShardedPack, SHARDED_PACK_KIND, sourceDeclaresShardedPack, type PackAsset } from "./pack.ts";
 import type {
   EditCommandName,
   EditFailure,
@@ -117,10 +117,14 @@ export class EditSession {
   private textCacheChars = 0;
   /** Bumped on every document change; cheap change detection for views. */
   revision = 0;
+  /** A pack's embedded images. No operation edits them, so they sit outside
+   * the document state and history and every export writes them back. */
+  private readonly packAssets: ReadonlyMap<string, PackAsset>;
 
-  private constructor(state: DocState) {
+  private constructor(state: DocState, assets: ReadonlyMap<string, PackAsset> = new Map()) {
     this.state = state;
     this.saved = cloneState(state);
+    this.packAssets = assets;
   }
 
   /** Open inline project JSON or a sharded pack. Throws EditApiError (with
@@ -133,7 +137,7 @@ export class EditSession {
     if (bytes <= MAX_PROJECT_FILE_BYTES || text.includes(SHARDED_PACK_KIND)) {
       if (sourceDeclaresShardedPack(text)) {
         const pack = parseShardedPack(text);
-        return new EditSession({ kind: "pack", shellText: pack.shellText, shards: pack.shards });
+        return new EditSession({ kind: "pack", shellText: pack.shellText, shards: pack.shards }, pack.assets);
       }
     }
     tooLarge(projectFileProblem(bytes), "$");
@@ -260,10 +264,17 @@ export class EditSession {
     this.changed();
   }
 
-  /** Exact export bytes: the project JSON, or the complete replacement pack. */
+  /** The images a sharded pack carries (path -> PNG), in pack order; empty
+   * for inline documents and packs without art. */
+  assets(): ReadonlyMap<string, PackAsset> {
+    return this.packAssets;
+  }
+
+  /** Exact export bytes: the project JSON, or the complete replacement pack
+   * (with the assets it was opened with). */
   exportText(): string {
     if (this.state.kind === "inline") return this.state.source;
-    return serializeShardedPack(this.state.shellText, this.shell().mapIndex, this.state.shards);
+    return serializeShardedPack(this.state.shellText, this.shell().mapIndex, this.state.shards, this.packAssets);
   }
 
   // ---- protocol execution ---------------------------------------------------

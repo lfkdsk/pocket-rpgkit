@@ -1444,6 +1444,7 @@ export function GameView(props: GameViewProps) {
               viewport={() => viewport()}
               margin={groundStreamVariant()?.margin ?? stream.margin}
               loadBudget={groundStreamVariant()?.loadBudget ?? stream.loadBudget}
+              loadTile={stream.loadTile}
               sourceKey={`ground:${groundSelection().name ?? ""}`}
               visible={groundSelection().visible}
               active={() => !sceneActive()}

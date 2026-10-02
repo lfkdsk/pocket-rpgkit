@@ -52,6 +52,7 @@ const EDITS: { name: string; command: Parameters<EditSession["run"]>[0]; args: R
   { name: "new map", command: "add-map", args: { map: "meadowlands", width: 12, height: 9 } },
   { name: "duplicate map", command: "duplicate-map", args: { map: "forest" } },
   { name: "delete map", command: "delete-map", args: { map: "cave" } },
+  { name: "reorder maps", command: "move-map", args: { map: "cave", index: 0 } },
   { name: "new event", command: "add-event", args: { map: "village", event: { id: "studio-npc", x: 5, y: 5, pages: [{ trigger: "action", commands: [] }] } } },
   { name: "move event", command: "update-event", args: { map: "village", event: "elder", changes: { x: 8, y: 4, name: "Elder (moved)" } } },
   { name: "delete event", command: "delete-event", args: { map: "village", event: "sign" } },
@@ -203,6 +204,7 @@ describe("Studio edit session (sharded pack, through StudioFiles on the memory h
       ["add-map", {}],
       ["duplicate-map", { map: "forest" }],
       ["delete-map", { map: "forest" }],
+      ["move-map", { map: "forest", index: 0 }],
       ["paint-edges", { map: "forest", cells: [[1, 1]], brush: { kind: "clear" } }],
     ] as const) {
       const response = app.run(command, args);

@@ -96,13 +96,13 @@ of already-published shards if a later rename fails; this is **not**
 crash-atomic. See `editor/api/file.ts` and
 [`edit-api.md`](edit-api.md#response-envelope) (the atomicity paragraph).
 
-- **Operations** (26): `open`, `list-maps`, `list-events`, `list-pages`,
+- **Operations** (27): `open`, `list-maps`, `list-events`, `list-pages`,
   `list-commands`, `validate`, `update-map`, `add-map`, `duplicate-map`,
-  `delete-map`, `paint-tile`, `paint-rect`, `fill-region`, `paint-passage`,
-  `paint-cells`, `paint-edges`, `add-event` (optional `index` places the
-  event in the map's event list), `update-event`, `delete-event`,
-  `add-page`, `update-page`, `delete-page`, `insert-command`,
-  `delete-command`, `update-command`, `save`.
+  `delete-map`, `move-map`, `paint-tile`, `paint-rect`, `fill-region`,
+  `paint-passage`, `paint-cells`, `paint-edges`, `add-event` (optional
+  `index` places the event in the map's event list), `update-event`,
+  `delete-event`, `add-page`, `update-page`, `delete-page`,
+  `insert-command`, `delete-command`, `update-command`, `save`.
 - **Addresses** are stable text paths: `map:<id>`,
   `map:<id>/event:<eid>/page:<i>/command:<key>`, with recursive command keys
   such as `i2:then#0` (if), `c2:option:1#0` (choices), `b2:win#0`
@@ -265,8 +265,9 @@ iframe and drives it with `postMessage`. The kit ships a host app (the
 [`../tools/web/preview-demo.html`](../tools/web/preview-demo.html)); Studio's
 play-test panel is a second frontend ([Studio](studio.md#play-test)). The
 host plays an arbitrary `rpgkit-project/v1` document through the production
-`GameView` with the editor playtest art, so no game bundle or baked pak is
-needed.
+`GameView` with the editor playtest art, or with the project's own images
+when the frontend supplies them (see [Project art](#project-art)), so no game
+bundle or baked pak is needed.
 
 ### Transport
 
@@ -306,6 +307,10 @@ kind (`an object`, `an array`). Notifications (`input`/`stop` without a
 | One chapter snapshot | 1 MiB | Save-code string bytes, or the structural size of a snapshot object |
 | One chapter tape | 36,000 frames | `tape.length` (u16 masks) |
 | `requestId` | 128 bytes | UTF-8 length |
+| Staged images | 1,024 | Images staged by `art` at once, complete or not |
+| Staged image bytes | 32 MiB | Sum of `width * height * 4` over the staged images, reserved by each image's first slice |
+| Image side | 4,096 px | `width` and `height` of one `art` image |
+| Image id | 256 bytes | UTF-8 length of an `art` `id` |
 
 String bytes follow the UTF-8 encoding of the wire string itself: a lone
 surrogate counts as the 3-byte U+FFFD (exactly what `TextEncoder` produces),
@@ -315,8 +320,8 @@ work proportional to the budget, not to the string.
 
 ### Messages
 
-All requests carry `protocol: "rpgkit-preview/v1"`. `load`, `start` and
-`state` require a `requestId` string; `input` and `stop` may omit it (no
+All requests carry `protocol: "rpgkit-preview/v1"`. `load`, `art`, `start`
+and `state` require a `requestId` string; `input` and `stop` may omit it (no
 reply is sent then). A `requestId` that is present but not a non-empty
 bounded string (a number, an object, an empty string, or over 128 bytes)
 refuses the whole message: it is never demoted to a fire-and-forget
@@ -324,7 +329,8 @@ notification, and it gets no reply (there is no valid correlation key).
 
 | Request | Fields | Reply `result` |
 | --- | --- | --- |
-| `load` | `document`: project JSON text or object; optional `chapters`: `[{id, title, snapshot, tape?}]` (save snapshot/code + u16 tape, for `start` by chapter) | `{title, maps: [{id, name, width, height}], start: {map, x, y, dir}}` |
+| `load` | `document`: project JSON text or object; optional `chapters`: `[{id, title, snapshot, tape?}]` (save snapshot/code + u16 tape, for `start` by chapter); optional `art: true` (draw the staged images) | `{title, maps: [{id, name, width, height}], start: {map, x, y, dir}}`, plus `art: {used, skipped: [{kind, id, reason}]}` when the load asked for art |
+| `art` | `kind` (`sheet` or `sprite`), `id`, `width`, `height`, `offset`, `rgba` (base64 of RGBA8 bytes starting at byte `offset` of the image) | `{received, complete, staged}`: bytes of this image so far, whether it is whole, images staged |
 | `start` | `map` + `x` + `y` + optional `dir` (`down`/`left`/`up`/`right`), **or** `chapter` (a chapter id supplied with `load`) | `{map, x, y, dir}` after the warp/restore |
 | `state` | — | `{status, map, x, y, px, py, dir, moving, frame, running, event, message, switches, variables, gold, items}` |
 | `input` | `buttons`: u16 mask; optional `frames` (1–600, default 1) | empty ok |
@@ -333,7 +339,10 @@ notification, and it gets no reply (there is no valid correlation key).
 Reply envelope: `{protocol, type: "reply", requestId, ok: true, result}` or
 `{..., ok: false, error: {code, message}}`. The host also sends one
 unsolicited event on boot: `{protocol, type: "event", event: "ready",
-version: 1}` (to `window.parent`, target `*`).
+version: 1, features: ["art"]}` (to `window.parent`, target `*`). `features`
+is an optional addition within v1 listing the optional capabilities the host
+has; a host without the field has none, and a frontend ignores names it does
+not know.
 
 In a `state` reply, `frame` is the session frame counter (it advances once
 per simulated frame), `running` counts the event pages running now (the main
@@ -365,8 +374,55 @@ after `stop`), `bad-document`, `unknown-map`, `bad-start`,
 `unknown-chapter`, `bad-input`, `too-large` (a wire limit from the table
 above), `internal`.
 
+### Project art
+
+A host that lists `"art"` in its `ready` features draws a project's own
+images instead of the stand-ins. The frontend stages each image with `art`
+requests, then sends `load` with `art: true`:
+
+- An image is keyed by `kind` and `id`: a `sheet` by its sheet id, a
+  `sprite` by its sprite id (an image sprite's picture, or a walker's whole
+  sheet). Its bytes are `width * height * 4` RGBA8, row-major.
+- An image larger than one message goes in several slices, in order: the
+  first at `offset: 0`, each next one exactly where the previous ended, with
+  the same `width`/`height`. Base64 inflates bytes by 4/3, so a frontend
+  keeps a slice's raw bytes to about 2 MiB (`PREVIEW_ART_SLICE_BYTES`) to
+  stay under the 4 MiB message bound. A slice at offset 0 starts the image
+  afresh. The image is complete when all its bytes have arrived.
+- `bad-message`: a `kind` other than `sheet`/`sprite`, an empty id, a
+  non-integer size or offset, `rgba` that is not strict standard base64
+  (RFC 4648 alphabet, `=` padding, no whitespace), a slice that runs past the
+  image, an out-of-order offset, or a size that differs from the image's
+  first slice. `too-large`: a side over 4,096 px, or an image or a new image
+  that would pass the staged-image or staged-byte bounds. A refused slice
+  leaves the staged image as it was.
+- `load` with `art: true` draws the complete staged images; incomplete ones
+  are ignored. Every `load` empties the staging area, so a `load` without
+  `art` discards staged images and plays with stand-ins as before; `stop`
+  empties it too. The reply's `art.used` counts the images the game now
+  draws, and `art.skipped` lists complete images it could not use (each
+  keeps its stand-in): a sheet that is not a whole number of 16 px cells, a
+  sprite the document does not declare, an image sprite over 512 px, a
+  walker sheet that does not match its declared `cols` x `rows` grid of
+  16 x `h` cells, or a legacy atlas walker.
+- A sheet is cut into 16 px cells, streamed like baked tiles. An image
+  sprite is drawn as is (a side that is not a power of two is resampled to
+  the next one). A walker sheet is cut into the twelve frames the asset
+  baker cuts (`tools/lib/walker-slice.ts`, shared with `tools/lib/bake.ts`).
+  Their textures are freed by the next `load` or `stop`.
+- Art only changes what is drawn. The session, and so every `state` reply,
+  is the same with and without it for the same document and inputs
+  (`tests/preview-art-sim.test.ts` checks this on the wasm sim).
+
+Compatibility runs both ways. A frontend that never sends `art` (or a
+`load` without `art`) gets exactly the earlier behaviour. A frontend sends
+`art` only to a host whose `ready` lists the feature: an older host has no
+`features`, would refuse `art` as an unknown type, and would ignore
+`load.art`.
+
 The same operations are available on the host page as
-`globalThis.__rpgkitPreview` for same-origin drivers and tests. The pure
+`globalThis.__rpgkitPreview` for same-origin drivers and tests (`art` takes
+the request's fields). The pure
 protocol core (allowlist, parsing, dispatch, byte budget) is
 `tools/preview/protocol.ts`, unit-tested in
 `tests/preview-protocol.test.ts`; the end-to-end browser path — including

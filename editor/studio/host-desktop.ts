@@ -55,6 +55,7 @@ function toOpened(reply: OpenReply): OpenedProject | { error: string } {
     label: reply.label,
     fileName: reply.fileName,
     ...(reply.target ? { target: { kind: reply.target.kind, name: reply.target.name, ref: reply.target.token } } : {}),
+    ...(reply.notes?.length ? { notes: reply.notes } : {}),
   };
 }
 

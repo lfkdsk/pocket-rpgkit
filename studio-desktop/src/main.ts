@@ -223,7 +223,7 @@ async function openDirectory(path: string): Promise<OpenReply> {
   const id = token();
   opened.set(id, { kind: "directory", path: dir.root, dir, target });
   addRecent("directory", dir.root);
-  return { text: result.text, label: result.label, fileName: result.fileName, target: { kind: "directory", name: target.name, token: id } };
+  return { text: result.text, label: result.label, fileName: result.fileName, target: { kind: "directory", name: target.name, token: id }, ...(result.notes?.length ? { notes: result.notes } : {}) };
 }
 
 async function openFile(path: string): Promise<OpenReply> {

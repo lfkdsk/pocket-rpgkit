@@ -68,6 +68,9 @@ export interface OpenedProject {
   fileName: string;
   /** Set when the host can save the document where it came from. */
   target?: SaveTarget;
+  /** Short remarks about the open worth showing the user, such as how much
+   * of a folder's art was found. */
+  notes?: string[];
 }
 
 export interface StoredProject {

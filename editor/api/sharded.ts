@@ -48,8 +48,9 @@ export const SHARDED_DOCUMENT_KIND = "rpgkit-edit/sharded-document-v1" as const;
 const NO_SHARD_COMMANDS = new Set(["open", "list-maps"]);
 
 /** Commands that cannot be expressed over a shell in patch-v1. Map
- * add/duplicate/delete would add or remove mapIndex entries, which patch-v1
- * keeps stable so a reverse patch can reacquire the same physical shards.
+ * add/duplicate/delete/move would add, remove or reorder mapIndex entries,
+ * which patch-v1 keeps stable so a reverse patch can reacquire the same
+ * physical shards.
  * Sheet dirEdges are project-global shell data, while a single-map edit
  * only writes back its shard and index metadata, so edge strokes fail closed
  * instead of silently dropping the sheet change. */
@@ -57,6 +58,7 @@ const SHELL_UNSUPPORTED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ["add-map", "adding a map would add a mapIndex entry; patch-v1 keeps ProjectShell mapIndex entries stable"],
   ["duplicate-map", "duplicating a map would add a mapIndex entry; patch-v1 keeps ProjectShell mapIndex entries stable"],
   ["delete-map", "deleting a map would remove a mapIndex entry; patch-v1 keeps ProjectShell mapIndex entries stable"],
+  ["move-map", "map order is the mapIndex order; patch-v1 keeps ProjectShell mapIndex entries in place"],
   ["paint-edges", "sheet dirEdges are project-global; edit them in an inline project"],
 ]);
 

@@ -10,7 +10,7 @@
 // bitmap; on release the whole stroke is committed as one protocol
 // operation and the cache is rebuilt from the resulting document.
 
-import type { GameEvent, MapDef, Sheet, TileId } from "../../src/engine/types.ts";
+import type { GameEvent, MapDef, Sheet, SpriteDef, TileId } from "../../src/engine/types.ts";
 import { uniqueEventId } from "../engine/model.ts";
 import type { StudioApp } from "./app.ts";
 import { ArtRegistry, TILE, parseTileId } from "./art.ts";
@@ -27,6 +27,7 @@ interface Theme {
   event: string;
   eventFill: string;
   hover: string;
+  danger: string;
 }
 
 type Drag =
@@ -52,6 +53,9 @@ export class MapCanvas {
   private drawnGround: (TileId | null | undefined)[] = [];
   private drawnUpper: (TileId | null | undefined)[] = [];
   private drag: Drag | null = null;
+  /** A pulse around a cell rectangle that reveal() points at. */
+  private flash: { x: number; y: number; w: number; h: number; start: number } | null = null;
+  private panAnimation = 0;
   private spaceHeld = false;
   private pending = false;
   private theme!: Theme;
@@ -107,6 +111,7 @@ export class MapCanvas {
       event: v("--canvas-event", "#7ce0c3"),
       eventFill: v("--canvas-event-fill", "rgba(124,224,195,0.18)"),
       hover: v("--canvas-hover", "rgba(255,255,255,0.35)"),
+      danger: v("--danger", "#ff6b6b"),
     };
     this.requestDraw();
   }
@@ -157,6 +162,39 @@ export class MapCanvas {
       ? ZOOM_LEVELS.find((level) => level > current + 1e-6)
       : [...ZOOM_LEVELS].reverse().find((level) => level < current - 1e-6);
     if (next !== undefined) this.setZoom(next, anchorX, anchorY);
+  }
+
+  /** Bring a cell rectangle into view (a short glide when it is off screen)
+   * and pulse a ring around it, e.g. after jumping to a problem. */
+  reveal(rect: { x: number; y: number; w?: number; h?: number }): void {
+    const w = rect.w ?? 1;
+    const h = rect.h ?? 1;
+    const view = this.app.view;
+    const viewW = this.cssWidth / view.zoom;
+    const viewH = this.cssHeight / view.zoom;
+    const margin = TILE;
+    const inside = rect.x * TILE >= view.panX + margin && rect.y * TILE >= view.panY + margin &&
+      (rect.x + w) * TILE <= view.panX + viewW - margin && (rect.y + h) * TILE <= view.panY + viewH - margin;
+    if (!inside) {
+      const fromX = view.panX;
+      const fromY = view.panY;
+      const toX = (rect.x + w / 2) * TILE - viewW / 2;
+      const toY = (rect.y + h / 2) * TILE - viewH / 2;
+      const started = performance.now();
+      const id = ++this.panAnimation;
+      const step = () => {
+        if (id !== this.panAnimation) return;
+        const t = Math.min(1, (performance.now() - started) / 260);
+        const ease = 1 - (1 - t) ** 3;
+        view.panX = fromX + (toX - fromX) * ease;
+        view.panY = fromY + (toY - fromY) * ease;
+        this.app.emit("view");
+        if (t < 1) requestAnimationFrame(step);
+      };
+      step();
+    }
+    this.flash = { x: rect.x, y: rect.y, w, h, start: performance.now() };
+    this.requestDraw();
   }
 
   /** Viewport-relative CSS pixel of a cell's center (for tests and popovers). */
@@ -302,6 +340,7 @@ export class MapCanvas {
     if (visible.grid && zoom * TILE >= 6) this.drawGrid(ctx, map, x0, y0, x1, y1, scale);
     if (visible.events) this.drawEventFrames(ctx, map, scale);
     this.drawSelection(ctx, map, scale);
+    this.drawFlash(ctx, scale);
     this.drawDrag(ctx, scale);
     this.drawHover(ctx, scale);
     // Map border.
@@ -323,42 +362,52 @@ export class MapCanvas {
 
   private drawEvents(ctx: CanvasRenderingContext2D, map: MapDef): void {
     const sprites = this.app.session?.sprites() ?? {};
+    const drag = this.drag;
+    const moving = drag?.kind === "move" && drag.moved ? drag.eventId : null;
     for (const event of map.events ?? []) {
-      const page = this.pageForDisplay(event);
-      const w = (event.w ?? 1) * TILE;
-      const h = (event.h ?? 1) * TILE;
-      const x = event.x * TILE;
-      const y = event.y * TILE;
-      ctx.fillStyle = this.theme.eventFill;
-      ctx.fillRect(x, y, w, h);
-      const spriteId = page?.sprite;
-      if (spriteId) {
-        const frame = this.art.spriteFrame(spriteId, sprites[spriteId]);
-        if (frame) {
-          // Bottom-anchored like the runtime: tall walkers overflow upward.
-          const dw = frame.sw;
-          const dh = frame.sh;
-          ctx.drawImage(frame.image, frame.sx, frame.sy, frame.sw, frame.sh, x + (TILE - dw) / 2, y + TILE - dh, dw, dh);
-        } else {
-          ctx.fillStyle = "rgba(0,0,0,0.35)";
-          ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
-          ctx.fillStyle = this.theme.event;
-          ctx.font = "bold 7px system-ui, sans-serif";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(spriteId.slice(0, 3).toUpperCase(), x + TILE / 2, y + TILE / 2);
-        }
-      }
+      // While an event is dragged its old place shows a faint ghost; the
+      // event itself is drawn at the drop position by drawDrag().
+      if (event.id === moving) ctx.globalAlpha = 0.3;
+      this.drawEventBody(ctx, event, event.x, event.y, sprites);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  private drawEventBody(ctx: CanvasRenderingContext2D, event: GameEvent, cellX: number, cellY: number, sprites: Record<string, SpriteDef>): void {
+    const page = this.pageForDisplay(event);
+    const w = (event.w ?? 1) * TILE;
+    const h = (event.h ?? 1) * TILE;
+    const x = cellX * TILE;
+    const y = cellY * TILE;
+    ctx.fillStyle = this.theme.eventFill;
+    ctx.fillRect(x, y, w, h);
+    const spriteId = page?.sprite;
+    if (!spriteId) return;
+    const frame = this.art.spriteFrame(spriteId, sprites[spriteId]);
+    if (frame) {
+      // Bottom-anchored like the runtime: tall walkers overflow upward.
+      const dw = frame.sw;
+      const dh = frame.sh;
+      ctx.drawImage(frame.image, frame.sx, frame.sy, frame.sw, frame.sh, x + (TILE - dw) / 2, y + TILE - dh, dw, dh);
+    } else {
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+      ctx.fillStyle = this.theme.event;
+      ctx.font = "bold 7px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(spriteId.slice(0, 3).toUpperCase(), x + TILE / 2, y + TILE / 2);
     }
   }
 
   private drawEventFrames(ctx: CanvasRenderingContext2D, map: MapDef, scale: number): void {
-    ctx.lineWidth = 1.5 / scale;
     ctx.strokeStyle = this.theme.event;
     const showLabels = this.app.view.zoom >= 3;
+    const hovered = this.hoveredEvent(map)?.id ?? this.app.highlight;
     for (const event of map.events ?? []) {
       const w = (event.w ?? 1) * TILE;
       const h = (event.h ?? 1) * TILE;
+      ctx.lineWidth = (event.id === hovered ? 3 : 1.5) / scale;
       ctx.strokeRect(event.x * TILE + 0.5 / scale, event.y * TILE + 0.5 / scale, w - 1 / scale, h - 1 / scale);
       if (showLabels) {
         ctx.save();
@@ -458,11 +507,46 @@ export class MapCanvas {
       if (event) rect = { x: event.x, y: event.y, w: event.w ?? 1, h: event.h ?? 1 };
     }
     if (!rect) return;
+    if (selection.kind === "event") {
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.fillStyle = this.theme.select;
+      ctx.fillRect(rect.x * TILE, rect.y * TILE, rect.w * TILE, rect.h * TILE);
+      ctx.restore();
+    }
     ctx.lineWidth = 2 / scale;
     ctx.strokeStyle = this.theme.select;
     ctx.setLineDash([4 / scale, 3 / scale]);
     ctx.strokeRect(rect.x * TILE, rect.y * TILE, rect.w * TILE, rect.h * TILE);
     ctx.setLineDash([]);
+  }
+
+  /** Three fading rings closing in on the revealed rectangle (about 1 s). */
+  private drawFlash(ctx: CanvasRenderingContext2D, scale: number): void {
+    const flash = this.flash;
+    if (!flash) return;
+    const t = (performance.now() - flash.start) / 1000;
+    if (t >= 1) {
+      this.flash = null;
+      return;
+    }
+    const phase = (t * 3) % 1;
+    const grow = (1 - phase) * 10 / this.app.view.zoom;
+    ctx.save();
+    ctx.globalAlpha = (1 - t) * (0.4 + 0.6 * (1 - phase));
+    ctx.lineWidth = 3 / scale;
+    ctx.strokeStyle = this.theme.select;
+    ctx.strokeRect(flash.x * TILE - grow, flash.y * TILE - grow, flash.w * TILE + grow * 2, flash.h * TILE + grow * 2);
+    ctx.globalAlpha = (1 - t) * 0.25;
+    ctx.fillStyle = this.theme.select;
+    ctx.fillRect(flash.x * TILE, flash.y * TILE, flash.w * TILE, flash.h * TILE);
+    ctx.restore();
+    this.requestDraw();
+  }
+
+  /** True while reveal()'s pulse is on screen (tests wait for it). */
+  get flashing(): boolean {
+    return this.flash !== null;
   }
 
   private drawDrag(ctx: CanvasRenderingContext2D, scale: number): void {
@@ -480,17 +564,92 @@ export class MapCanvas {
     } else if (drag?.kind === "move" && drag.moved) {
       const map = this.app.currentMap();
       const event = map?.events?.find((item) => item.id === drag.eventId);
-      if (event) {
-        ctx.lineWidth = 2 / scale;
-        ctx.strokeStyle = this.theme.accent;
-        ctx.strokeRect(drag.at.x * TILE, drag.at.y * TILE, (event.w ?? 1) * TILE, (event.h ?? 1) * TILE);
-      }
+      if (!map || !event) return;
+      const w = (event.w ?? 1) * TILE;
+      const h = (event.h ?? 1) * TILE;
+      // Dashed outline where it was, a line to where it goes, the event
+      // drawn at the drop cell, and a red frame when it would share a cell
+      // with another event (allowed, but usually a mistake).
+      ctx.lineWidth = 1 / scale;
+      ctx.strokeStyle = this.theme.accent;
+      ctx.setLineDash([3 / scale, 3 / scale]);
+      ctx.strokeRect(event.x * TILE, event.y * TILE, w, h);
+      ctx.beginPath();
+      ctx.moveTo(event.x * TILE + w / 2, event.y * TILE + h / 2);
+      ctx.lineTo(drag.at.x * TILE + w / 2, drag.at.y * TILE + h / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.85;
+      this.drawEventBody(ctx, event, drag.at.x, drag.at.y, this.app.session?.sprites() ?? {});
+      ctx.globalAlpha = 1;
+      const overlap = this.overlapping(map, event, drag.at.x, drag.at.y);
+      ctx.lineWidth = 2 / scale;
+      ctx.strokeStyle = overlap ? this.theme.danger : this.theme.accent;
+      ctx.strokeRect(drag.at.x * TILE, drag.at.y * TILE, w, h);
+      this.screenLabel(ctx, drag.at.x * TILE, drag.at.y * TILE + h, overlap ? `(${drag.at.x}, ${drag.at.y}) shares a cell with ${overlap.id}` : `(${drag.at.x}, ${drag.at.y})`, overlap ? this.theme.danger : this.theme.accent);
     }
+  }
+
+  /** Another event covering any cell of `event` placed at (x, y). */
+  private overlapping(map: MapDef, event: GameEvent, x: number, y: number): GameEvent | undefined {
+    const w = event.w ?? 1;
+    const h = event.h ?? 1;
+    return (map.events ?? []).find((other) => other.id !== event.id &&
+      other.x < x + w && x < other.x + (other.w ?? 1) && other.y < y + h && y < other.y + (other.h ?? 1));
+  }
+
+  /** A small text tag in screen pixels just under map point (mx, my). */
+  private screenLabel(ctx: CanvasRenderingContext2D, mx: number, my: number, text: string, color: string): void {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const dpr = window.devicePixelRatio || 1;
+    const { zoom, panX, panY } = this.app.view;
+    const px = (mx - panX) * zoom * dpr;
+    const py = (my - panY) * zoom * dpr + 3 * dpr;
+    ctx.font = `600 ${10.5 * dpr}px system-ui, sans-serif`;
+    const tw = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(10,12,16,0.82)";
+    ctx.fillRect(px, py, tw + 10 * dpr, 15 * dpr);
+    ctx.fillStyle = color;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, px + 5 * dpr, py + 7.5 * dpr);
+    ctx.restore();
+  }
+
+  /** The event under the pointer when the select or event tool would pick
+   * it up (not while dragging). */
+  private hoveredEvent(map: MapDef): GameEvent | undefined {
+    const hover = this.app.hover;
+    if (!hover || this.drag || !this.app.visible.events) return undefined;
+    if (this.app.tool !== "select" && this.app.tool !== "event") return undefined;
+    return this.eventAt(map, hover.x, hover.y);
+  }
+
+  /** Drop an event drag without moving it (Esc). */
+  cancelDrag(): boolean {
+    if (this.drag?.kind !== "move" && this.drag?.kind !== "rect" && this.drag?.kind !== "paint") return false;
+    this.drag = null;
+    this.cacheRevision = "";
+    this.requestDraw();
+    return true;
   }
 
   private drawHover(ctx: CanvasRenderingContext2D, scale: number): void {
     const hover = this.app.hover;
+    const map = this.app.currentMap();
+    const overEvent = map ? this.hoveredEvent(map) : undefined;
+    this.canvas.classList.toggle("over-event", !!overEvent);
+    this.canvas.classList.toggle("moving-event", this.drag?.kind === "move");
     if (!hover || this.drag?.kind === "pan") return;
+    const tool = this.app.tool;
+    const tileLayer = this.app.layer === "ground" || this.app.layer === "upper";
+    if (!this.drag && tileLayer && (tool === "pencil" || tool === "rect") && this.app.brush) {
+      // Show the brush where it would land.
+      ctx.globalAlpha = 0.6;
+      this.drawTile(ctx, this.app.brush, hover.x * TILE, hover.y * TILE);
+      ctx.globalAlpha = 1;
+    }
     ctx.lineWidth = 1 / scale;
     ctx.strokeStyle = this.theme.hover;
     ctx.strokeRect(hover.x * TILE, hover.y * TILE, TILE, TILE);

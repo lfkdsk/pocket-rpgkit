@@ -1,6 +1,6 @@
 // editor/api/limits.ts — resource limits for documents and art the editor
 // accepts from outside: imported project JSON, sharded packs, their shards and
-// local PNGs. Everything that reads such input (EditSession, the pack reader,
+// asset images, and local PNGs. Everything that reads such input (EditSession, the pack reader,
 // Studio's hosts) checks it against these numbers before doing expensive work,
 // so a huge or hostile file fails with a clear message instead of freezing or
 // exhausting the page.
@@ -38,6 +38,12 @@ export const MAX_PNG_SIDE = 8192;
 export const MAX_PNG_PIXELS = 16_777_216;
 /** Bytes a PNG header needs for readPngSize: signature + IHDR width/height. */
 export const PNG_HEADER_BYTES = 24;
+/** Images one sharded pack carries in its `assets`. */
+export const MAX_PACK_ASSETS = 4096;
+/** All of one pack's asset images together, decoded (each image is also
+ * held to MAX_PNG_BYTES, and the whole pack text to MAX_PACK_BYTES). Base64
+ * makes 32 MiB of images about 43 MiB of pack text, leaving room for maps. */
+export const MAX_PACK_ASSET_BYTES = 32 * MiB;
 
 /** UTF-8 byte length of `text`, counted without allocating. When `limit` is
  * given and the text has more UTF-16 units than that, the byte count is
@@ -118,6 +124,18 @@ export function shardProblem(entry: string, bytes: number): string | null {
 /** Why a pack has too many shards, or null. */
 export function shardCountProblem(shards: number): string | null {
   return shards > MAX_SHARDS ? `the pack has ${count(shards)} map shards; a pack can have at most ${count(MAX_SHARDS)}.` : null;
+}
+
+/** Why a pack carries too many asset images, or null. */
+export function packAssetCountProblem(assets: number): string | null {
+  return assets > MAX_PACK_ASSETS ? `the pack has ${count(assets)} asset images; a pack can have at most ${count(MAX_PACK_ASSETS)}.` : null;
+}
+
+/** Why a pack's asset images weigh too much together, or null. */
+export function packAssetBytesProblem(bytes: number): string | null {
+  return bytes > MAX_PACK_ASSET_BYTES
+    ? `the pack's asset images are ${sizeOver(bytes, MAX_PACK_ASSET_BYTES)} together; a pack can carry at most ${formatLimit(MAX_PACK_ASSET_BYTES)} of images.`
+    : null;
 }
 
 /** Why an inline project has too many maps, or null. */

@@ -1,7 +1,8 @@
 // The desktop app's project folder (studio-desktop/src/fs-directory.ts): a
 // ProjectDirectory over node:fs that Studio opens and saves in place. These
 // tests use real files in a scratch folder and check (1) that every path
-// stays inside the folder the user picked, symlinks included, (2) that a save
+// stays inside the folder the user picked, symlinks included, for text and
+// art (readBytes) alike, (2) that a save
 // replaces only the files whose text changed and leaves no temporary files,
 // lock or rollback copies behind, (3) that a file changed on disk since it was
 // opened blocks the save, (4) that a save waits for no one: another writer
@@ -35,6 +36,7 @@ import type { Project } from "../src/engine/types.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const SUNSTONE = readFileSync(join(ROOT, "examples", "sunstone", "data", "sunstone.json"), "utf8");
+const TILE_PNG = new Uint8Array(readFileSync(join(ROOT, "editor", "assets", "tile-town-48.png")));
 const TEMP = join(import.meta.dir, `.studio-desktop-fs-${process.pid}`);
 const VILLAGE = "maps/village.json";
 const SAVED_AT = "2026-01-01T00:00:00.000Z";
@@ -194,6 +196,56 @@ describe("FsDirectory keeps every path inside the folder", () => {
     expect(dir.resolve("alias.json")).toBe(join(realpathSync(root), "maps", "village.json"));
     await dir.write("alias.json", village.replace("town.0", "town.1"));
     expect(readFileSync(join(root, VILLAGE), "utf8")).toBe(village.replace("town.0", "town.1"));
+  });
+
+  test("readBytes reads a file's exact bytes under the same rules", async () => {
+    const outside = scratch("outside");
+    writeFileSync(join(outside, "secret.png"), TILE_PNG);
+    const root = looseSunstone();
+    mkdirSync(join(root, "art", "sheets"), { recursive: true });
+    writeFileSync(join(root, "art", "sheets", "town.png"), TILE_PNG);
+    symlinkSync(join(outside, "secret.png"), join(root, "art", "sheets", "dun.png"));
+    symlinkSync(outside, join(root, "linked"));
+    symlinkSync(join(root, "art", "sheets", "town.png"), join(root, "alias.png"));
+    const dir = new FsDirectory(root);
+
+    const bytes = await dir.readBytes("art/sheets/town.png");
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(bytes).toEqual(TILE_PNG);
+    expect(await dir.readBytes("alias.png")).toEqual(TILE_PNG);
+    for (const path of refused) await expect(dir.readBytes(path)).rejects.toThrow();
+    for (const path of ["art/sheets/dun.png", "linked/secret.png"]) {
+      await expect(dir.readBytes(path)).rejects.toThrow(/resolves outside/);
+    }
+    await expect(dir.readBytes("art/sheets/missing.png")).rejects.toThrow();
+    await expect(dir.readBytes("no-such-folder/x.png")).rejects.toThrow();
+  });
+
+  test("opening a folder embeds its own art, skips art outside it, and a save never writes art", async () => {
+    const outside = scratch("outside");
+    writeFileSync(join(outside, "dun.png"), TILE_PNG);
+    const root = looseSunstone();
+    mkdirSync(join(root, "art", "sheets"), { recursive: true });
+    mkdirSync(join(root, "assets", "npc"), { recursive: true });
+    writeFileSync(join(root, "art", "sheets", "town.png"), TILE_PNG);
+    writeFileSync(join(root, "assets", "npc", "wiz.png"), TILE_PNG);
+    symlinkSync(join(outside, "dun.png"), join(root, "art", "sheets", "dun.png"));
+    const dir = new FsDirectory(root);
+    const opened = await open(dir);
+    const pack = parseShardedPack(opened.text);
+    expect([...pack.assets.keys()]).toEqual(["art/sheets/town.png", "assets/npc/wiz.png"]);
+    expect(opened.notes?.[0]).toBe("Loaded 2 art files from the folder.");
+    expect(opened.notes?.[1]).toMatch(/^13 referenced art files are missing: art\/sheets\/dun\.png, /);
+
+    const edited = paintThroughSession(opened.text);
+    expect(parseShardedPack(edited).assets).toEqual(pack.assets);
+    const before = mtimes(root);
+    const outcome = await saveDirectoryTarget(opened.target, edited, SAVED_AT);
+    expect(outcome).toEqual({ ok: true, where: "directory", written: [VILLAGE, "project.json"], savedAt: SAVED_AT });
+    const after = mtimes(root);
+    for (const path of ["art/sheets/town.png", "assets/npc/wiz.png"]) expect(after.get(path)).toBe(before.get(path)!);
+    expect(new Uint8Array(readFileSync(join(root, "art", "sheets", "town.png")))).toEqual(TILE_PNG);
+    expect(leftovers(root)).toEqual([]);
   });
 
   // realpathSync also fails for a symlink whose target does not exist, so a

@@ -2,17 +2,19 @@
 // editor/studio/art.ts — tile sheet and character art for the canvas.
 //
 // A project names its sheets and sprites by id; the pixels live outside the
-// document. Bundled examples ship their art beside the page. For any other
-// project the user may pick a local PNG per id through the host (LocalArt):
-// it is decoded here only, never uploaded or stored. Ids without art draw a hatched,
-// id-coloured placeholder so the map stays readable.
+// document. A project folder (or a pack that carries art) brings its own
+// PNGs, found by the conventions in project-art.ts; bundled examples ship
+// their art beside the page. The user may also pick a local PNG per id
+// through the host (LocalArt): it is decoded here only, never uploaded or
+// stored. Ids without art draw a hatched, id-coloured placeholder so the map
+// stays readable.
 
 import type { SpriteDef } from "../../src/engine/types.ts";
 import type { LocalArt } from "./host.ts";
 
 export const TILE = 16;
 
-export type ArtSource = "bundled" | "local" | "missing" | "loading" | "broken";
+export type ArtSource = "project" | "bundled" | "local" | "missing" | "loading" | "broken";
 
 interface ArtEntry {
   image: CanvasImageSource | null;
@@ -60,7 +62,7 @@ export class ArtRegistry {
     this.changed();
   }
 
-  private load(table: Map<string, ArtEntry>, id: string, url: string, source: "bundled" | "local", from: string, local?: LocalArt): Promise<void> {
+  private load(table: Map<string, ArtEntry>, id: string, url: string, source: "project" | "bundled" | "local", from: string, local?: LocalArt): Promise<void> {
     this.release(table.get(id));
     const keep = local ? { local } : {};
     table.set(id, { image: null, source: "loading", width: 0, height: 0, from, ...keep });
@@ -93,6 +95,32 @@ export class ArtRegistry {
 
   loadBundledSprite(id: string, url: string): Promise<void> {
     return this.load(this.sprites, id, url, "bundled", url);
+  }
+
+  /** The project's own PNG for a sheet id; `path` is the path the project
+   * names it by, `url` something drawable (a data: URL of the pack asset). */
+  loadProjectSheet(id: string, path: string, url: string): Promise<void> {
+    return this.load(this.sheets, id, url, "project", path);
+  }
+
+  loadProjectSprite(id: string, path: string, url: string): Promise<void> {
+    return this.load(this.sprites, id, url, "project", path);
+  }
+
+  /** The decoded RGBA pixels of a sheet's or sprite's art, for the
+   * play-test; null when it has none or it is bundled example art (the
+   * game already has that). */
+  pixels(kind: "sheet" | "sprite", id: string): { width: number; height: number; rgba: Uint8Array } | null {
+    const entry = (kind === "sheet" ? this.sheets : this.sprites).get(id);
+    if (!entry?.image || (entry.source !== "project" && entry.source !== "local") || !entry.width || !entry.height) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = entry.width;
+    canvas.height = entry.height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(entry.image, 0, 0);
+    const data = ctx.getImageData(0, 0, entry.width, entry.height).data;
+    return { width: entry.width, height: entry.height, rgba: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) };
   }
 
   /** Use a local PNG (picked through the host) for a sheet id. */

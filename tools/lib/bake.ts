@@ -17,12 +17,15 @@
 import { decodePng } from "../../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../../vendor/pocketjs/tests/png.ts";
 import type { MapDef, TileId } from "../../src/engine/types.ts";
+import {
+  sliceWalkerFrames,
+  TUXEMON_WALKER_LAYOUT,
+  type SheetImage,
+  type WalkerSheetLayout,
+  type WalkerSheetOptions,
+} from "./walker-slice.ts";
 
-export interface SheetImage {
-  width: number;
-  height: number;
-  rgba: Uint8Array;
-}
+export type { SheetImage };
 
 export interface TileCells {
   cols: number;
@@ -197,84 +200,27 @@ export interface WalkerSheetFrames extends WalkerFrames {
   cellH: number;
 }
 
-/** Where each engine facing/pose lives on a source sheet. */
-export interface WalkerSheetLayout {
-  /** Engine facing index (0 down,1 left,2 up,3 right) -> sheet row. */
-  rowForFacing: readonly [number, number, number, number];
-  /** Sheet columns for the three poses. */
-  idleCol: number;
-  walkLCol: number;
-  walkRCol: number;
-}
-
-export interface WalkerSheetOptions {
-  cols?: number;
-  rows?: number;
-  cellW?: number;
-  cellH?: number;
-  layout?: WalkerSheetLayout;
-}
-
-/**
- * The Tuxemon character sheet: 3 columns x 4 rows of 16x32 cells.
- * Rows run down, left, RIGHT, up; columns run walk-L, idle, walk-R. The
- * engine facing order is down, left, UP, right, so rows 2 and 3 swap.
- * (Scout S1 §8: sprites/<name>.png 48x128; idle is the middle column.)
- */
-export const TUXEMON_WALKER_LAYOUT: WalkerSheetLayout = {
-  rowForFacing: [0, 1, 3, 2], // engine down,left,up,right <- sheet rows
-  idleCol: 1,
-  walkLCol: 0,
-  walkRCol: 2,
-};
+export type { WalkerSheetLayout, WalkerSheetOptions };
+export { TUXEMON_WALKER_LAYOUT };
 
 /** Slice decoded walker pixels (default a Tuxemon 3x4 of 16x32 cells) into
  *  twelve frame PNGs in engine order. This pure form lets importers and
- *  tests use an already-decoded source without a second filesystem read. */
+ *  tests use an already-decoded source without a second filesystem read.
+ *  The cut itself is tools/lib/walker-slice.ts, shared with the preview
+ *  page, which uploads the same raw frames at run time. */
 export function sliceWalkerSheet(
   png: SheetImage,
   opts: WalkerSheetOptions = {},
   source = "walker sheet",
 ): WalkerSheetFrames {
-  const cellW = opts.cellW ?? 16;
-  const cellH = opts.cellH ?? 32;
-  const cols = opts.cols ?? 3;
-  const rows = opts.rows ?? 4;
-  const layout = opts.layout ?? TUXEMON_WALKER_LAYOUT;
-  if (
-    !Number.isInteger(cellW) || cellW < 1 ||
-    !Number.isInteger(cellH) || cellH < 1 ||
-    !Number.isInteger(cols) || cols < 1 ||
-    !Number.isInteger(rows) || rows < 1
-  ) {
-    throw new Error(`${source}: walker grid and cell sizes must be positive integers`);
-  }
-  if (png.width !== cols * cellW || png.height !== rows * cellH) {
-    throw new Error(`${source}: expected a ${cols}x${rows} sheet of ${cellW}x${cellH} cells, got ${png.width}x${png.height}`);
-  }
-  const poseColumns = [layout.idleCol, layout.walkLCol, layout.walkRCol];
-  if (
-    layout.rowForFacing.some((row) => !Number.isInteger(row) || row < 0 || row >= rows) ||
-    poseColumns.some((col) => !Number.isInteger(col) || col < 0 || col >= cols)
-  ) {
-    throw new Error(`${source}: walker layout addresses a cell outside the ${cols}x${rows} sheet`);
-  }
-  const copy = (col: number, row: number): Buffer => {
-    const out = new Uint8Array(cellW * cellH * 4);
-    for (let y = 0; y < cellH; y++) {
-      const src = ((row * cellH + y) * png.width + col * cellW) * 4;
-      out.set(png.rgba.subarray(src, src + cellW * 4), y * cellW * 4);
-    }
-    return encodePNG(out, cellW, cellH);
-  };
-  const cut = (col: number): Buffer[] =>
-    [0, 1, 2, 3].map((facing) => copy(col, layout.rowForFacing[facing]!));
+  const frames = sliceWalkerFrames(png, opts, source);
+  const encode = (rgba: Uint8Array): Buffer => encodePNG(rgba, frames.cellW, frames.cellH);
   return {
-    idle: cut(layout.idleCol),
-    walkL: cut(layout.walkLCol),
-    walkR: cut(layout.walkRCol),
-    cellW,
-    cellH,
+    idle: frames.idle.map(encode),
+    walkL: frames.walkL.map(encode),
+    walkR: frames.walkR.map(encode),
+    cellW: frames.cellW,
+    cellH: frames.cellH,
   };
 }
 

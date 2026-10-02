@@ -16,6 +16,7 @@ export const EDIT_COMMANDS = [
   "add-map",
   "duplicate-map",
   "delete-map",
+  "move-map",
   "paint-tile",
   "paint-rect",
   "fill-region",

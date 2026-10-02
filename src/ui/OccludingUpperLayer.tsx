@@ -155,6 +155,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
   let rebind = false;
   const stream = props.assets.stream;
   const isStreamed = stream !== undefined;
+  const loadTile = stream?.loadTile ?? loadTileTexture;
   let upperVisible = props.visible?.() ?? true;
 
   const reportStream = (pending: number): void => {
@@ -352,7 +353,7 @@ export function OccludingUpperLayer(props: OccludingUpperLayerProps): SolidJSX.E
       }
       if (textureSlotsPooled > 0) textureSlotsPooled--;
       else textureSlotsCreated++;
-      const handle = loadTileTexture(ref.slice(0, hash), tileIndex);
+      const handle = loadTile(ref.slice(0, hash), tileIndex);
       if (handle >= 0) uploads++;
       liveTextures.set(index, { handle });
       setTexture(index, handle);

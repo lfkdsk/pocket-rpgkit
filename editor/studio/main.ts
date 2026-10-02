@@ -11,16 +11,17 @@ import { mountAgentPanel } from "./agent-panel.ts";
 import { StudioApp, type PaintLayer, type Tool } from "./app.ts";
 import { ArtRegistry, parseTileId } from "./art.ts";
 import { MapCanvas, isTyping } from "./canvas.ts";
-import { h, icon, iconButton, MOD, replace } from "./dom.ts";
+import { emptyState, h, icon, iconButton, MOD, replace } from "./dom.ts";
 import { StudioFiles } from "./files.ts";
 import type { HostCommand, HostFeature, StudioHost, ThemeChoice } from "./host.ts";
 import { BrowserHost } from "./host-browser.ts";
 import { mountInspector } from "./inspector.ts";
 import { eventCopyOp } from "./inspector-model.ts";
-import { PlayTest } from "./preview.ts";
+import { PlayTest, type PreviewArtImage } from "./preview.ts";
 import { mountPlayTestPanel } from "./preview-panel.ts";
 import { mountMapTree } from "./map-tree.ts";
 import { mountPalette } from "./palette.ts";
+import { keyLabel, SHORTCUT_GROUPS } from "./shortcuts.ts";
 import { schemaProblems, type StudioProblem } from "./problems.ts";
 
 const host: StudioHost = (globalThis as { studioHost?: StudioHost }).studioHost ?? new BrowserHost();
@@ -65,6 +66,22 @@ mountMapTree($("maps"), app);
 mountPalette($("palette"), app, art);
 mountInspector($("inspector"), app);
 const play = new PlayTest(app, host, () => files.examples);
+// The game gets the project's own art and the user's picks (bundled
+// example art is already in the game): one image per sheet and sprite id.
+play.setArtProvider(async () => {
+  const session = app.session;
+  if (!session) return [];
+  const images: PreviewArtImage[] = [];
+  for (const sheet of session.sheets()) {
+    const pixels = art.pixels("sheet", sheet.id);
+    if (pixels) images.push({ kind: "sheet", id: sheet.id, ...pixels });
+  }
+  for (const id of Object.keys(session.sprites())) {
+    const pixels = art.pixels("sprite", id);
+    if (pixels) images.push({ kind: "sprite", id, ...pixels });
+  }
+  return images;
+});
 const playPanel = mountPlayTestPanel($("playtest"), app, play, () => canvas?.canvas.focus());
 const agent = new AgentReview(app, host);
 const agentPanel = mountAgentPanel($("agent"), agent, () => {
@@ -237,7 +254,14 @@ function scheduleProblems(): void {
 
 function locate(problem: StudioProblem): void {
   if (problem.map) app.openMap(problem.map);
+  const event = problem.event ? app.currentMap()?.events?.find((item) => item.id === problem.event) : undefined;
   if (problem.event) app.select({ kind: "event", eventId: problem.event, page: problem.page ?? 0 });
+  // Glide to the event and pulse it; the inspector flashes the event too.
+  if (event) {
+    app.pulse = true;
+    requestAnimationFrame(() => canvas?.reveal({ x: event.x, y: event.y, w: event.w, h: event.h }));
+  }
+  app.emit("selection");
 }
 
 function renderProblems(): void {
@@ -263,7 +287,7 @@ function renderProblems(): void {
       }, "Run engine checks"),
       iconButton("chevron", "Close problems", () => { problemsOpen = false; renderProblems(); renderStatus(); })),
     problems.length === 0
-      ? h("p", { class: "empty" }, icon("check"), " No problems found by schema validation and rpgkit-check.")
+      ? emptyState("check", "No problems", "Schema validation and rpgkit-check found nothing to fix.")
       : h("ul", { class: "problem-list" }, problems.map((problem) => h("li", null, h("button", {
           type: "button",
           class: `problem ${problem.severity}`,
@@ -347,6 +371,7 @@ function renderHistory(): void {
   const done = session.history();
   const future = session.future();
   const rows = [
+    done.length === 0 && future.length === 0 ? h("li", null, emptyState("history", "No edits yet", "Every edit becomes one step here; click a step to go back to it.")) : null,
     h("li", null, h("button", { type: "button", class: `history-row${done.length === 0 ? " current" : ""}`, onclick: () => app.jumpTo(0) }, h("span", { class: "muted" }, "Opened document"))),
     ...done.map((entry, index) => h("li", null, h("button", {
       type: "button",
@@ -401,7 +426,7 @@ function openArtDialog(): void {
       return h("tr", null,
         h("td", null, h("code", null, sheet.id)), h("td", null, "tile sheet"),
         h("td", null, `${sheet.cols}×${sheet.rows} cells`),
-        h("td", { class: `art-status ${status.source}` }, status.source === "missing" ? "placeholder" : status.source, status.from ? h("span", { class: "muted" }, ` ${status.from.split("/").pop()}`) : null),
+        h("td", { class: `art-status ${status.source}` }, status.source === "missing" ? "placeholder" : status.source, status.from ? h("span", { class: "muted" }, ` ${status.source === "project" ? status.from : status.from.split("/").pop()}`) : null),
         h("td", null, h("button", { type: "button", class: "text-button", dataset: { artSheet: sheet.id }, disabled: !localArt.available, title: localArt.reason, onclick: () => void choose() }, "Choose PNG…")));
     });
     const spriteRows = Object.entries(session.sprites()).map(([id, def]) => {
@@ -419,7 +444,7 @@ function openArtDialog(): void {
       return h("tr", null,
         h("td", null, h("code", null, id)), h("td", null, def.kind === "walker" ? "walker sheet" : "image"),
         h("td", null, def.kind === "image" ? def.src : "sheet" in def ? def.sheet : "atlases"),
-        h("td", { class: `art-status ${status.source}` }, status.source === "missing" ? "placeholder" : status.source),
+        h("td", { class: `art-status ${status.source}` }, status.source === "missing" ? "placeholder" : status.source, status.from && status.source === "project" ? h("span", { class: "muted" }, ` ${status.from}`) : null),
         h("td", null, h("button", { type: "button", class: "text-button", disabled: !localArt.available, title: localArt.reason, onclick: () => void choose() }, "Choose PNG…")));
     });
     replace(body, h("table", { class: "art-table" },
@@ -428,28 +453,22 @@ function openArtDialog(): void {
   };
   render();
   dialog("Art",
-    h("p", { class: "hint" }, `Tile sheets and characters are drawn from art keyed by id. Bundled examples bring their own; for other ids choose a local PNG. ${localArt.reason} The project JSON does not change.`),
+    h("p", { class: "hint" }, `Tile sheets and characters are drawn from art keyed by id. A project folder brings its own (art/sheets/<id>.png, each sprite's src or sheet path, art/sprites/<id>.png), and so does a pack that carries art; bundled examples bring theirs. For other ids choose a local PNG. ${localArt.reason} The project JSON does not change.`),
     body);
 }
 
 function openShortcuts(): void {
-  const rows: [string, string][] = [
-    [`${MOD}+Z / ${MOD}+Shift+Z`, "Undo / redo"],
-    [`${MOD}+S`, "Save (in this browser, or back into the opened folder)"],
-    [`${MOD}+O`, "Open a file"],
-    [`${MOD}+Shift+E`, "Download"],
-    ["V B R F E I N", "Select, brush, rectangle, fill, eraser, eyedropper, events"],
-    ["1 2 3 4", "Ground, upper, passage, edges layer"],
-    ["G / P", "Grid / passage overlay"],
-    ["Wheel, pinch, = / -", "Zoom"],
-    ["0", "Fit map"],
-    ["Space+drag, middle drag, Shift+wheel", "Pan"],
-    ["Right-click drag", "Erase while painting"],
-    ["Delete", "Delete the selected event"],
-    [`${MOD}+D`, "Duplicate the selected event"],
-    ["Esc", "Clear selection"],
-  ];
-  dialog("Keyboard shortcuts", h("table", { class: "shortcut-table" }, h("tbody", null, rows.map(([keys, action]) => h("tr", null, h("td", null, h("kbd", null, keys)), h("td", null, action))))));
+  const mac = MOD === "⌘";
+  const chord = (keys: string[]) => h("span", { class: "chord" }, keys.map((key, i) => [i > 0 ? h("span", { class: "plus" }, "+") : null, h("kbd", null, keyLabel(key, mac))]));
+  dialog("Keyboard shortcuts",
+    h("div", { class: "shortcut-grid", "data-role": "shortcuts" }, SHORTCUT_GROUPS.map((group) =>
+      h("section", { class: "shortcut-group" },
+        h("h3", null, group.title),
+        h("dl", null, group.items.map((item) => [
+          h("dt", null, item.keys.map((keys, i) => [i > 0 ? h("span", { class: "or" }, "/") : null, chord(keys)])),
+          h("dd", null, item.action),
+        ]))))),
+    h("p", { class: "hint shortcut-foot" }, "Every toolbar button's tooltip also names its shortcut."));
 }
 
 // ---- right column tabs ----------------------------------------------------------------
@@ -540,7 +559,12 @@ window.addEventListener("keydown", (event) => {
   if (key === "-") { canvas?.zoomStep(-1); return; }
   if (key === "0") { canvas?.fit(); return; }
   if (key === "?") { openShortcuts(); return; }
-  if (key === "escape") { closeMenus(); app.select({ kind: "none" }); return; }
+  if (key === "escape") {
+    closeMenus();
+    if (canvas?.cancelDrag()) return;
+    app.select({ kind: "none" });
+    return;
+  }
   if ((key === "delete" || key === "backspace") && (event.target === document.body || event.target === canvas?.canvas)) {
     event.preventDefault();
     deleteSelectedEvent();

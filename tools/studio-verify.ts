@@ -10,6 +10,13 @@
 //             Ctrl+Z / Ctrl+Shift+Z undo and redo it
 //   event     the event tool creates an event; the inspector adds a text
 //             command and writes a line of dialog
+//   drag      dragging a map row reorders the maps with one move-map step;
+//             dragging a command row into another branch is one transaction
+//             (delete + insert) and lands where the drop line showed;
+//             dragging an event on the canvas moves it with one update-event
+//             step (ghost, target frame and coordinates drawn meanwhile);
+//             each is undone byte for byte; Esc cancels a drag; the
+//             shortcuts panel, empty states and the problem jump's pulse
 //   save      Ctrl+S stores the document; a reload restores it
 //   download  the downloaded JSON passes schema validation and rpgkit-edit
 //             (the CLI) reads it and lists the new event
@@ -24,6 +31,12 @@
 //             puts the shard back and a retry succeeds; Save pressed twice
 //             runs the saves one after the other (Save disabled, "saving…"
 //             shown) and leaves one whole version on disk
+//   art       a project folder with its own art (art/sheets/town.png, an
+//             autumn recolour, and the wiz sprite's src file) opens with that
+//             art on the canvas, pixel for pixel; Download writes a pack that
+//             carries the art, and opening that pack shows it again; the
+//             play-test gets the art too (the game's screen shows the autumn
+//             sheet and the recoloured sprite)
 //   limits    a picked file over the pack limit is refused before it is read;
 //             the served page carries the browser host's boot script
 //   perf      a 100×100 map: zoom, pan and a 200-cell stroke stay fast
@@ -54,6 +67,7 @@ import { Cdp, launchChrome } from "./lib/cdp.ts";
 import { splitProjectMaps } from "./lib/map-project.ts";
 import { DEFAULT_UI_THEME } from "../src/ui/theme.ts";
 import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
+import { autumn, encodePng } from "./lib/png-encode.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -455,6 +469,129 @@ async function main(): Promise<void> {
     const written = await evaluate<unknown>(`__studio.app.currentMap().events.find((e) => e.id === ${JSON.stringify(created?.id ?? "")})?.pages[0].commands`);
     expect("event: the inspector writes a line of dialog", JSON.stringify(written) === JSON.stringify([{ op: "text", lines: ["Hello from Studio!"] }]), JSON.stringify(written));
 
+    // ---- drag and drop ----
+    phase = "drag";
+    const rectOf = (expression: string) => evaluate<{ x: number; y: number; w: number; h: number } | null>(`(() => {
+      const el = ${expression};
+      if (!el) return null;
+      el.scrollIntoView({ block: "nearest" });
+      const r = el.getBoundingClientRect();
+      return { x: r.left, y: r.top, w: r.width, h: r.height };
+    })()`);
+    /** Press at `from`, move there in steps, optionally shoot, release. */
+    const dragPoints = async (from: { x: number; y: number }, to: { x: number; y: number }, shotName?: string, release = true) => {
+      await mouse("mouseMoved", from.x, from.y, "none");
+      await mouse("mousePressed", from.x, from.y);
+      for (let i = 1; i <= 8; i++) await mouse("mouseMoved", from.x + (to.x - from.x) * i / 8, from.y + (to.y - from.y) * i / 8);
+      await sleep(120);
+      if (shotName) await shot(shotName);
+      if (release) await mouse("mouseReleased", to.x, to.y);
+      await sleep(150);
+    };
+    const beforeDrag = await evaluate<string>(`__studio.app.session.exportText()`);
+    const historyDepth = () => evaluate<number>(`__studio.app.session.history().length`);
+    const lastStep = () => evaluate<{ label: string; commands: string[] }>(`(() => { const h = __studio.app.session.history().at(-1); return { label: h.label, commands: h.commands }; })()`);
+
+    // Maps: drag the last map (cave) above the first.
+    const mapOrder = () => evaluate<string[]>(`__studio.app.session.maps().map((m) => m.id)`);
+    const order0 = await mapOrder();
+    const caveRow = await rectOf(`document.querySelector('.map-row[data-map="cave"]')`);
+    const firstRow = await rectOf(`document.querySelector('.map-row[data-map="${order0[0]}"]')`);
+    const depth0 = await historyDepth();
+    await dragPoints({ x: caveRow!.x + 40, y: caveRow!.y + caveRow!.h / 2 }, { x: firstRow!.x + 40, y: firstRow!.y + 3 }, "studio-drag-map", false);
+    const lineShown = await evaluate<boolean>(`!!document.querySelector(".map-drop-line") && !!document.querySelector(".map-row.dragging")`);
+    await mouse("mouseReleased", firstRow!.x + 40, firstRow!.y + 3);
+    await sleep(150);
+    const order1 = await mapOrder();
+    const mapStep = await lastStep();
+    expect("drag: a map row drag shows the drop line and the dragged row", lineShown, String(lineShown));
+    expect("drag: dropping the map above the first reorders the maps", order1[0] === "cave" && order1.length === order0.length && order1.slice(1).join() === order0.filter((id) => id !== "cave").join(), `${order0} -> ${order1}`);
+    expect("drag: the map drag is one move-map step", (await historyDepth()) === depth0 + 1 && mapStep.commands.join() === "move-map", JSON.stringify(mapStep));
+    expect("drag: the open map stays open after the drop", (await evaluate<string>(`__studio.app.mapId`)) === "village", await evaluate<string>(`__studio.app.mapId`));
+    await key("z", "KeyZ", CTRL);
+    expect("drag: Ctrl+Z puts the map order back byte for byte", (await evaluate<string>(`__studio.app.session.exportText()`)) === beforeDrag, (await mapOrder()).join());
+    // Alt+Down on the focused list moves the open map one place down.
+    await evaluate(`document.querySelector(".map-scroller").focus()`);
+    await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "ArrowDown", code: "ArrowDown", modifiers: 1, windowsVirtualKeyCode: 40 });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowDown", code: "ArrowDown", modifiers: 1, windowsVirtualKeyCode: 40 });
+    await sleep(120);
+    const altOrder = await mapOrder();
+    expect("drag: Alt+Down moves the open map down one place", altOrder.indexOf("village") === order0.indexOf("village") + 1, altOrder.join());
+    await key("z", "KeyZ", CTRL);
+
+    // Commands: drag the elder's first line into the top of the choice's
+    // "Farewell" branch.
+    await key("v", "KeyV", 0, "v");
+    const elderAt = await cell(9, 5);
+    await click(elderAt.x, elderAt.y);
+    await waitFor("elder command tree", `document.querySelectorAll('[data-action="select-command"]').length >= 4`);
+    const elderBefore = await evaluate<any[]>(`__studio.app.currentMap().events.find((e) => e.id === "elder").pages[0].commands`);
+    const firstText = await rectOf(`document.querySelector('.ins-row[data-op="text"]')`);
+    const farewell = await rectOf(`[...document.querySelectorAll(".ins-branch")].find((el) => /farewell/i.test(el.textContent))`);
+    const depth1 = await historyDepth();
+    await dragPoints({ x: firstText!.x + 60, y: firstText!.y + firstText!.h / 2 }, { x: farewell!.x + 80, y: farewell!.y + farewell!.h / 2 }, "studio-drag-command", false);
+    const cmdLine = await evaluate<{ dragging: boolean; target: string | null }>(`({ dragging: !!document.querySelector(".ins-row.dragging"), target: document.querySelector(".drop-after, .drop-before")?.textContent ?? null })`);
+    await mouse("mouseReleased", farewell!.x + 80, farewell!.y + farewell!.h / 2);
+    await sleep(200);
+    const elderAfter = await evaluate<any[]>(`__studio.app.currentMap().events.find((e) => e.id === "elder").pages[0].commands`);
+    const cmdStep = await lastStep();
+    expect("drag: the command drag marks the dragged row and the Farewell branch", cmdLine.dragging && /farewell/i.test(cmdLine.target ?? ""), JSON.stringify(cmdLine));
+    expect("drag: the line lands at the top of the Farewell branch",
+      elderAfter.length === 1 && elderAfter[0].op === "choices" && JSON.stringify(elderAfter[0].options[1].commands[0]) === JSON.stringify(elderBefore[0]) && elderAfter[0].options[1].commands.length === 2,
+      JSON.stringify(elderAfter).slice(0, 200));
+    expect("drag: the command drag is one transaction step", (await historyDepth()) === depth1 + 1 && cmdStep.commands.join() === "delete-command,insert-command" && cmdStep.label === "Move command", JSON.stringify(cmdStep));
+    const movedSelected = await evaluate<string | null>(`document.querySelector(".ins-row.selected")?.dataset.op ?? null`);
+    expect("drag: the moved command is selected afterwards", movedSelected === "text", String(movedSelected));
+    // Esc during a drag drops nothing.
+    const choicesRow = await rectOf(`document.querySelector('.ins-row[data-op="choices"]')`);
+    await dragPoints({ x: choicesRow!.x + 60, y: choicesRow!.y + choicesRow!.h / 2 }, { x: choicesRow!.x + 60, y: choicesRow!.y + choicesRow!.h * 3 }, undefined, false);
+    await evaluate(`document.querySelector('[data-role="command-tree"]').focus()`);
+    await key("Escape", "Escape");
+    await mouse("mouseReleased", choicesRow!.x + 60, choicesRow!.y + choicesRow!.h * 3);
+    await sleep(150);
+    expect("drag: Esc cancels a command drag", (await historyDepth()) === depth1 + 1, String(await historyDepth()));
+    await key("z", "KeyZ", CTRL);
+    expect("drag: Ctrl+Z puts the command back byte for byte", (await evaluate<string>(`__studio.app.session.exportText()`)) === beforeDrag, "");
+
+    // Events: drag the new event from (5,5) to (7,6) on the canvas.
+    await key("Escape", "Escape");
+    const from = await cell(5, 5);
+    const to = await cell(7, 6);
+    const depth2 = await historyDepth();
+    await dragPoints(from, to, "studio-drag-event", false);
+    const ghost = await evaluate<boolean>(`document.querySelector(".map-canvas").classList.contains("moving-event")`);
+    await mouse("mouseReleased", to.x, to.y);
+    await sleep(150);
+    const moved = await evaluate<{ x: number; y: number } | null>(`(() => { const e = __studio.app.currentMap().events.find((e) => e.id === ${JSON.stringify(created?.id ?? "")}); return e ? { x: e.x, y: e.y } : null; })()`);
+    const eventStep = await lastStep();
+    expect("drag: the canvas shows the move cursor while an event is dragged", ghost, String(ghost));
+    expect("drag: dropping the event moves it to the drop cell in one update-event step", moved?.x === 7 && moved?.y === 6 && (await historyDepth()) === depth2 + 1 && eventStep.commands.join() === "update-event", `${JSON.stringify(moved)} ${JSON.stringify(eventStep)}`);
+    // Esc while dragging the event leaves it where it is.
+    await dragPoints(await cell(7, 6), await cell(10, 8), undefined, false);
+    await key("Escape", "Escape");
+    const escTo = await cell(10, 8);
+    await mouse("mouseReleased", escTo.x, escTo.y);
+    await sleep(120);
+    const stayed = await evaluate<{ x: number; y: number } | null>(`(() => { const e = __studio.app.currentMap().events.find((e) => e.id === ${JSON.stringify(created?.id ?? "")}); return e ? { x: e.x, y: e.y } : null; })()`);
+    expect("drag: Esc cancels an event drag", stayed?.x === 7 && stayed?.y === 6 && (await historyDepth()) === depth2 + 1, JSON.stringify(stayed));
+    await key("z", "KeyZ", CTRL);
+    expect("drag: Ctrl+Z puts the event back byte for byte", (await evaluate<string>(`__studio.app.session.exportText()`)) === beforeDrag, "");
+
+    // Polish: the shortcuts panel, empty states.
+    await evaluate(`document.activeElement?.blur()`);
+    await key("?", "Slash", SHIFT, "?");
+    await waitFor("shortcuts panel", `!!document.querySelector('[data-role="shortcuts"]')`);
+    const groups = await evaluate<string[]>(`[...document.querySelectorAll(".shortcut-group h3")].map((el) => el.textContent)`);
+    expect("drag: the shortcuts panel lists its groups, drag gestures included", groups.length >= 5 && (await evaluate<boolean>(`/Drag command/.test(document.querySelector('[data-role="shortcuts"]').textContent)`)), groups.join(", "));
+    await shot("studio-shortcuts");
+    await key("Escape", "Escape");
+    await evaluate(`(() => { const i = document.querySelector(".map-search"); i.value = "zzz"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+    await sleep(80);
+    const emptyMaps = await evaluate<string | null>(`document.querySelector(".map-scroller .empty-state")?.textContent ?? null`);
+    expect("drag: a filter with no match shows an empty state with Clear filter", !!emptyMaps && /Clear filter/.test(emptyMaps), String(emptyMaps));
+    await clickSelector(".map-scroller .empty-action");
+    expect("drag: Clear filter brings the maps back", (await evaluate<number>(`document.querySelectorAll(".map-row").length`)) === order0.length, "");
+
     // ---- save / restore ----
     phase = "save";
     await evaluate(`document.activeElement?.blur()`);
@@ -710,6 +847,132 @@ async function main(): Promise<void> {
     await evaluate(`(() => { const ref = __studio.files.target.ref; ref.dir = ref.realDir; delete ref.realDir; })()`);
 
     // ---- limits: oversized input is refused before it is read ----
+    phase = "art";
+    const townSource = decodePng(new Uint8Array(readFileSync(join(ROOT, "examples", "sunstone", "assets", "src", "town-tiles.png"))));
+    const autumnRgba = autumn(townSource.rgba);
+    const autumnPng = encodePng(townSource.width, townSource.height, autumnRgba);
+    const wizRgba = new Uint8Array(16 * 16 * 4);
+    for (let i = 0; i < wizRgba.length; i += 4) wizRgba.set([236, 64, 200, 255], i);
+    const wizPng = encodePng(16, 16, wizRgba);
+    const artFiles: Record<string, string> = { "art/sheets/town.png": Buffer.from(autumnPng).toString("base64"), "assets/npc/wiz.png": Buffer.from(wizPng).toString("base64") };
+    await navigate(`${base}?example=sunstone`);
+    await evaluate(`(async () => {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle("sunstone-art", { create: true });
+      const write = async (path, data) => {
+        const parts = path.split("/");
+        let parent = dir;
+        for (const part of parts.slice(0, -1)) parent = await parent.getDirectoryHandle(part, { create: true });
+        const w = await (await parent.getFileHandle(parts.at(-1), { create: true })).createWritable();
+        await w.write(data);
+        await w.close();
+      };
+      for (const [path, text] of Object.entries(${JSON.stringify(looseFiles)})) await write(path, text);
+      for (const [path, b64] of Object.entries(${JSON.stringify(artFiles)})) await write(path, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+      await __studio.host.openDirectoryHandle(dir);
+    })()`);
+    await waitFor("art folder opened", `__studio.files.target?.name === "sunstone-art/"`);
+    await waitFor("project art loaded", `__studio.art.sheetStatus("town").source === "project" && __studio.art.spriteStatus("wiz").source === "project"`);
+    const artStatus = await evaluate<unknown>(`({ town: __studio.art.sheetStatus("town"), wiz: __studio.art.spriteStatus("wiz"), dun: __studio.art.sheetStatus("dun"), merchant: __studio.art.spriteStatus("merchant"), notices: __studio.app.notices.map((n) => n.text) })`);
+    results.projectArt = artStatus;
+    const status = artStatus as { town: { from: string }; wiz: { from: string }; dun: { source: string }; merchant: { source: string } };
+    expect("art: the folder's art/sheets/town.png and the wiz sprite's src file are used", status.town.from === "art/sheets/town.png" && status.wiz.from === "assets/npc/wiz.png", JSON.stringify(artStatus));
+    expect("art: ids the folder has no art for keep the bundled art", status.dun.source === "bundled" && status.merchant.source === "bundled", JSON.stringify(artStatus));
+    await evaluate(`__studio.app.openMap("village")`);
+    await evaluate(`__studio.canvas.fit()`);
+    await sleep(300);
+    /** Compare the map canvas at a cell centre with the autumn sheet pixel of the tile there. */
+    const village = JSON.parse(split.entries.find((entry) => entry.path.includes("village"))!.text) as { width: number; height: number; ground: (string | null)[]; upper?: [number, string][]; events: { id: string; x: number; y: number; w?: number; h?: number; pages: { sprite?: string }[] }[] };
+    const wizEvent = village.events.find((event) => event.pages.some((page) => page.sprite === "wiz"))!;
+    const samples: { x: number; y: number; want: number[] }[] = [];
+    // Cells with only a ground tile (no upper tile, no event over them),
+    // spread over the map: four distinct tiles.
+    const covered = new Set((village.upper ?? []).map(([index]) => index));
+    for (const event of village.events) for (let dy = 0; dy < (event.h ?? 1); dy++) for (let dx = 0; dx < (event.w ?? 1); dx++) covered.add((event.y + dy) * village.width + event.x + dx);
+    const plain: [number, number][] = [];
+    const seenTiles = new Set<string>();
+    for (let index = 0; index < village.width * village.height; index += 7) {
+      const tile = village.ground[index];
+      if (!tile?.startsWith("town.") || covered.has(index) || seenTiles.has(tile)) continue;
+      seenTiles.add(tile);
+      plain.push([index % village.width, Math.floor(index / village.width)]);
+      if (plain.length === 4) break;
+    }
+    for (const [x, y] of plain) {
+      const tile = village.ground[y * village.width + x]!;
+      const cellIndex = Number(tile.slice(5));
+      const cols = townSource.width / 16;
+      const px = (cellIndex % cols) * 16 + 8;
+      const py = Math.floor(cellIndex / cols) * 16 + 8;
+      const i = (py * townSource.width + px) * 4;
+      samples.push({ x, y, want: [autumnRgba[i]!, autumnRgba[i + 1]!, autumnRgba[i + 2]!] });
+    }
+    const pixelAt = async (cx: number, cy: number) => {
+      const p = await cell(cx, cy);
+      return evaluate<number[]>(`(() => {
+        const c = document.querySelector(".map-canvas");
+        const r = c.getBoundingClientRect();
+        const s = c.width / r.width;
+        return [...c.getContext("2d").getImageData(Math.round((${p.x} - r.left) * s), Math.round((${p.y} - r.top) * s), 1, 1).data].slice(0, 3);
+      })()`);
+    };
+    const got: unknown[] = [];
+    let tilesMatch = samples.length >= 3;
+    for (const sample of samples) {
+      const seen = await pixelAt(sample.x, sample.y);
+      got.push({ ...sample, seen });
+      tilesMatch &&= seen.every((value, i) => Math.abs(value - sample.want[i]!) <= 3);
+    }
+    expect("art: the canvas draws the folder's town sheet pixel for pixel", tilesMatch, JSON.stringify(got));
+    const wizSeen = await pixelAt(wizEvent.x, wizEvent.y);
+    expect("art: the canvas draws the folder's wiz sprite", Math.abs(wizSeen[0]! - 236) <= 3 && Math.abs(wizSeen[1]! - 64) <= 3 && Math.abs(wizSeen[2]! - 200) <= 3, JSON.stringify({ at: [wizEvent.x, wizEvent.y], wizSeen }));
+    await shot("studio-project-art");
+    // The play-test draws the same art: the game gets the folder's images.
+    await key("v", "KeyV", 0, "v");
+    const artStart = await cell(9, 7);
+    await click(artStart.x, artStart.y);
+    await clickSelector("#studio-play");
+    const artRunning = await waitFor<unknown>("the game running with project art", `__studio.play.status === "running" && __studio.play.readings > 0 || (__studio.play.status === "error" && "error: " + __studio.play.error)`, 25_000);
+    await sleep(900);
+    const playArt = await evaluate<any>(`({ art: __studio.play.art, note: __studio.play.artNote, state: __studio.play.state && { map: __studio.play.state.map, x: __studio.play.state.x, y: __studio.play.state.y }, line: document.querySelector('#playtest dd[data-field="art"]')?.textContent ?? null })`);
+    results.playArt = playArt;
+    expect("art: the play-test runs with the project's art (2 images used) and says so", artRunning === true && playArt.art?.kind === "project" && playArt.art.used === 2 && playArt.art.skipped.length === 0 && playArt.note === null && playArt.line === "project (2 images)", JSON.stringify(playArt));
+    const artFrame = await evaluate<{ x: number; y: number; w: number; h: number }>(`(() => { const r = document.querySelector("#playtest-screen iframe").getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
+    const artCapture = decodePng(new Uint8Array(Buffer.from((await cdp.send("Page.captureScreenshot", { format: "png" })).data, "base64")));
+    let autumnPixels = 0;
+    let greenPixels = 0;
+    let magentaPixels = 0;
+    let allPixels = 0;
+    for (let y = Math.ceil(artFrame.y); y < artFrame.y + artFrame.h * 0.6; y += 2) {
+      for (let x = Math.ceil(artFrame.x); x < artFrame.x + artFrame.w; x += 2) {
+        const i = (y * artCapture.width + x) * 4;
+        const [r, g, b] = [artCapture.rgba[i]!, artCapture.rgba[i + 1]!, artCapture.rgba[i + 2]!];
+        allPixels++;
+        if (r > g + 30 && r > 120 && b < g) autumnPixels++;
+        if (g > r + 15 && g > b + 15) greenPixels++;
+        if (Math.abs(r - 236) <= 4 && Math.abs(g - 64) <= 4 && Math.abs(b - 200) <= 4) magentaPixels++;
+      }
+    }
+    const gameColors = { autumn: autumnPixels / allPixels, green: greenPixels / allPixels, magenta: magentaPixels };
+    results.playArtColors = gameColors;
+    expect("art: the game draws the autumn town sheet (no green grass left) and the magenta wiz", gameColors.autumn > 0.2 && gameColors.green < 0.02 && gameColors.magenta > 20, JSON.stringify(gameColors));
+    await mouse("mouseMoved", 700, 860, "none");
+    await sleep(200);
+    await shot("studio-playtest-project-art");
+    await clickSelector("#playtest-close");
+    const artPack = readFileSync(await download(), "utf8");
+    const artPackParsed = parseShardedPack(artPack);
+    expect("art: Download writes a pack that carries the folder's art", JSON.stringify([...artPackParsed.assets.keys()].sort()) === JSON.stringify(Object.keys(artFiles).sort()) && artPackParsed.assets.get("art/sheets/town.png")?.data === artFiles["art/sheets/town.png"], JSON.stringify([...artPackParsed.assets.keys()]));
+    const artPackPath = join(OUT, "sunstone-art-pack.json");
+    writeFileSync(artPackPath, artPack);
+    await navigate(`${base}?example=sunstone`);
+    await setFile("#studio-open-input", artPackPath);
+    await waitFor("art pack opened", `__studio.app.session?.kind === "pack" && __studio.files.target === null`);
+    await waitFor("pack art loaded", `__studio.art.sheetStatus("town").source === "project" && __studio.art.spriteStatus("wiz").source === "project"`, 5000).catch(() => undefined);
+    const packArt = await evaluate<unknown>(`({ town: __studio.art.sheetStatus("town"), wiz: __studio.art.spriteStatus("wiz") })`);
+    expect("art: opening that pack in the browser draws its art again", JSON.stringify(packArt).split('"project"').length === 3, JSON.stringify(packArt));
+    await evaluate(`(async () => { const root = await navigator.storage.getDirectory(); await root.removeEntry("sunstone-art", { recursive: true }); })()`);
+
     phase = "limits";
     const openBefore = await evaluate<string>(`__studio.app.session.exportText()`);
     await evaluate(`(() => {
@@ -811,6 +1074,9 @@ async function main(): Promise<void> {
     await clickSelector(".problem");
     const located = await evaluate<{ kind: string; eventId?: string }>(`__studio.app.selection`);
     expect("problems: clicking a problem selects its event", located.kind === "event", JSON.stringify(located));
+    const pulse = await waitFor<{ canvas: boolean; inspector: boolean }>("problem pulse", `(() => { const p = { canvas: __studio.canvas.flashing, inspector: !!document.querySelector("#inspector .ins-section.flash") }; return p.canvas && p.inspector ? p : null; })()`, 2000).catch(() => null);
+    expect("problems: the jump pulses the event on the canvas and in the inspector", !!pulse, JSON.stringify(pulse));
+    await sleep(1200);
     await shot("studio-problems");
 
     // ---- narrow ----
@@ -1064,6 +1330,29 @@ async function main(): Promise<void> {
     await key("v", "KeyV", 0, "v");
     await click(elder2.x, elder2.y);
     await shot("studio-dark");
+    // The drag feedback and the shortcuts panel in the dark theme.
+    await waitFor("elder command tree", `document.querySelectorAll('[data-action="select-command"]').length >= 4`);
+    await evaluate(`document.querySelector('[data-role="command-tree"]').scrollIntoView({ block: "start" })`);
+    await sleep(100);
+    const darkRow = await evaluate<{ x: number; y: number; w: number; h: number }>(`(() => { const el = document.querySelector('.ins-row[data-op="text"]'); el.scrollIntoView({ block: "nearest" }); const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
+    const darkBranch = await evaluate<{ x: number; y: number; w: number; h: number }>(`(() => { const el = [...document.querySelectorAll(".ins-branch")].find((b) => /farewell/i.test(b.textContent)); const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
+    await mouse("mouseMoved", darkRow.x + 60, darkRow.y + darkRow.h / 2, "none");
+    await mouse("mousePressed", darkRow.x + 60, darkRow.y + darkRow.h / 2);
+    for (let i = 1; i <= 8; i++) await mouse("mouseMoved", darkRow.x + 60 + 20 * i / 8, darkRow.y + darkRow.h / 2 + (darkBranch.y + darkBranch.h / 2 - darkRow.y - darkRow.h / 2) * i / 8);
+    await sleep(150);
+    const darkDrop = await evaluate<boolean>(`!!document.querySelector(".ins-branch.drop-after") && !!document.querySelector(".ins-row.dragging")`);
+    expect("theme: the command drag shows its drop line in the dark theme", darkDrop, String(darkDrop));
+    await shot("studio-drag-command-dark");
+    await evaluate(`document.querySelector('[data-role="command-tree"]').focus()`);
+    await key("Escape", "Escape");
+    await mouse("mouseReleased", darkBranch.x + 80, darkBranch.y + darkBranch.h / 2);
+    await sleep(150);
+    expect("theme: Esc left the elder's commands as they were", (await evaluate<number>(`__studio.app.session.history().length`)) === 0, "");
+    await evaluate(`document.activeElement?.blur()`);
+    await key("?", "Slash", SHIFT, "?");
+    await waitFor("shortcuts panel", `!!document.querySelector('[data-role="shortcuts"]')`);
+    await shot("studio-shortcuts-dark");
+    await key("Escape", "Escape");
   } catch (error) {
     failures.push({ check: phase, message: error instanceof Error ? error.message : String(error) });
     console.log(`  FAIL ${phase}: ${error instanceof Error ? error.stack : error}`);

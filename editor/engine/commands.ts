@@ -767,7 +767,7 @@ function samePath(a: CommandListPath, b: CommandListPath): boolean {
 
 /** Rebase a destination path after deleting `removed`. null means the
  * destination was inside the command being moved. */
-function pathAfterDelete(
+export function pathAfterDelete(
   path: CommandListPath,
   removed: CommandAddress,
 ): CommandListPath | null {

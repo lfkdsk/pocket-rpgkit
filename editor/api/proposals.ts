@@ -87,6 +87,7 @@ export type ProposalFileResponse = ProposalFileSuccess | ProposalFileFailure;
 
 const MUTATION_COMMANDS = new Set([
   "update-map",
+  "move-map",
   "paint-tile",
   "paint-rect",
   "fill-region",

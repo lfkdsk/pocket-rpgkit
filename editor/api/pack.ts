@@ -8,32 +8,52 @@
 // byte-for-byte, so a replacement pack differs from its source only in the
 // shell and the shards an edit actually touched.
 //
+// A pack may also carry the project's art: an optional `assets` record of
+// PNG images keyed by the relative paths the project names them by. Assets
+// are opaque here too (checked, never re-encoded) and written back exactly.
+//
 // The format itself (kind tag, entry-key rule, envelope check, byte spelling)
 // lives in pack-format.ts, shared with the browser player; this file adds the
-// strict ProjectShell gate and EditApiError reporting.
+// strict ProjectShell gate, the asset checks and EditApiError reporting.
 
 import type { MapIndexEntry, ProjectShell } from "../../src/engine/types.ts";
 import {
   MAX_PACK_BYTES,
   MAX_PROJECT_FILE_BYTES,
   MAX_SHARD_BYTES,
+  PNG_HEADER_BYTES,
+  packAssetBytesProblem,
+  packAssetCountProblem,
   packFileProblem,
+  pngProblem,
   projectFileProblem,
+  readPngSize,
   shardCountProblem,
   shardProblem,
   utf8Bytes,
 } from "./limits.ts";
 import { EditApiError } from "./operations.ts";
-import { packEntryProblem, packText, readPackEnvelope, SHARDED_PACK_KIND } from "./pack-format.ts";
+import {
+  base64DecodedBound,
+  decodeBase64,
+  packEntryProblem,
+  packText,
+  readPackEnvelope,
+  SHARDED_PACK_KIND,
+  type PackAsset,
+} from "./pack-format.ts";
 import { loadValidatedProjectShell } from "./sharded.ts";
 
-export { SHARDED_PACK_KIND };
+export { SHARDED_PACK_KIND, type PackAsset };
 
 export interface ShardedPack {
   shellText: string;
   shell: ProjectShell;
   /** Entry -> shard text, in the shell's mapIndex order. */
   shards: Map<string, string>;
+  /** Relative path -> embedded image, in the pack's order; empty when the
+   * pack carries no art. */
+  assets: Map<string, PackAsset>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -65,7 +85,8 @@ function tooLarge(problem: string | null, path: string): void {
  * shard texts are only checked for presence and size here and are validated
  * lazily by loadValidatedMapShard when a map is first opened. Resource limits
  * (limits.ts) are checked first: the whole text before it is parsed, the
- * shard count and the shell's size before the shell is validated. */
+ * shard count and the shell's size before the shell is validated. Embedded
+ * assets are checked last (parsePackAssets). */
 export function parseShardedPack(text: string): ShardedPack {
   tooLarge(packFileProblem(utf8Bytes(text, MAX_PACK_BYTES)), "$");
   const envelope = readPackEnvelope(text);
@@ -96,17 +117,61 @@ export function parseShardedPack(text: string): ShardedPack {
     }
     shards.set(meta.entry, shard);
   }
-  return { shellText: envelope.shell, shell, shards };
+  return { shellText: envelope.shell, shell, shards, assets: parsePackAssets(envelope.assets) };
+}
+
+/** Check a pack's `assets` record. Each key is a portable relative path
+ * (the shard-entry rule); each value is `{ type: "image/png", data }` whose
+ * base64 data decodes to a PNG within the local-PNG limits. The count and
+ * the decoded total are limited per pack; an image's size is checked from
+ * its base64 length before it is decoded. */
+function parsePackAssets(supplied: Record<string, unknown> | undefined): Map<string, PackAsset> {
+  const assets = new Map<string, PackAsset>();
+  if (supplied === undefined) return assets;
+  const paths = Object.keys(supplied);
+  tooLarge(packAssetCountProblem(paths.length), "$.assets");
+  let total = 0;
+  for (const path of paths) {
+    const at = `$.assets[${JSON.stringify(path)}]`;
+    if (packEntryProblem(path) !== null) {
+      throw new EditApiError("INVALID_PACK", `unsafe asset path ${JSON.stringify(path)}; asset keys must be portable relative paths`, "$.assets", "relative key", path);
+    }
+    const value = supplied[path];
+    if (!isRecord(value) || typeof value.data !== "string" || Object.keys(value).some((key) => key !== "type" && key !== "data")) {
+      throw new EditApiError("INVALID_PACK", `asset ${JSON.stringify(path)} must be an object with only "type" and "data"`, at);
+    }
+    if (value.type !== "image/png") {
+      throw new EditApiError("INVALID_PACK", `asset ${JSON.stringify(path)} has type ${JSON.stringify(value.type)}; only "image/png" is supported`, `${at}.type`, "image/png", value.type);
+    }
+    const data = value.data;
+    // Refuse an oversized image from its base64 length, before decoding.
+    tooLarge(pngProblem(`asset ${JSON.stringify(path)}`, base64DecodedBound(data.length) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0)), `${at}.data`);
+    const bytes = decodeBase64(data);
+    if (bytes === null) throw new EditApiError("INVALID_PACK", `asset ${JSON.stringify(path)} is not valid base64`, `${at}.data`);
+    total += bytes.length;
+    tooLarge(packAssetBytesProblem(total), "$.assets");
+    const header = bytes.subarray(0, PNG_HEADER_BYTES);
+    const size = readPngSize(header);
+    const problem = pngProblem(`asset ${JSON.stringify(path)}`, bytes.length, header);
+    if (problem !== null) throw new EditApiError(size === null || size.width === 0 || size.height === 0 ? "INVALID_PACK" : "TOO_LARGE", problem, `${at}.data`);
+    assets.set(path, { type: "image/png", data });
+  }
+  return assets;
 }
 
 /** Serialize in the browser host's spelling: two-space JSON, shards in
- * catalog order, trailing newline. */
-export function serializeShardedPack(shellText: string, catalog: readonly MapIndexEntry[], shards: ReadonlyMap<string, string>): string {
+ * catalog order, then any assets in the order given, trailing newline. */
+export function serializeShardedPack(
+  shellText: string,
+  catalog: readonly MapIndexEntry[],
+  shards: ReadonlyMap<string, string>,
+  assets?: ReadonlyMap<string, PackAsset>,
+): string {
   const ordered: [string, string][] = [];
   for (const meta of catalog) {
     const text = shards.get(meta.entry);
     if (text === undefined) throw new EditApiError("INVALID_PACK", `pack is missing shard text for ${JSON.stringify(meta.entry)}`, "$.shards");
     ordered.push([meta.entry, text]);
   }
-  return packText(shellText, ordered);
+  return packText(shellText, ordered, assets);
 }

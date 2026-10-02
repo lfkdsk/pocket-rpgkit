@@ -39,6 +39,8 @@ import {
 import { openDirectoryProject, saveDirectoryTarget, type ProjectDirectory } from "./project-directory.ts";
 import {
   PREVIEW_PROTOCOL,
+  type PreviewArtMessage,
+  type PreviewArtResult,
   type PreviewChapter,
   type PreviewLoadResult,
   type PreviewOutcome,
@@ -98,6 +100,10 @@ export function handleDirectory(root: DirectoryHandle): ProjectDirectory {
     async read(path) {
       const { parent, name } = await walk(path);
       return (await (await parent.getFileHandle(name)).getFile()).text();
+    },
+    async readBytes(path) {
+      const { parent, name } = await walk(path);
+      return new Uint8Array(await (await (await parent.getFileHandle(name)).getFile()).arrayBuffer());
     },
     async size(path) {
       const { parent, name } = await walk(path);
@@ -167,6 +173,8 @@ export class BrowserPreview implements StudioPreview {
   private frame: HTMLIFrameElement | null = null;
   private origin = "";
   private ready = false;
+  /** What the page's ready event listed in `features`. */
+  private pageFeatures: string[] = [];
   /** Set when the embedded page speaks another protocol version. */
   private versionError: string | null = null;
   private waiting: Pending | null = null;
@@ -208,8 +216,17 @@ export class BrowserPreview implements StudioPreview {
     return (await outcome) as PreviewOutcome<void>;
   }
 
-  load(documentText: string, chapters: readonly PreviewChapter[]): Promise<PreviewOutcome<PreviewLoadResult>> {
-    return this.request("load", { document: documentText, ...(chapters.length ? { chapters } : {}) }, LOAD_TIMEOUT_MS);
+  features(): readonly string[] {
+    return this.ready ? this.pageFeatures : [];
+  }
+
+  load(documentText: string, chapters: readonly PreviewChapter[], options?: { art?: boolean }): Promise<PreviewOutcome<PreviewLoadResult>> {
+    return this.request("load", { document: documentText, ...(chapters.length ? { chapters } : {}), ...(options?.art ? { art: true } : {}) }, LOAD_TIMEOUT_MS);
+  }
+
+  sendArt(message: PreviewArtMessage): Promise<PreviewOutcome<PreviewArtResult>> {
+    // A slice carries up to a few MiB of base64 for the page to decode.
+    return this.request("art", { ...message }, LOAD_TIMEOUT_MS);
   }
 
   start(target: PreviewTarget): Promise<PreviewOutcome<PreviewStartResult>> {
@@ -250,6 +267,7 @@ export class BrowserPreview implements StudioPreview {
     this.frame?.remove();
     this.frame = null;
     this.ready = false;
+    this.pageFeatures = [];
     this.versionError = null;
   }
 
@@ -314,6 +332,8 @@ export class BrowserPreview implements StudioPreview {
     }
     if (data.type === "event" && data.event === "ready") {
       this.ready = true;
+      // Optional within v1: an older page lists none.
+      this.pageFeatures = Array.isArray(data.features) ? data.features.filter((feature): feature is string => typeof feature === "string") : [];
       const waiting = this.waiting;
       this.waiting = null;
       if (waiting) {

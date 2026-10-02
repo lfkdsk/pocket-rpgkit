@@ -10,9 +10,15 @@
 import type { EditSession } from "../api/session.ts";
 import type { MapDef, Project } from "../../src/engine/types.ts";
 import {
+  PREVIEW_ART_SLICE_BYTES,
   PREVIEW_LIMITS,
   PREVIEW_PROTOCOL,
+  encodePreviewBase64,
   previewMessageBytes,
+  type PreviewArtImage,
+  type PreviewArtKind,
+  type PreviewArtResult,
+  type PreviewArtSkip,
   type PreviewLoadResult,
   type PreviewStartResult,
   type PreviewStateResult,
@@ -20,8 +26,8 @@ import {
 import type { StudioApp } from "./app.ts";
 import type { StudioExample, StudioHost } from "./host.ts";
 
-export { PREVIEW_LIMITS, PREVIEW_PROTOCOL };
-export type { PreviewLoadResult, PreviewStartResult, PreviewStateResult };
+export { PREVIEW_ART_SLICE_BYTES, PREVIEW_LIMITS, PREVIEW_PROTOCOL };
+export type { PreviewArtImage, PreviewArtResult, PreviewArtSkip, PreviewLoadResult, PreviewStartResult, PreviewStateResult };
 
 export type PreviewDir = "down" | "left" | "up" | "right";
 export const PREVIEW_DIRS: readonly PreviewDir[] = ["down", "left", "up", "right"];
@@ -44,13 +50,31 @@ export type PreviewTarget =
  * "unavailable", "timeout", "disconnected", "bad-version". */
 export type PreviewOutcome<T> = { ok: true; value: T } | { ok: false; code: string; message: string };
 
+/** One `art` request's fields: a slice of an image's RGBA8 bytes, base64,
+ * starting at byte `offset`. */
+export interface PreviewArtMessage {
+  kind: PreviewArtKind;
+  id: string;
+  width: number;
+  height: number;
+  offset: number;
+  rgba: string;
+}
+
 /** The game connection a host provides. Requests settle; they never throw. */
 export interface StudioPreview {
   /** Show the game in the UI element with this id and wait until the
    * embedded page announces rpgkit-preview/v1. Connecting again replaces the
    * previous game. */
   connect(slotId: string): Promise<PreviewOutcome<void>>;
-  load(documentText: string, chapters: readonly PreviewChapter[]): Promise<PreviewOutcome<PreviewLoadResult>>;
+  /** The optional features the connected page listed in its ready event
+   * ("art"); none before it connects, and none from an older page. */
+  features(): readonly string[];
+  /** With `art`, the game draws the images staged by sendArt() since the
+   * last load; without, it discards them and draws stand-ins. */
+  load(documentText: string, chapters: readonly PreviewChapter[], options?: { art?: boolean }): Promise<PreviewOutcome<PreviewLoadResult>>;
+  /** Stage one slice of a project image for the next load. */
+  sendArt(message: PreviewArtMessage): Promise<PreviewOutcome<PreviewArtResult>>;
   start(target: PreviewTarget): Promise<PreviewOutcome<PreviewStartResult>>;
   state(): Promise<PreviewOutcome<PreviewStateResult>>;
   stop(): Promise<PreviewOutcome<void>>;
@@ -109,6 +133,39 @@ export function previewDocument(session: EditSession, chapters: readonly Preview
   return { ok: true, text, bytes, expanded };
 }
 
+/** Why these images cannot go to the game (over the protocol's art
+ * limits, or malformed), or null when they fit. */
+export function previewArtProblem(images: readonly PreviewArtImage[]): string | null {
+  const limits = PREVIEW_LIMITS;
+  if (images.length > limits.maxArtImages) {
+    return `Project art has ${images.length} images and the play-test takes at most ${limits.maxArtImages}; using stand-in art.`;
+  }
+  let bytes = 0;
+  for (const image of images) {
+    if (image.width > limits.maxArtSide || image.height > limits.maxArtSide) {
+      return `Project art ${image.kind} ${image.id} is ${image.width}×${image.height} and the play-test takes at most ${limits.maxArtSide} px a side; using stand-in art.`;
+    }
+    if (!Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width < 1 || image.height < 1 || image.rgba.length !== image.width * image.height * 4) {
+      return `Project art ${image.kind} ${image.id} is not a ${image.width}×${image.height} RGBA image; using stand-in art.`;
+    }
+    bytes += image.rgba.length;
+  }
+  if (bytes > limits.maxArtBytes) {
+    return `Project art too large for the play-test (${mib(bytes)}; at most ${mib(limits.maxArtBytes)}); using stand-in art.`;
+  }
+  return null;
+}
+
+/** The `art` messages that carry one image, in order. */
+export function previewArtMessages(image: PreviewArtImage, sliceBytes = PREVIEW_ART_SLICE_BYTES): PreviewArtMessage[] {
+  const messages: PreviewArtMessage[] = [];
+  for (let offset = 0; offset < image.rgba.length; offset += sliceBytes) {
+    const end = Math.min(image.rgba.length, offset + sliceBytes);
+    messages.push({ kind: image.kind, id: image.id, width: image.width, height: image.height, offset, rgba: encodePreviewBase64(image.rgba, offset, end) });
+  }
+  return messages;
+}
+
 /** Save points offered for the open document: those of a bundled example
  * with the same title. */
 export function chaptersFor(examples: readonly StudioExample[], title: string): PreviewChapter[] {
@@ -128,6 +185,17 @@ export type StartChoice = { kind: "selection" } | { kind: "project" } | { kind: 
 export const PREVIEW_POLL_HZ = 4;
 
 type Listener = () => void;
+
+/** The project's own images for the play-test (not the bundled stand-ins).
+ * Called once per Play; an empty list plays with stand-in art. */
+export type PreviewArtProvider = () => Promise<readonly PreviewArtImage[]>;
+
+/** What the running game draws: the project's images, or stand-ins. */
+export type PlayArt =
+  | { kind: "project"; images: number; used: number; skipped: PreviewArtSkip[] }
+  | { kind: "stand-ins" };
+
+type LoadOutcome = { ok: true; result: PreviewLoadResult } | { ok: false };
 
 /** The play-test panel's model: connection, document, start target, the
  * last state reading. The panel renders it; tests drive it directly. */
@@ -149,12 +217,19 @@ export class PlayTest {
   stale = false;
   /** Facing for a start at a cell. */
   dir: PreviewDir = "down";
+  /** What the loaded game draws; null before a load. */
+  art: PlayArt | null = null;
+  /** Why the project's art is not in the game (too large, not sent). */
+  artNote: string | null = null;
   choice: StartChoice = { kind: "selection" };
   private loadedRevision = -1;
   private loadedSession: EditSession | null = null;
   /** What the running game loaded, so Restart can start it afresh. */
   private loadedText: string | null = null;
   private loadedChapters: PreviewChapter[] = [];
+  /** The images the running game loaded, sent again by Restart. */
+  private loadedArt: readonly PreviewArtImage[] = [];
+  private artProvider: PreviewArtProvider | null = null;
   /** The document revision last measured by checkDocument(). */
   private checked: { session: EditSession; revision: number } | null = null;
   private listeners = new Set<Listener>();
@@ -180,6 +255,13 @@ export class PlayTest {
         this.emit();
       }
     });
+  }
+
+  /** Where Play gets the project's own images. Without a provider, or with
+   * a game page that does not list the "art" feature, the game draws
+   * stand-in art as before. */
+  setArtProvider(provider: PreviewArtProvider | null): void {
+    this.artProvider = provider;
   }
 
   /** Called when the user leaves the game with Esc. */
@@ -273,16 +355,15 @@ export class PlayTest {
     this.status = "loading";
     this.emit();
     const revision = session.revision;
-    const loaded = await preview.load(document.text, chapters);
+    const images = await this.projectArt(preview);
     if (generation !== this.generation) return false;
-    if (!loaded.ok) {
-      if (loaded.code === "disconnected" || loaded.code === "bad-version" || loaded.code === "timeout") this.connected = false;
-      return this.fail(`The game refused the document: ${loaded.message}`);
-    }
+    const loaded = await this.loadInto(preview, document.text, chapters, images, generation);
+    if (!loaded.ok) return false;
     this.loadedSession = session;
     this.loadedRevision = revision;
     this.loadedText = document.text;
     this.loadedChapters = chapters;
+    this.loadedArt = images;
     this.stale = this.app.session !== session || session.revision !== revision;
     this.expanded = document.expanded;
     return this.startAt(target, generation);
@@ -302,13 +383,77 @@ export class PlayTest {
     this.state = null;
     this.readings = 0;
     this.emit();
-    const loaded = await preview.load(text, this.loadedChapters);
-    if (generation !== this.generation) return false;
-    if (!loaded.ok) {
-      if (loaded.code === "disconnected" || loaded.code === "bad-version" || loaded.code === "timeout") this.connected = false;
-      return this.fail(`The game refused the document: ${loaded.message}`);
-    }
+    const loaded = await this.loadInto(preview, text, this.loadedChapters, this.loadedArt, generation);
+    if (!loaded.ok) return false;
     return this.startAt(target, generation);
+  }
+
+  /** The project's images for the next load: none when the page cannot take
+   * them or there is no provider; none, with a note, when they do not fit
+   * the protocol's limits or cannot be read. */
+  private async projectArt(preview: StudioPreview): Promise<readonly PreviewArtImage[]> {
+    this.artNote = null;
+    const provider = this.artProvider;
+    if (!provider || !preview.features().includes("art")) return [];
+    let images: readonly PreviewArtImage[];
+    try {
+      images = await provider();
+    } catch (error) {
+      this.artNote = `Could not read the project art (${error instanceof Error ? error.message : String(error)}); using stand-in art.`;
+      return [];
+    }
+    const problem = previewArtProblem(images);
+    if (problem) {
+      this.artNote = problem;
+      return [];
+    }
+    return images;
+  }
+
+  /** Stage `images` (if any), then load the document. A failed art slice
+   * plays on with stand-in art unless the game itself is gone. */
+  private async loadInto(
+    preview: StudioPreview,
+    text: string,
+    chapters: readonly PreviewChapter[],
+    images: readonly PreviewArtImage[],
+    generation: number,
+  ): Promise<LoadOutcome> {
+    let art = images.length > 0;
+    sending: for (const image of art ? images : []) {
+      for (const message of previewArtMessages(image)) {
+        const sent = await preview.sendArt(message);
+        if (generation !== this.generation) return { ok: false };
+        if (sent.ok) continue;
+        if (this.lost(sent.code)) {
+          this.fail(`Could not send the project art: ${sent.message}`);
+          return { ok: false };
+        }
+        this.artNote = `Could not send the project art (${sent.message}); using stand-in art.`;
+        art = false;
+        break sending;
+      }
+    }
+    const loaded = await preview.load(text, chapters, art ? { art: true } : undefined);
+    if (generation !== this.generation) return { ok: false };
+    if (!loaded.ok) {
+      this.lost(loaded.code);
+      this.fail(`The game refused the document: ${loaded.message}`);
+      return { ok: false };
+    }
+    const use = loaded.value.art;
+    this.art = art
+      ? { kind: "project", images: images.length, used: use?.used ?? images.length, skipped: use?.skipped ?? [] }
+      : { kind: "stand-ins" };
+    return { ok: true, result: loaded.value };
+  }
+
+  /** Whether a failure code means the game is gone; the next Play embeds it
+   * again. */
+  private lost(code: string): boolean {
+    const gone = code === "disconnected" || code === "bad-version" || code === "timeout";
+    if (gone) this.connected = false;
+    return gone;
   }
 
   private async startAt(target: PreviewTarget, generation: number): Promise<boolean> {
@@ -377,6 +522,9 @@ export class PlayTest {
     this.target = null;
     this.loadedSession = null;
     this.loadedText = null;
+    this.loadedArt = [];
+    this.art = null;
+    this.artNote = null;
     this.expanded = false;
     this.stale = false;
     this.error = null;

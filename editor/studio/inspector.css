@@ -586,6 +586,42 @@ select.ins-input {
   text-overflow: ellipsis;
 }
 
+/* Drag and drop: the row being dragged, and a line where it would land. */
+.ins-root.command-dragging .ins-tree,
+.ins-root.command-dragging .ins-row {
+  cursor: grabbing;
+}
+
+.ins-row.dragging {
+  opacity: 0.45;
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.ins-branch {
+  position: relative;
+}
+
+.ins-row.drop-before::after,
+.ins-row.drop-after::after,
+.ins-branch.drop-after::after {
+  content: "";
+  position: absolute;
+  left: var(--indent);
+  right: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  pointer-events: none;
+}
+
+.ins-row.drop-before::after { top: 0; }
+.ins-row.drop-after::after,
+.ins-branch.drop-after::after { bottom: 0; }
+.ins-row.drop-root::after,
+.ins-branch.drop-root::after { left: 0; }
+
 .ins-branch .ins-muted {
   font-weight: 400;
   text-transform: none;
