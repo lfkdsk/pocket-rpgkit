@@ -7,13 +7,14 @@
 // only the small, host-neutral decoder that a game opting into compact maps
 // pays for.
 
-import type { MapDef, TileId } from "./types.ts";
+import type { MapDef, ParallaxDef, TileId } from "./types.ts";
 
 export const COMPACT_MAP_MAGIC = "rpgkit-map/1";
 
 function isCompactMapField(key: string): boolean {
   return key === "$" || key === "i" || key === "n" || key === "w" || key === "h" ||
-    key === "s" || key === "g" || key === "u" || key === "p" || key === "k" || key === "e";
+    key === "s" || key === "g" || key === "u" || key === "p" || key === "a" ||
+    key === "k" || key === "e";
 }
 
 type DenseLayer =
@@ -37,6 +38,7 @@ interface CompactMapEnvelope {
   g: DenseLayer;
   u?: SparseTileLayer;
   p?: PassageLayer;
+  a?: unknown;
   k?: string[];
   e?: unknown;
 }
@@ -65,6 +67,39 @@ function numbers(value: unknown, label: string): number[] {
   if (!Array.isArray(value)) fail(`${label} must be an array`);
   for (let i = 0; i < value.length; i++) integer(value[i], `${label} ${i}`);
   return value as number[];
+}
+
+function decodeParallax(value: unknown): ParallaxDef {
+  if (!isObject(value)) fail("parallax must be an object");
+  const allowed = new Set(["image", "loopX", "loopY", "sx", "sy", "zero", "showInEditor"]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) fail(`unknown parallax field ${JSON.stringify(key)}`);
+  }
+  if (value.image !== null && typeof value.image !== "string") {
+    fail("parallax image must be a string or null");
+  }
+  if (typeof value.loopX !== "boolean" || typeof value.loopY !== "boolean") {
+    fail("parallax loopX and loopY must be booleans");
+  }
+  if (typeof value.sx !== "number" || !Number.isFinite(value.sx) ||
+      typeof value.sy !== "number" || !Number.isFinite(value.sy)) {
+    fail("parallax sx and sy must be finite numbers");
+  }
+  if (value.zero !== undefined && typeof value.zero !== "boolean") {
+    fail("parallax zero must be a boolean");
+  }
+  if (value.showInEditor !== undefined && typeof value.showInEditor !== "boolean") {
+    fail("parallax showInEditor must be a boolean");
+  }
+  return {
+    image: value.image,
+    loopX: value.loopX,
+    loopY: value.loopY,
+    sx: value.sx,
+    sy: value.sy,
+    ...(value.zero === undefined ? {} : { zero: value.zero }),
+    ...(value.showInEditor === undefined ? {} : { showInEditor: value.showInEditor }),
+  } as ParallaxDef;
 }
 
 function decodeDense(value: unknown, cells: number): TileId[] {
@@ -324,6 +359,7 @@ export function decodeCompactMap(value: unknown): MapDef {
   if (value.s !== undefined) out.sheets = value.s;
   if (value.u !== undefined) out.upper = decodeSparseTiles(value.u, cells);
   if (value.p !== undefined) out.passage = decodePassage(value.p, cells);
+  if (value.a !== undefined) out.parallax = decodeParallax(value.a);
   if (value.e !== undefined) {
     if (!Array.isArray(value.k) || value.k.some((key) => typeof key !== "string") || new Set(value.k).size !== value.k.length) {
       fail("event key table must contain unique strings");

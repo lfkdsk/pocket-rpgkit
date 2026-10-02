@@ -155,7 +155,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The seamless-v1 traversal identity, transfer provenance, sparse reducer
 // state and optional GameView resolver seam bring it to 905,748 measured. The
 // concrete world handoff resolver remains outside this non-world input graph.
-const EXPECTED_BYTES = 905_748;
+// KRM3V's additive parallax/animation reducer and save paths plus the small
+// optional shop-icon and parallax GameView seams add 11,305 bytes, measuring
+// 917,053. The concrete ParallaxLayer and ItemIconRow remain outside this
+// input graph (krm3v-ui-bundle-isolation.test.ts).
+const EXPECTED_BYTES = 917_053;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

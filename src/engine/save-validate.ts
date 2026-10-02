@@ -24,7 +24,7 @@ const INTEGER_OPS = new Set([
   "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm",
   "erase", "exit", "transfer",
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
-  "mapAnim", "stopAnim", "appearance", "layer", "tileProperty",
+  "mapAnim", "stopAnim", "appearance", "layer", "changeParallax", "tileProperty",
   "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "scrollMap", "balloon", "screenBackdrop",
   "showPicture", "movePicture", "rotatePicture", "tintPicture", "erasePicture",
   "timer", "hostAction", "changeName", "mapNameDisplay",
@@ -797,6 +797,25 @@ function validateProg(prog: unknown, path: string): string | null {
           return fail(`${here}.variant`, "string or null required");
         }
         break;
+      case "changeParallax":
+        for (const key of Object.keys(ins)) {
+          if (!["op", "image", "loopX", "loopY", "sx", "sy", "zero"].includes(key)) {
+            return fail(`${here}.${key}`, "unknown changeParallax field");
+          }
+        }
+        if (ins.image !== null && typeof ins.image !== "string") {
+          return fail(`${here}.image`, "string or null required");
+        }
+        if (typeof ins.loopX !== "boolean" || typeof ins.loopY !== "boolean") {
+          return fail(here, "loopX/loopY booleans required");
+        }
+        if (!isFiniteNumber(ins.sx) || !isFiniteNumber(ins.sy)) {
+          return fail(here, "sx/sy finite numbers required");
+        }
+        if (ins.zero !== undefined && typeof ins.zero !== "boolean") {
+          return fail(`${here}.zero`, "boolean required");
+        }
+        break;
       case "tileProperty":
         if (!isNonNegInt(ins.x) || !isNonNegInt(ins.y)) {
           return fail(here, "x/y non-negative integers required");
@@ -1050,9 +1069,10 @@ function validateProg(prog: unknown, path: string): string | null {
           }
         } else if (
           ins.target !== "player" &&
+          ins.target !== "this" &&
           !(isRecord(ins.target) && typeof ins.target.event === "string" && ins.target.event.length > 0)
         ) {
-          return fail(`${here}.target`, '"player" or {event: id} required');
+          return fail(`${here}.target`, '"player", "this", or {event: id} required');
         }
         if (ins.layer !== "below" && ins.layer !== "above") {
           return fail(`${here}.layer`, "'below' or 'above' required");
@@ -1674,6 +1694,26 @@ function validateLayers(v: unknown, path: string): string | null {
   return null;
 }
 
+function validateParallax(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "parallax state required");
+  for (const key of Object.keys(v)) {
+    if (!["image", "loopX", "loopY", "sx", "sy", "zero", "phaseX", "phaseY"].includes(key)) {
+      return fail(`${path}.${key}`, "unknown parallax state field");
+    }
+  }
+  if (typeof v.image !== "string") return fail(`${path}.image`, "string required");
+  if (typeof v.loopX !== "boolean" || typeof v.loopY !== "boolean") {
+    return fail(path, "loopX/loopY booleans required");
+  }
+  for (const field of ["sx", "sy", "phaseX", "phaseY"] as const) {
+    if (!isFiniteNumber(v[field])) return fail(`${path}.${field}`, "finite number required");
+  }
+  if (v.zero !== undefined && typeof v.zero !== "boolean") {
+    return fail(`${path}.zero`, "boolean required");
+  }
+  return null;
+}
+
 function validateTileProperties(v: unknown, path: string): string | null {
   if (!isRecord(v)) return fail(path, "record required");
   for (const [index, tile] of Object.entries(v)) {
@@ -2146,6 +2186,10 @@ export function validateSnapshot(snap: unknown): string | null {
   if (it.layers !== undefined) {
     const layers = validateLayers(it.layers, "state.interp.layers");
     if (layers) return layers;
+  }
+  if (it.parallax !== undefined) {
+    const parallax = validateParallax(it.parallax, "state.interp.parallax");
+    if (parallax) return parallax;
   }
   if (it.tileProperties !== undefined) {
     const tiles = validateTileProperties(it.tileProperties, "state.interp.tileProperties");

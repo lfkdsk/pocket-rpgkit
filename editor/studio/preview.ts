@@ -59,6 +59,9 @@ export interface PreviewArtMessage {
   height: number;
   offset: number;
   rgba: string;
+  /** Present only for a cooked animation image. */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 /** The game connection a host provides. Requests settle; they never throw. */
@@ -161,7 +164,16 @@ export function previewArtMessages(image: PreviewArtImage, sliceBytes = PREVIEW_
   const messages: PreviewArtMessage[] = [];
   for (let offset = 0; offset < image.rgba.length; offset += sliceBytes) {
     const end = Math.min(image.rgba.length, offset + sliceBytes);
-    messages.push({ kind: image.kind, id: image.id, width: image.width, height: image.height, offset, rgba: encodePreviewBase64(image.rgba, offset, end) });
+    messages.push({
+      kind: image.kind,
+      id: image.id,
+      width: image.width,
+      height: image.height,
+      offset,
+      rgba: encodePreviewBase64(image.rgba, offset, end),
+      ...(image.offsetX === undefined ? {} : { offsetX: image.offsetX }),
+      ...(image.offsetY === undefined ? {} : { offsetY: image.offsetY }),
+    });
   }
   return messages;
 }

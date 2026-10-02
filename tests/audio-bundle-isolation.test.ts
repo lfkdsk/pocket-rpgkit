@@ -123,10 +123,14 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 898,897 and 708,561 bytes. Merging seamless-v1 (traversal identity,
 // transfer provenance, sparse reducer state and the optional GameView
 // resolver seam) brings them to 561,053, 905,748 and 714,453.
+// KRM3V's additive reducer/save support and optional GameView seams bring the
+// three input graphs to 569,421 (+8,368), 917,053 (+11,305) and 723,778
+// (+9,325). Concrete parallax and item-icon components remain opt-in and are
+// checked separately by krm3v-ui-bundle-isolation.test.ts.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 561_053;
-const EXPECTED_SUNSTONE_QOA_BYTES = 905_748;
-const EXPECTED_WAV_FIXTURE_BYTES = 714_453;
+const EXPECTED_MEADOW_BYTES = 569_421;
+const EXPECTED_SUNSTONE_QOA_BYTES = 917_053;
+const EXPECTED_WAV_FIXTURE_BYTES = 723_778;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

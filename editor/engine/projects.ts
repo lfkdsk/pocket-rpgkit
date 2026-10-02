@@ -316,7 +316,40 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
         "frames": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 }, "description": "Frame indices into the sheet (row-major), in play order." },
         "count": { "type": "integer", "minimum": 1, "description": "Frame count when frames is omitted (sequential 0..count-1 play order)." },
         "frameDuration": { "type": "number", "exclusiveMinimum": 0, "description": "Duration of each frame in virtual seconds; compiled to reference ticks so the same virtual instant shows the same frame at 60/30/20/4 Hz." },
-        "loop": { "type": "boolean", "description": "Default loop behavior; a mapAnim command's loop overrides it." }
+        "loop": { "type": "boolean", "description": "Default loop behavior; a mapAnim command's loop overrides it." },
+        "timings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["frame"],
+            "anyOf": [{ "required": ["se"] }, { "required": ["flash"] }],
+            "properties": {
+              "frame": { "type": "integer", "minimum": 0 },
+              "se": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "volume": { "type": "number", "minimum": 0, "maximum": 100 },
+                  "pitch": { "type": "number", "minimum": 50, "maximum": 150 }
+                }
+              },
+              "flash": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["color", "intensity", "duration"],
+                "properties": {
+                  "color": { "$ref": "#/$defs/screenColor" },
+                  "intensity": { "type": "integer", "minimum": 0, "maximum": 255 },
+                  "duration": { "type": "number", "minimum": 0 }
+                }
+              }
+            }
+          },
+          "description": "Sound and full-screen flash cues fired when the named animation frame begins."
+        }
       },
       "description": "A frame animation a mapAnim command plays on the map. The runtime frame index is a pure function of the saved reference tick, so rewind and save/load reproduce pixels exactly."
     },
@@ -510,10 +543,25 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
           },
           "uniqueItems": true
         },
+        "parallax": { "$ref": "#/$defs/parallax" },
         "events": {
           "type": "array",
           "items": { "$ref": "#/$defs/event" }
         }
+      }
+    },
+    "parallax": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "loopX", "loopY", "sx", "sy"],
+      "properties": {
+        "image": { "type": ["string", "null"] },
+        "loopX": { "type": "boolean" },
+        "loopY": { "type": "boolean" },
+        "sx": { "type": "number" },
+        "sy": { "type": "number" },
+        "zero": { "type": "boolean" },
+        "showInEditor": { "type": "boolean" }
       }
     },
     "event": {
@@ -787,6 +835,21 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             "variant": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
           },
           "description": "Select visibility and/or a prepackaged variant for a named visual layer during this map visit."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "image", "loopX", "loopY", "sx", "sy"],
+          "properties": {
+            "op": { "const": "changeParallax" },
+            "image": { "type": ["string", "null"] },
+            "loopX": { "type": "boolean" },
+            "loopY": { "type": "boolean" },
+            "sx": { "type": "number" },
+            "sy": { "type": "number" },
+            "zero": { "type": "boolean" }
+          },
+          "description": "Replace the current map parallax, or remove it with image:null."
         },
         {
           "type": "object",
@@ -1255,7 +1318,7 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
             "y": { "type": "integer", "minimum": 0, "description": "Tile row; required with x when target is absent." },
             "target": {
               "oneOf": [
-                { "enum": ["player"] },
+                { "enum": ["player", "this"] },
                 {
                   "type": "object",
                   "additionalProperties": false,
@@ -1263,7 +1326,7 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
                   "properties": { "event": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" } }
                 }
               ],
-              "description": "Character to follow: the instance keeps painting on the character's live pixel position. Alternative to x/y."
+              "description": "Character to follow: player, the issuing event (`this`, including inside a called common event), or a named event. The instance keeps painting on the character's live pixel position. Alternative to x/y."
             },
             "follow": { "type": "boolean", "description": "With a target: true (default) tracks the character's live pixel position; false snapshots the character's tile at execution and pins the instance there (Tuxemon play_map_animation parity)."
             },

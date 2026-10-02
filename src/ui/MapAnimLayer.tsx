@@ -186,8 +186,9 @@ export function MapAnimLayer(props: MapAnimLayerProps): SolidJSX.Element {
           h = art.h;
         }
       }
-      const { px, py } = pixelOf(state, inst);
-      const top = py - (h > TILE ? h >> 1 : 0);
+      const anchor = pixelOf(state, inst);
+      const px = anchor.px + (art?.offsetX ?? 0);
+      const top = anchor.py + (art?.offsetY ?? -(h > TILE ? h >> 1 : 0));
       if (px !== slot.px || top !== slot.top) {
         jump(slot.node, "translateX", px);
         jump(slot.node, "translateY", top);

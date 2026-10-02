@@ -343,6 +343,18 @@ export type Command =
   /** Change one named visual layer for this map visit. A null field restores
    *  its asset default; variant names resolve through GameAssets. */
   | { op: "layer"; layer: string; visible?: boolean | null; variant?: string | null }
+  /** Replace the current map parallax. A null image removes it. A looping
+   *  axis scrolls by speed/4 kit pixels per reference tick (signed); the
+   *  RPG Maker importer converts MV/MZ speeds from source-tile pixels. */
+  | {
+      op: "changeParallax";
+      image: string | null;
+      loopX: boolean;
+      loopY: boolean;
+      sx: number;
+      sy: number;
+      zero?: boolean;
+    }
   /** Override passage and/or one-sided blocked edges at one map cell for
    *  this visit. null clears that field back to the authored map value. */
   | {
@@ -510,7 +522,9 @@ export type Command =
       anim: string;
       x?: number;
       y?: number;
-      target?: "player" | { event: string };
+      /** `this` resolves against the issuing page fiber, including while it
+       * is executing a called common event. */
+      target?: "player" | "this" | { event: string };
       follow?: boolean;
       layer?: "below" | "above";
       loop?: boolean;
@@ -616,6 +630,18 @@ export interface GameEvent {
   pages: Page[];
 }
 
+export interface ParallaxDef {
+  image: string | null;
+  loopX: boolean;
+  loopY: boolean;
+  /** Signed scroll speed of a looping axis: speed/4 kit pixels per
+   *  reference tick. Ignored on a non-looping axis. */
+  sx: number;
+  sy: number;
+  zero?: boolean;
+  showInEditor?: boolean;
+}
+
 export interface MapDef {
   id: string;
   name: string;
@@ -629,6 +655,8 @@ export interface MapDef {
   upper?: [number, TileId][];
   /** Per-cell passage overrides: [index, "pass"|"block"]. */
   passage?: [number, "pass" | "block"][];
+  /** Optional map backdrop and its reference-tick scroll configuration. */
+  parallax?: ParallaxDef;
   /** Interactive events (P1③: page selection + interpretation). */
   events?: GameEvent[];
 }
@@ -790,6 +818,15 @@ export type WalkerSpriteDef = WalkerSheetSpriteDef | WalkerAtlasSpriteDef;
  *  the cooker slices into per-facing/pose frames. */
 export type SpriteDef = ImageSpriteDef | WalkerSpriteDef;
 
+/** A deterministic cue attached to one authored animation frame. Target-
+ * local flashes are intentionally not represented: importers either bake
+ * them or report the semantic loss. */
+export interface AnimationTimingDef {
+  frame: number;
+  se?: { id: string; volume?: number; pitch?: number };
+  flash?: { color: ScreenColor; intensity: number; duration: number };
+}
+
 /** A frame animation a `mapAnim` command plays on the map. The sheet is
  *  cooked into one static baked image per authored frame (the same pipeline
  *  as walker sheets), so the runtime frame index is a pure function of the
@@ -819,6 +856,10 @@ export interface AnimationDef {
   frameDuration: number;
   /** Default loop behavior; a `mapAnim` command's `loop` overrides it. */
   loop?: boolean;
+  /** Sound and full-screen flash cues fired when their frame begins. The
+   * timeline is folded from the saved animation start tick, including for
+   * non-waited and looping playback. */
+  timings?: AnimationTimingDef[];
 }
 
 /** Project-wide runtime options (RPG Maker's System settings). Every field

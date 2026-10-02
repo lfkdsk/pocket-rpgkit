@@ -7,7 +7,8 @@ test `tools/rpgmaker-import/`.
 
 Both projects were authored for this repository and are MIT licensed like the
 rest of it. Every file under `hollow-mz/` and `stage-mv/` is written by
-`gen-fixtures.ts` (data) and `art.ts` (procedural placeholder art):
+`gen-fixtures.ts` (data and feature-specific procedural art) and `art.ts`
+(shared procedural tile/character art):
 
     bun tests/fixtures/rpgmaker/gen-fixtures.ts [outDir]
 
@@ -33,6 +34,9 @@ The `audio/` directories are intentionally absent.
 | A1 / A2 / A3 / A4 / A5 / B | 256x192 / 256x192 / 256x128 / 256x240 / 128x256 / 256x256 | - / 768x576 / - / 768x720 / 384x768 / 768x768 |
 | Characters | `People` (8 chars, 192x128), `!Things` (objects), `$Golem` (48x64) | `Cast` (8 chars, 576x384), `$Moth` (144x192) |
 | Balloon.png | 8x15 frames of 16 px | 8x15 frames of 48 px |
+| IconSet.png | 16x13 cells of 32 px; seven original occupied cells | same original sheet |
+| Parallaxes | - | `StageClouds` and zero-parallax `!StageGlow`, 288x192 source -> 96x64 imported |
+| MV animations | - | `Sparkle`, five original 192 px cells in a 960x192 sheet |
 | Pictures | - | `Curtain` 816x624 (the MV screen) |
 
 Both `System.json` files carry `versionId` (MV writes it too); flavour is
@@ -96,7 +100,7 @@ Events that matter:
 | 1 | 9 | Bell | (0, 14) | parallel; the page body is one loop; Ticks += 1 per second until 5, then self B |
 | 2 | 1 | Exit | (6, 9) | player touch, below (step on it) |
 | 2 | 2 | Chest | (6, 3) | action; p1 branches on switch 1; p2 (self A) empty |
-| 2 | 3 | Shopkeeper | (9, 4) | action, behind the counter: talk from (9, 6) facing up |
+| 2 | 3 | Shopkeeper | (9, 4) | action, use the service opening at (9, 5) facing up |
 | 3 | 1 | Exit | (10, 14) | player touch, below |
 | 3 | 2 | Golem | (10, 4) | action; battle; p2 (switch 10) invisible, below |
 
@@ -163,13 +167,17 @@ before the path ends.
 ## stage-mv: autorun opening cutscene
 
 One map: map 1 "Stage" ("Lantern Stage"), 17x13, tileset 1 "Stage" (mode 1:
-A2, A4, A5, B). The stage is y 2..5, a stage lip at y 6 (stairs at x 3 and
-x 8), the audience y 7..11 with chair rows at y 9 and y 11 (x 1..6, x 10..15)
-and a center aisle at x 7..9. The fan's pen x 11..15, y 7..8 is sealed by the
-lip, the chairs and a rail at x 10.
+A2, A4, A5, B). It starts with the horizontally looping `StageClouds`
+parallax at speed 2. The stage is y 2..5, a stage lip at y 6 (stairs at x 3
+and x 8), the audience y 7..11 with chair rows at y 9 and y 11 (x 1..6,
+x 10..15) and a center aisle at x 7..9. The fan's pen x 11..15, y 7..8 is
+sealed by the lip, the chairs and a rail at x 10.
 
 Switches: 1 SceneDone, 2 LeadBowed, 3 Smoke, 4 StagehandGo.
-Variables: 1 Claps, 2 Encore. Actor 1 Ivy. Animation 1 "Sparkle".
+Variables: 1 Claps, 2 Encore. Actor 1 Ivy. Animation 1 "Sparkle" uses five
+visible source cells, including translated/scaled/rotated/mirrored and
+partially transparent cells; frame 0 has a sound plus target flash and frame
+2 has a screen flash.
 
 | Id | Name | At | Notes |
 |---|---|---|---|
@@ -189,9 +197,10 @@ Variables: 1 Claps, 2 Encore. Actor 1 Ivy. Animation 1 "Sparkle".
    player turns transparent, fade out, BGM + BGS, the Curtain picture, fade
    in, a 30-frame wait, then text 1: **Confirm** (about 90 frames in).
 2. The scene continues on its own: BGS fade, the curtain moves up and is
-   erased, the player reappears, an MV plugin command (356), a dusk tint, ME,
-   a flash, a "!" balloon on the player, the player's route (**Up** x2 and a
-   turn up -> (8, 8), not skippable), the Sparkle animation on the Lead, the
+   erased, the player reappears, Change Parallax selects the non-looping
+   zero-parallax `!StageGlow`, then an MV plugin command (356), a dusk tint,
+   ME, a flash, a "!" balloon on the player, the player's route (**Up** x2
+   and a turn up -> (8, 8), not skippable), the Sparkle animation on the Lead, the
    Lead's long route (skippable; it turns switch 2 ON and changes the Lead's
    image), Set Event Location puts the Lead back at (8, 3) facing down, a
    heart balloon on the Lead, then text 2: **Confirm** (roughly 10 s after
@@ -229,7 +238,7 @@ stage-mv commands: 101 x12 (MV, four parameters), 401 x14, 108, 111 x3,
 411/412, 112/113/413, 121 x4, 122 x2, 123, 203, 205 x3 + 505 x44, 211 x2,
 212, 213 x4, 214, 221, 222, 223 x2, 224, 225, 230 x3, 231, 232, 235, 241,
 245, 246, 249, 250 x3, 356. Route codes 1-10, 12, 14-16, 19-22, 24-27,
-29-31, 33, 35-38, 41, 42, 44.
+29-31, 33, 35-38, 41, 42, 44. Change Parallax 284 x1.
 
 Expected to have no kit equivalent (placeholder or dropped): 236 weather,
 124 timer, 355/655 script, 356/357 plugin commands, 303 name input (only on

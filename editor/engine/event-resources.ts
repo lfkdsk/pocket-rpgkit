@@ -11,6 +11,7 @@ export interface EventEditorResources {
   readonly items: readonly string[];
   readonly sprites: readonly string[];
   readonly animations: readonly string[];
+  readonly parallaxes: readonly string[];
   readonly audio: readonly string[];
   readonly commonEvents: readonly string[];
   readonly events: readonly string[];
@@ -25,6 +26,7 @@ export const EMPTY_EVENT_EDITOR_RESOURCES: EventEditorResources = Object.freeze(
   items: Object.freeze([]),
   sprites: Object.freeze([]),
   animations: Object.freeze([]),
+  parallaxes: Object.freeze([]),
   audio: Object.freeze([]),
   commonEvents: Object.freeze([]),
   events: Object.freeze([]),
@@ -63,6 +65,11 @@ export function eventEditorResources(project: Project, map?: MapDef): EventEdito
   const variants = new Map<string, Set<string>>();
   const animationInstances = new Set<string>();
   const extensionCalls = new Set<string>();
+  const parallaxes = new Set<string>();
+
+  for (const projectMap of project.maps) {
+    if (projectMap.parallax?.image) parallaxes.add(projectMap.parallax.image);
+  }
 
   const addVariant = (layer: string, variant: string | null | undefined): void => {
     layers.add(layer);
@@ -84,6 +91,9 @@ export function eventEditorResources(project: Project, map?: MapDef): EventEdito
         break;
       case "mapAnim":
         animationInstances.add(command.id);
+        break;
+      case "changeParallax":
+        if (command.image) parallaxes.add(command.image);
         break;
       case "ext":
       case "extChoice":
@@ -111,6 +121,7 @@ export function eventEditorResources(project: Project, map?: MapDef): EventEdito
     items: sorted(project.items.map((entry) => entry.id)),
     sprites: sorted(Object.keys(project.sprites ?? {})),
     animations: sorted((project.animations ?? []).map((entry) => entry.id)),
+    parallaxes: sorted(parallaxes),
     audio: sorted(Object.keys(project.audio ?? {})),
     commonEvents: sorted((project.commonEvents ?? []).map((entry) => entry.id)),
     events: sorted((map?.events ?? project.maps.flatMap((entry) => entry.events ?? [])).map((entry) => entry.id)),

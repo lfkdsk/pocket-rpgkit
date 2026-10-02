@@ -73,6 +73,26 @@ export interface ScreenLayerVariant {
   h?: number;
 }
 
+/** One map-parallax image in logical pixels. The renderer tiles it across
+ * the active map's visible viewport; the active ParallaxDef determines MV's
+ * camera/scroll origin independently on each axis. */
+export interface ParallaxAsset {
+  image: string;
+  w: number;
+  h: number;
+}
+
+/** One cooked deterministic map animation. Optional offsets are the baked
+ * frame canvas' top-left relative to the target tile's top-left. Their
+ * absence retains the original mapAnim top-left/tall-frame anchor. */
+export interface CookedMapAnimation {
+  frames: readonly string[];
+  w: number;
+  h: number;
+  offsetX?: number;
+  offsetY?: number;
+}
+
 export interface GameScreenLayerAssets {
   placement: "screen";
   defaultVariant?: string;
@@ -132,6 +152,9 @@ export interface GameAssets {
   order: readonly string[];
   /** Page.sprite key -> static 16x16 image src or a 12-frame walker. */
   npcSrc: Readonly<Record<string, NpcArt>>;
+  /** Item.sprite tile id -> cooked 16px image. Optional and presentation
+   * only: inventory/shop reducer state continues to carry item ids. */
+  itemSrc?: Readonly<Record<string, string>>;
   /** The player's 12 static walker frames. */
   player: PlayerFrames;
   /** Player frame height in px; 16 (square) when omitted, 32 for a 16x32
@@ -145,7 +168,10 @@ export interface GameAssets {
   /** AnimationDef id -> cooked per-frame static images in play order. The
    *  mapAnim layer selects frames[animFrameIndex(...)] per frame from the
    *  saved reference tick; never an auto-play atlas. */
-  anims?: Readonly<Record<string, { frames: readonly string[]; w: number; h: number }>>;
+  anims?: Readonly<Record<string, CookedMapAnimation>>;
+  /** Parallax image id -> immutable cooked art. Active configuration and
+   * scroll phase live in InterpState, never in this render-only table. */
+  parallaxes?: Readonly<Record<string, ParallaxAsset>>;
   /** Optional named runtime layers and prepackaged variants. The reducer
    * stores only {visible,variant}; these immutable assets remain render-only. */
   layers?: Readonly<Record<string, GameVisualLayerAssets>>;

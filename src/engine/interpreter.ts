@@ -88,6 +88,7 @@ import type {
   MoveRoute,
   Page,
   PageCondition,
+  ParallaxDef,
   PictureBlendMode,
   PictureCoordinate,
   PictureOrigin,
@@ -220,6 +221,19 @@ export interface EventPageAppearance {
 export interface LayerState {
   visible?: boolean;
   variant?: string;
+}
+
+/** Live map parallax configuration. Phases are pre-origin pixel offsets and
+ * advance on the fixed 60 Hz interpreter clock. */
+export interface ParallaxState {
+  image: string;
+  loopX: boolean;
+  loopY: boolean;
+  sx: number;
+  sy: number;
+  zero?: boolean;
+  phaseX: number;
+  phaseY: number;
 }
 
 export interface EffectiveAppearance {
@@ -656,6 +670,15 @@ export type Instr =
     }
   | { op: "layer"; layer: string; visible?: boolean | null; variant?: string | null }
   | {
+      op: "changeParallax";
+      image: string | null;
+      loopX: boolean;
+      loopY: boolean;
+      sx: number;
+      sy: number;
+      zero?: boolean;
+    }
+  | {
       op: "tileProperty";
       x: number;
       y: number;
@@ -728,7 +751,7 @@ export type Instr =
       /** Null when the instance follows `target`. */
       x: number | null;
       y: number | null;
-      target: "player" | { event: string } | null;
+      target: "player" | "this" | { event: string } | null;
       /** With a target: true keeps painting on the character's live pixel
        *  position; false snapshots the character's tile at execution and
        *  pins the instance there (Tuxemon play_map_animation parity). */
@@ -971,6 +994,17 @@ function compileScoped(
             layer: c.layer,
             ...(c.visible === undefined ? {} : { visible: c.visible }),
             ...(c.variant === undefined ? {} : { variant: c.variant }),
+          });
+          break;
+        case "changeParallax":
+          emit({
+            op: "changeParallax",
+            image: c.image,
+            loopX: c.loopX,
+            loopY: c.loopY,
+            sx: c.sx,
+            sy: c.sy,
+            ...(c.zero === undefined ? {} : { zero: c.zero }),
           });
           break;
         case "tileProperty":
@@ -1542,9 +1576,9 @@ interface Fiber {
  *  only when a mapAnim/stopAnim command runs or the map is entered (the
  *  interpreter rebuilds on entry, so animations never survive a transfer,
  *  matching Tuxemon's per-map AnimationManager). During playback the
- *  reducer does no per-frame work: the UI derives the frame from `start`
- *  and the compiled timing (animFrameIndex), so playback is identical
- *  under rewind and after a save/load. */
+ *  UI derives the frame from `start` and the compiled timing
+ *  (animFrameIndex); the reducer only scans an authored timing list when
+ *  one exists, so playback is identical under rewind and save/load. */
 export interface MapAnimInstance {
   /** Author-owned instance id, unique among live instances. stopAnim and
    *  a same-id replay reference it. */
@@ -1579,6 +1613,14 @@ export interface CompiledAnim {
   total: number;
   /** Default loop flag from the def. */
   loop: boolean;
+  /** Sparse cues, sorted by quantized tick within one playthrough. */
+  timings?: readonly CompiledAnimationTiming[];
+}
+
+export interface CompiledAnimationTiming {
+  tick: number;
+  se?: SoundCue;
+  flash?: { color: ScreenColor; intensity: number; frames: number };
 }
 
 /** Compile an AnimationDef's authored seconds into reference ticks. The
@@ -1588,17 +1630,45 @@ export function compileAnim(def: AnimationDef, hz: number = TICK_HZ): CompiledAn
   if (order === null || order.length === 0) {
     throw new Error(`animation ${def.id}: frames or count must name at least one frame`);
   }
-  const per = secondsToFrames(def.frameDuration, hz);
-  if (per <= 0) {
-    throw new Error(`animation ${def.id}: frameDuration must be positive at ${hz} Hz`);
+  if (!Number.isFinite(def.frameDuration) || def.frameDuration <= 0) {
+    throw new Error(`animation ${def.id}: frameDuration must be positive`);
   }
-  const steps: number[] = [];
-  let acc = 0;
-  for (let i = 0; i < order.length; i++) {
-    acc += per;
-    steps.push(acc);
+  // Quantize cumulative endpoints, not each short frame independently.
+  // MV's 4/60 s frames therefore keep their total duration even at 4 Hz;
+  // individual source frames may share an endpoint and be skipped there.
+  const total = Math.max(1, secondsToFrames(def.frameDuration * order.length, hz));
+  const steps = order.map((_, i) => i + 1 === order.length
+    ? total
+    : Math.min(total, secondsToFrames(def.frameDuration * (i + 1), hz)));
+  const compiled: CompiledAnim = { frames: order.length, steps, total, loop: def.loop === true };
+  if (def.timings && def.timings.length > 0) {
+    const timings: CompiledAnimationTiming[] = def.timings.map((timing, index) => {
+      if (!Number.isInteger(timing.frame) || timing.frame < 0 || timing.frame >= order.length) {
+        throw new Error(`animation ${def.id}: timing ${index} frame ${timing.frame} is outside 0..${order.length - 1}`);
+      }
+      const out: CompiledAnimationTiming = {
+        tick: timing.frame === 0 ? 0 : steps[timing.frame - 1]!,
+      };
+      if (timing.se) {
+        out.se = {
+          name: timing.se.id,
+          volume: timing.se.volume ?? 100,
+          pitch: timing.se.pitch ?? 100,
+        };
+      }
+      if (timing.flash) {
+        out.flash = {
+          color: { ...timing.flash.color },
+          intensity: timing.flash.intensity,
+          frames: secondsToFrames(timing.flash.duration, hz),
+        };
+      }
+      return out;
+    });
+    timings.sort((a, b) => a.tick - b.tick);
+    compiled.timings = timings;
   }
-  return { frames: order.length, steps, total: acc, loop: def.loop === true };
+  return compiled;
 }
 
 /** The frame index an instance shows on reference tick `frame`, or -1 when
@@ -1607,12 +1677,50 @@ export function compileAnim(def: AnimationDef, hz: number = TICK_HZ): CompiledAn
 export function animFrameIndex(compiled: CompiledAnim, instance: MapAnimInstance, frame: number): number {
   const elapsed = frame - instance.start;
   if (elapsed < 0) return 0;
+  if (elapsed === 0) return 0;
   const t = instance.loop ? elapsed % compiled.total : elapsed;
   if (!instance.loop && elapsed >= compiled.total) return -1;
   for (let i = 0; i < compiled.frames; i++) {
     if (t < compiled.steps[i]!) return i;
   }
   return compiled.frames - 1;
+}
+
+/** Apply every cue that begins at `elapsed` in this playthrough. Called
+ * only for a live animation whose compiled definition has timings. */
+function emitMapAnimTimings(
+  s: InterpState,
+  compiled: CompiledAnim,
+  elapsed: number,
+  loop: boolean,
+): void {
+  const timings = compiled.timings;
+  if (!timings || elapsed < 0 || compiled.total <= 0) return;
+  const tick = loop ? elapsed % compiled.total : elapsed;
+  for (const timing of timings) {
+    if (timing.tick < tick) continue;
+    if (timing.tick > tick) break;
+    if (timing.se) s.cues.push({ ...timing.se });
+    if (timing.flash) {
+      const screen = ensureScreen(s);
+      startScreenFlash(screen, timing.flash.color, timing.flash.intensity, timing.flash.frames);
+      if (screenEffectsEmpty(screen)) delete s.screen;
+    }
+  }
+}
+
+/** Advance cue timelines for instances that existed before this tick. New
+ * instances invoke tick zero directly in the mapAnim command handler. */
+function emitLiveMapAnimTimings(s: InterpState, w: World): void {
+  const instances = s.anims;
+  if (!instances) return;
+  for (const instance of instances) {
+    const compiled = w.anims.get(instance.anim);
+    if (!compiled?.timings) continue;
+    const elapsed = s.frame - instance.start;
+    if (!instance.loop && elapsed > compiled.total) continue;
+    emitMapAnimTimings(s, compiled, elapsed, instance.loop);
+  }
 }
 
 export interface World {
@@ -1776,6 +1884,8 @@ export interface InterpState {
   eventAppearances?: Record<string, EventAppearanceState>;
   /** Named visual-layer changes for this map visit. */
   layers?: Record<string, LayerState>;
+  /** Current map parallax. Absent when this visit has no parallax. */
+  parallax?: ParallaxState;
   /** Row-major cell index -> runtime passage/edge replacement. */
   tileProperties?: Record<string, TilePropertyOverride>;
   /** Sparse, deterministic screen/camera/balloon presentation. Global
@@ -1821,9 +1931,12 @@ export interface InterpState {
   error?: InterpError;
 }
 
-export function createInterpState(sw: SwitchState = createSwitchState()): InterpState {
+export function createInterpState(
+  sw: SwitchState = createSwitchState(),
+  parallax?: Readonly<ParallaxDef>,
+): InterpState {
   const safeSwitches = createSwitchState(sw);
-  return {
+  const state: InterpState = {
     frame: 0,
     sw: safeSwitches,
     main: null,
@@ -1840,6 +1953,19 @@ export function createInterpState(sw: SwitchState = createSwitchState()): Interp
     pendingPlacements: [],
     abortedRoutes: [],
   };
+  if (parallax?.image !== null && parallax?.image !== undefined) {
+    state.parallax = {
+      image: parallax.image,
+      loopX: parallax.loopX,
+      loopY: parallax.loopY,
+      sx: parallax.sx,
+      sy: parallax.sy,
+      ...(parallax.zero === undefined ? {} : { zero: parallax.zero }),
+      phaseX: 0,
+      phaseY: 0,
+    };
+  }
+  return state;
 }
 
 /** Non-interpreter reasons the player is not in the freely controllable map
@@ -1941,7 +2067,7 @@ function programContextFlags(program: readonly Instr[]): number {
       // carries x/y instead). typeof null === "object", so the null check is
       // required: only a `{event}` target needs the live-character set.
       instruction.target !== null &&
-      typeof instruction.target === "object"
+      instruction.target !== "player"
     ) {
       flags |= CONTEXT_MAP_ANIM_TARGET;
     } else if (
@@ -2298,6 +2424,7 @@ function copyInterp(
     pendingPlacements: s0.pendingPlacements.map((p) => ({ ...p })),
     abortedRoutes: [...s0.abortedRoutes],
   };
+  if (s0.parallax) s.parallax = { ...s0.parallax };
   // Conditional assignment (not a conditional spread) so a scene-free
   // project allocates no empty-object literal on the per-frame clone path.
   if (s0.pendingScenes && s0.pendingScenes.length > 0) {
@@ -3902,6 +4029,27 @@ function applyLayerCommand(s: InterpState, ins: Extract<Instr, { op: "layer" }>)
   }
 }
 
+function applyChangeParallaxCommand(
+  s: InterpState,
+  ins: Extract<Instr, { op: "changeParallax" }>,
+): void {
+  if (ins.image === null) {
+    delete s.parallax;
+    return;
+  }
+  const previous = s.parallax;
+  s.parallax = {
+    image: ins.image,
+    loopX: ins.loopX,
+    loopY: ins.loopY,
+    sx: ins.sx,
+    sy: ins.sy,
+    ...(ins.zero === undefined ? {} : { zero: ins.zero }),
+    phaseX: previous?.loopX === true && ins.loopX ? previous.phaseX : 0,
+    phaseY: previous?.loopY === true && ins.loopY ? previous.phaseY : 0,
+  };
+}
+
 function applyTilePropertyCommand(
   s: InterpState,
   w: World,
@@ -4405,6 +4553,10 @@ function runFiber(
         applyLayerCommand(s, ins);
         top.pc++;
         break;
+      case "changeParallax":
+        applyChangeParallaxCommand(s, ins);
+        top.pc++;
+        break;
       case "tileProperty":
         applyTilePropertyCommand(s, w, f, ins);
         if (s.error) return;
@@ -4677,7 +4829,7 @@ function runFiber(
         // the character's tile at execution and pins the instance there
         // (Tuxemon play_map_animation reads character.tile_pos once and
         // stores the coordinates, never a live reference).
-        let target = ins.target;
+        let target: MapAnimInstance["target"] = ins.target === "this" ? null : ins.target;
         if (ins.target !== null) {
           if (ins.target === "player") {
             x = input.playerCell.x;
@@ -4687,16 +4839,18 @@ function runFiber(
             // (Tuxemon get_npc looks up _on_map): an erased, inactive, or
             // never-spawned event has no live character, so play nothing
             // rather than ghost the animation at the authored x/y.
-            const cell = input.liveEventCells ? keyedValue(input.liveEventCells, ins.target.event) : undefined;
+            const eventId = ins.target === "this" ? f.key.split("/").pop()! : ins.target.event;
+            const cell = input.liveEventCells ? keyedValue(input.liveEventCells, eventId) : undefined;
             if (!cell) {
               s.error = {
                 kind: "content",
-                message: `mapAnim in ${f.key}: target event ${ins.target.event} has no live character on this map`,
+                message: `mapAnim in ${f.key}: target event ${eventId} has no live character on this map`,
               };
               return;
             }
             x = cell.x;
             y = cell.y;
+            target = { event: eventId };
           }
           if (!ins.follow) target = null;
         } else if (
@@ -4718,7 +4872,7 @@ function runFiber(
           if (a.id !== ins.id) anims[kept++] = a;
         }
         anims.length = kept;
-        anims.push({
+        const instance: MapAnimInstance = {
           id: ins.id,
           anim: ins.anim,
           start: s.frame,
@@ -4727,7 +4881,9 @@ function runFiber(
           target,
           layer: ins.layer,
           loop,
-        });
+        };
+        anims.push(instance);
+        emitMapAnimTimings(s, compiled, 0, loop);
         if (ins.wait) {
           f.mode = "animWait";
           f.since = s.frame;
@@ -4961,6 +5117,11 @@ export function stepInterpWithExtensionsInPlace(
 ): JsonValue {
   const extension: MutableExtensionScope = { runtime: w.extensions, ext: ext0 };
   advanceInterpAudioInPlace(s);
+  const parallax = s.parallax;
+  if (parallax) {
+    if (parallax.loopX) parallax.phaseX += parallax.sx / 2;
+    if (parallax.loopY) parallax.phaseY += parallax.sy / 2;
+  }
   // A fatalized state is frozen: no triggers scan, no fiber advances. The
   // frame clock still ticks so render/host code keeps its cadence, but the
   // cyclic program can never consume another step (review 1274 B1).
@@ -4973,6 +5134,7 @@ export function stepInterpWithExtensionsInPlace(
   s.frame++;
   s.cues = [];
   delete s.hostActions;
+  emitLiveMapAnimTimings(s, w);
   // Transfer/route/place requests live only on the step that issued them:
   // P1④ reads them off that step, performs the work, then resumes the fiber.
   // Battle requests are different: they remain FIFO-queued until the scene

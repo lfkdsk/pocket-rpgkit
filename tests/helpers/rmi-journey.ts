@@ -230,6 +230,39 @@ export class RmiDriver {
     this.go(0);
     this.settle(opts);
   }
+
+  /** Open the faced shop but stop before choosing a row, so a visual test
+   * can inspect it without accidentally buying anything. */
+  openShop(maxFrames = 3000): void {
+    this.go(BTN_CIRCLE);
+    this.go(0);
+    let confirm = true;
+    for (let i = 0; i < maxFrames; i++) {
+      if (this.state.interp.modal?.kind === "shop") return;
+      this.go(confirm ? BTN_CIRCLE : 0);
+      confirm = !confirm;
+    }
+    throw new Error("rmi journey: shop did not open");
+  }
+
+  /** Select the final Leave/Back control row, then finish the event. */
+  leaveShop(maxFrames = 1000): void {
+    for (let i = 0; i < maxFrames; i++) {
+      const modal = this.state.interp.modal;
+      if (modal?.kind !== "shop") {
+        this.settle();
+        return;
+      }
+      if (modal.index < modal.rows.length - 1) {
+        this.go(BTN_DOWN);
+        this.go(0);
+      } else {
+        this.go(BTN_CIRCLE);
+        this.go(0);
+      }
+    }
+    throw new Error("rmi journey: shop did not close");
+  }
 }
 
 // --- the two fixture playthroughs (tests/fixtures/rpgmaker/README.md) -------
@@ -258,6 +291,13 @@ export function playHollow(project: Project): RmiDriver {
   d.stepOnce(FACE.up);
   d.settle({ wantMap: "map002" });
   d.mark("house");
+  // The fixture leaves a service opening in front of the shopkeeper so the
+  // journey does not depend on the importer's known counter-reach downgrade.
+  d.walkTo(9, 5);
+  d.press(FACE.up);
+  d.openShop();
+  d.mark("shop-icons");
+  d.leaveShop();
   d.walkTo(6, 4);
   d.press(FACE.up);
   d.talk();
@@ -296,6 +336,11 @@ export function playStage(project: Project): RmiDriver {
   d.watch("curtain", (s) => s.interp.screen?.pictures?.["1"] !== undefined && s.interp.modal?.kind === "text");
   d.watch("tint", (s) => Object.keys(s.interp.screen?.tints ?? {}).length > 0 && s.interp.modal?.kind === "text");
   d.watch("balloon", (s) => Object.keys(s.interp.screen?.balloons ?? {}).length > 0);
+  d.watch("parallax", (s) => s.interp.parallax?.image === "parallax-stageglow" && s.interp.modal?.kind === "text");
+  d.watch("sparkle", (s) => {
+    const instance = s.interp.anims?.find((anim) => anim.anim === "anim001");
+    return !!instance && s.interp.frame - instance.start >= 4;
+  });
   d.settle({ maxFrames: 20000 });
   d.mark("cutscene-done");
   d.mark("claps");

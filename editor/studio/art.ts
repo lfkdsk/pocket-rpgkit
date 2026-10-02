@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-// editor/studio/art.ts — tile sheet and character art for the canvas.
+// editor/studio/art.ts — project art for the canvas and play-test.
 //
 // A project names its sheets and sprites by id; the pixels live outside the
 // document. A project folder (or a pack that carries art) brings its own
@@ -11,6 +11,7 @@
 
 import type { SpriteDef } from "../../src/engine/types.ts";
 import type { LocalArt } from "./host.ts";
+import type { PreviewArtImage, PreviewArtKind } from "../../tools/preview/protocol.ts";
 
 export const TILE = 16;
 
@@ -25,7 +26,12 @@ interface ArtEntry {
   from?: string;
   /** The host's handle on a local pick, released when replaced. */
   local?: LocalArt;
+  /** Render-only placement of a cooked map-animation frame. */
+  offsetX?: number;
+  offsetY?: number;
 }
+
+type ProjectArtTable = "sheet" | "sprite" | "animation" | "parallax";
 
 function hue(id: string): number {
   let h = 2166136261;
@@ -36,6 +42,8 @@ function hue(id: string): number {
 export class ArtRegistry {
   private sheets = new Map<string, ArtEntry>();
   private sprites = new Map<string, ArtEntry>();
+  private animations = new Map<string, ArtEntry>();
+  private parallaxes = new Map<string, ArtEntry>();
   private placeholders = new Map<string, HTMLCanvasElement>();
   private listeners = new Set<() => void>();
   /** Bumped whenever any image finishes loading or is replaced. */
@@ -56,16 +64,26 @@ export class ArtRegistry {
   }
 
   clear(): void {
-    for (const entry of [...this.sheets.values(), ...this.sprites.values()]) this.release(entry);
+    for (const entry of [...this.sheets.values(), ...this.sprites.values(), ...this.animations.values(), ...this.parallaxes.values()]) this.release(entry);
     this.sheets.clear();
     this.sprites.clear();
+    this.animations.clear();
+    this.parallaxes.clear();
     this.changed();
   }
 
-  private load(table: Map<string, ArtEntry>, id: string, url: string, source: "project" | "bundled" | "local", from: string, local?: LocalArt): Promise<void> {
+  private load(
+    table: Map<string, ArtEntry>,
+    id: string,
+    url: string,
+    source: "project" | "bundled" | "local",
+    from: string,
+    local?: LocalArt,
+    placement: { offsetX?: number; offsetY?: number } = {},
+  ): Promise<void> {
     this.release(table.get(id));
     const keep = local ? { local } : {};
-    table.set(id, { image: null, source: "loading", width: 0, height: 0, from, ...keep });
+    table.set(id, { image: null, source: "loading", width: 0, height: 0, from, ...keep, ...placement });
     this.changed();
     return new Promise((resolve) => {
       const image = new Image();
@@ -73,14 +91,14 @@ export class ArtRegistry {
       image.onload = () => {
         // Ignore a load that a newer pick replaced meanwhile.
         if (table.get(id)?.from === from) {
-          table.set(id, { image, source, width: image.naturalWidth, height: image.naturalHeight, from, ...keep });
+          table.set(id, { image, source, width: image.naturalWidth, height: image.naturalHeight, from, ...keep, ...placement });
           this.changed();
         }
         resolve();
       };
       image.onerror = () => {
         if (table.get(id)?.from === from) {
-          table.set(id, { image: null, source: "broken", width: 0, height: 0, from, ...keep });
+          table.set(id, { image: null, source: "broken", width: 0, height: 0, from, ...keep, ...placement });
           this.changed();
         }
         resolve();
@@ -107,11 +125,18 @@ export class ArtRegistry {
     return this.load(this.sprites, id, url, "project", path);
   }
 
-  /** The decoded RGBA pixels of a sheet's or sprite's art, for the
-   * play-test; null when it has none or it is bundled example art (the
-   * game already has that). */
-  pixels(kind: "sheet" | "sprite", id: string): { width: number; height: number; rgba: Uint8Array } | null {
-    const entry = (kind === "sheet" ? this.sheets : this.sprites).get(id);
+  loadProjectAnimation(id: string, path: string, url: string, placement: { offsetX?: number; offsetY?: number } = {}): Promise<void> {
+    return this.load(this.animations, id, url, "project", path, undefined, placement);
+  }
+
+  loadProjectParallax(id: string, path: string, url: string): Promise<void> {
+    return this.load(this.parallaxes, id, url, "project", path);
+  }
+
+  /** Decoded RGBA pixels for the play-test; null when the resource has none
+   * or it is bundled example art (the game already has that). */
+  pixels(kind: ProjectArtTable, id: string): { width: number; height: number; rgba: Uint8Array; offsetX?: number; offsetY?: number } | null {
+    const entry = this.table(kind).get(id);
     if (!entry?.image || (entry.source !== "project" && entry.source !== "local") || !entry.width || !entry.height) return null;
     const canvas = document.createElement("canvas");
     canvas.width = entry.width;
@@ -120,7 +145,26 @@ export class ArtRegistry {
     if (!ctx) return null;
     ctx.drawImage(entry.image, 0, 0);
     const data = ctx.getImageData(0, 0, entry.width, entry.height).data;
-    return { width: entry.width, height: entry.height, rgba: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) };
+    return {
+      width: entry.width,
+      height: entry.height,
+      rgba: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      ...(entry.offsetX === undefined ? {} : { offsetX: entry.offsetX }),
+      ...(entry.offsetY === undefined ? {} : { offsetY: entry.offsetY }),
+    };
+  }
+
+  /** Every decoded project/local image for the preview protocol. Bundled
+   * example art is already present in the preview build and stays out. */
+  previewImages(): PreviewArtImage[] {
+    const images: PreviewArtImage[] = [];
+    for (const kind of ["sheet", "sprite", "animation", "parallax"] as const satisfies readonly PreviewArtKind[]) {
+      for (const id of this.table(kind).keys()) {
+        const pixels = this.pixels(kind, id);
+        if (pixels) images.push({ kind, id, ...pixels });
+      }
+    }
+    return images;
   }
 
   /** Use a local PNG (picked through the host) for a sheet id. */
@@ -145,6 +189,23 @@ export class ArtRegistry {
   /** The loaded sheet image, or null when it must be drawn as a placeholder. */
   sheetImage(id: string): CanvasImageSource | null {
     return this.sheets.get(id)?.image ?? null;
+  }
+
+  /** Loaded parallax image and natural logical dimensions. */
+  parallaxImage(id: string): { image: CanvasImageSource; width: number; height: number } | null {
+    const entry = this.parallaxes.get(id);
+    return entry?.image && entry.width > 0 && entry.height > 0
+      ? { image: entry.image, width: entry.width, height: entry.height }
+      : null;
+  }
+
+  private table(kind: ProjectArtTable): Map<string, ArtEntry> {
+    switch (kind) {
+      case "sheet": return this.sheets;
+      case "sprite": return this.sprites;
+      case "animation": return this.animations;
+      case "parallax": return this.parallaxes;
+    }
   }
 
   /** A per-sheet placeholder atlas: every cell hatched in the sheet's hue

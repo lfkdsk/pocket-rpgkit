@@ -457,6 +457,7 @@ export class MapCanvas {
     const H = map.height * TILE;
     ctx.fillStyle = t.void;
     ctx.fillRect(0, 0, W, H);
+    this.drawParallax(ctx, map, W, H);
     const visible = this.app.visible;
     const opacity = this.app.opacity;
     if (visible.ground && opacity.ground > 0) {
@@ -509,6 +510,23 @@ export class MapCanvas {
     this.stats.frames++;
     this.stats.recent.push(elapsed);
     if (this.stats.recent.length > 240) this.stats.recent.shift();
+  }
+
+  /** Authored editor-visible parallax is presentation behind the ground,
+   * never part of either tile cache. At phase zero its image begins at the
+   * map origin; loop axes repeat using the same authored flags as runtime. */
+  private drawParallax(ctx: CanvasRenderingContext2D, map: MapDef, width: number, height: number): void {
+    const def = map.parallax;
+    if (!def?.showInEditor || !def.image) return;
+    const art = this.art.parallaxImage(def.image);
+    if (!art) return;
+    const repeat = def.loopX && def.loopY ? "repeat" : def.loopX ? "repeat-x" : def.loopY ? "repeat-y" : "no-repeat";
+    const pattern = ctx.createPattern(art.image, repeat);
+    if (!pattern) return;
+    ctx.save();
+    ctx.fillStyle = pattern;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
   }
 
   private pageForDisplay(event: GameEvent): GameEvent["pages"][number] | undefined {

@@ -66,6 +66,7 @@ const SCREEN_COMMAND_LABELS: Readonly<Record<string, string>> = Object.freeze({
   tintPicture: "tint picture",
   erasePicture: "erase picture",
   mapNameDisplay: "map name display",
+  changeParallax: "change parallax",
 });
 
 function commandLabel(row: InspectorCommandRow): string {

@@ -219,7 +219,8 @@ written after `shards`:
 
 - Each key is the relative path the project names the image by: a sprite's
   `src` or `sheet`, an animation's `sheet`, or a conventional path such as
-  `art/sheets/<sheet id>.png` (see [`studio.md`](studio.md), "Project art").
+  `art/sheets/<sheet id>.png` or `art/parallaxes/<parallax id>.png` (see
+  [`studio.md`](studio.md), "Project art").
   Keys follow the shard-entry rule: portable POSIX-relative paths, no
   absolute paths, `..`, `.`, empty segments, backslashes or control
   characters.
@@ -658,6 +659,7 @@ The movement, presentation, modal, extension, and battle forms use:
 | `moveControl` | `target`, `control.kind`; `control.value` for value-bearing kinds, or `control.bounds` (`x,y,width,height`) and `control.frequency` for `wander` |
 | `appearance` | `target`, `sprite`, `opacity`, `visible`, `saveDefault` |
 | `layer` | `layer`, `visible`, `variant` |
+| `changeParallax` | `image` (or `null`), `loopX`, `loopY`, `sx`, `sy`, `zero` |
 | `tileProperty` | `x`, `y`, `passage`, `enter`, `exit`; directions are a comma list, JSON array, `[]`, `null`, or `(unset)` |
 | `screenFade` | `direction`, `duration`, `color` (`r,g,b,a` or `(unset)`), `wait` |
 | `screenTint` | `layer`, `color.r`, `color.g`, `color.b`, `color.a`, `duration`, `wait` |
@@ -677,7 +679,7 @@ The movement, presentation, modal, extension, and battle forms use:
 | `changeName` | `name` |
 | `mapNameDisplay` | `visible` |
 | `shop` | `id`, `goods` (JSON array), `sell`, `sellList` |
-| `mapAnim` | `id`, `anim`, `placement`; then `x`/`y` for `tile` or `target` for `target`; also `follow`, `layer`, `loop`, `wait` |
+| `mapAnim` | `id`, `anim`, `placement`; then `x`/`y` for `tile` or `target` (`player`, `this`, or an event id) for `target`; also `follow`, `layer`, `loop`, `wait` |
 | `stopAnim` | `selector` (`all`, `id`, or `anim`), then the selected `id` or `anim` |
 | `ext` | `call`, `args` (JSON) |
 | `extChoice` | `call`, `args` (JSON), `prompt`, `cancel`, `write` (JSON object or `(unset)`) |
@@ -769,9 +771,9 @@ Clearing it again with `"value":"(unset)"` produces the mirror change
 (`before` holds the old icon, `after` is `{ "exists": false }`).
 
 The desktop inspector offers resource hints drawn from project maps, items,
-sprites, animations, audio ids and common events, plus already-authored layer
-variants, animation instance ids, and extension calls. These remain
-suggestions rather than closed enums because games can supply presentation
+sprites, animations, parallaxes, audio ids and common events, plus
+already-authored layer variants, animation instance ids, and extension calls.
+These remain suggestions rather than closed enums because games can supply presentation
 layers and registered extensions outside project JSON.
 
 For nested insertion, the desktop add prompt accepts `<op>@then`/`@else`

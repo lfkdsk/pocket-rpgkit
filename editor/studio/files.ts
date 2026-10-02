@@ -8,6 +8,7 @@ import type { StudioApp } from "./app.ts";
 import type { ArtRegistry } from "./art.ts";
 import type { OpenedProject, SaveTarget, StudioExample, StudioHost } from "./host.ts";
 import { projectArtRefs, resolveProjectArt } from "./project-art.ts";
+import { flattenCommands } from "../engine/commands.ts";
 
 export type { StudioExample } from "./host.ts";
 
@@ -35,11 +36,16 @@ export class StudioFiles {
    * pressed, which need not be the one open now. Null for storage saves. */
   savingTo: string | null = null;
   private saveQueue: Promise<unknown> = Promise.resolve();
-  /** Sheet and sprite ids drawn with the open document's own art. */
+  /** Resource ids drawn with the open document's own art. */
   projectArt = 0;
 
   constructor(private app: StudioApp, private art: ArtRegistry, readonly host: StudioHost) {
     host.onOpen((opened) => void this.opened(opened));
+    // A pack parses its next shard while Studio switches maps. Refresh that
+    // map's local art afterward without forcing any unopened shard.
+    app.on((reason) => {
+      if (reason === "map") this.projectArt = this.attachArt();
+    });
   }
 
   async loadExamples(): Promise<void> {
@@ -50,7 +56,7 @@ export class StudioFiles {
     }
   }
 
-  /** Load art for every sheet and sprite id the document uses: the
+  /** Load art for every sheet, sprite, animation and parallax id the document uses: the
    * project's own PNGs when it carries them (a folder, or a pack with
    * assets; see project-art.ts), else what a bundled example provides for
    * that id (art is keyed by id, as in the PocketJS editor). Returns how
@@ -60,9 +66,38 @@ export class StudioFiles {
     if (!session) return 0;
     this.art.clear();
     const assets = session.assets();
-    const project = { sheets: new Set<string>(), sprites: new Set<string>() };
+    const project = {
+      sheets: new Set<string>(),
+      sprites: new Set<string>(),
+      animations: new Set<string>(),
+      parallaxes: new Set<string>(),
+    };
+    const globals = session.globals();
+    const animations = new Map((globals.animations ?? []).map((animation) => [animation.id, animation]));
+    const parallaxIds = new Set<string>();
+    const collectParallaxCommands = (commands: Parameters<typeof flattenCommands>[0]): void => {
+      for (const { command } of flattenCommands(commands)) {
+        if (command.op === "changeParallax" && command.image) parallaxIds.add(command.image);
+      }
+    };
+    const loaded = session.kind === "pack" ? new Set(session.loadedEntries()) : null;
+    for (const { id, entry } of session.maps()) {
+      // A sharded shell contains no map-local parallax or event commands.
+      // Reading an unopened map here would defeat Studio's lazy contract.
+      if (loaded && entry && !loaded.has(entry)) continue;
+      const map = session.map(id);
+      if (map?.parallax?.image) parallaxIds.add(map.parallax.image);
+      for (const event of map?.events ?? []) for (const page of event.pages) collectParallaxCommands(page.commands);
+    }
+    for (const common of globals.commonEvents ?? []) collectParallaxCommands(common.commands);
+    const parallaxes = [...parallaxIds];
     if (assets.size > 0) {
-      const refs = projectArtRefs({ sheets: session.sheets(), sprites: session.sprites() });
+      const refs = projectArtRefs({
+        sheets: session.sheets(),
+        sprites: session.sprites(),
+        animations: globals.animations,
+        parallaxes,
+      });
       for (const { ref, path } of resolveProjectArt(refs, (candidate) => assets.has(candidate))) {
         const url = `data:image/png;base64,${assets.get(path)!.data}`;
         if (ref.kind === "sheet") {
@@ -71,6 +106,19 @@ export class StudioFiles {
         } else if (ref.kind === "sprite") {
           project.sprites.add(ref.id);
           void this.art.loadProjectSprite(ref.id, path, url);
+        } else if (ref.kind === "animation") {
+          project.animations.add(ref.id);
+          // Placement is render-only metadata in cooked asset producers.
+          // Accept it when present without making it part of the project
+          // schema; ordinary AnimationDef values simply omit it.
+          const def = animations.get(ref.id) as ({ offsetX?: number; offsetY?: number } | undefined);
+          void this.art.loadProjectAnimation(ref.id, path, url, {
+            ...(def?.offsetX === undefined ? {} : { offsetX: def.offsetX }),
+            ...(def?.offsetY === undefined ? {} : { offsetY: def.offsetY }),
+          });
+        } else {
+          project.parallaxes.add(ref.id);
+          void this.art.loadProjectParallax(ref.id, path, url);
         }
       }
     }
@@ -88,7 +136,7 @@ export class StudioFiles {
       const url = sprites.get(id);
       if (url && !project.sprites.has(id)) void this.art.loadBundledSprite(id, url);
     }
-    return project.sheets.size + project.sprites.size;
+    return project.sheets.size + project.sprites.size + project.animations.size + project.parallaxes.size;
   }
 
   /** Open document text; returns false (with a visible error) if invalid. */
@@ -122,7 +170,7 @@ export class StudioFiles {
     if (ok) {
       const kind = this.app.session?.kind === "pack" ? "sharded pack" : "project";
       const where = opened.target ? ` Save writes back into ${opened.target.name}.` : "";
-      const art = this.projectArt > 0 ? ` Using the project's own art for ${this.projectArt} sheet and sprite id${this.projectArt === 1 ? "" : "s"}.` : "";
+      const art = this.projectArt > 0 ? ` Using the project's own art for ${this.projectArt} resource id${this.projectArt === 1 ? "" : "s"}.` : "";
       this.app.notify("info", `Opened ${kind} ${opened.label}.${where}${art}`);
       for (const note of opened.notes ?? []) this.app.notify("info", note);
     }

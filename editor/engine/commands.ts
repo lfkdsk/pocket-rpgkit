@@ -103,6 +103,7 @@ export const EDITABLE_COMMAND_OPS = [
   "moveControl",
   "appearance",
   "layer",
+  "changeParallax",
   "tileProperty",
   "screenFade",
   "screenTint",
@@ -218,6 +219,9 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
       break;
     case "layer":
       command = { op, layer: "layer", visible: true };
+      break;
+    case "changeParallax":
+      command = { op, image: null, loopX: false, loopY: false, sx: 0, sy: 0 };
       break;
     case "tileProperty":
       command = { op, x: 0, y: 0, passage: null };
@@ -501,6 +505,10 @@ export function commandSummary(command: unknown): string {
       return `Appearance ${jsonPreview(command.target)} ${jsonPreview({ sprite: command.sprite, opacity: command.opacity, visible: command.visible })}`;
     case "layer":
       return `Layer ${text(command.layer)} ${jsonPreview({ visible: command.visible, variant: command.variant })}`;
+    case "changeParallax":
+      return command.image === null
+        ? "Clear parallax"
+        : `Parallax ${text(command.image)} loop ${command.loopX ? "X" : "-"}${command.loopY ? "Y" : "-"} speed (${numberText(command.sx)}, ${numberText(command.sy)})`;
     case "tileProperty":
       return `Tile property (${numberText(command.x)}, ${numberText(command.y)}) ${jsonPreview({ passage: command.passage, enter: command.enter, exit: command.exit })}`;
     case "screenFade":

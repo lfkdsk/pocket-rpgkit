@@ -62,6 +62,7 @@ export type {
   GameViewWorldRuntime,
   GameViewWorldViewport,
 } from "./world-contract.ts";
+export type { ParallaxLayerComponent, ParallaxLayerProps } from "./parallax-contract.ts";
 export type {
   GameViewDemoRuntime,
   GameViewDemoStepResult,

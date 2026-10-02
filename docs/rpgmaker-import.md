@@ -21,10 +21,13 @@ with a `www/` folder work too). The output folder receives:
 | --- | --- |
 | `project.json` | The `rpgkit-project/v1` document. With `--shard`, a `ProjectShell` plus one `maps/<id>.json` per map. |
 | `tiles/ts<N>.png` | One generated 16 px tile sheet per RM tileset (every distinct composed cell, see [Tiles](#tiles-and-autotiles)). |
+| `tiles/iconset.png` | `IconSet.png` scaled from 32 px cells to the kit's 16 px item cells, when present. |
 | `sprites/*.png` | Character blocks (3 × 4 walking frames) and tile-image events. |
+| `animations/*.png` | Imported MV `Animations.json` timelines, flattened into one deterministic multi-cell sheet per animation. |
+| `parallaxes/*.png` | Referenced map and Change Parallax images, scaled by the same map-to-16-px factor as tiles. |
 | `pictures/*.png` | Pictures used by Show Picture, copied unchanged. |
 | `system/balloon.png` | The balloon sheet, when Show Balloon Icon is used. |
-| `assets.json` | The render manifest an asset cooker bakes: sheets, sprites, pictures, animated water cells per map, the balloon sheet, the player's sprite. |
+| `assets.json` | The render manifest an asset cooker bakes: sheets (including item cells), sprites, animations, parallaxes, pictures, animated water cells per map, the balloon sheet, and the player's sprite. |
 | `coverage.md` | What happened to every construct in this project, followed by the table of every MV/MZ command. |
 | `coverage.json` | The machine-readable per-project construct counts (the static command table is Markdown-only). |
 
@@ -40,9 +43,12 @@ to be baked by a cooker as for any game. `tests/fixtures/rmi-play` is a
 complete example: its `gen-assets.ts` imports two test projects, bakes the
 512 px map chunks from the generated tile sheets, slices each character
 block into the twelve walker frames, cooks animated water into sprite
-atlases, slices balloons, fits pictures into a screen layer, and writes the
-`GameAssets` manifest. Its `rmi-play.tsx` mounts `GameView` with a
-placeholder battle and the kit's name-input scene.
+atlases, slices balloons and animations, carries parallaxes and item cells,
+fits pictures into a screen layer, and writes the `GameAssets` manifest. Its
+`rmi-play.tsx` mounts `GameView` with the opt-in parallax renderer and
+item-icon row, a placeholder battle and the kit's name-input scene. Production
+games use `pocket-rpgkit/ui/parallax` and `pocket-rpgkit/ui/item-icons` the
+same way; omitting either entry keeps its concrete UI out of the bundle.
 
 ## Ids
 
@@ -121,9 +127,9 @@ In short:
 ## Command table
 
 Every MV/MZ event command code and what the importer does with a minimal
-use of it: 51 of the 107 commands map natively, 3 run degraded, 4 become
+use of it: 53 of the 107 commands map natively, 3 run degraded, 4 become
 placeholders (Battle Processing, Script and the two plugin commands) and
-49 are dropped, many of them actor, enemy and battle-only commands. "Needs
+47 are dropped, many of them actor, enemy and battle-only commands. "Needs
 kit" names the runtime capability a native mapping would take; it is the
 list of what the kit would need to import an RPG Maker game completely.
 `tests/rpgmaker-import.test.ts` keeps this table in step with the
@@ -172,7 +178,7 @@ for that project, to `coverage.md`.
 | 205 | Set Movement Route | MV/MZ | Native |  | diagonal, jump, backward/away moves, relative turns, in-route switches/SE/image |
 | 206 | Get on/off Vehicle | MV/MZ | Dropped |  | vehicles |
 | 211 | Change Transparency | MV/MZ | Native |  |  |
-| 212 | Show Animation | MV/MZ | Dropped |  | Animations.json effects cooked into mapAnim AnimationDefs |
+| 212 | Show Animation | MV/MZ | Native |  |  |
 | 213 | Show Balloon Icon | MV/MZ | Native |  |  |
 | 214 | Erase Event | MV/MZ | Native |  |  |
 | 216 | Change Player Followers | MV/MZ | Dropped |  | party followers on the map |
@@ -202,7 +208,7 @@ for that project, to `coverage.md`.
 | 281 | Change Map Name Display | MV/MZ | Native |  |  |
 | 282 | Change Tileset | MV/MZ | Dropped |  | runtime tileset swaps (a ground/upper layer variant per tileset) |
 | 283 | Change Battle Background | MV/MZ | Dropped |  | battle backgrounds in the battle setup |
-| 284 | Change Parallax | MV/MZ | Dropped |  | scrolling parallax backgrounds |
+| 284 | Change Parallax | MV/MZ | Native |  |  |
 | 285 | Get Location Info | MV/MZ | Dropped |  | a variable source for terrain tag/event id/tile id/region at a cell |
 | 301 | Battle Processing | MV/MZ | Placeholder | no RPG Maker battle system; the game runs a placeholder battle | an RPG Maker battle system (troops, actors, skills) behind the battle op |
 | 302 | Shop Processing | MV/MZ | Native |  |  |
@@ -276,6 +282,33 @@ constructs. Of note:
   pass; RPG Maker plugin-written strings containing another `\V` are not
   recursively expanded. Colour, icon, font-size and timing codes are
   stripped.
+- **Parallaxes**: `parallaxName`, both loop flags, signed `parallaxSx/Sy`,
+  editor visibility and the leading-`!` zero-camera convention become the
+  map's authored parallax. Change Parallax (284) replaces or clears the same
+  state. Source pixels, scroll speeds included, are divided by the map scale
+  exactly as tiles are, so a looping axis scrolls at MV's on-screen rate.
+  The runtime repeats loop axes, proportionally follows non-loop axes (MV
+  pins an ordinary non-looping parallax to the screen; following the map
+  keeps parallax-mapped scenes aligned with their events), and clips the
+  result to the active map in a connected world. Painting is an
+  explicit `GameView parallax={ParallaxLayer}` opt-in from
+  `pocket-rpgkit/ui/parallax`.
+- **Show Animation (212)**: legacy MV cell animations are composited at
+  import time, including every cell's translation, scale, rotation, mirror,
+  opacity, hue and blend. The command follows its player/event target and may
+  wait. Head, centre and feet positions are measured from a one-tile
+  character (MV measures the target sprite, so tall `$` characters sit
+  differently); the screen-centre position is dropped with a coverage
+  reason. SE and full-screen-flash timing rows are retained. Target-local flash
+  and temporary target hiding are omitted; non-normal blending is exact among
+  cells in the flattened frame but cannot interact with the map below it.
+  MZ Effekseer animation records have no compatible cell timeline and are
+  dropped with an explicit coverage reason.
+- **Item icons**: a valid 32 px `IconSet.png` becomes a 16 px `iconset` sheet;
+  each item, weapon and armour keeps its `iconIndex` as `sprite` when that cell
+  exists. The runtime shop draws it only when the game opts into
+  `pocket-rpgkit/ui/item-icons`; other games keep the old text-only bundle and
+  layout.
 
 ## Known limitations
 
@@ -294,7 +327,9 @@ constructs. Of note:
 - **No battle system, actors or classes.** Actor, enemy and battle-only
   commands are dropped; Battle Processing is a placeholder.
 - **Maps are capped at 256 × 256**, the kit's limit.
-- Region ids, terrain tags, damage floors, parallaxes and map encounters
-  are not carried over; ladders, bushes and counters keep their passage
-  but not their special behaviour.
-- Item icons (`IconSet.png`) are not imported.
+- Region ids, terrain tags, damage floors and map encounters are not carried
+  over; ladders, bushes and counters keep their passage but not their special
+  behaviour.
+- MZ Effekseer animations are not converted. MV target-only flash, temporary
+  target hiding and blend interaction with the map are reported as degraded,
+  while their remaining animation still imports.

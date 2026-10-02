@@ -395,6 +395,20 @@ describe("mapAnim target binding", () => {
     expect([s.anims![0]!.x, s.anims![0]!.y]).toEqual([5, 6]);
   });
 
+  test("target this resolves to the issuing event before entering saved state", () => {
+    const w = createWorld(map([
+      event("burst", 2, 3, [page("action", [
+        { op: "mapAnim", id: "fx", anim: "pulse", target: "this" },
+      ])]),
+    ]), [], 60, { animations: [PULSE] });
+    const s = stepInterp(w, createInterpState(), input(0, {
+      confirmEdge: true,
+      liveEventCells: { burst: { x: 2, y: 3 } },
+    }));
+    expect(s.anims![0]!.target).toEqual({ event: "burst" });
+    expect([s.anims![0]!.x, s.anims![0]!.y]).toEqual([2, 3]);
+  });
+
   test("a missing target event is a content error", () => {
     const w = createWorld(map([
       event("burst", 2, 3, [page("action", [
@@ -679,9 +693,11 @@ describe("mapAnim timing", () => {
     expect(animFrameIndex(compiled, loop, 30)).toBe(1);
   });
 
-  test("a frame duration shorter than one tick at the world hz is rejected at compile time", () => {
+  test("a frame duration shorter than one tick uses cumulative quantization", () => {
     const def: AnimationDef = { id: "pulse", sheet: "pulse.png", count: 4, frameDuration: 0.1 };
-    expect(() => compileAnim(def, 4)).toThrow(/frameDuration/);
+    const compiled = compileAnim(def, 4);
+    expect(compiled.total).toBe(2);
+    expect(compiled.steps).toEqual([0, 1, 1, 2]);
   });
 });
 

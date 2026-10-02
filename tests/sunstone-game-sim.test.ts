@@ -473,7 +473,10 @@ simDescribe("sunstone — render budget", () => {
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(908_000);
+    // KRM3V's additive reducer/save support and the optional presentation
+    // seams measure 917,053 B. Its concrete parallax and item-icon components
+    // remain outside this input graph.
+    expect(jsBytes).toBeLessThan(920_000);
   });
 });
 

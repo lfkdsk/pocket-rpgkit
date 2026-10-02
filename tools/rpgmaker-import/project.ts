@@ -10,16 +10,18 @@
 // animated water cells) is listed in an ImportAssets manifest so a game's
 // asset cooker can bake it; the importer itself never runs at game time.
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AnimationDef,
+  AnimationTimingDef,
   CommonEvent,
   Condition,
   Command,
   GameEvent,
   Item,
   MapDef,
+  ParallaxDef,
   Page,
   PageCondition,
   Project,
@@ -27,11 +29,12 @@ import type {
   SpriteDef,
   TileId,
 } from "../../src/engine/types.ts";
+import { cookMvAnimation, MV_ANIMATION_RATE, MvAnimationCookError } from "./animation.ts";
 import { Coverage } from "./coverage.ts";
 import { TileAtlas, composeMap } from "./compose.ts";
 import { convertCommonEvent, convertPage, type EventContext } from "./events.ts";
-import { commonId, eventId, itemId, mapId, partySwitchId, slug } from "./ids.ts";
-import { rmTileSize } from "./load.ts";
+import { animationId, commonId, eventId, itemId, mapId, partySwitchId, slug } from "./ids.ts";
+import { rmParallaxSpeed, rmTileSize } from "./load.ts";
 import { blankImage, blit, readPng, type RgbaImage } from "./png.ts";
 import type { RmPageImage, RmProject } from "./rm-types.ts";
 import { downscale, drawTile, loadTilesetImages, type TilesetImages } from "./tile-render.ts";
@@ -52,6 +55,10 @@ export interface ImportAssets {
   sprites: Record<string, { png: string; kind: "walker" | "image"; h: 16 | 32 }>;
   /** Picture variant id -> source picture PNG (screen-sized, not rescaled). */
   pictures: Record<string, string>;
+  /** Parallax image id -> generated logical-pixel PNG and dimensions. */
+  parallaxes: Record<string, { png: string; w: number; h: number }>;
+  /** Animation id -> generated source sheet plus render-only target offset. */
+  animations: Record<string, { sheet: string; offsetX: number; offsetY: number }>;
   /** Map id -> animated cells (water, waterfalls): sheet cells per step. */
   animated: Record<string, { x: number; y: number; above: boolean; frames: TileId[]; frameSeconds: number }[]>;
   /** The balloon sheet (8 columns x 15 rows of 16 px frames), when used. */
@@ -76,6 +83,15 @@ const BALLOON_FRAME_SECONDS = 8 / 60;
 
 const truncate = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
 
+function clampNumber(value: unknown, lo: number, hi: number, fallback: number): number {
+  const numeric = Number(value);
+  return Math.min(hi, Math.max(lo, Number.isFinite(numeric) ? numeric : fallback));
+}
+
+function byteNumber(value: unknown): number {
+  return Math.round(clampNumber(value, 0, 255, 0));
+}
+
 function nonEmpty(s: string | undefined, fallback: string): string {
   const t = (s ?? "").trim();
   return t.length > 0 ? t : fallback;
@@ -95,6 +111,8 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     sheets: {},
     sprites: {},
     pictures: {},
+    parallaxes: {},
+    animations: {},
     animated: {},
   };
 
@@ -152,6 +170,22 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     if (!assets.pictures[id]) assets.pictures[id] = `pictures/${id}.png`;
     return id;
   };
+  const parallaxRequests = new Map<string, { image: string; zero: boolean }>();
+  const parallaxIds = new Set<string>();
+  const parallaxFor = (name: string): { image: string; zero: boolean } | null => {
+    const raw = name.trim();
+    if (!raw) return null;
+    const existing = parallaxRequests.get(raw);
+    if (existing) return existing;
+    const zero = raw.startsWith("!");
+    const base = `parallax-${slug(zero ? raw.slice(1) : raw) || "image"}`;
+    let image = base;
+    for (let suffix = 2; parallaxIds.has(image); suffix++) image = `${base}-${suffix}`;
+    parallaxIds.add(image);
+    const request = { image, zero };
+    parallaxRequests.set(raw, request);
+    return request;
+  };
   const balloonPath = join(rm.root, "img", "system", "Balloon.png");
   const hasBalloon = existsSync(balloonPath);
   const balloonsUsed = new Set<number>();
@@ -167,6 +201,95 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     return id;
   };
 
+  // --- MV database animations --------------------------------------------
+  const animations: AnimationDef[] = [];
+  const animationImports = new Map<number, { id: string; disposition: "Native" | "Degraded"; reason?: string }>();
+  const animationFailures = new Map<number, string>();
+  const usedAnimationIds = new Set<number>();
+  const collectAnimations = (list: readonly { code: number; parameters?: unknown[] }[]): void => {
+    for (const command of list) {
+      if (command.code === 212) usedAnimationIds.add(Math.max(0, Math.trunc(Number(command.parameters?.[1] ?? 0))));
+    }
+  };
+  for (const rmMap of rm.maps.values()) {
+    for (const event of rmMap.events) for (const page of event?.pages ?? []) collectAnimations(page.list);
+  }
+  for (const common of rm.commonEvents) if (common) collectAnimations(common.list);
+  for (const n of [...usedAnimationIds].filter((id) => id > 0).sort((a, b) => a - b)) {
+    const source = rm.animations[n];
+    if (!source) {
+      animationFailures.set(n, `animation ${n} does not exist`);
+      continue;
+    }
+    if (rm.flavor !== "MV") {
+      animationFailures.set(n, "MZ Effekseer animations are not supported by the MV cell compositor");
+      continue;
+    }
+    try {
+      const image = async (name: string) => {
+        if (!name) return null;
+        const path = findNamedPng(join(rm.root, "img", "animations"), name);
+        return path ? readPng(path) : null;
+      };
+      const cooked = cookMvAnimation(source, {
+        animation1: await image(source.animation1Name),
+        animation2: await image(source.animation2Name),
+      }, tileSize);
+      const id = animationId(n);
+      const sheet = `animations/${id}.png`;
+      images.set(sheet, cooked.sheet);
+      assets.animations[id] = { sheet, offsetX: cooked.offsetX, offsetY: cooked.offsetY };
+      const degradations = [...cooked.degradations];
+      const timings: AnimationTimingDef[] = [];
+      for (const timing of source.timings ?? []) {
+        const entry: AnimationTimingDef = { frame: Math.max(0, Math.trunc(timing.frame)) };
+        if (timing.se?.name) {
+          entry.se = {
+            id: audioFor("se", timing.se.name),
+            volume: clampNumber(timing.se.volume, 0, 100, 100),
+            pitch: clampNumber(timing.se.pitch, 50, 150, 100),
+          };
+          if (timing.se.pan !== 0) degradations.push("animation sound pan is ignored");
+        }
+        if (timing.flashScope === 2) {
+          const color = Array.isArray(timing.flashColor) ? timing.flashColor : [255, 255, 255, 0];
+          entry.flash = {
+            color: { r: byteNumber(color[0]), g: byteNumber(color[1]), b: byteNumber(color[2]), a: 255 },
+            intensity: byteNumber(color[3]),
+            duration: Math.max(0, Number(timing.flashDuration) || 0) * MV_ANIMATION_RATE / 60,
+          };
+        } else if (timing.flashScope === 1) {
+          degradations.push("target-local animation flash is omitted");
+        } else if (timing.flashScope === 3) {
+          degradations.push("temporary target hiding is omitted");
+        }
+        if (entry.se || entry.flash) timings.push(entry);
+      }
+      const uniqueDegradations = [...new Set(degradations)];
+      for (const warning of cooked.warnings) warnings.push(`${id}: ${warning}`);
+      animations.push({
+        id,
+        sheet,
+        frameW: cooked.frameW,
+        frameH: cooked.frameH,
+        cols: cooked.cols,
+        count: cooked.count,
+        frameDuration: MV_ANIMATION_RATE / 60,
+        loop: false,
+        ...(timings.length > 0 ? { timings } : {}),
+      });
+      animationImports.set(n, {
+        id,
+        disposition: uniqueDegradations.length > 0 ? "Degraded" : "Native",
+        ...(uniqueDegradations.length > 0 ? { reason: uniqueDegradations.join("; ") } : {}),
+      });
+    } catch (error) {
+      const reason = error instanceof MvAnimationCookError || error instanceof Error ? error.message : String(error);
+      animationFailures.set(n, reason);
+      warnings.push(reason);
+    }
+  }
+
   const kitMaps = new Map<number, string>();
   for (const info of rm.mapInfos) if (info && rm.maps.has(info.id)) kitMaps.set(info.id, mapId(info.id));
 
@@ -177,6 +300,9 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     maps: kitMaps,
     sprite: spriteFor,
     picture: pictureFor,
+    parallax: parallaxFor,
+    animation: (id: number) => animationImports.get(id) ?? null,
+    animationFailure: (id: number) => animationFailures.get(id),
     balloon: balloonFor,
     audio: audioFor,
   } as const;
@@ -212,10 +338,12 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       const kitId = eventId(ev.id);
       let shop = 0;
       const pages: Page[] = ev.pages.map((page, index) => {
+        let animation = 0;
         const ctx: EventContext = {
           ...baseContext,
           owner: { kind: "page", mapId: id, eventId: kitId, page: index, trigger: "action", eventIds },
           nextShopId: () => `${id}-${kitId}-shop${shop++}`,
+          nextAnimationId: () => `${id}-${kitId}-p${index}-anim${animation++}`,
         };
         const kitPage = convertPage(page, index, ctx);
         if ((page.trigger === 1 || page.trigger === 2) && page.priorityType === 1 && kitPage.commands.length > 0) {
@@ -232,6 +360,16 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       events.push({ id: kitId, name: truncate(nonEmpty(ev.name, kitId), 40), x: ev.x, y: ev.y, pages });
     }
 
+    const parallaxArt = parallaxFor(rmMap.parallaxName);
+    const parallax: ParallaxDef | undefined = parallaxArt ? {
+      image: parallaxArt.image,
+      loopX: rmMap.parallaxLoopX,
+      loopY: rmMap.parallaxLoopY,
+      sx: rmParallaxSpeed(rm, rmMap.parallaxSx),
+      sy: rmParallaxSpeed(rm, rmMap.parallaxSy),
+      ...(parallaxArt.zero ? { zero: true } : {}),
+      ...(rmMap.parallaxShow ? { showInEditor: true } : {}),
+    } : undefined;
     maps.push({
       id,
       name: truncate(nonEmpty(rmMap.displayName || info?.name, id), 40),
@@ -239,6 +377,7 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       height: rmMap.height,
       sheets: [atlas.sheetId],
       ground: composed.ground.map(cellId),
+      ...(parallax ? { parallax } : {}),
       ...(composed.upper.length > 0 ? { upper: composed.upper.map(([i, c]) => [i, cellId(c)] as [number, TileId]) } : {}),
       events,
     });
@@ -256,7 +395,7 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
         frameSeconds: a.frameSeconds,
       }));
     }
-    if (rmMap.parallaxName) cov.record("tile", "parallax", "Dropped", "parallax backgrounds are not imported");
+    if (rmMap.parallaxName) cov.record("tile", "parallax", "Native");
     if (rmMap.autoplayBgm && rmMap.bgm?.name) cov.record("tile", "map autoplay BGM", "Degraded", "autoplay BGM is not started on map entry");
     if (rmMap.encounterList?.length) cov.record("tile", "map encounters", "Dropped", "random encounters need a battle system");
   }
@@ -267,11 +406,13 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     if (!ce) continue;
     currentTilesetId = 0;
     let shop = 0;
+    let animation = 0;
     const trigger = ce.trigger === 2 ? "parallel" : ce.trigger === 1 ? "autorun" : "none";
     const ctx: EventContext = {
       ...baseContext,
       owner: { kind: "common", id: commonId(ce.id), trigger },
       nextShopId: () => `${commonId(ce.id)}-shop${shop++}`,
+      nextAnimationId: () => `${commonId(ce.id)}-anim${animation++}`,
     };
     commonEvents.push(convertCommonEvent(ce, ctx));
   }
@@ -294,6 +435,44 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     images.set(png, atlas.toImage());
     assets.sheets[atlas.sheetId] = { png, cols: atlas.cols, rows: atlas.rows };
     void tilesetId;
+  }
+
+  // --- parallax images ----------------------------------------------------
+  for (const [name, request] of [...parallaxRequests].sort((a, b) => a[1].image.localeCompare(b[1].image))) {
+    const path = findNamedPng(join(rm.root, "img", "parallaxes"), name);
+    if (!path) {
+      warnings.push(`parallax ${name}: img/parallaxes/${name}.png not found`);
+      continue;
+    }
+    const source = await readPng(path);
+    if (source.width % scale !== 0 || source.height % scale !== 0) {
+      warnings.push(`parallax ${name}: ${source.width}x${source.height} is not divisible by map scale ${scale}`);
+      continue;
+    }
+    const image = scale === 1 ? source : downscale(source, scale);
+    const png = `parallaxes/${request.image}.png`;
+    images.set(png, image);
+    assets.parallaxes[request.image] = { png, w: image.width, h: image.height };
+  }
+
+  // --- item icons ---------------------------------------------------------
+  const iconSetPath = findNamedPng(join(rm.root, "img", "system"), "IconSet");
+  let iconSheet: { id: string; cols: number; rows: number; count: number } | null = null;
+  if (iconSetPath) {
+    const source = await readPng(iconSetPath);
+    if (source.width > 0 && source.height > 0 && source.width % 32 === 0 && source.height % 32 === 0) {
+      const id = "iconset";
+      const image = downscale(source, 2);
+      const cols = source.width / 32;
+      const rows = source.height / 32;
+      const png = `tiles/${id}.png`;
+      images.set(png, image);
+      assets.sheets[id] = { png, cols, rows };
+      sheets.push({ id, pak: "chunks", cols, rows, defaultPassage: "pass" });
+      iconSheet = { id, cols, rows, count: cols * rows };
+    } else {
+      warnings.push(`item icons: IconSet.png must be a non-empty grid of 32x32 cells (got ${source.width}x${source.height})`);
+    }
   }
 
   // --- sprites ------------------------------------------------------------
@@ -339,7 +518,6 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
   }
 
   // --- balloons -----------------------------------------------------------
-  const animations: AnimationDef[] = [];
   if (balloonsUsed.size > 0) {
     const sheet = await readPng(balloonPath);
     images.set("system/balloon.png", scale === 1 ? sheet : downscale(sheet, scale));
@@ -365,10 +543,13 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       const item: Item = {
         id: itemId(kind, entry.id),
         name: truncate(entry.name, 24),
-        // Item icons (IconSet.png) are not imported; every item shows the
-        // first generated tile.
-        sprite: `${firstSheet}.0`,
+        sprite: iconSheet && entry.iconIndex >= 0 && entry.iconIndex < iconSheet.count
+          ? `${iconSheet.id}.${entry.iconIndex}`
+          : `${firstSheet}.0`,
       };
+      if (iconSheet && (entry.iconIndex < 0 || entry.iconIndex >= iconSheet.count)) {
+        warnings.push(`${kind} ${entry.id}: iconIndex ${entry.iconIndex} is outside IconSet (${iconSheet.count} cells)`);
+      }
       if (entry.price > 0) item.price = entry.price;
       if (kind === "item" && entry.itypeId === 2) item.sellable = false;
       if (kind === "item" && entry.consumable === false) item.usable = false;
@@ -401,6 +582,17 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
     warnings.push(`${audioUsed.size} audio ids are referenced; audio files are not converted (project.audio is left empty)`);
   }
   return { project, images, assets, cov, warnings };
+}
+
+/** Find an RPG Maker PNG by basename without depending on host filesystem
+ * case rules. Direct lookup keeps the common path allocation-free. */
+function findNamedPng(dir: string, name: string): string | null {
+  const direct = join(dir, `${name}.png`);
+  if (existsSync(direct)) return direct;
+  if (!existsSync(dir)) return null;
+  const wanted = `${name}.png`.toLowerCase();
+  const file = readdirSync(dir).sort().find((candidate) => candidate.toLowerCase() === wanted);
+  return file ? join(dir, file) : null;
 }
 
 /** The kit has no initial switch values, and party membership is a switch

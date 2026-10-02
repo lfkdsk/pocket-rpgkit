@@ -757,7 +757,9 @@ simDescribe("editor budget", () => {
     // editor paths: the merged editor measures 1,522,089 B. Seamless-v1's
     // schema/editor preservation, traversal identity, transfer provenance and
     // sparse reducer state bring it to 1,528,850 B; the editor still does not
-    // opt into the concrete world handoff resolver. Keep a narrow margin.
-    expect(js).toBeLessThan(1_532_000);
+    // opt into the concrete world handoff resolver. KRM3V's embedded schema,
+    // parallax/animation Studio preview and shared reducer support add 15,006
+    // B, measuring 1,543,856 B. Keep a narrow margin.
+    expect(js).toBeLessThan(1_547_000);
   });
 });

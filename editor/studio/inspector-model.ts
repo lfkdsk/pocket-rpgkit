@@ -89,6 +89,7 @@ const CATEGORY_OF: Readonly<Record<string, CommandCategory>> = {
   stopAnim: "present",
   appearance: "present",
   layer: "present",
+  changeParallax: "present",
   se: "audio",
   playBgm: "audio",
   fadeoutBgm: "audio",
@@ -135,6 +136,7 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   gameOver: "Game over",
   returnTitle: "Return to title screen",
   mapNameDisplay: "Map name display",
+  changeParallax: "Change parallax",
 };
 
 /** "screenFade" → "Screen fade". */

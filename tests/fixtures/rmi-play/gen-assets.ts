@@ -7,14 +7,15 @@
 // generated art into assets/imported/<game>/; this cooker then bakes the
 // 512 px map chunks from the generated tile sheets, slices every character
 // block into the kit's twelve walker frames, cooks the animated water cells
-// into shared sprite atlases, slices the balloon sheet into per-frame
-// images and fits pictures into a power-of-two screen-layer image. Every
+// into shared sprite atlases, slices every imported AnimationDef sheet into
+// per-frame images, and bakes item icons, parallaxes, and pictures. Every
 // output is a pure function of tests/fixtures/rpgmaker/.
 //
 // games.ts (committed) carries the imported projects and their GameAssets.
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { decodePng } from "../../../vendor/pocketjs/framework/compiler/pak.ts";
 import { encodePNG } from "../../../vendor/pocketjs/tests/png.ts";
 import { CHUNK_PX, TILE } from "../../../src/engine/tiles.ts";
 import type { Project, TileId } from "../../../src/engine/types.ts";
@@ -50,6 +51,25 @@ const writeAsset = (rel: string, bytes: Uint8Array): string => {
 };
 
 const asSheet = (img: RgbaImage) => ({ width: img.width, height: img.height, rgba: img.data });
+const nextPow2 = (value: number): number => {
+  let result = 1;
+  while (result < value) result <<= 1;
+  return result;
+};
+
+/** PocketJS static textures are power-of-two. Pad at the bottom/right so
+ * the cooked top-left and its authored placement offsets do not move. */
+function padAnimationFrame(png: Uint8Array, width: number, height: number): { png: Uint8Array; w: number; h: number } {
+  const w = nextPow2(width);
+  const h = nextPow2(height);
+  if (w === width && h === height) return { png, w, h };
+  const decoded = decodePng(png);
+  const rgba = new Uint8Array(w * h * 4);
+  for (let y = 0; y < height; y++) {
+    rgba.set(decoded.rgba.subarray(y * width * 4, (y + 1) * width * 4), y * w * 4);
+  }
+  return { png: encodePNG(rgba, w, h), w, h };
+}
 
 /** Nearest-neighbour resample (pictures only; tile art is never resampled here). */
 function resample(img: RgbaImage, w: number, h: number): Uint8Array {
@@ -105,7 +125,10 @@ for (const source of RMI_SOURCES) {
   const columns: Record<string, number> = {};
   let maxChunks = 1;
   for (const map of project.maps) {
-    const baked = bakeMapChunks(map, tileArt, black);
+    // A parallax map needs transparent void cells so the backdrop below the
+    // ground plane can paint through them. Legacy maps retain their opaque
+    // padding byte-for-byte.
+    const baked = bakeMapChunks(map, tileArt, map.parallax ? null : black);
     const count = baked.columns * baked.rows;
     maxChunks = Math.max(maxChunks, count);
     columns[map.id] = baked.columns;
@@ -129,6 +152,15 @@ for (const source of RMI_SOURCES) {
     }
   }
 
+  // --- item icons ---------------------------------------------------------
+  const itemSource: string[] = [];
+  for (const sprite of [...new Set(project.items.map((item) => item.sprite))].sort()) {
+    const art = tileArt(sprite);
+    if (!art) continue;
+    const file = writeAsset(`${prefix}/item/${sprite.replace(/[^A-Za-z0-9_-]/g, "-")}.png`, encodePNG(art, TILE, TILE));
+    itemSource.push(`${q(sprite)}: ${q(file)}`);
+  }
+
   // --- characters ---------------------------------------------------------
   const walkerSource: string[] = [];
   const staticSource: string[] = [];
@@ -148,15 +180,29 @@ for (const source of RMI_SOURCES) {
     );
   }
 
-  // --- balloons -----------------------------------------------------------
+  // --- map animations and balloons ---------------------------------------
   const animSource: string[] = [];
-  if (assets.balloon) {
-    const sheet = asSheet(result.images.get(assets.balloon)!);
-    for (const def of project.animations ?? []) {
-      const cooked = sliceAnimationSheet(sheet, def);
-      const names = cooked.frames.map((png, i) => writeAsset(`${prefix}/anim/${def.id}-${i}.png`, png));
-      animSource.push(`${q(def.id)}: { frames: ${q(names)}, w: ${cooked.w}, h: ${cooked.h} }`);
-    }
+  for (const def of project.animations ?? []) {
+    const image = result.images.get(def.sheet);
+    if (!image) throw new Error(`rmi-play: animation ${def.id} has no imported sheet ${def.sheet}`);
+    const cooked = sliceAnimationSheet(asSheet(image), def);
+    const padded = cooked.frames.map((png) => padAnimationFrame(png, cooked.w, cooked.h));
+    const names = padded.map((frame, i) => writeAsset(`${prefix}/anim/${def.id}-${i}.png`, frame.png));
+    const placement = assets.animations[def.id];
+    animSource.push(
+      `${q(def.id)}: { frames: ${q(names)}, w: ${padded[0]!.w}, h: ${padded[0]!.h}` +
+      (placement ? `, offsetX: ${placement.offsetX}, offsetY: ${placement.offsetY}` : "") +
+      ` }`,
+    );
+  }
+
+  // --- parallaxes ---------------------------------------------------------
+  const parallaxSource: string[] = [];
+  for (const [id, parallax] of Object.entries(assets.parallaxes)) {
+    const image = result.images.get(parallax.png);
+    if (!image) throw new Error(`rmi-play: parallax ${id} has no imported image ${parallax.png}`);
+    const file = writeAsset(`${prefix}/parallax/${id}.png`, encodePNG(image.data, image.width, image.height));
+    parallaxSource.push(`${q(id)}: { image: ${q(file)}, w: ${parallax.w}, h: ${parallax.h} }`);
   }
 
   // --- pictures -----------------------------------------------------------
@@ -182,13 +228,19 @@ for (const source of RMI_SOURCES) {
       `  maxChunks: ${maxChunks},\n  maxActors: ${maxActors},\n  world: ${q(world)},\n` +
       `  order: ${q(project.maps.map((m) => m.id))},\n` +
       `  npcSrc: { ...WALKERS_${source.id}, ${staticSource.join(", ")} },\n` +
+      `  itemSrc: { ${itemSource.join(", ")} },\n` +
       `  player: ${player},\n  playerHeight: ${assets.player ? `${assets.sprites[assets.player]!.h}` : 16},\n` +
       `  animated: ANIMATED_${source.id},\n` +
       `  anims: { ${animSource.join(", ")} },\n` +
+      `  parallaxes: { ${parallaxSource.join(", ")} },\n` +
       `  layers: { picture: { placement: "screen", defaultVisible: false, variants: { ${pictureVariants.join(", ")} } } },\n` +
       `};\n`,
   );
-  summaries.push(`${source.id}: ${project.maps.length} maps, ${Object.keys(assets.sprites).length} sprites, ${Object.keys(assets.pictures).length} pictures`);
+  summaries.push(
+    `${source.id}: ${project.maps.length} maps, ${Object.keys(assets.sprites).length} sprites, ` +
+    `${project.animations?.length ?? 0} animations, ${Object.keys(assets.parallaxes).length} parallaxes, ` +
+    `${Object.keys(assets.pictures).length} pictures`,
+  );
 }
 
 // Animated cells: identical sequences across both games share one atlas.

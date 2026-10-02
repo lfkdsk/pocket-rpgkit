@@ -55,6 +55,16 @@ import { resolveUiTheme, speakerLabel, type SpeakerSplit, type UiTheme } from ".
 import { startupProfileMark } from "../startup-profile.ts";
 import type { ChoiceIconBoxComponent, ChoiceIconResolver } from "./choice-icons.ts";
 import { formatUiText, KIT_UI_TEXT, withUiText, type UiTextOverrides } from "../engine/ui-text.ts";
+import {
+  ITEM_ICON_GAP,
+  ITEM_ICON_ROW_H,
+  ITEM_ICON_W,
+  itemIconBlockHeight,
+  itemListHasResolvedIcon,
+  resolvedItemIcon,
+  type ItemIconArt,
+  type ItemIconRowComponent,
+} from "./item-icon.ts";
 
 type ShopText = { readonly [K in keyof typeof KIT_UI_TEXT]: string };
 
@@ -63,6 +73,14 @@ const FACE_PX = 64;
 /** The message box's top edge, measured up from the layer bottom
  *  (insetB 8 + height 92); the name tab sits on it. */
 const BOX_TOP = 100;
+
+/** Presentation-only item data consumed by the shop box. `{ name }` remains
+ * the complete legacy shape; a nonempty icon opts the current shop into its
+ * icon layout. */
+export interface DialogItemPresentation {
+  name: string;
+  icon?: ItemIconArt;
+}
 
 export interface DialogBoxProps {
   modal: Accessor<Modal | null>;
@@ -79,9 +97,14 @@ export interface DialogBoxProps {
    *  64 px image and an 8 px gap). Art drawn smaller inside its 64x64
    *  canvas can narrow it. */
   faceWidth?: number;
-  /** Shop box item display names: id -> name. An id absent from the table
-   *  (or the prop itself omitted) renders its raw id. */
-  items?: Readonly<Record<string, { name: string }>>;
+  /** Shop box item presentation: id -> display name and optional icon. An id
+   * absent from the table (or the prop itself omitted) renders its raw id.
+   * A shop with no resolved nonempty icon keeps the legacy text-only layout. */
+  items?: Readonly<Record<string, DialogItemPresentation>>;
+  /** Opt-in icon row implementation from `pocket-rpgkit/ui/item-icons`.
+   * Without it, even icon-bearing item metadata uses the legacy text-only
+   * shop path and the Image implementation stays out of the bundle. */
+  itemIconRow?: ItemIconRowComponent;
   /** The choices box for options with an `icon` (pocket-rpgkit/ui/choice-icons
    *  ChoiceIconBox). Opt-in, so games without icons do not bundle it; while
    *  it is absent an icon choice opens the text-only box (labels only) and
@@ -141,6 +164,19 @@ interface ChoiceListRow extends ListRow {
   leftMarquee: number;
 }
 
+interface ShopListRow extends ListRow {
+  leftWidth: number;
+  leftMarquee: number;
+  rightMarquee: number;
+  height: number;
+  /** Present on item rows only while this shop is in icon mode. */
+  iconLine?: {
+    icon: ItemIconArt | null;
+    first: boolean;
+    cursor: string;
+  };
+}
+
 const sameLines = (a: readonly string[], b: readonly string[]): boolean =>
   a === b || (a.length === b.length && a.every((line, i) => line === b[i]));
 const sameCell = (a: BoundedCell, b: BoundedCell): boolean =>
@@ -169,6 +205,15 @@ export function DialogBox(props: DialogBoxProps) {
     const modal = props.modal();
     return modal?.kind === "shop" ? modal : null;
   });
+  const shopHasIcons = createMemo(() => {
+    const m = shop();
+    if (!m || !props.itemIconRow) return false;
+    return itemListHasResolvedIcon(
+      m.rows.flatMap((row) => row.kind === "item" ? [row.item] : []),
+      props.items,
+    );
+  });
+  const ItemIconRow = props.itemIconRow;
   const message = createMemo(() => {
     const modal = props.modal();
     return modal?.kind === "text" ? modal : null;
@@ -312,7 +357,7 @@ export function DialogBox(props: DialogBoxProps) {
       return {
         stage: { kind: "wrap", rows: [], overflow: 0 } as BoundedCell,
         gold: { kind: "wrap", rows: [], overflow: 0 } as BoundedCell,
-        rows: [] as (ListRow & { leftWidth: number; leftMarquee: number; rightMarquee: number })[],
+        rows: [] as ShopListRow[],
         slots: [] as number[],
         boxH: LIST_BOX_H,
         headerH: 0,
@@ -325,41 +370,69 @@ export function DialogBox(props: DialogBoxProps) {
     const legendBlock = BOX_GAP + LEGEND_ROW_H * legendCell().rows.length;
     const windowPx = BOX_CAP_H - BOX_FRAME - headerRows * LIST_ROW_H - BOX_GAP - legendBlock;
     const maxRows = Math.max(1, Math.floor(windowPx / LIST_ROW_H));
+    const iconMode = shopHasIcons();
+    // An icon-bearing item spends ten more pixels on its first text row. Keep
+    // even a single very long selected item inside the same box cap.
+    const iconMaxRows = Math.max(1, Math.floor((windowPx - (ITEM_ICON_ROW_H - LIST_ROW_H)) / LIST_ROW_H));
     const labels = m.rows.map((r) => {
       if (r.kind !== "item") {
         const word = words[r.kind === "sell" ? "shop.rowSell" : r.kind === "leave" ? "shop.rowLeave" : "shop.rowBack"];
         return fitBounded(word, labelBudget(), maxRows, measure);
       }
       const name = props.items?.[r.item]?.name ?? r.item;
-      return fitBounded(name, labelBudget() - SHOP_PRICE_W - 6, maxRows, measure);
+      const iconGutter = iconMode ? ITEM_ICON_W + ITEM_ICON_GAP : 0;
+      return fitBounded(name, labelBudget() - SHOP_PRICE_W - 6 - iconGutter, iconMode ? iconMaxRows : maxRows, measure);
     });
-    const rights = m.rows.map((r) => (r.kind === "item" ? fitBounded(priceLabel(r, words), SHOP_PRICE_W, maxRows, measure) : null));
+    const rights = m.rows.map((r) => (r.kind === "item"
+      ? fitBounded(priceLabel(r, words), SHOP_PRICE_W, iconMode ? iconMaxRows : maxRows, measure)
+      : null));
     const rowCounts = m.rows.map((_, i) => Math.max(labels[i]!.rows.length, rights[i]?.rows.length ?? 0));
-    const { start, end } = windowByRows(m.index, rowCounts, VISIBLE_ROWS, maxRows);
-    const rows: (ListRow & { leftWidth: number; leftMarquee: number; rightMarquee: number })[] = [];
+    const rowHeights = m.rows.map((r, i) => iconMode && r.kind === "item"
+      ? itemIconBlockHeight(rowCounts[i]!, LIST_ROW_H)
+      : rowCounts[i]! * LIST_ROW_H);
+    // windowByRows sums arbitrary positive weights; pixels make the icon
+    // window exact, while the legacy path keeps its historical row counts.
+    const { start, end } = iconMode
+      ? windowByRows(m.index, rowHeights, VISIBLE_ROWS, windowPx)
+      : windowByRows(m.index, rowCounts, VISIBLE_ROWS, maxRows);
+    const rows: ShopListRow[] = [];
     for (let item = start; item < end; item++) {
       const count = rowCounts[item]!;
       const labelCell = labels[item]!;
       const priceCell = rights[item];
-      const leftWidth = m.rows[item]!.kind === "item" ? listBudget() - SHOP_PRICE_W - 6 : listBudget();
+      const shopRow = m.rows[item]!;
+      const leftWidth = shopRow.kind === "item" ? listBudget() - SHOP_PRICE_W - 6 : listBudget();
+      const iconItem = iconMode && shopRow.kind === "item";
+      const icon = shopRow.kind === "item" ? resolvedItemIcon(props.items?.[shopRow.item]?.icon) : null;
       for (let j = 0; j < count; j++) {
         const left = labelCell.rows[j] ?? "";
         const right = priceCell?.rows[j] ?? "";
         const prefixedLeft = `${j > 0 ? CURSOR_OFF : item === m.index ? CURSOR_ON : CURSOR_OFF}${left}`;
         rows.push({
           item,
-          left: prefixedLeft,
+          left: iconItem ? left : prefixedLeft,
           right,
           leftWidth,
+          height: iconItem && j === 0 ? ITEM_ICON_ROW_H : LIST_ROW_H,
+          ...(iconItem ? {
+            iconLine: {
+              icon: j === 0 ? icon : null,
+              first: j === 0,
+              cursor: j > 0 ? CURSOR_OFF : item === m.index ? CURSOR_ON : CURSOR_OFF,
+            },
+          } : {}),
           // A marquee cell shows its one row on the item's first row only.
           // Its clip includes the cursor prefix, so measure that same drawn
           // string rather than leaving the last prefix-width of text hidden.
-          leftMarquee: j === 0 && labelCell.kind === "marquee" ? Math.max(0, measure(prefixedLeft) - leftWidth) : 0,
+          leftMarquee: j === 0 && labelCell.kind === "marquee"
+            ? iconItem ? labelCell.overflow : Math.max(0, measure(prefixedLeft) - leftWidth)
+            : 0,
           rightMarquee: j === 0 && priceCell?.kind === "marquee" ? priceCell.overflow : 0,
         });
       }
     }
-    const boxH = BOX_FRAME + headerRows * LIST_ROW_H + BOX_GAP + rows.length * LIST_ROW_H + legendBlock;
+    const rowsH = iconMode ? rows.reduce((sum, row) => sum + row.height, 0) : rows.length * LIST_ROW_H;
+    const boxH = BOX_FRAME + headerRows * LIST_ROW_H + BOX_GAP + rowsH + legendBlock;
     return { stage, gold, rows, slots: range(rows.length), boxH, headerH: headerRows * LIST_ROW_H };
   });
   const shopBoxH = () => shopLayout().boxH;
@@ -589,7 +662,30 @@ export function DialogBox(props: DialogBoxProps) {
                 const rowColor = () => (disabled() ? theme().dim : selected() ? theme().accent : theme().ink);
                 const left = () => row()?.left ?? "";
                 const right = () => row()?.right ?? "";
-                return (
+                const leftMarquee = () => row()?.leftMarquee ?? 0;
+                const rightMarquee = () => row()?.rightMarquee ?? 0;
+                return row()?.iconLine && ItemIconRow ? (
+                  <ItemIconRow
+                    icon={row()?.iconLine?.icon ?? null}
+                    firstLine={row()?.iconLine?.first ?? false}
+                    cursor={row()?.iconLine?.cursor ?? ""}
+                    label={left()}
+                    price={right()}
+                    width={listBudget()}
+                    leftWidth={row()?.leftWidth ?? listBudget()}
+                    cursorWidth={Math.max(measure(CURSOR_ON), measure(CURSOR_OFF))}
+                    priceWidth={SHOP_PRICE_W}
+                    height={row()?.height ?? LIST_ROW_H}
+                    lineHeight={LIST_ROW_H}
+                    leftMarquee={leftMarquee() ? marqueeOffset(leftMarquee(), marqueeTick()) : 0}
+                    rightMarquee={rightMarquee() ? marqueeOffset(rightMarquee(), marqueeTick()) : 0}
+                    rightClipped={rightMarquee() > 0}
+                    textColor={rowColor()}
+                    dimColor={theme().dim}
+                    paperColor={theme().paper}
+                    debugName={`rpgkit-shop-row-${slot}`}
+                  />
+                ) : (
                   <View class="flex-row justify-between" style={{ height: LIST_ROW_H }} debugName={`rpgkit-shop-row-${slot}`}>
                     {row()?.leftMarquee ? (
                       <View style={{ width: row()!.leftWidth, height: LIST_ROW_H, overflow: 1 }}>

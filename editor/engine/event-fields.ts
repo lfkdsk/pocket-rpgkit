@@ -552,6 +552,15 @@ export function commandFields(
         field("visible", "VISIBLE", optionValue(command.visible), "enum", NULLABLE_BOOLEAN),
         resourceField("variant", "VARIANT", optionValue(command.variant), resources.layerVariants[command.layer] ?? [], `Authored variants for ${command.layer}; use ${NULL} to reset or ${OMIT} to leave unchanged`),
       ];
+    case "changeParallax":
+      return [
+        resourceField("image", "IMAGE", command.image ?? NULL, resources.parallaxes, `Authored parallax ids; use ${NULL} to clear`),
+        field("loopX", "LOOP X", command.loopX, "boolean", BOOLS),
+        field("loopY", "LOOP Y", command.loopY, "boolean", BOOLS),
+        field("sx", "SPEED X", command.sx, "number"),
+        field("sy", "SPEED Y", command.sy, "number"),
+        field("zero", "ZERO PARALLAX", command.zero ?? false, "boolean", BOOLS),
+      ];
     case "tileProperty":
       return [
         field("x", "X", command.x, "integer"), field("y", "Y", command.y, "integer"),
@@ -1087,6 +1096,21 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
       }
       break;
     }
+    case "changeParallax": {
+      if (key === "image") {
+        if (raw === NULL || raw.trim() === "") return good({ ...command, image: null });
+        return raw.length > 0 ? good({ ...command, image: raw }) : bad("parallax image is required or null");
+      }
+      if (key === "loopX" || key === "loopY" || key === "zero") {
+        const value = bool(raw);
+        return value === null ? bad(`${key} must be true or false`) : good({ ...command, [key]: value });
+      }
+      if (key === "sx" || key === "sy") {
+        const value = finite(raw, key, -32, 32);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      break;
+    }
     case "tileProperty": {
       if (key === "x" || key === "y") {
         const value = integer(raw, key, 0);
@@ -1469,7 +1493,6 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
         if (command.target === undefined) return bad("target is only editable for target placement");
         const value = parseTarget(raw, true);
         if (!value.ok) return value;
-        if (value.value === "this") return bad("animation target must be player or event:<id>");
         return good({ ...command, target: value.value });
       }
       if (key === "follow" || key === "wait") {

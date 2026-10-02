@@ -105,6 +105,7 @@ const PAGE_OWNER: Owner = {
 
 function makeCtx(opts: { placeholders?: "visible" | "silent"; owner?: Owner; balloon?: boolean; flavor?: "MV" | "MZ" } = {}): EventContext {
   let shop = 0;
+  let animation = 0;
   return {
     rm: opts.flavor ? { ...RM, flavor: opts.flavor } : RM,
     cov: new Coverage(),
@@ -113,9 +114,13 @@ function makeCtx(opts: { placeholders?: "visible" | "silent"; owner?: Owner; bal
     owner: opts.owner ?? PAGE_OWNER,
     sprite: (img) => (img.characterName ? `rm-${img.characterName.toLowerCase()}-${img.characterIndex}` : null),
     picture: (name) => `pic-${name.toLowerCase()}`,
+    parallax: (name) => name ? { image: `parallax-${name.toLowerCase()}`, zero: name.startsWith("!") } : null,
+    animation: (n) => n === 1 ? { id: "anim001", disposition: "Native" } : null,
+    animationFailure: (n) => n === 2 ? "animation 2 could not be cooked" : undefined,
     balloon: (n) => (opts.balloon === false ? null : `balloon${n}`),
     audio: (kind, name) => audioId(kind, name),
     nextShopId: () => `shop${++shop}`,
+    nextAnimationId: () => `animation${++animation}`,
   };
 }
 
@@ -792,14 +797,20 @@ describe("characters and routes", () => {
       .toEqual({ steps: ["moveUp", "wait"], repeat: true, skippable: false });
   });
 
-  test("transparency, balloon, erase", () => {
-    let r = conv([C(211, 0, [0]), C(211, 0, [1]), C(213, 0, [0, 3, true]), C(214, 0)]);
+  test("transparency, animation, balloon, erase", () => {
+    let r = conv([C(211, 0, [0]), C(211, 0, [1]), C(212, 0, [-1, 1, true]), C(212, 0, [0, 1, false]), C(213, 0, [0, 3, true]), C(214, 0)]);
     expect(r.cmds).toEqual([
       { op: "appearance", target: "player", visible: false },
       { op: "appearance", target: "player", visible: true },
+      { op: "mapAnim", id: "animation1", anim: "anim001", target: "player", wait: true },
+      { op: "mapAnim", id: "animation2", anim: "anim001", target: "this", wait: false },
       { op: "balloon", target: "this", icon: "balloon3", duration: 76 / 60, wait: true },
       { op: "erase" },
     ]);
+    expect(counts(r.cov, "command", "212").Native).toBe(2);
+    r = conv([C(212, 0, [0, 2, false])]);
+    expect(r.cmds).toEqual([]);
+    expect(only(r.cov, 212)).toBe("Dropped");
     r = conv([C(213, 0, [-1, 3, false])], { balloon: false });
     expect(r.cmds).toEqual([]);
     expect(only(r.cov, 213)).toBe("Dropped");
@@ -809,6 +820,17 @@ describe("characters and routes", () => {
 // --- screen and audio ---------------------------------------------------------------------------
 
 describe("screen and audio", () => {
+  test("Change Parallax scroll speeds convert from source pixels to kit pixels", () => {
+    // MV scrolls a looping axis by speed/4 source pixels per frame; the kit
+    // scrolls speed/4 kit pixels per reference tick, so a 48 px project's
+    // speeds shrink by 16/48 to keep the on-screen rate.
+    const { cmds, cov } = conv([C(284, 0, ["Clouds", true, true, 6, -3])]);
+    expect(cmds).toEqual([
+      { op: "changeParallax", image: "parallax-clouds", loopX: true, loopY: true, sx: 2, sy: -1 },
+    ]);
+    expect(only(cov, 284)).toBe("Native");
+  });
+
   test("screen effects", () => {
     const { cmds, cov } = conv([
       C(221, 0), C(222, 0),

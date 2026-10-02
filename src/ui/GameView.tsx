@@ -96,6 +96,7 @@ import { slotMeasure } from "./text-measure.ts";
 import { wrapLabel } from "./list-window.ts";
 import { formatUiText, KIT_UI_TEXT, mergeUiText, withUiText, type UiTextOverrides } from "../engine/ui-text.ts";
 import { resolveChoiceIcon, type ChoiceIconBoxComponent } from "./choice-icons.ts";
+import type { ItemIconRowComponent } from "./item-icon.ts";
 import { resolveUiTheme, type UiTheme } from "./theme.ts";
 import type {
   GameAssets,
@@ -107,6 +108,7 @@ import type {
 } from "./game-assets.ts";
 import { AnimatedTiles, type AnimatedTilesStats } from "./AnimatedTiles.tsx";
 import { MapAnimLayer, type MapAnimStats } from "./MapAnimLayer.tsx";
+import type { ParallaxLayerComponent } from "./parallax-contract.ts";
 import { BalloonLayer, type BalloonAnchor } from "./BalloonLayer.tsx";
 import {
   ScreenEffectsLayer,
@@ -895,6 +897,14 @@ export interface GameViewProps {
    *  `pocket-rpgkit/ui/choice-icons`. Without it such a choice shows its
    *  labels in the text-only box. */
   choiceIcons?: ChoiceIconBoxComponent;
+  /** Optional icon-bearing shop row. Import ItemIconRow from the dedicated
+   * item-icons entry; without it itemSrc remains outside the presentation
+   * path and shops retain their text-only layout. */
+  itemIcons?: ItemIconRowComponent;
+  /** Optional map-parallax renderer. Import ParallaxLayer from the dedicated
+   * `pocket-rpgkit/ui/parallax` entry; omitting it keeps the concrete
+   * renderer outside this GameView bundle. */
+  parallax?: ParallaxLayerComponent;
   /** Optional diagnostics for streamed ground/upper residency. */
   onStreamStats?: (layer: "ground" | "upper", stats: StreamedChunkLayerStats) => void;
   /** Optional diagnostics for viewport-mounted animated tile sprites. */
@@ -950,14 +960,18 @@ function SceneRenderer(props: {
 export function GameView(props: GameViewProps) {
   startupProfileMark("game-view:start");
   const { project, assets } = props;
+  const Parallax = props.parallax;
   const Effects = props.effects;
   const ScreenPresentationEffects = props.screenPresentation?.effects;
   const ScreenPresentationHud = props.screenPresentation?.hud;
   // Shop box item display names, keyed by id (DialogBox falls back to the
   // raw id for anything absent). Derived once from the project's own item
   // catalog: the same source shop goods and inventory ids resolve against.
-  const itemNames: Readonly<Record<string, { name: string }>> = Object.fromEntries(
-    project.items.map((it) => [it.id, { name: it.name }]),
+  const itemNames: Readonly<Record<string, { name: string; icon?: { src: string; h?: 16 | 32 } }>> = Object.fromEntries(
+    project.items.map((it) => {
+      const src = props.itemIcons ? assets.itemSrc?.[it.sprite] : undefined;
+      return [it.id, { name: it.name, ...(src ? { icon: { src } } : {}) }];
+    }),
   );
   startupProfileMark("game-view:item-names");
   // The kit's words: English unless the project or the prop replaces some.
@@ -1656,6 +1670,17 @@ export function GameView(props: GameViewProps) {
           }}
           debugName="rpgkit-world-frame"
         >
+          {assets.parallaxes && Parallax ? (
+            <Parallax
+              state={() => state}
+              camera={activeMapCamera}
+              viewport={() => ({ w: worldFrame().w, h: worldFrame().h })}
+              mapSize={mapSize}
+              assets={assets.parallaxes}
+              active={() => !sceneActive()}
+              debugName="rpgkit-parallax"
+            />
+          ) : null}
             <View
               class="absolute"
               nodeRef={(n) => {
@@ -1946,6 +1971,7 @@ export function GameView(props: GameViewProps) {
           faces={props.faces}
           faceWidth={props.faceWidth}
           items={itemNames}
+          itemIconRow={props.itemIcons}
           choiceIconBox={props.choiceIcons}
           choiceIcon={props.choiceIcons && ((icon) => resolveChoiceIcon(icon, sprites, assets.npcSrc))}
           viewportWidth={viewport().w}

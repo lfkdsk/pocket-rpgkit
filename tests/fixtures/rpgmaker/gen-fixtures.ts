@@ -347,6 +347,14 @@ interface MapSpec {
   events: RmEvent[];
   bgm?: RmAudio;
   bgs?: RmAudio;
+  parallax?: {
+    name: string;
+    loopX: boolean;
+    loopY: boolean;
+    sx: number;
+    sy: number;
+    show: boolean;
+  };
 }
 
 function rmMap(s: MapSpec): RmMap {
@@ -363,12 +371,12 @@ function rmMap(s: MapSpec): RmMap {
     encounterStep: 30,
     height: s.grid.h,
     note: "",
-    parallaxLoopX: false,
-    parallaxLoopY: false,
-    parallaxName: "",
-    parallaxShow: true,
-    parallaxSx: 0,
-    parallaxSy: 0,
+    parallaxLoopX: s.parallax?.loopX ?? false,
+    parallaxLoopY: s.parallax?.loopY ?? false,
+    parallaxName: s.parallax?.name ?? "",
+    parallaxShow: s.parallax?.show ?? true,
+    parallaxSx: s.parallax?.sx ?? 0,
+    parallaxSy: s.parallax?.sy ?? 0,
     scrollType: 0,
     specifyBattleback: false,
     tilesetId: s.tilesetId,
@@ -971,6 +979,53 @@ function hollowB(): Map<number, TileDraw> {
   return t;
 }
 
+/** A standard 16-column IconSet with only the fixture database's cells
+ * occupied. Each motif is original integer-pixel art; the importer halves
+ * the 32 px source cells to the kit's 16 px item sprites. */
+function fixtureIconSet(): Canvas {
+  const c = new Canvas(16 * 32, 13 * 32);
+  const at = (index: number): [number, number] => [(index % 16) * 32, Math.floor(index / 16) * 32];
+  const tile = (index: number, base: ReturnType<typeof rgb>, accent: ReturnType<typeof rgb>): [number, number] => {
+    const [x, y] = at(index);
+    c.rect(x + 6, y + 6, 20, 20, shade(base, 0.45));
+    c.rect(x + 8, y + 8, 16, 16, base);
+    c.frame(x + 8, y + 8, 16, 16, accent);
+    return [x, y];
+  };
+
+  // State and skill marks (not imported as inventory, but keep every
+  // referenced database icon visibly self-contained).
+  let [x, y] = tile(1, rgb("#8050b0"), rgb("#e0c8ff"));
+  c.rect(x + 14, y + 10, 4, 12, rgb("#fff0a0"));
+  c.rect(x + 10, y + 14, 12, 4, rgb("#fff0a0"));
+  [x, y] = tile(76, rgb("#d07030"), rgb("#ffe0a0"));
+  c.rect(x + 14, y + 9, 4, 14, rgb("#fff8d0"));
+  c.rect(x + 10, y + 13, 12, 6, rgb("#fff8d0"));
+
+  // Staff, sword and vest.
+  [x, y] = tile(97, rgb("#704828"), rgb("#e0b060"));
+  for (let p = 0; p < 16; p += 2) c.rect(x + 8 + p, y + 22 - p, 4, 4, rgb("#e0b060"));
+  c.rect(x + 18, y + 8, 6, 6, rgb("#70d090"));
+  [x, y] = tile(98, rgb("#405070"), rgb("#d8e8ff"));
+  for (let p = 0; p < 14; p += 2) c.rect(x + 10 + p, y + 20 - p, 4, 4, rgb("#f0f4ff"));
+  c.rect(x + 8, y + 20, 10, 4, rgb("#d0a040"));
+  [x, y] = tile(135, rgb("#506080"), rgb("#d0d8e8"));
+  c.rect(x + 10, y + 9, 12, 5, rgb("#d0d8e8"));
+  c.rect(x + 8, y + 13, 16, 11, rgb("#a8b8d0"));
+  c.rect(x + 14, y + 13, 4, 11, rgb("#506080"));
+
+  // Potion and cave-pass/ticket.
+  [x, y] = tile(176, rgb("#803050"), rgb("#ffc0d0"));
+  c.rect(x + 13, y + 8, 6, 5, rgb("#e8d8c0"));
+  c.rect(x + 10, y + 13, 12, 11, rgb("#e05070"));
+  c.rect(x + 12, y + 15, 8, 4, rgb("#ff90b0"));
+  [x, y] = tile(195, rgb("#806020"), rgb("#ffe080"));
+  c.rect(x + 8, y + 11, 16, 10, rgb("#f0c858"));
+  c.frame(x + 8, y + 11, 16, 10, rgb("#fff0a0"));
+  c.rect(x + 15, y + 11, 2, 10, rgb("#806020"));
+  return c;
+}
+
 function hollowArt(files: Files): void {
   const m = hollowMaterials();
   const img = (path: string, canvas: Canvas) => files.set(`${HOLLOW}/img/${path}`, canvas.png());
@@ -996,6 +1051,7 @@ function hollowArt(files: Files): void {
   img("characters/!Things.png", characterSheet([chest(rgb("#9a6030"), rgb("#e0c060")), door(rgb("#7a4a2a"))]));
   img("characters/$Golem.png", singleSheet(golem(rgb("#7a746c"), rgb("#f0a030"))));
   img("system/Balloon.png", balloonSheet());
+  img("system/IconSet.png", fixtureIconSet());
   // Front-view battler for the placeholder battle (Enemies.json).
   const battler = new Canvas(64, 64);
   const rock = material(rgb("#7a746c"), "rock", 400);
@@ -1227,8 +1283,10 @@ function hollowHouse(): RmMap {
   g.fill(0, 1, 1, 11, 2, auto(K.houseSide));
   g.fill(0, 1, 3, 11, 8, a5(H5.wood));
   g.set(0, 6, 9, a5(H5.doormat));
-  // The counter fences the shopkeeper in; talk to him across it.
-  g.points(0, a5(H5.counter), [[8, 3], [8, 4], [8, 5], [9, 5], [10, 5], [11, 5]]);
+  // The counter frames the shopkeeper, with a service opening at (9,5).
+  // RPG Maker can trigger events across counter tiles, but that unrelated
+  // interaction rule is intentionally reported as degraded by this importer.
+  g.points(0, a5(H5.counter), [[8, 3], [8, 4], [8, 5], [10, 5], [11, 5]]);
   // A2 table with the table/counter flag.
   g.fill(0, 2, 6, 3, 7, auto(K.table));
   g.points(2, HB.window, [[3, 1], [9, 1]]);
@@ -1531,8 +1589,63 @@ function stageB(): Map<number, TileDraw> {
   return t;
 }
 
+/** Five original 192 px MV animation cells, authored at one-third scale
+ * beside the rest of the MV fixture art. */
+function stageSparkleSheet(): Canvas {
+  const c = new Canvas(5 * 64, 64);
+  const colors = ["#fff4a0", "#80e8ff", "#ff90d8", "#b0ff90", "#d0b0ff"];
+  for (let cell = 0; cell < 5; cell++) {
+    const ox = cell * 64;
+    const color = rgb(colors[cell]!);
+    const glow = rgb(colors[cell]!, 110);
+    const radius = 8 + cell * 2;
+    c.rect(ox + 32 - radius, 31, radius * 2 + 1, 3, glow);
+    c.rect(ox + 31, 32 - radius, 3, radius * 2 + 1, glow);
+    for (let d = 0; d <= radius; d++) {
+      const half = Math.max(1, Math.floor((radius - d) / 4));
+      c.rect(ox + 32 - half, 32 - d, half * 2 + 1, 1, color);
+      c.rect(ox + 32 - half, 32 + d, half * 2 + 1, 1, color);
+      c.rect(ox + 32 - d, 32 - half, 1, half * 2 + 1, color);
+      c.rect(ox + 32 + d, 32 - half, 1, half * 2 + 1, color);
+    }
+    c.rect(ox + 29, 29, 7, 7, rgb("#ffffff"));
+    c.rect(ox + 18 + cell * 2, 18, 3, 3, color);
+    c.rect(ox + 43, 42 - cell, 2, 2, color);
+  }
+  return c;
+}
+
+function stageClouds(): Canvas {
+  const c = new Canvas(128, 64);
+  c.paint(0, 0, c.w, c.h, (_x, y) => shade(rgb("#203858"), 0.75 + y / 160));
+  for (const [x, y, w] of [[4, 13, 26], [45, 31, 34], [92, 8, 26]] as const) {
+    c.rect(x, y + 3, w, 6, rgb("#7890a8", 210));
+    c.rect(x + 4, y, w - 10, 9, rgb("#98a8b8", 210));
+  }
+  for (const [x, y] of [[12, 5], [57, 10], [108, 27], [30, 43]] as const) c.rect(x, y, 2, 2, rgb("#fff0b0"));
+  return c;
+}
+
+function stageGlow(): Canvas {
+  const c = new Canvas(128, 64);
+  c.paint(0, 0, c.w, c.h, (x, y) => {
+    const band = Math.abs(x - 64) + Math.floor(Math.abs(y - 32) / 2);
+    return band < 18 ? rgb("#705070") : band < 34 ? rgb("#403858") : rgb("#181c38");
+  });
+  for (const x of [16, 64, 112]) {
+    c.rect(x - 5, 13, 10, 14, rgb("#d09040"));
+    c.rect(x - 3, 15, 6, 10, rgb("#ffe090"));
+    c.rect(x - 1, 4, 2, 9, rgb("#b08040"));
+  }
+  return c;
+}
+
 function stageArt(files: Files): void {
   const img = (path: string, canvas: Canvas) => files.set(`${STAGE}/img/${path}`, canvas.scaled(MV_SCALE).png());
+  // IconSet cells are always 32 px in MV as well as MZ; unlike map,
+  // character, animation, picture, and parallax art they do not scale with
+  // the project's 48 px tile size.
+  const systemImg = (path: string, canvas: Canvas) => files.set(`${STAGE}/img/${path}`, canvas.png());
   const a2 = (kind: number): Material => {
     switch (kind) {
       case SK.stage: return material(rgb("#9a6a38"), "planks", 516);
@@ -1576,6 +1689,10 @@ function stageArt(files: Files): void {
   );
   img("characters/$Moth.png", singleSheet(moth(rgb("#d8d0b0"), rgb("#5a4a3a"))));
   img("system/Balloon.png", balloonSheet());
+  systemImg("system/IconSet.png", fixtureIconSet());
+  img("animations/Sparkle.png", stageSparkleSheet());
+  img("parallaxes/StageClouds.png", stageClouds());
+  img("parallaxes/!StageGlow.png", stageGlow());
   // Full-screen curtain (816 x 624 once scaled).
   const curtain = new Canvas(272, 208);
   const velvet = rgb("#a01a2a");
@@ -1598,6 +1715,13 @@ function stageMap(): RmMap {
   g.fill(0, 1, 7, 15, 11, auto(SK.carpet));
   g.fill(0, 7, 7, 9, 11, auto(SK.aisle));
   g.fill(0, 11, 7, 15, 8, a5(S5.pit));
+  // Transparent backdrop windows prove the authored parallax is really
+  // below the tile plane. Clear both RM ground layers. The lower window at
+  // x=7,y=5 exposes the right lantern away from the map-name banner.
+  g.fill(0, 3, 0, 5, 1, 0);
+  g.fill(1, 3, 0, 5, 1, 0);
+  g.set(0, 7, 5, 0);
+  g.set(1, 7, 5, 0);
   g.fill(5, 1, 2, 15, 5, 1);
   g.fill(4, 1, 2, 1, 5, 0b0101);
   g.points(2, SB.curtain, [[1, 1], [2, 1], [14, 1], [15, 1]]);
@@ -1670,6 +1794,7 @@ function stageMap(): RmMap {
       cmd(232, 1, 0, 0, 0, 0, -624, 100, 100, 255, 0, 60, true),
       cmd(235, 1),
       cmd(211, 1),
+      cmd(284, "!StageGlow", false, false, 0, 0),
       cmd(356, "StageLights dim 50"),
       cmd(223, [-34, -34, 0, 34], 30, true),
       cmd(249, MV_SE.fanfare),
@@ -1803,7 +1928,13 @@ function stageMap(): RmMap {
       }),
     ]),
   ];
-  return rmMap({ displayName: "Lantern Stage", tilesetId: 1, grid: g, events });
+  return rmMap({
+    displayName: "Lantern Stage",
+    tilesetId: 1,
+    grid: g,
+    events,
+    parallax: { name: "StageClouds", loopX: true, loopY: false, sx: 2, sy: 0, show: true },
+  });
 }
 
 function stageData(files: Files): void {
@@ -1869,14 +2000,22 @@ function stageData(files: Files): void {
       null,
       {
         animation1Hue: 0,
-        animation1Name: "",
+        animation1Name: "Sparkle",
         animation2Hue: 0,
         animation2Name: "",
-        frames: [[], [], [], []],
+        frames: [
+          [[0, 0, 0, 50, 0, false, 255, 0]],
+          [[1, -12, -12, 60, 25, false, 255, 0], [2, 16, 10, 35, -20, true, 192, 0]],
+          [[3, 0, -24, 75, 90, true, 220, 0]],
+          [[4, 12, -16, 40, 180, false, 180, 0]],
+        ],
         id: 1,
         name: "Sparkle",
         position: 1,
-        timings: [{ flashColor: [255, 255, 224, 160], flashDuration: 5, flashScope: 1, frame: 0, se: MV_SE.puff }],
+        timings: [
+          { flashColor: [255, 255, 224, 160], flashDuration: 5, flashScope: 1, frame: 0, se: MV_SE.puff },
+          { flashColor: [160, 208, 255, 120], flashDuration: 3, flashScope: 2, frame: 2, se: SILENT },
+        ],
       },
     ]),
   );

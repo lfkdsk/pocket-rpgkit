@@ -23,7 +23,7 @@ import { uniqueEventId } from "../engine/model.ts";
 import { mountLayersPanel } from "./layers-panel.ts";
 import { mountMinimap } from "./minimap.ts";
 import { mountEventHoverCard } from "./event-hover-card.ts";
-import { PlayTest, type PreviewArtImage } from "./preview.ts";
+import { PlayTest } from "./preview.ts";
 import { mountPlayTestPanel } from "./preview-panel.ts";
 import { mountMapTree } from "./map-tree.ts";
 import { mountPalette } from "./palette.ts";
@@ -89,20 +89,11 @@ mountPalette($("palette"), app, art);
 mountInspector($("inspector"), app);
 const play = new PlayTest(app, host, () => files.examples);
 // The game gets the project's own art and the user's picks (bundled
-// example art is already in the game): one image per sheet and sprite id.
+// example art is already in the game). The registry includes tile sheets,
+// sprites, cooked animations and parallaxes; item icons are cells of the
+// same supplied sheets.
 play.setArtProvider(async () => {
-  const session = app.session;
-  if (!session) return [];
-  const images: PreviewArtImage[] = [];
-  for (const sheet of session.sheets()) {
-    const pixels = art.pixels("sheet", sheet.id);
-    if (pixels) images.push({ kind: "sheet", id: sheet.id, ...pixels });
-  }
-  for (const id of Object.keys(session.sprites())) {
-    const pixels = art.pixels("sprite", id);
-    if (pixels) images.push({ kind: "sprite", id, ...pixels });
-  }
-  return images;
+  return app.session ? art.previewImages() : [];
 });
 const playPanel = mountPlayTestPanel($("playtest"), app, play, () => canvas?.canvas.focus());
 const agent = new AgentReview(app, host);

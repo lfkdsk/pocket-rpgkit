@@ -664,6 +664,7 @@ describe("event editor resource catalogs", () => {
       items: ["item", "potion"],
       sprites: ["hero", "npc"],
       animations: ["animation", "spark"],
+      parallaxes: [],
       audio: ["audio", "door", "field", "rain", "sound", "victory"],
       commonEvents: ["ce"],
       events: ["event", "guard"],

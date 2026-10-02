@@ -36,6 +36,49 @@ export interface RmAudio {
   pan: number;
 }
 
+/** One cell in an MV frame. Patterns 0..99 address animation1 and 100..199
+ * address animation2; each source pattern is a 192 px square in a five-column
+ * sheet. The remaining fields are the values written by MV's animation
+ * editor, in Sprite_Animation.updateCellSprite order. */
+export type RmAnimationCell = [
+  pattern: number,
+  x: number,
+  y: number,
+  scale: number,
+  rotation: number,
+  mirror: boolean,
+  opacity: number,
+  blendMode: number,
+];
+
+/** A sound/flash marker on an MV animation frame. `flashDuration` is measured
+ * in animation frames; MV multiplies it by the animation rate (four game
+ * frames for database animations). */
+export interface RmAnimationTiming {
+  frame: number;
+  se: RmAudio;
+  /** 0 none, 1 target, 2 screen, 3 hide target. */
+  flashScope: number;
+  flashColor: [number, number, number, number];
+  flashDuration: number;
+}
+
+/** RPG Maker MV's legacy cell animation. MZ projects may instead contain
+ * Effekseer animation records; callers must gate this shape on project
+ * flavor before cooking it. */
+export interface RmAnimation {
+  id: number;
+  name: string;
+  animation1Name: string;
+  animation1Hue: number;
+  animation2Name: string;
+  animation2Hue: number;
+  /** 0 head, 1 center, 2 feet, 3 screen. */
+  position: number;
+  frames: RmAnimationCell[][];
+  timings: RmAnimationTiming[];
+}
+
 /** Event page activation conditions (all present clauses must hold). */
 export interface RmPageConditions {
   actorId: number;
@@ -104,6 +147,12 @@ export interface RmMap {
   width: number;
   note: string;
   parallaxName: string;
+  parallaxLoopX: boolean;
+  parallaxLoopY: boolean;
+  parallaxSx: number;
+  parallaxSy: number;
+  /** Editor-only visibility toggle; runtime still uses parallaxName. */
+  parallaxShow: boolean;
   scrollType: number;
   specifyBattleback: boolean;
   tilesetId: number;
@@ -214,5 +263,5 @@ export interface RmProject {
   armors: (RmItem | null)[];
   actors: (RmActor | null)[];
   troops: (RmTroop | null)[];
-  animations: ({ id: number; name: string } | null)[];
+  animations: (RmAnimation | null)[];
 }

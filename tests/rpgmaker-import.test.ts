@@ -19,6 +19,7 @@ import { loadRmProject, RmLoadError } from "../tools/rpgmaker-import/load.ts";
 import { importRmProject, invertInitialParty } from "../tools/rpgmaker-import/project.ts";
 import { commandTableLines, staticCommandTable } from "../tools/rpgmaker-import/report.ts";
 import { writePngBytes } from "../tools/rpgmaker-import/png.ts";
+import { lintProject } from "../tools/rpgkit-check/src/lint.ts";
 import { RMI_GAMES } from "./fixtures/rmi-play/games.ts";
 
 const ROOT = join(import.meta.dir, "..");
@@ -39,6 +40,11 @@ function files(dir: string): Map<string, Buffer> {
   };
   walk(dir);
   return out;
+}
+
+function pixel(image: { width: number; data: Uint8Array }, x: number, y: number): number[] {
+  const offset = (y * image.width + x) * 4;
+  return [...image.data.subarray(offset, offset + 4)];
 }
 
 function allCommands(project: Project): { op: string }[] {
@@ -65,6 +71,10 @@ describe("rpgmaker-import: output", () => {
     test(`${name}: the project validates against the kit schema`, () => {
       expect(validateSchema(result.project, schema as Record<string, unknown>)).toEqual([]);
     });
+
+    test(`${name}: visual extensions do not produce checker errors`, () => {
+      expect(lintProject(result.project).findings.filter((finding) => finding.severity === "error")).toEqual([]);
+    });
   }
 
   test("maps, sheets and start come from the RM data", () => {
@@ -75,9 +85,10 @@ describe("rpgmaker-import: output", () => {
     ]);
     expect(hollow.project.start).toEqual({ map: "map001", x: 11, y: 9, dir: "down" });
     expect(hollow.project.playerName).toBe("Wren");
-    expect(hollow.project.sheets.map((s) => s.id)).toEqual(["ts1", "ts2"]);
+    expect(hollow.project.sheets.map((s) => s.id)).toEqual(["ts1", "ts2", "iconset"]);
     // MV is 48 px: composed at 48 and averaged down, every sheet is 16 px.
     expect(stage.project.maps.map((m) => [m.id, m.width, m.height])).toEqual([["map001", 17, 13]]);
+    expect(stage.project.sheets.map((s) => s.id)).toEqual(["ts1", "iconset"]);
     for (const r of [hollow, stage]) {
       for (const sheet of r.project.sheets) {
         const img = r.images.get(`tiles/${sheet.id}.png`)!;
@@ -127,6 +138,95 @@ describe("rpgmaker-import: output", () => {
       expect(row.counts.Native + row.counts.Degraded + row.counts.Dropped).toBe(0);
     }
     expect(stage.cov.list("command").find((r) => r.key === "356")!.counts.Placeholder).toBe(1);
+  });
+
+  test("MV Show Animation cooks a deterministic mapAnim sheet, cues, target, and wait flag", () => {
+    expect(stage.project.animations?.find((entry) => entry.id === "anim001")).toEqual({
+      id: "anim001",
+      sheet: "animations/anim001.png",
+      frameW: 54,
+      frameH: 54,
+      cols: 2,
+      count: 4,
+      frameDuration: 4 / 60,
+      loop: false,
+      timings: [
+        { frame: 0, se: { id: "se-stage-puff", volume: 70, pitch: 100 } },
+        {
+          frame: 2,
+          flash: {
+            color: { r: 160, g: 208, b: 255, a: 255 },
+            intensity: 120,
+            duration: 0.2,
+          },
+        },
+      ],
+    });
+    expect(stage.assets.animations.anim001).toEqual({
+      sheet: "animations/anim001.png",
+      offsetX: -22,
+      offsetY: -24,
+    });
+    const sheet = stage.images.get("animations/anim001.png")!;
+    expect(sheet).toMatchObject({ width: 108, height: 108 });
+    // A transparent corner and four authored centres prove the compositor
+    // emitted real per-frame pixels rather than four copies of one cell.
+    expect(pixel(sheet, 0, 0)).toEqual([0, 0, 0, 0]);
+    expect(pixel(sheet, 30, 31)).toEqual([255, 255, 255, 255]);
+    expect(pixel(sheet, 84, 31)).toEqual([128, 232, 255, 113]);
+    expect(pixel(sheet, 30, 79)).toEqual([255, 255, 255, 220]);
+    expect(pixel(sheet, 86, 80)).toEqual([239, 229, 255, 180]);
+    expect(allCommands(stage.project).find((command) => command.op === "mapAnim") as unknown).toEqual({
+      op: "mapAnim",
+      id: "map001-ev001-p0-anim0",
+      anim: "anim001",
+      target: { event: "ev002" },
+      wait: true,
+    });
+    const coverage = stage.cov.list("command").find((row) => row.key === "212")!;
+    expect(coverage.counts.Degraded).toBe(1);
+    expect(coverage.reasons).toContain("target-local animation flash is omitted");
+  });
+
+  test("IconSet item cells and map/change parallaxes retain authored pixels and metadata", () => {
+    expect(hollow.assets.sheets.iconset).toEqual({ png: "tiles/iconset.png", cols: 16, rows: 13 });
+    expect(hollow.project.items.map((item) => [item.id, item.sprite])).toEqual([
+      ["item001", "iconset.176"],
+      ["item002", "iconset.195"],
+      ["weapon001", "iconset.97"],
+      ["weapon002", "iconset.98"],
+      ["armor001", "iconset.135"],
+    ]);
+    const icons = hollow.images.get("tiles/iconset.png")!;
+    expect(icons).toMatchObject({ width: 256, height: 208 });
+    expect(pixel(icons, 8, 11 * 16 + 8)).toEqual([255, 144, 176, 255]);
+
+    // The fixture authors parallaxSx 2 on 48 px tiles: a third of that in
+    // 16 px kit pixels keeps MV's on-screen scroll rate.
+    expect(stage.project.maps[0]!.parallax).toEqual({
+      image: "parallax-stageclouds",
+      loopX: true,
+      loopY: false,
+      sx: 2 * 16 / 48,
+      sy: 0,
+      showInEditor: true,
+    });
+    expect(stage.assets.parallaxes).toEqual({
+      "parallax-stageclouds": { png: "parallaxes/parallax-stageclouds.png", w: 128, h: 64 },
+      "parallax-stageglow": { png: "parallaxes/parallax-stageglow.png", w: 128, h: 64 },
+    });
+    expect(pixel(stage.images.get("parallaxes/parallax-stageclouds.png")!, 12, 5)).toEqual([255, 240, 176, 255]);
+    expect(pixel(stage.images.get("parallaxes/parallax-stageglow.png")!, 64, 16)).toEqual([255, 224, 144, 255]);
+    expect(allCommands(stage.project).find((command) => command.op === "changeParallax") as unknown).toEqual({
+      op: "changeParallax",
+      image: "parallax-stageglow",
+      loopX: false,
+      loopY: false,
+      sx: 0,
+      sy: 0,
+      zero: true,
+    });
+    expect(stage.cov.list("command").find((row) => row.key === "284")!.counts.Native).toBe(1);
   });
 
   test("silent placeholders drop the text but still count as Placeholder", async () => {
@@ -191,7 +291,7 @@ describe("rpgmaker-import: output", () => {
     const used = new Set<string>();
     for (const r of [hollow, stage]) for (const row of r.cov.list("command")) used.add(row.key);
     for (const code of ["101", "102", "111", "112", "117", "121", "122", "123", "124", "125", "126", "129", "201", "203", "205",
-      "211", "213", "214", "221", "222", "223", "224", "225", "230", "231", "232", "235", "241", "250", "301", "302", "355", "356", "357"]) {
+      "211", "212", "213", "214", "221", "222", "223", "224", "225", "230", "231", "232", "235", "241", "250", "284", "301", "302", "355", "356", "357"]) {
       expect(used.has(code)).toBe(true);
     }
     // Tile constructs are counted too.
@@ -210,7 +310,7 @@ describe("rpgmaker-import: output", () => {
     expect(by.get(101)!.disposition).toBe("Native");
     expect(by.get(112)!.disposition).toBe("Native");
     expect(by.get(113)!.disposition).toBe("Native");
-    for (const code of [103, 124, 204, 231, 232, 233, 234, 235, 281, 351, 352, 353, 354]) {
+    for (const code of [103, 124, 204, 212, 231, 232, 233, 234, 235, 281, 284, 351, 352, 353, 354]) {
       expect(by.get(code)!.disposition).toBe("Native");
       expect(by.get(code)!.needsKit).toBe("");
     }

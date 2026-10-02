@@ -169,7 +169,17 @@ export function gameManifestSource(opts: {
   player: PlayerFrameNames;
   /** AnimationDef id -> cooked per-frame images, in play order. Absent (or
    *  empty) keeps the generated text byte-identical to the older manifest. */
-  anims?: readonly (readonly [string, { frames: readonly string[]; w: number; h: number }])[];
+  anims?: readonly (readonly [string, {
+    frames: readonly string[];
+    w: number;
+    h: number;
+    offsetX?: number;
+    offsetY?: number;
+  }])[];
+  /** Item.sprite tile id -> cooked 16px image. */
+  itemSrc?: readonly (readonly [string, string])[];
+  /** Map parallax id -> cooked image and its logical dimensions. */
+  parallaxes?: readonly (readonly [string, { image: string; w: number; h: number }])[];
 }): string {
   const table = (rows: string[]): string => rows.map((r) => `  ${r},`).join("\n");
   // A computed property keeps "__proto__" as an own data key. Preserve the
@@ -186,9 +196,26 @@ export function gameManifestSource(opts: {
     if (names.length !== 4) throw new Error(`gameManifestSource: ${name} needs 4 facings, got ${names.length}`);
     return `export const ${name}: readonly [string, string, string, string] = [\n${table(names.map((n) => q(n)))}\n];\n\n`;
   };
+  const animLiteral = (a: NonNullable<typeof opts.anims>[number][1]): string =>
+    `{ frames: ${q(a.frames)}, w: ${a.w}, h: ${a.h}` +
+    (a.offsetX === undefined ? "" : `, offsetX: ${a.offsetX}`) +
+    (a.offsetY === undefined ? "" : `, offsetY: ${a.offsetY}`) +
+    ` }`;
   const animsBlock = opts.anims && opts.anims.length > 0
-    ? `export const ANIM_FRAMES: Record<string, { frames: readonly string[]; w: number; h: number }> = {\n` +
-      table(opts.anims.map(([id, a]) => entry(id, `{ frames: ${q(a.frames)}, w: ${a.w}, h: ${a.h} }`))) +
+    ? `export const ANIM_FRAMES: ${opts.anims.some(([, a]) => a.offsetX !== undefined || a.offsetY !== undefined)
+        ? "NonNullable<GameAssets[\"anims\"]>"
+        : "Record<string, { frames: readonly string[]; w: number; h: number }>"} = {\n` +
+      table(opts.anims.map(([id, a]) => entry(id, animLiteral(a)))) +
+      `\n};\n\n`
+    : "";
+  const itemSrcBlock = opts.itemSrc && opts.itemSrc.length > 0
+    ? `export const ITEM_SRC: NonNullable<GameAssets["itemSrc"]> = {\n` +
+      table(opts.itemSrc.map(([id, src]) => entry(id, q(src)))) +
+      `\n};\n\n`
+    : "";
+  const parallaxBlock = opts.parallaxes && opts.parallaxes.length > 0
+    ? `export const PARALLAXES: NonNullable<GameAssets["parallaxes"]> = {\n` +
+      table(opts.parallaxes.map(([id, art]) => entry(id, `{ image: ${q(art.image)}, w: ${art.w}, h: ${art.h} }`))) +
       `\n};\n\n`
     : "";
   return (
@@ -225,6 +252,8 @@ export function gameManifestSource(opts: {
     frames("PLAYER_WALK_L", opts.player.walkL) +
     frames("PLAYER_WALK_R", opts.player.walkR) +
     animsBlock +
+    itemSrcBlock +
+    parallaxBlock +
     `export const GAME_ASSETS: GameAssets = {\n` +
     `  ground: MAP_GROUND,\n` +
     `  upper: MAP_UPPER,\n` +
@@ -236,6 +265,8 @@ export function gameManifestSource(opts: {
     `  npcSrc: NPC_SRC,\n` +
     `  player: { idle: PLAYER_IDLE, walkL: PLAYER_WALK_L, walkR: PLAYER_WALK_R },\n` +
     (opts.anims && opts.anims.length > 0 ? `  anims: ANIM_FRAMES,\n` : "") +
+    (opts.itemSrc && opts.itemSrc.length > 0 ? `  itemSrc: ITEM_SRC,\n` : "") +
+    (opts.parallaxes && opts.parallaxes.length > 0 ? `  parallaxes: PARALLAXES,\n` : "") +
     `};\n`
   );
 }

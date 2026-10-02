@@ -175,6 +175,7 @@ export function encodeCompactMap(map: MapDef): EncodedCompactMap {
   if (hasOwn(map, "sheets")) value.s = map.sheets;
   if (hasOwn(map, "upper")) value.u = encodeUpper(map.upper ?? []);
   if (hasOwn(map, "passage")) value.p = encodePassage(map.passage ?? []);
+  if (hasOwn(map, "parallax")) value.a = map.parallax;
   if (hasOwn(map, "events")) {
     const encoded = encodeEvents(map.events ?? []);
     value.k = encoded.keys;

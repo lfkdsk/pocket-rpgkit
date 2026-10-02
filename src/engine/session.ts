@@ -870,7 +870,7 @@ export function startSession(
   acquireSessionMap(session, start.map);
   releaseSessionMapsExcept(session, [start.map]);
   if (sw0) {
-    const interp = createInterpState(sw0);
+    const interp = createInterpState(sw0, session.maps.get(start.map)!.parallax);
     clearLocalBank(interp.sw);
     const state: SessionState = {
       frame: 0,
@@ -891,7 +891,7 @@ export function startSession(
   // Fresh playthrough: seed the project's starting gold (the remaining
   // switch/item/variable banks begin empty) and the configurable default
   // player name (substituted for the {name} text token).
-  const interp = createInterpState();
+  const interp = createInterpState(undefined, session.maps.get(start.map)!.parallax);
   interp.sw.gold = clampFiniteVar(project.initialGold ?? 0);
   if (project.playerName) interp.sw.playerName = project.playerName;
   if (project.system?.mapNameDisplay === true) interp.sw.mapNameDisplay = true;
@@ -939,7 +939,7 @@ function clearLocalBank(sw: SwitchState): void {
  *  project-wide switch bank shared (minus the per-visit `local.` ids). */
 function enterMap(
   s: SessionState,
-  mapId: string,
+  map: Readonly<MapDef>,
   x: number,
   y: number,
   facing: Facing,
@@ -948,10 +948,10 @@ function enterMap(
   const screen = screenEffectsAfterTransfer(s.interp.screen);
   const audio = s.interp.audio;
   clearLocalBank(s.sw);
-  s.mapId = mapId;
+  s.mapId = map.id;
   s.move = initialMovement(x, y, facing, cfg);
   s.chars = createChars();
-  s.interp = createInterpState(s.sw);
+  s.interp = createInterpState(s.sw, map.parallax);
   if (screen) s.interp.screen = screen;
   if (audio) s.interp.audio = audio;
   s.sw = s.interp.sw;
@@ -2130,7 +2130,7 @@ function commitSeamlessHandoff(sess: Session, s: SessionState): { x: number; y: 
   const target = acquireSessionMap(sess, handoff.targetMapId);
   enterMap(
     s,
-    handoff.targetMapId,
+    target,
     handoff.targetX,
     handoff.targetY,
     handoff.direction,
@@ -2722,7 +2722,7 @@ function applyTransfer(
 ): void {
   const map = acquireSessionMap(sess, mapId);
   const facing: Facing = dir === "keep" ? s.move.facing : DIR_INDEX[dir];
-  enterMap(s, mapId, x, y, facing, sess.cfg);
+  enterMap(s, map, x, y, facing, sess.cfg);
   showMapNameBanner(s, map);
   releaseSessionMapsExcept(sess, [mapId]);
 }

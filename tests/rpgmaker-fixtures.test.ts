@@ -429,9 +429,11 @@ for (const name of FIXTURE_PROJECTS) {
         expect(eventAt(p, 1, 19, 0)?.name).toBe("To Cave");
         expect(eventAt(p, 3, 10, 4)?.name).toBe("Golem");
         expect(eventAt(p, 3, 10, 14)?.name).toBe("Exit");
-        // The counter between the player's spot (9, 6) and the shopkeeper.
+        // The shop still carries an RPG Maker counter tile beside its
+        // service opening, exercising the flag without requiring its
+        // cross-counter action-button rule in the imported journey.
         const house = p.maps.get(2)!;
-        const counter = house.data[5 * house.width + 9]!;
+        const counter = house.data[4 * house.width + 8]!;
         expect(p.tilesets[house.tilesetId]!.flags[counter]! & 0x80).toBe(0x80);
         // The fence blocks only the crossing of its bottom edge.
         expect(() => walkTiles(p, 1, 17, 7, "U")).toThrow();

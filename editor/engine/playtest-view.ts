@@ -22,6 +22,12 @@ export interface PlaytestArt {
   sheets?: Readonly<Record<string, { key: string; cells: number }>>;
   /** Sprite id -> art that replaces (or fills in for) the stand-in. */
   sprites?: Readonly<Record<string, NpcArt>>;
+  /** Item.sprite tile id -> registered 16px cell image. */
+  itemSrc?: NonNullable<GameAssets["itemSrc"]>;
+  /** AnimationDef id -> registered cooked frames and their placement. */
+  animations?: NonNullable<GameAssets["anims"]>;
+  /** Authored parallax id -> registered image and logical size. */
+  parallaxes?: NonNullable<GameAssets["parallaxes"]>;
   /** Loads the runtime tile keys (and delegates every other key);
    *  becomes StreamedGameAssets.loadTile. */
   loadTile?: (key: string, index: number) => number;
@@ -92,8 +98,11 @@ export function createPlaytestAssets(project: Project, art?: PlaytestArt): GameA
     world,
     order: project.maps.map((map) => map.id),
     npcSrc: art?.sprites ? { ...PLAYTEST_NPC_SRC, ...art.sprites } : PLAYTEST_NPC_SRC,
+    ...(art?.itemSrc ? { itemSrc: art.itemSrc } : {}),
     player: PLAYTEST_PLAYER,
     stream: { chunkPx: 16, ground, upper, columns, margin: 0, ...(art?.loadTile ? { loadTile: art.loadTile } : {}) },
+    ...(art?.animations ? { anims: art.animations } : {}),
+    ...(art?.parallaxes ? { parallaxes: art.parallaxes } : {}),
     layers,
   };
 }

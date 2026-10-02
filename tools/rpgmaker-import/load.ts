@@ -85,3 +85,11 @@ export function loadRmProject(rootArg: string): RmProject {
 export function rmTileSize(rm: RmProject): number {
   return rm.system.tileSize ?? 48;
 }
+
+/** MV/MZ scroll a looping parallax by speed/4 source pixels per frame at
+ *  any tile size; the kit scrolls speed/4 kit pixels per reference tick.
+ *  Converting source pixels to 16 px kit pixels keeps the on-screen rate
+ *  (a third of the source speed for 48 px tiles). */
+export function rmParallaxSpeed(rm: RmProject, speed: number): number {
+  return speed * 16 / rmTileSize(rm);
+}

@@ -49,6 +49,7 @@ import {
   tempVariableId,
   variableId,
 } from "./ids.ts";
+import { rmParallaxSpeed } from "./load.ts";
 import type {
   RmAudio,
   RmCommand,
@@ -83,6 +84,15 @@ export interface EventContext {
   sprite(image: { characterName: string; characterIndex: number; tileId: number }): string | null;
   /** register a picture file (img/pictures/<name>.png); returns the screen-layer variant id */
   picture(name: string): string;
+  /** Register a map parallax. Empty names clear it; a leading ! selects
+   * zero-parallax (1:1 camera) movement while retaining the source name. */
+  parallax(name: string): { image: string; zero: boolean } | null;
+  /** Resolve an Animations.json entry cooked by project.ts. A command can
+   * be degraded even though it remains playable (for example, because a
+   * source blend mode was flattened against a transparent canvas). */
+  animation(n: number): { id: string; disposition: "Native" | "Degraded"; reason?: string } | null;
+  /** Diagnostic retained when an animation could not be cooked. */
+  animationFailure(n: number): string | undefined;
   /** register balloon icon n (img/system/Balloon.png row n-1); returns the
    *  AnimationDef id or null when the project has no Balloon.png */
   balloon(n: number): string | null;
@@ -90,6 +100,8 @@ export interface EventContext {
   audio(kind: "bgm" | "bgs" | "me" | "se", name: string): string;
   /** unique id for a shop command inside this owner */
   nextShopId(): string;
+  /** unique mapAnim instance id for Show Animation inside this owner */
+  nextAnimationId(): string;
 }
 
 // --- constants -------------------------------------------------------------
@@ -557,6 +569,8 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
       // Change Transparency: parameter 0 is ON (transparent).
       rec(st, 211, "Native");
       return [{ op: "appearance", target: "player", visible: int(p[0]) !== 0 }];
+    case 212:
+      return emitAnimation(p, st);
     case 213:
       return emitBalloon(p, st);
     case 214:
@@ -627,6 +641,19 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
     case 281:
       rec(st, 281, "Native");
       return [{ op: "mapNameDisplay", visible: int(p[0]) === 0 }];
+    case 284: {
+      const art = ctx.parallax(String(p[0] ?? ""));
+      rec(st, 284, "Native");
+      return [{
+        op: "changeParallax",
+        image: art?.image ?? null,
+        loopX: !!p[1],
+        loopY: !!p[2],
+        sx: rmParallaxSpeed(ctx.rm, clamp(num(p[3]), -32, 32)),
+        sy: rmParallaxSpeed(ctx.rm, clamp(num(p[4]), -32, 32)),
+        ...(art?.zero ? { zero: true } : {}),
+      }];
+    }
     case 301:
       return emitBattle(nd, p, st, scope);
     case 302:
@@ -1414,6 +1441,32 @@ function emitBalloon(p: readonly unknown[], st: State): Command[] {
   }
   rec(st, 213, "Native");
   return [{ op: "balloon", target, icon, duration: BALLOON_FRAMES / FPS, wait: !!p[2] }];
+}
+
+/** Show Animation follows the requested character for the whole effect,
+ * matching Sprite_Animation's target binding. MV/MZ use the same character
+ * ids as movement routes: -1 player, 0 this event, positive map event. */
+function emitAnimation(p: readonly unknown[], st: State): Command[] {
+  if (thisWithoutEvent(212, p, st)) return [];
+  const target = charTarget(int(p[0]), st);
+  if (!target) {
+    rec(st, 212, "Dropped", "no such event");
+    return [];
+  }
+  const n = int(p[1]);
+  const imported = st.ctx.animation(n);
+  if (!imported) {
+    rec(st, 212, "Dropped", st.ctx.animationFailure(n) ?? `animation ${n} is not imported`);
+    return [];
+  }
+  rec(st, 212, imported.disposition, imported.reason);
+  return [{
+    op: "mapAnim",
+    id: st.ctx.nextAnimationId(),
+    anim: imported.id,
+    target,
+    wait: !!p[2],
+  }];
 }
 
 // --- screen and audio -------------------------------------------------------------

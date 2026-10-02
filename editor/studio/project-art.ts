@@ -1,16 +1,16 @@
 // editor/studio/project-art.ts — where a project's own art lives. Projects
-// do not embed pixels: tile sheets are named by id, image sprites carry a
-// `src` path, walker sprites and animations a `sheet` path. This module turns
-// those references into the relative PNG paths to look for, by convention,
-// so a folder host can find the files and a pack can carry them (its
-// `assets`, keyed by the same paths).
+// do not embed pixels: tile sheets and parallax images are named by id,
+// image sprites carry a `src` path, and walker sprites and animations a
+// `sheet` path. This module turns those references into the relative PNG
+// paths to look for, by convention, so a folder host can find the files and
+// a pack can carry them (its `assets`, keyed by the same paths).
 //
 // Pure and host-neutral: no DOM, no file access. Callers probe the paths.
 
 import type { AnimationDef, Sheet, SpriteDef } from "../../src/engine/types.ts";
 import { packEntryProblem } from "../api/pack-format.ts";
 
-export type ProjectArtKind = "sheet" | "sprite" | "animation";
+export type ProjectArtKind = "sheet" | "sprite" | "animation" | "parallax";
 
 export interface ProjectArtRef {
   kind: ProjectArtKind;
@@ -32,11 +32,13 @@ function ref(kind: ProjectArtKind, id: string, paths: readonly (string | undefin
 }
 
 /** Where a project's art lives, by convention, in project order (sheets,
- * sprites, animations):
+ * sprites, animations, parallaxes):
  * - tile sheet S: "art/sheets/S.png", then "sheets/S.png";
  * - image sprite: its `src`, then "art/sprites/<id>.png";
  * - walker sheet sprite: its `sheet`, then "art/sprites/<id>.png";
- * - animation: its `sheet`.
+ * - animation: its `sheet`;
+ * - parallax: an explicit PNG id, else "art/parallaxes/<id>.png", then
+ *   "parallaxes/<id>.png".
  * Candidates that are not safe portable relative paths or not ".png" files
  * are dropped, as are duplicates; a ref may end up with no candidates.
  * Legacy walker sprites (one `atlases` image per facing) are skipped: Studio
@@ -45,6 +47,8 @@ export function projectArtRefs(globals: {
   sheets?: readonly Sheet[];
   sprites?: Readonly<Record<string, SpriteDef>>;
   animations?: readonly AnimationDef[];
+  /** Authored parallax image ids collected from map payloads. */
+  parallaxes?: readonly string[];
 }): ProjectArtRef[] {
   const refs: ProjectArtRef[] = [];
   for (const sheet of globals.sheets ?? []) {
@@ -55,6 +59,13 @@ export function projectArtRefs(globals: {
     else if ("sheet" in sprite) refs.push(ref("sprite", id, [sprite.sheet, `art/sprites/${id}.png`]));
   }
   for (const animation of globals.animations ?? []) refs.push(ref("animation", animation.id, [animation.sheet]));
+  for (const id of globals.parallaxes ?? []) {
+    // A project may use a portable PNG path as the image id. Imported
+    // projects use a logical id and put the file in parallaxes/<id>.png.
+    refs.push(ref("parallax", id, id.toLowerCase().endsWith(".png")
+      ? [id]
+      : [`art/parallaxes/${id}.png`, `parallaxes/${id}.png`]));
+  }
   return refs;
 }
 

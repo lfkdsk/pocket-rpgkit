@@ -67,6 +67,7 @@ function sampleContext(cov: Coverage): EventContext {
     animations: [null],
   };
   let shop = 0;
+  let animation = 0;
   return {
     rm,
     cov,
@@ -75,9 +76,13 @@ function sampleContext(cov: Coverage): EventContext {
     owner: { kind: "page", mapId: "map001", eventId: "ev001", page: 0, trigger: "action", eventIds: new Map([[1, "ev001"]]) },
     sprite: () => null,
     picture: (name) => name.toLowerCase(),
+    parallax: (name) => name ? { image: name.toLowerCase(), zero: name.startsWith("!") } : null,
+    animation: (n) => ({ id: `anim${n}`, disposition: "Native" }),
+    animationFailure: () => "animation unavailable during static catalog reporting",
     balloon: (n) => `balloon${n}`,
     audio: (kind, name) => `${kind}-${name.toLowerCase()}`,
     nextShopId: () => `sample-shop${shop++}`,
+    nextAnimationId: () => `sample-animation${animation++}`,
   };
 }
 

@@ -109,9 +109,9 @@ export interface PreviewLoadResult {
   glyphs?: { added: number; missing: string };
 }
 
-/** What one image is: a tile sheet (by sheet id, cut into 16px cells) or a
- *  sprite (by sprite id: an image sprite, or a walker's whole sheet). */
-export type PreviewArtKind = "sheet" | "sprite";
+/** What one image is: a tile sheet (also the source of item icon cells), a
+ * sprite, a cooked animation sheet, or a map parallax. */
+export type PreviewArtKind = "sheet" | "sprite" | "animation" | "parallax";
 
 /** One validated `art` request: `bytes` land at byte `offset` of the
  *  image's width*height*4 RGBA8 buffer. */
@@ -122,6 +122,9 @@ export interface PreviewArtSlice {
   height: number;
   offset: number;
   bytes: Uint8Array;
+  /** Cooked animation frame placement relative to its target tile. */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 /** The reply to an `art` request. */
@@ -141,6 +144,9 @@ export interface PreviewArtImage {
   width: number;
   height: number;
   rgba: Uint8Array;
+  /** Cooked animation frame placement relative to its target tile. */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 export type PreviewStartTarget =
@@ -499,8 +505,8 @@ export function decodePreviewBase64(text: string): Uint8Array | null {
  *  problems `bad-message`. */
 export function parsePreviewArt(msg: Record<string, unknown>): PreviewArtSlice {
   const kind = msg.kind;
-  if (kind !== "sheet" && kind !== "sprite") {
-    throw new PreviewError("bad-message", `art kind must be "sheet" or "sprite", got ${echoPreviewValue(kind)}`);
+  if (kind !== "sheet" && kind !== "sprite" && kind !== "animation" && kind !== "parallax") {
+    throw new PreviewError("bad-message", `art kind must be "sheet", "sprite", "animation" or "parallax", got ${echoPreviewValue(kind)}`);
   }
   const id = msg.id;
   if (typeof id !== "string" || id.length === 0) throw new PreviewError("bad-message", "art needs a non-empty id");
@@ -534,7 +540,17 @@ export function parsePreviewArt(msg: Record<string, unknown>): PreviewArtSlice {
   if ((offset as number) + bytes.length > total) {
     throw new PreviewError("bad-message", `art slice of ${bytes.length} bytes at offset ${offset as number} overflows the ${total}-byte image`);
   }
-  return { kind, id, width, height, offset: offset as number, bytes };
+  const placement: { offsetX?: number; offsetY?: number } = {};
+  for (const axis of ["offsetX", "offsetY"] as const) {
+    const value = msg[axis];
+    if (value === undefined) continue;
+    if (kind !== "animation") throw new PreviewError("bad-message", `art ${axis} is only valid for an animation`);
+    if (!Number.isSafeInteger(value) || Math.abs(value as number) > PREVIEW_LIMITS.maxArtSide) {
+      throw new PreviewError("bad-message", `art ${axis} must be an integer from -${PREVIEW_LIMITS.maxArtSide} to ${PREVIEW_LIMITS.maxArtSide}, got ${echoPreviewValue(value)}`);
+    }
+    placement[axis] = value as number;
+  }
+  return { kind, id, width, height, offset: offset as number, bytes, ...placement };
 }
 
 interface StagedArt {
@@ -545,8 +561,8 @@ interface StagedArt {
 /** The host's staging area for `art`: images by kind and id, filled slice
  *  by slice in order. A first slice (offset 0) starts the image afresh;
  *  every later slice must continue exactly where the previous one ended,
- *  with the same size. `load` takes the complete images; `load` without
- *  art and `stop` discard everything. */
+ *  with the same size and animation placement. `load` takes the complete
+ *  images; `load` without art and `stop` discard everything. */
 export class PreviewArtStage {
   private staged = new Map<string, StagedArt>();
   private bytes = 0;
@@ -576,7 +592,15 @@ export class PreviewArtStage {
       this.bytes -= freed;
       this.staged.delete(key);
       entry = {
-        image: { kind: slice.kind, id: slice.id, width: slice.width, height: slice.height, rgba: new Uint8Array(total) },
+        image: {
+          kind: slice.kind,
+          id: slice.id,
+          width: slice.width,
+          height: slice.height,
+          rgba: new Uint8Array(total),
+          ...(slice.offsetX === undefined ? {} : { offsetX: slice.offsetX }),
+          ...(slice.offsetY === undefined ? {} : { offsetY: slice.offsetY }),
+        },
         received: 0,
       };
       this.staged.set(key, entry);
@@ -587,6 +611,9 @@ export class PreviewArtStage {
       }
       if (entry.image.width !== slice.width || entry.image.height !== slice.height) {
         throw new PreviewError("bad-message", `art ${slice.kind} ${echoPreviewValue(slice.id)} was started at ${entry.image.width}x${entry.image.height}, not ${slice.width}x${slice.height}`);
+      }
+      if (entry.image.offsetX !== slice.offsetX || entry.image.offsetY !== slice.offsetY) {
+        throw new PreviewError("bad-message", `art ${slice.kind} ${echoPreviewValue(slice.id)} changed its animation offsets between slices`);
       }
       if (slice.offset !== entry.received) {
         throw new PreviewError("bad-message", `art ${slice.kind} ${echoPreviewValue(slice.id)} expects its next slice at offset ${entry.received}, not ${slice.offset}`);

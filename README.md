@@ -5,7 +5,7 @@ built on [PocketJS](https://github.com/pocket-nexus/pocketjs). It contains
 the parts an RPG-Maker-style game needs without any specific game:
 
 - **pure-TS engine** (`src/engine/`) — tile movement and collision, the
-  event interpreter (pages, triggers, 63 commands), map-character motion,
+  event interpreter (pages, triggers, 64 commands), map-character motion,
   multi-map sessions, deterministic extension state and battle scenes,
   deterministic save snapshots. No host imports, no
   wall clock, no `Math.random`: a session is one pure fold per virtual
@@ -829,7 +829,7 @@ are translated by the shared `worldNode`. Both sit inside the renderer's
 band adds the origin itself. The coordinate spaces and the single
 conversion point are documented in `src/ui/world-contract.ts`.
 
-### The 63 commands
+### The 64 commands
 
 | op | purpose |
 | --- | --- |
@@ -844,6 +844,7 @@ conversion point are documented in `src/ui/world-contract.ts`.
 | `moveControl` | change a target's autonomous mode, stop it, start bounded wandering, or override speed/run/frequency/collision/facing settings |
 | `appearance` | change a player's/event's walking sprite, opacity, or visibility; optionally save a new player reset baseline |
 | `layer` | show/hide a named visual layer or select one of its prepackaged variants for this map visit |
+| `changeParallax` | replace or clear the current map's parallax image, loop axes, signed scroll speeds and RPG Maker `!`/zero-camera mode |
 | `tileProperty` | replace one cell's passage and/or one-sided entry/exit edge masks for this map visit |
 | `screenFade` | fade the complete presentation out to a colour (default opaque black) or back in, independently of transfer |
 | `screenTint` | tween a named composable RGBA screen-tint layer (a zero-alpha target removes it) |
@@ -984,6 +985,46 @@ tone, but the KRM2 presentation draws every blend as normal source-over and
 approximates tone deterministically with gray/darken/brighten overlays. Position, origin,
 scale, opacity and rotation are rendered directly; exact RPG Maker colour
 math awaits a host primitive.
+
+#### Map parallax backgrounds
+
+A map can opt into an image behind its ground plane:
+
+```json
+"parallax": {
+  "image": "clouds", "loopX": true, "loopY": false,
+  "sx": 2, "sy": 0, "zero": false, "showInEditor": true
+}
+```
+
+`GameAssets.parallaxes` maps `image` to immutable cooked art and its logical
+pixel size. The concrete renderer is an explicit bundle opt-in:
+
+```tsx
+import { GameView } from "pocket-rpgkit/ui";
+import { ParallaxLayer } from "pocket-rpgkit/ui/parallax";
+
+mount(() => <GameView project={project} assets={GAME_ASSETS} parallax={ParallaxLayer} />);
+```
+
+Without the `parallax` prop the reducer still preserves the authored state,
+but no backdrop component enters the game's dependency graph. `showInEditor`
+controls only the editor canvas preview; a registered renderer always draws a
+configured image. Looping axes repeat the image and add
+`speed / 2` pixels per 60 Hz reference tick. A normal looping RPG Maker
+parallax also follows half the camera origin, while `zero:true` (the imported
+leading-`!` convention) follows the full origin. A non-looping axis maps the
+camera's available map travel onto the image's available overflow, so a
+whole-map painted backdrop stays registered from edge to edge.
+
+`changeParallax` replaces those six runtime fields or clears the backdrop
+with `image:null`. It preserves an axis's accumulated scroll phase only when
+both the old and new definitions loop that axis. The sparse phase and current
+definition are reducer state: save/load, rewind and 60/30/20/4 Hz playback
+resume identically. Transfers initialize the destination map's authored
+definition at phase zero. In a connected-world renderer the parallax remains
+map-local: it is clipped to the active map and is not repeated across adjacent
+placements.
 
 #### Timer, number input and map lifecycle commands
 
@@ -2124,7 +2165,12 @@ A project may list frame animations in `animations`:
 
 ```ts
 animations: [
-  { id: "pulse", sheet: "assets/anim/pulse.png", count: 4, frameDuration: 0.15, loop: false },
+  {
+    id: "pulse", sheet: "assets/anim/pulse.png",
+    frameW: 32, frameH: 32, cols: 2, count: 4,
+    frameDuration: 0.15, loop: false,
+    timings: [{ frame: 0, se: { id: "pulse" } }]
+  },
 ]
 ```
 
@@ -2134,8 +2180,9 @@ image per frame (`frames` lists sheet indices in play order; `count` plays
 reference ticks with the world's hz, so the same virtual instant shows the
 same frame at 60/30/20/4 Hz. A missing sheet is a build error.
 
-`mapAnim` plays an instance on a tile (`x`/`y`) or following the player or a
-named event (`target`). `follow` (default `true`) keeps a targeted instance
+`mapAnim` plays an instance on a tile (`x`/`y`) or following the player, the
+issuing event (`target:"this"`) or a named event (`target`). `follow`
+(default `true`) keeps a targeted instance
 pinned to the character's live pixel position; `follow:false` snapshots the
 character's tile at execution and pins the instance there. An event target
 with no live character is a content error. `layer` is `"above"` (default,
@@ -2151,8 +2198,13 @@ a same-id replay restarts the instance. `stopAnim` stops one instance by
 parked on a stopped instance's `wait` resumes. Animations are per-map-visit
 state — a transfer clears them — and a playing (non-waited) animation does
 not make the world busy. `GameAssets.anims` maps each animation id to its
-cooked frame refs; `MapAnimLayer` mounts instances from a pooled node set,
-so playback itself costs no per-frame node churn.
+cooked frame refs plus optional `offsetX`/`offsetY` placement; `MapAnimLayer`
+mounts instances from a pooled node set, so playback itself costs no per-frame
+node churn. Optional frame `timings` emit an ordered sound cue and/or a
+full-screen flash when that frame begins. Cumulative reference-tick endpoints
+ensure a short imported timeline has the same total duration at every
+supported simulation rate, and save/rewind never repeats a cue that already
+fired.
 
 ### Themes and speaker portraits
 
@@ -2237,6 +2289,26 @@ opens the text-only box with the labels and logs one warning. Text-only
 choices render exactly as before either way. `DialogBox` takes the same
 component as `choiceIconBox` plus a `choiceIcon` resolver
 (`resolveChoiceIcon` from the same entry).
+
+### Item icons in shops
+
+An item may name a cooked cell with its existing `sprite` field. Supply the
+matching image names in `GameAssets.itemSrc` and opt the UI in explicitly:
+
+```tsx
+import { ItemIconRow } from "pocket-rpgkit/ui/item-icons";
+
+mount(() => <GameView project={project} assets={GAME_ASSETS} itemIcons={ItemIconRow} />);
+```
+
+When any item in the open shop has resolved art, item rows reserve one aligned
+16 px icon cell; a missing row draws a framed `?`, and wrapped continuation
+lines keep the same text gutter. The first line is 24 px high, so a custom
+16×32 item picture can be bottom-anchored and clipped without moving prices or
+the cursor. If `itemIcons` is omitted, or the current list has no resolved
+icons, the legacy text-only shop node tree and dimensions are unchanged. The
+dedicated package entry keeps `Image` and the icon-row implementation out of
+games that do not opt in.
 
 ### Chinese (CJK) text
 

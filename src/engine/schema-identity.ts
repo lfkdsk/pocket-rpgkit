@@ -24,12 +24,14 @@
 /** SHA-256 of canonical src/data/schema.json. A test derives it from the file
  * so schema edits cannot leave it stale; keeping the literal avoids hashing
  * the schema at startup. */
-export const MAP_SCHEMA_HASH = "49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8ba161586f4c0149a1";
+export const MAP_SCHEMA_HASH = "0e510772cbf540414553fd8f4204e0cecba80f4d8c844146e3be46d23841daae";
 
 /** Earlier schema identities whose shells and saves remain loadable, newest
  * first. Each entry names the change that superseded it.
  *
  * History of cleared lists (each break refuses every identity before it):
+ * - `49d96a25…` → current only added optional parallax and animation timing
+ *   data, their commands, and the `mapAnim` `this` target, so it is listed.
  * - `bc4e7242…` → current only added the optional project `worldTraversal`
  *   identity and the optional transfer `handoff` provenance, so it is listed.
  * - `4a9a8310…` → `bc4e7242…` only added the optional root `uiText` table, so
@@ -57,6 +59,8 @@ export const MAP_SCHEMA_HASH = "49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8b
  * tests/fixtures/schema-compat keeps a refused fixture and a recorded
  * counterexample for each of these. */
 export const MAP_SCHEMA_COMPATIBLE_HASHES: readonly string[] = Object.freeze([
+  // superseded by: optional parallax/timing data, commands, and mapAnim `this`
+  "49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8ba161586f4c0149a1",
   // superseded by: optional project traversal identity and transfer handoff provenance
   "bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906",
   // superseded by: optional root `uiText`

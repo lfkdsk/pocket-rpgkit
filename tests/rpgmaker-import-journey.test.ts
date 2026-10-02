@@ -8,7 +8,9 @@
 // water in the village, the dialog and choices boxes, the placeholder
 // battle screen, the curtain picture, the tint.
 //
-// RMI_SHOTS=<dir> also writes each marked frame (2x) as a PNG for review.
+// RMI_SHOTS=<dir> also writes marked frames as nearest-neighbour PNGs for
+// review. RMI_SHOT_SCALE defaults to 2; RMI_SHOT_NAMES may select a
+// comma-separated set of game:mark names.
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
@@ -92,15 +94,18 @@ const stageBrightness = (rgba: Uint8Array): number => {
 async function writeShot(game: string, name: string, rgba: Uint8Array): Promise<void> {
   const dir = process.env.RMI_SHOTS;
   if (!dir) return;
+  const selected = process.env.RMI_SHOT_NAMES;
+  if (selected && !new Set(selected.split(",").map((entry) => entry.trim())).has(`${game}:${name}`)) return;
   mkdirSync(dir, { recursive: true });
-  const big = new Uint8Array(W * 2 * H * 2 * 4);
-  for (let y = 0; y < H * 2; y++) {
-    for (let x = 0; x < W * 2; x++) {
-      const s = ((y >> 1) * W + (x >> 1)) * 4;
-      big.set(rgba.subarray(s, s + 4), (y * W * 2 + x) * 4);
+  const scale = Math.max(1, Math.min(6, Math.trunc(Number(process.env.RMI_SHOT_SCALE ?? 2)) || 2));
+  const big = new Uint8Array(W * scale * H * scale * 4);
+  for (let y = 0; y < H * scale; y++) {
+    for (let x = 0; x < W * scale; x++) {
+      const s = (Math.floor(y / scale) * W + Math.floor(x / scale)) * 4;
+      big.set(rgba.subarray(s, s + 4), (y * W * scale + x) * 4);
     }
   }
-  await Bun.write(join(dir, `${game}-${name}.png`), encodePNG(big, W * 2, H * 2));
+  await Bun.write(join(dir, `${game}-${name}.png`), encodePNG(big, W * scale, H * scale));
 }
 
 /** Replay `d`'s tape in the bundle; return the frame at each mark. */
@@ -153,7 +158,7 @@ describe("rpgmaker-import journey: hollow-mz (village, house, cave, battle)", ()
       "map001/ev009": "B",
       "map002/ev002": "A",
     });
-    for (const mark of ["intro", "village", "elder-choices", "luck-text", "house", "chest", "gate-open", "cave", "battle", "golem-down", "end"]) {
+    for (const mark of ["intro", "village", "elder-choices", "luck-text", "house", "shop-icons", "chest", "gate-open", "cave", "battle", "golem-down", "end"]) {
       expect(d.marks[mark]).toBeNumber();
     }
     const luckText = d.markStates["luck-text"]!.interp.modal;
@@ -191,6 +196,12 @@ describe("rpgmaker-import journey: hollow-mz (village, house, cave, battle)", ()
     )).toBeGreaterThan(W);
     // The house interior has no grass.
     expect(census(shots.get("house")!, grass)).toBeLessThan(W * H / 50);
+    // The selected potion row carries the imported IconSet cell. This pink
+    // is unique to the potion motif in the self-drawn fixture.
+    expect(censusRect(
+      shots.get("shop-icons")!, 240, 68, 258, 92,
+      (r, g, b) => r === 255 && g === 144 && b === 176,
+    )).toBeGreaterThanOrEqual(4);
     // The placeholder battle fills the screen with its backdrop.
     expect(census(shots.get("battle")!, battleBg)).toBeGreaterThan(W * H * 0.8);
   }, 60_000);
@@ -208,7 +219,7 @@ describe("rpgmaker-import journey: stage-mv (cutscene)", () => {
     expect(d.markStates["cutscene-done"]!.sw.variables.v001).toBe(3);
     expect(s.sw.self).toMatchObject({ "map001/ev001": "A" });
     expect(s.interp.erased).toMatchObject({ "map001/ev007": true });
-    for (const mark of ["curtain", "tint", "balloon", "cutscene-done", "claps", "end"]) expect(d.marks[mark]).toBeNumber();
+    for (const mark of ["curtain", "parallax", "tint", "balloon", "sparkle", "cutscene-done", "claps", "end"]) expect(d.marks[mark]).toBeNumber();
   });
 
   test("the GameView bundle replays the tape to the same states and pictures", async () => {
@@ -217,6 +228,18 @@ describe("rpgmaker-import journey: stage-mv (cutscene)", () => {
     expect(stateAt(shots, "end")).toEqual(storyState(d.state));
     // The full-screen curtain picture.
     expect(census(shots.get("curtain")!, curtain)).toBeGreaterThan(W * H * 0.5);
+    // The transparent stage window reveals the changed !StageGlow backdrop
+    // beneath the ground plane. (104,32) is the centred map origin; the
+    // lower window avoids the transient map-name banner.
+    const parallax = shots.get("parallax")!;
+    expect([...parallax.subarray(((32 + 80) * W + (104 + 112)) * 4, ((32 + 80) * W + (104 + 112)) * 4 + 4)])
+      .toEqual([255, 224, 144, 255]);
+    // Frame two of the cooked Sparkle animation carries cyan pixels around
+    // the lead actor; the count distinguishes it from the actor alone.
+    expect(censusRect(
+      shots.get("sparkle")!, 200, 42, 280, 120,
+      (r, g, b) => b > 220 && g > 180 && b > r + 30,
+    )).toBeGreaterThan(8);
     // Erase Event hides the smoke puff (6,5) for good: the cell shows the
     // stage floor again (the 17x13 map is centred: origin (104,32)).
     const end = shots.get("end")!;
