@@ -46,7 +46,8 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     title: "View",
     items: [
       { keys: [["G"], ["P"]], action: "Grid, passage overlay" },
-      { keys: [["Wheel"], ["="], ["-"]], action: "Zoom" },
+      { keys: [["Wheel"]], action: "Zoom around the pointer" },
+      { keys: [["="], ["+"], ["-"]], action: "Zoom in or out" },
       { keys: [["0"]], action: "Fit the map" },
       { keys: [["Space", "Drag"], ["Middle-drag"], ["Shift", "Wheel"]], action: "Pan" },
     ],
@@ -56,6 +57,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     items: [
       { keys: [["Drag map"], ["Alt", "↑"], ["Alt", "↓"]], action: "Reorder maps (inline projects)" },
       { keys: [["↑"], ["↓"]], action: "Previous, next map or command" },
+      { keys: [["Home"], ["End"]], action: "First or last map" },
       { keys: [["Drag command"]], action: "Move a command, also into or out of branches" },
       { keys: [["Alt", "↑"], ["Alt", "↓"]], action: "Move the selected command up or down" },
     ],

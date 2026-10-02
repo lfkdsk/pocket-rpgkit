@@ -26,6 +26,14 @@ export function mapDropIndex(order: readonly string[], shown: readonly string[],
   const from = order.indexOf(id);
   if (from < 0 || shown.length === 0) return null;
   const clamped = Math.max(0, Math.min(shown.length, slot));
+  // A gap immediately before or after the dragged row is the same visible
+  // position. With a filter, moving there must not silently cross maps hidden
+  // between the two shown rows.
+  const shownFrom = shown.indexOf(id);
+  if (shownFrom >= 0) {
+    const shownTo = clamped > shownFrom ? clamped - 1 : clamped;
+    if (shownTo === shownFrom) return null;
+  }
   const insert = clamped < shown.length ? order.indexOf(shown[clamped]!) : order.indexOf(shown[shown.length - 1]!) + 1;
   if (insert < 0) return null;
   const to = insert > from ? insert - 1 : insert;
@@ -111,7 +119,12 @@ export function mountMapTree(root: HTMLElement, app: StudioApp): void {
     });
     const dragging = press?.dragging ? press : null;
     // In the 2 px gap above the slot's row; the first slot stays inside the list.
-    if (dragging) dropLine.style.top = `${Math.max(3, dragging.slot * MAP_ROW_HEIGHT - 1)}px`;
+    if (dragging) {
+      dropLine.style.top = `${Math.max(3, dragging.slot * MAP_ROW_HEIGHT - 1)}px`;
+      const noChange = mapDropIndex(maps.map((map) => map.id), shown.map((map) => map.id), dragging.id, dragging.slot) === null;
+      dropLine.classList.toggle("no-change", noChange);
+      dropLine.dataset.note = noChange ? (filter && shown.length < maps.length ? "Hidden maps stay in place" : "No change") : "";
+    }
     const empty = shown.length === 0
       ? filter
         ? emptyState("map", "No map matches", `No map id or name contains “${filter}”.`, { label: "Clear filter", onClick: () => { search.value = ""; filter = ""; renderRows(); } })
@@ -140,6 +153,7 @@ export function mountMapTree(root: HTMLElement, app: StudioApp): void {
   function endDrag(commit: boolean): void {
     const ended = press;
     press = null;
+    stopTrackingPointer();
     if (edgeTimer) window.clearTimeout(edgeTimer);
     edgeTimer = 0;
     scroller.classList.remove("drag-active");
@@ -151,6 +165,43 @@ export function mountMapTree(root: HTMLElement, app: StudioApp): void {
     if (!commit) return;
     const index = mapDropIndex(maps.map((map) => map.id), shown.map((map) => map.id), ended.id, ended.slot);
     if (index !== null) moveMap(ended.id, index);
+    else if (filter && shown.length < maps.length) app.notify("info", "Map order unchanged; a drop beside the same visible neighbours does not cross hidden maps.");
+  }
+
+  function stopTrackingPointer(): void {
+    window.removeEventListener("pointermove", pointerMove, true);
+    window.removeEventListener("pointerup", pointerUp, true);
+    window.removeEventListener("pointercancel", pointerCancel, true);
+  }
+
+  function pointerMove(event: PointerEvent): void {
+    if (!press || event.pointerId !== press.pointerId) return;
+    press.clientY = event.clientY;
+    if (!press.dragging) {
+      if (Math.abs(event.clientY - press.startY) < DRAG_THRESHOLD) return;
+      if (!canReorder()) {
+        stopTrackingPointer();
+        press = null;
+        app.notify("info", "A sharded pack's map order is fixed; reorder maps in an inline project or with rpgkit-edit.");
+        return;
+      }
+      press.dragging = true;
+      scroller.classList.add("drag-active");
+    }
+    event.preventDefault();
+    press.slot = slotAt(event.clientY);
+    renderRows();
+    if (!edgeTimer) edgeScroll();
+  }
+
+  function pointerUp(event: PointerEvent): void {
+    if (!press || event.pointerId !== press.pointerId) return;
+    endDrag(true);
+  }
+
+  function pointerCancel(event: PointerEvent): void {
+    if (!press || event.pointerId !== press.pointerId) return;
+    endDrag(false);
   }
 
   scroller.addEventListener("pointerdown", (event) => {
@@ -158,30 +209,15 @@ export function mountMapTree(root: HTMLElement, app: StudioApp): void {
     const row = (event.target as HTMLElement).closest<HTMLElement>(".map-row");
     const id = row?.dataset.map;
     if (!id) return;
-    press = { id, pointerId: event.pointerId, startY: event.clientY, dragging: false, slot: 0, clientY: event.clientY };
-  });
-  scroller.addEventListener("pointermove", (event) => {
-    if (!press || event.pointerId !== press.pointerId) return;
-    press.clientY = event.clientY;
-    if (!press.dragging) {
-      if (Math.abs(event.clientY - press.startY) < DRAG_THRESHOLD) return;
-      if (!canReorder()) {
-        press = null;
-        app.notify("info", "A sharded pack's map order is fixed; reorder maps in an inline project or with rpgkit-edit.");
-        return;
-      }
-      press.dragging = true;
-      scroller.setPointerCapture(event.pointerId);
-      scroller.classList.add("drag-active");
+    if (press) {
+      stopTrackingPointer();
+      endDrag(false);
     }
-    press.slot = slotAt(event.clientY);
-    renderRows();
-    if (!edgeTimer) edgeScroll();
+    press = { id, pointerId: event.pointerId, startY: event.clientY, dragging: false, slot: 0, clientY: event.clientY };
+    window.addEventListener("pointermove", pointerMove, true);
+    window.addEventListener("pointerup", pointerUp, true);
+    window.addEventListener("pointercancel", pointerCancel, true);
   });
-  scroller.addEventListener("pointerup", (event) => {
-    if (press && event.pointerId === press.pointerId) endDrag(true);
-  });
-  scroller.addEventListener("pointercancel", () => endDrag(false));
 
   scroller.addEventListener("scroll", () => renderRows());
   scroller.addEventListener("keydown", (event) => {

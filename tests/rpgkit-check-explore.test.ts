@@ -119,6 +119,30 @@ describe("rpgkit-check explore", () => {
     expect(report.endedReason).toBe("complete");
   });
 
+  test("sessionOptions can activate a game-owned extension-gated page", () => {
+    const project = grassProject([{
+      id: "extension-gate",
+      x: 4,
+      y: 4,
+      pages: [{
+        trigger: "action",
+        condition: { all: [{ kind: "ext", call: "fixture.open", args: null }] },
+        commands: [{ op: "text", lines: ["open"] }],
+      }],
+    }]);
+    const without = checkExplore(project, { frames: 600 });
+    expect(without.neverTriggered[0]?.reason).toBe("no-active-page");
+
+    const withSession = checkExplore(project, {
+      frames: 600,
+      sessionOptions: {
+        extensions: { conditions: { "fixture.open": () => true } },
+      },
+    });
+    expect(withSession.events[0]!.triggers).toBeGreaterThan(0);
+    expect(withSession.neverTriggered).toEqual([]);
+  });
+
   test("auto-picks choices option 0", () => {
     const project = grassProject([
       {

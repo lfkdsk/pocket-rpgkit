@@ -122,8 +122,11 @@ in the problems list.
 - **Maps** (left): every map, with a filter box. The list is virtualized, so
   packs with hundreds of maps scroll smoothly. Drag a map up or down to
   change the map order (Alt+↑/↓ moves the open map one place); a line shows
-  where it will land, and the drop is one `move-map` step. A sharded pack's
-  map order is its fixed map index, so there the rows only open maps.
+  where it will land, and the drop is one `move-map` step. With a filter,
+  visible-order changes are anchored to the visible neighbour; dropping back
+  beside the map's current visible neighbour is a no-op and never silently
+  crosses hidden maps. A sharded pack's map order is its fixed map index, so
+  there the rows only open maps.
 - **Tiles** (left): the sheets the current map declares, with a recently-used
   strip and a size control. With the passage or edges layer active this
   panel shows those brushes instead.
@@ -252,10 +255,11 @@ one undo step each.
 | V B R F E I N | Select, brush, rectangle, fill, eraser, eyedropper, events |
 | 1 2 3 4 | Ground, upper, passage, edges layer |
 | G, P | Grid, passage overlay |
-| = and -, 0 | Zoom in and out, fit |
+| = or +, -, 0 | Zoom in, zoom out, fit |
 | Space+drag, middle-drag, Shift+wheel | Pan |
 | Delete, Ctrl/⌘+D | Delete or duplicate the selected event |
 | Drag a map, Alt+↑/↓ in the map list | Reorder maps |
+| ↑/↓, Home/End in the map list | Open the previous/next, first/last map |
 | Drag a command, Alt+↑/↓ in the command tree | Move a command |
 | Drag an event (select or event tool) | Move an event |
 | Esc | Cancel a drag, else clear the selection; in the play-test, give the keyboard back to the editor |

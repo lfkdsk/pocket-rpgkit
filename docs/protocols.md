@@ -114,6 +114,14 @@ crash-atomic. See `editor/api/file.ts` and
   expecting `before`; reverse applies backwards expecting `after`; a base
   hash mismatch fails closed. Implementation: `editor/api/operations.ts`
   (`diffJson`, `applyEditPatch`).
+- **Array diff granularity.** `diffJson` compares equal-length arrays by
+  index, and replaces an array as one change when its length changes. There
+  is one deliberate order-only exception: when an equal-length array of
+  objects with unique string `id` fields is a permutation of the same ids,
+  every changed index is a whole-cell replacement. It does not field-diff
+  the object that used to occupy that index against the object moved into
+  it. This is how `move-map` remains reversible while preserving each map
+  object's source property order.
 - **Both editors edit through this protocol.** Studio's `EditSession`, the
   CLI and the MCP tools call the text entry point
   (`executeEditOperation` on the document source). The PocketJS editor calls

@@ -60,7 +60,20 @@ import { BTN } from "./keys.ts";
 import { createMasterAudioHost } from "./audio-control.ts";
 // The pack format (kind tag, entry-key rule, envelope check, byte spelling)
 // is shared with the TypeScript edit API; this file only adds plain Errors.
-import { packEntryProblem, packText, readPackEnvelope, SHARDED_PACK_KIND } from "../../editor/api/pack-format.ts";
+import {
+  PNG_HEADER_BYTES,
+  packAssetBytesProblem,
+  packAssetCountProblem,
+  pngProblem,
+} from "../../editor/api/limits.ts";
+import {
+  base64DecodedBound,
+  decodeBase64,
+  packEntryProblem,
+  packText,
+  readPackEnvelope,
+  SHARDED_PACK_KIND,
+} from "../../editor/api/pack-format.ts";
 
 const STEP_MS = 1000 / 60;
 const MAX_ELAPSED_MS = 250;
@@ -303,6 +316,41 @@ async function sha256Text(text) {
   return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/** Validate embedded art by the edit API's pack limits while retaining the
+ * accepted base64 spelling verbatim. BrowserProjectPack is a transport, but
+ * accepting a pack here that Studio or rpgkit-edit refuses would make the
+ * same file behave differently between the two browser editors. */
+function browserPackAssets(supplied) {
+  const assets = [];
+  const paths = Object.keys(supplied ?? {});
+  const countProblem = packAssetCountProblem(paths.length);
+  if (countProblem !== null) throw new Error(countProblem);
+  let total = 0;
+  for (const path of paths) {
+    packEntry(path);
+    const asset = supplied[path];
+    if (!record(asset)
+      || asset.type !== "image/png"
+      || typeof asset.data !== "string"
+      || Object.keys(asset).some((key) => key !== "type" && key !== "data")) {
+      throw new Error(`pack asset ${JSON.stringify(path)} is not a PNG entry with only type and data`);
+    }
+    const padding = asset.data.endsWith("==") ? 2 : asset.data.endsWith("=") ? 1 : 0;
+    const bound = base64DecodedBound(asset.data.length) - padding;
+    const sizeProblem = pngProblem(`asset ${JSON.stringify(path)}`, bound);
+    if (sizeProblem !== null) throw new Error(sizeProblem);
+    const bytes = decodeBase64(asset.data);
+    if (bytes === null) throw new Error(`pack asset ${JSON.stringify(path)} is not valid base64`);
+    total += bytes.length;
+    const totalProblem = packAssetBytesProblem(total);
+    if (totalProblem !== null) throw new Error(totalProblem);
+    const imageProblem = pngProblem(`asset ${JSON.stringify(path)}`, bytes.length, bytes.subarray(0, PNG_HEADER_BYTES));
+    if (imageProblem !== null) throw new Error(imageProblem);
+    assets.push([path, { type: asset.type, data: asset.data }]);
+  }
+  return assets;
+}
+
 /** Self-contained browser transport for a ProjectShell and its shard bytes.
  * It deliberately keeps shard text in a private Map: projectMessage() sends
  * the shell/catalog only and read() releases one requested shard at a time. */
@@ -338,11 +386,7 @@ export class BrowserProjectPack {
       shards.set(entry, shard);
     }
     const pack = new BrowserProjectPack(envelope.shell, shards);
-    for (const [path, asset] of Object.entries(envelope.assets ?? {})) {
-      packEntry(path);
-      if (!record(asset) || asset.type !== "image/png" || typeof asset.data !== "string") throw new Error(`pack asset ${JSON.stringify(path)} is not a PNG entry`);
-      pack.assets.push([path, { type: asset.type, data: asset.data }]);
-    }
+    pack.assets = browserPackAssets(envelope.assets);
     return pack;
   }
 

@@ -82,9 +82,20 @@ const SITE = resolve(option("site", join(ROOT, "dist", "web")));
 const OUT = resolve(option("out", join(ROOT, "dist", "web-verify")));
 const CHROME = option("chrome", Bun.which("google-chrome") ?? Bun.which("chromium") ?? "/usr/bin/google-chrome");
 
-if (!existsSync(join(SITE, "index.html"))) {
-  console.error(`web-verify: no site at ${SITE}; run \`bun run web\` first`);
-  process.exit(2);
+/** Decide whether this built site contains both ends of the preview demo. */
+export function previewProtocolCheck(
+  site: string,
+  gameIds: readonly string[],
+  output: (line: string) => void = console.log,
+): boolean {
+  const missing = [
+    ...(!gameIds.includes("preview") ? ["the preview app is not listed in games.json"] : []),
+    ...(!existsSync(join(site, "preview", "index.html")) ? ["preview/index.html is absent"] : []),
+    ...(!existsSync(join(site, "preview-demo.html")) ? ["preview-demo.html is absent"] : []),
+  ];
+  if (missing.length === 0) return true;
+  output(`  SKIP preview protocol: ${missing.join("; ")}`);
+  return false;
 }
 
 // ---- static server -----------------------------------------------------------
@@ -1427,7 +1438,7 @@ async function main(): Promise<void> {
     // Only a site built with the preview app has preview-demo.html and
     // preview/ (tools/web.ts adds both for the kit site); a game site
     // that never opts in has nothing to check here.
-    if (games.some((game) => game.id === "preview")) {
+    if (previewProtocolCheck(SITE, games.map((game) => game.id))) {
       // The demo page on the root server embeds the preview host from the
       // subpath server (a different origin) and allowlists its own origin.
       phase = "preview";
@@ -1743,6 +1754,12 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
-console.log(`\nweb-verify: ${failures.length === 0 ? "PASS" : `FAIL (${failures.length})`}; screenshots and report.json in ${OUT}`);
-process.exit(failures.length === 0 ? 0 : 1);
+if (import.meta.main) {
+  if (!existsSync(join(SITE, "index.html"))) {
+    console.error(`web-verify: no site at ${SITE}; run \`bun run web\` first`);
+    process.exit(2);
+  }
+  await main();
+  console.log(`\nweb-verify: ${failures.length === 0 ? "PASS" : `FAIL (${failures.length})`}; screenshots and report.json in ${OUT}`);
+  process.exit(failures.length === 0 ? 0 : 1);
+}

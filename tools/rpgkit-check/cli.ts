@@ -141,6 +141,27 @@ async function loadSessionOptions(file: string): Promise<SessionOptions> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`--session module must export a SessionOptions object as default or sessionOptions: ${file}`);
   }
+  const options = value as Record<string, unknown>;
+  const expectType = (
+    key: string,
+    valid: (candidate: unknown) => boolean,
+    expected: string,
+  ): void => {
+    if (options[key] !== undefined && !valid(options[key])) {
+      throw new Error(`--session module SessionOptions.${key} must be ${expected}: ${file}`);
+    }
+  };
+  const isObject = (candidate: unknown): boolean =>
+    typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
+  expectType("immutableState", (candidate) => typeof candidate === "boolean", "a boolean");
+  expectType("verifyMapManifest", (candidate) => typeof candidate === "boolean", "a boolean");
+  expectType("maps", isObject, "an object");
+  expectType("extensions", isObject, "an object");
+  expectType("battle", isObject, "an object");
+  expectType("scenes", isObject, "an object");
+  expectType("scene", isObject, "an object");
+  expectType("onFiberStart", (candidate) => typeof candidate === "function", "a function");
+  expectType("paginateText", (candidate) => typeof candidate === "function", "a function");
   return value as SessionOptions;
 }
 

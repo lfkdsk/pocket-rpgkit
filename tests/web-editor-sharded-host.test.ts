@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { MAX_PACK_ASSET_BYTES, MAX_PACK_ASSETS, MAX_PNG_BYTES, MAX_PNG_SIDE } from "../editor/api/limits.ts";
+import { encodeBase64 } from "../editor/api/pack-format.ts";
 // The web host intentionally stays plain JavaScript so it can be copied
 // verbatim beside generated pages.
 // @ts-expect-error no declaration file for the browser-only host module
@@ -15,6 +17,17 @@ const {
 } = browserHost;
 
 const digest = (text: string): string => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+
+function pngHeader(width = 1, height = 1): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+const PNG_DATA = encodeBase64(pngHeader());
 
 function fixture(count = 263) {
   const shards: Record<string, string> = Object.create(null);
@@ -66,7 +79,7 @@ describe("browser sharded editor pack host", () => {
 
   test("keeps a pack's image assets when it serializes the pack again", () => {
     const source = fixture(2);
-    const assets = { "art/sheets/town.png": { type: "image/png", data: "iVBORw0KGgo=" } };
+    const assets = { "art/sheets/town.png": { type: "image/png", data: PNG_DATA } };
     const withArt = `${JSON.stringify({ kind: SHARDED_PACK_KIND, shell: source.shell, shards: source.shards, assets }, null, 2)}\n`;
     expect(BrowserProjectPack.parse(withArt).serialize()).toBe(withArt);
     // A pack without assets keeps its spelling: no empty "assets" record.
@@ -75,6 +88,55 @@ describe("browser sharded editor pack host", () => {
     const bad = JSON.stringify({ kind: SHARDED_PACK_KIND, shell: source.shell, shards: source.shards, assets: { "../x.png": { type: "image/png", data: "" } } });
     expect(() => BrowserProjectPack.parse(bad)).toThrow();
   });
+
+  test("uses the edit API's asset gates before retaining accepted bytes", () => {
+    const source = fixture(1);
+    const packed = (assets: Record<string, unknown>) => JSON.stringify({
+      kind: SHARDED_PACK_KIND,
+      shell: source.shell,
+      shards: source.shards,
+      assets,
+    });
+
+    const accepted = packed({ "art/tiny.png": { type: "image/png", data: PNG_DATA } });
+    expect(BrowserProjectPack.parse(accepted).serialize()).toContain(PNG_DATA);
+    expect(() => BrowserProjectPack.parse(packed({ "art/bad.png": { type: "image/png", data: "not base64" } })))
+      .toThrow(/not valid base64/);
+    const maxSide = encodeBase64(pngHeader(MAX_PNG_SIDE, 1));
+    expect(BrowserProjectPack.parse(packed({ "art/max-side.png": { type: "image/png", data: maxSide } })).serialize())
+      .toContain(maxSide);
+    expect(() => BrowserProjectPack.parse(packed({ "art/wide.png": { type: "image/png", data: encodeBase64(pngHeader(MAX_PNG_SIDE + 1, 1)) } })))
+      .toThrow(/8,192 px on a side/);
+
+    const many = Object.fromEntries(Array.from({ length: MAX_PACK_ASSETS + 1 }, (_, index) => [
+      `art/${index}.png`,
+      { type: "image/png", data: PNG_DATA },
+    ]));
+    expect(() => BrowserProjectPack.parse(packed(many)))
+      .toThrow("the pack has 4,097 asset images; a pack can have at most 4,096.");
+
+    // The encoded length rejects one oversized image before allocating its
+    // decoded bytes.
+    const oversized = "A".repeat(Math.ceil((MAX_PNG_BYTES + 1) / 3) * 4);
+    expect(() => BrowserProjectPack.parse(packed({ "art/huge.png": { type: "image/png", data: oversized } })))
+      .toThrow(/local PNGs can be at most 16 MiB/);
+
+    // Two maximum-size entries are exactly the shared 32 MiB cap. One more
+    // tiny PNG crosses it, proving the total uses decoded bytes and `>`.
+    const half = new Uint8Array(MAX_PACK_ASSET_BYTES / 2);
+    half.set(pngHeader());
+    const halfData = encodeBase64(half);
+    const atTotal = {
+      "art/half-0.png": { type: "image/png", data: halfData },
+      "art/half-1.png": { type: "image/png", data: halfData },
+    };
+    expect(BrowserProjectPack.parse(packed(atTotal)).assets).toHaveLength(2);
+    expect(() => BrowserProjectPack.parse(packed({
+      ...atTotal,
+      "art/over-total.png": { type: "image/png", data: PNG_DATA },
+    })))
+      .toThrow(/a pack can carry at most 32 MiB of images/);
+  }, 30_000);
 
   test("catalogues 263 entries without sending any shard text until map-read", () => {
     const source = fixture();

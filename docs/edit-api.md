@@ -236,8 +236,10 @@ written after `shards`:
 Assets are opaque to editing: no operation changes them, undo and redo do
 not touch them, and a re-serialized pack writes them back unchanged in the
 same order. `assets` is written only when it has at least one image, so a
-pack without art keeps exactly the bytes it had before assets existed, and
-readers that predate assets (the browser player) ignore the field.
+pack without art keeps exactly the bytes it had before assets existed. The
+browser player applies the same asset count, decoded-byte, PNG and dimension
+limits when it opens a pack, then retains every accepted base64 string
+byte-for-byte.
 
 ## Read commands
 

@@ -118,6 +118,29 @@ describe("rpgkit-check freeze: permanent input lock", () => {
     expect(report.summary.permanentLocks).toBe(1);
     expect(report.summary.flagged).toBe(1);
   });
+
+  test("sessionOptions can activate a game-owned extension-gated lock", () => {
+    const project = fixture([{
+      id: "extension-locker",
+      x: 0,
+      y: 0,
+      pages: [{
+        trigger: "autorun",
+        condition: { all: [{ kind: "ext", call: "fixture.freeze", args: null }] },
+        commands: [{ op: "lockInput" }],
+      }],
+    }]);
+    expect(checkFreeze(project, { windowFrames: WINDOW }).findings).toEqual([]);
+
+    const report = checkFreeze(project, {
+      windowFrames: WINDOW,
+      sessionOptions: {
+        extensions: { conditions: { "fixture.freeze": () => true } },
+      },
+    });
+    expect(report.findings).toHaveLength(1);
+    expect(report.findings[0]!.check).toBe("freeze/permanent-lock");
+  });
 });
 
 describe("rpgkit-check freeze: permanent blocking fiber", () => {

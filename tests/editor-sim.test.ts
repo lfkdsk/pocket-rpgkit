@@ -29,6 +29,7 @@ import { describe, expect, test } from "bun:test";
 import { statSync } from "node:fs";
 import { createSimFsHost } from "../vendor/pocketjs/hosts/sim/fs.ts";
 import { BTN } from "../vendor/pocketjs/contracts/spec/spec.ts";
+import { FS_WRITE_TRUNCATE } from "../vendor/pocketjs/contracts/spec/fs.ts";
 import { createSession, startSession, stepSession } from "../src/engine/session.ts";
 import type { Project } from "../src/engine/types.ts";
 import { BUNDLED_PROJECTS } from "../editor/engine/projects.ts";
@@ -641,6 +642,24 @@ simDescribe("editor document round trip and playability", () => {
 // --- data.fs ----------------------------------------------------------------
 
 simDescribe("editor data.fs project store", () => {
+  test("an invalid exported copy warns and falls back to the bundled document", async () => {
+    const fsHost = createSimFsHost();
+    const write = fsHost.ns.write as (path: string, data: string, mode: number) => number;
+    expect(write("projects/sunstone.json", JSON.stringify("{not json"), FS_WRITE_TRUNCATE)).toBe(0);
+
+    const world = await bootEditorWorld(60, { fs: fsHost.ns }, undefined, { width: W, height: H });
+    live = world;
+    for (let i = 0; i < 4; i++) frame(world);
+
+    const state = g().state();
+    expect(state.docId).toBe("sunstone");
+    expect(state.hostFile).toBe(false);
+    expect(state.notice.kind).toBe("bad");
+    expect(state.notice.text).toContain("EXPORTED COPY REJECTED");
+    expect(state.notice.text).toContain("OPENED BUNDLED sunstone");
+    expect(g().export().text).toBe(SUNSTONE.json);
+  });
+
   test("START saves to projects/sunstone.json and a fresh boot reads it back", async () => {
     const fsHost = createSimFsHost();
     const world = await bootEditorWorld(60, { fs: fsHost.ns }, undefined, { width: W, height: H });

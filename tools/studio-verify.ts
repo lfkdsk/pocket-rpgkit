@@ -498,9 +498,18 @@ async function main(): Promise<void> {
     const caveRow = await rectOf(`document.querySelector('.map-row[data-map="cave"]')`);
     const firstRow = await rectOf(`document.querySelector('.map-row[data-map="${order0[0]}"]')`);
     const depth0 = await historyDepth();
-    await dragPoints({ x: caveRow!.x + 40, y: caveRow!.y + caveRow!.h / 2 }, { x: firstRow!.x + 40, y: firstRow!.y + 3 }, "studio-drag-map", false);
+    const mapFrom = { x: caveRow!.x + 40, y: caveRow!.y + caveRow!.h / 2 };
+    const mapTo = { x: firstRow!.x + 40, y: firstRow!.y + 3 };
+    // Cross outside the scroller before returning to the target. Map drag
+    // tracking belongs to the window, so leaving the list cannot strand it.
+    await mouse("mouseMoved", mapFrom.x, mapFrom.y, "none");
+    await mouse("mousePressed", mapFrom.x, mapFrom.y);
+    await mouse("mouseMoved", caveRow!.x + caveRow!.w + 24, mapFrom.y - 8);
+    for (let i = 1; i <= 8; i++) await mouse("mouseMoved", mapFrom.x + (mapTo.x - mapFrom.x) * i / 8, mapFrom.y + (mapTo.y - mapFrom.y) * i / 8);
+    await sleep(120);
+    await shot("studio-drag-map");
     const lineShown = await evaluate<boolean>(`!!document.querySelector(".map-drop-line") && !!document.querySelector(".map-row.dragging")`);
-    await mouse("mouseReleased", firstRow!.x + 40, firstRow!.y + 3);
+    await mouse("mouseReleased", mapTo.x, mapTo.y);
     await sleep(150);
     const order1 = await mapOrder();
     const mapStep = await lastStep();
@@ -510,6 +519,18 @@ async function main(): Promise<void> {
     expect("drag: the open map stays open after the drop", (await evaluate<string>(`__studio.app.mapId`)) === "village", await evaluate<string>(`__studio.app.mapId`));
     await key("z", "KeyZ", CTRL);
     expect("drag: Ctrl+Z puts the map order back byte for byte", (await evaluate<string>(`__studio.app.session.exportText()`)) === beforeDrag, (await mapOrder()).join());
+    // Filtering out the middle map must not let a visually unchanged drop
+    // move the first map across that hidden neighbour.
+    await evaluate(`(() => { const i = document.querySelector(".map-search"); i.value = "a"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+    const filteredFirst = await rectOf(`document.querySelector('.map-row[data-map="village"]')`);
+    const filteredNext = await rectOf(`document.querySelector('.map-row[data-map="cave"]')`);
+    await dragPoints(
+      { x: filteredFirst!.x + 40, y: filteredFirst!.y + filteredFirst!.h / 2 },
+      { x: filteredNext!.x + 40, y: filteredNext!.y + 3 },
+    );
+    const filteredNoop = await evaluate<{ order: string[]; notice: string }>(`({ order: __studio.app.session.maps().map((m) => m.id), notice: __studio.app.notices.at(-1)?.text ?? "" })`);
+    expect("drag: a filtered visual no-op does not cross a hidden neighbour and explains why", filteredNoop.order.join() === order0.join() && /does not cross hidden maps/.test(filteredNoop.notice), JSON.stringify(filteredNoop));
+    await evaluate(`(() => { const i = document.querySelector(".map-search"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
     // Alt+Down on the focused list moves the open map one place down.
     await evaluate(`document.querySelector(".map-scroller").focus()`);
     await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "ArrowDown", code: "ArrowDown", modifiers: 1, windowsVirtualKeyCode: 40 });
@@ -582,7 +603,7 @@ async function main(): Promise<void> {
     await key("?", "Slash", SHIFT, "?");
     await waitFor("shortcuts panel", `!!document.querySelector('[data-role="shortcuts"]')`);
     const groups = await evaluate<string[]>(`[...document.querySelectorAll(".shortcut-group h3")].map((el) => el.textContent)`);
-    expect("drag: the shortcuts panel lists its groups, drag gestures included", groups.length >= 5 && (await evaluate<boolean>(`/Drag command/.test(document.querySelector('[data-role="shortcuts"]').textContent)`)), groups.join(", "));
+    expect("drag: the shortcuts panel lists its groups, drag gestures, zoom and map endpoints", groups.length >= 5 && (await evaluate<boolean>(`(() => { const text = document.querySelector('[data-role="shortcuts"]').textContent; return /Drag command/.test(text) && /Zoom in or out/.test(text) && /First or last map/.test(text); })()`)), groups.join(", "));
     await shot("studio-shortcuts");
     await key("Escape", "Escape");
     await evaluate(`(() => { const i = document.querySelector(".map-search"); i.value = "zzz"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);

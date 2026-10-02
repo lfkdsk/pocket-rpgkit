@@ -101,6 +101,59 @@ describe("rpgkit-check mutation: locks", () => {
     expect(hit!.outcome).toBe("unresolved");
     expect(report.findings.some((f) => f.check === "locks/permanent-lock")).toBe(true);
   });
+
+  test("changing a durable release prerequisite to per-visit local state is caught", async () => {
+    const project = await loadSunstone();
+    const source = {
+      id: "mutant-cross-event-lock",
+      x: 1,
+      y: 1,
+      pages: [{
+        trigger: "autorun" as const,
+        commands: [
+          { op: "lockInput" as const },
+          { op: "switch" as const, id: "mutation.ready", value: true },
+        ],
+      }],
+    };
+    const release = {
+      id: "mutant-cross-event-release",
+      x: 1,
+      y: 2,
+      pages: [{
+        trigger: "parallel" as const,
+        condition: { switch: "mutation.ready" },
+        commands: [{
+          op: "if" as const,
+          if: { kind: "switch" as const, id: "mutation.history", value: true },
+          then: [{ op: "unlockInput" as const }],
+        }],
+      }],
+    };
+    project.maps[0]!.events!.push(source, release);
+
+    const clean = checkLocks(project, { frames: 600 });
+    const cleanRow = clean.rows.find((row) => row.event === source.id);
+    expect(cleanRow?.outcome).toBe("unlocked");
+
+    const mutant = clone(project);
+    const mutantRelease = mutant.maps[0]!.events!.find((event) => event.id === release.id)!;
+    const guard = mutantRelease.pages[0]!.commands[0]!;
+    expect(guard.op).toBe("if");
+    if (guard.op !== "if" || guard.if.kind !== "switch") throw new Error("fixture guard changed");
+    guard.if.id = "local.mutation.history";
+
+    // This mutation is discriminating: the global prerequisite can describe
+    // durable history, but its `local.*` replacement is cleared on map entry.
+    // A checker that fabricates that local value incorrectly lets the mutant
+    // survive as "unlocked"; the correct checker must kill it as permanent.
+    const report = checkLocks(mutant, { frames: 600 });
+    const hit = report.rows.find((row) => row.event === source.id);
+    expect(hit?.outcome).toBe("unresolved");
+    expect(report.findings.some((finding) =>
+      finding.check === "locks/permanent-lock" && finding.loc?.event === source.id
+    )).toBe(true);
+  });
 });
 
 describe("rpgkit-check mutation: freeze", () => {

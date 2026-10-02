@@ -106,6 +106,31 @@ function logicalMessages(outbox: string[]): Record<string, unknown>[] {
 }
 
 simDescribe("sharded visual editor", () => {
+  test("a failed map read clears loading and remains visibly failed", async () => {
+    const split = fixture();
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    const world = await bootSvc(inbox, outbox);
+
+    send(inbox, world, { t: "project", shell: split.shellText, request: 60 });
+    const firstRead = logicalMessages(outbox).find((message) => message.t === "map-read")!;
+    send(inbox, world, {
+      t: "map-error",
+      request: firstRead.request,
+      entry: firstRead.entry,
+      error: "injected shard read failure",
+    });
+    await settle(world, () => world.probes().state().loadingMapIndex === null);
+
+    expect(world.probes().state()).toMatchObject({
+      sharded: true,
+      loadingMapIndex: null,
+      loadedMapIds: [],
+      docId: "sunstone",
+      notice: { kind: "bad", text: "MAP LOAD FAILED: injected shard read failure" },
+    });
+  });
+
   test("opens 263 maps lazily, edits the 100x100 tail map, and clears dirty only after save ack", async () => {
     const split = fixture();
     const sourceByEntry = new Map(split.entries.map((entry) => [entry.path, entry.text]));

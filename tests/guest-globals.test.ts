@@ -21,8 +21,10 @@ import {
 
 const ROOT = resolve(import.meta.dir, "..");
 
-/** Package exports a game bundles into its own guest. `./editor-api` is the
- * Bun/Node edit protocol (files, locks, proposals) and `./schema` is JSON. */
+/** Handwritten list of package exports that a game bundles into its guest;
+ * package.json also exports `./editor-api` for Bun/Node and `./schema` as JSON,
+ * so deriving this list from every export would scan code that never runs in
+ * a guest. Keep it in sync when adding a guest-facing package export. */
 const GUEST_EXPORTS = [
   "src/index.ts",
   "src/engine/index.ts",
@@ -52,7 +54,13 @@ describe("guest globals", () => {
     }
   });
 
-  test("every app, fixture and package export uses only guest globals", () => {
+  test("every desktop guest app, fixture and package export uses only guest globals", () => {
+    // TOOL_APPS is deliberately excluded: tools/preview is a browser-only
+    // PocketJS app whose postMessage protocol uses browser globals that the
+    // desktop QuickJS guest is not meant to provide.
+    // tools/qoa-quickjs-entry.ts is also not a shipping app/package entry. It
+    // is a standalone benchmark exercised in the real QuickJS guest by
+    // tools/qoa-quickjs-bench.sh, which is its dedicated compatibility check.
     const entries = [
       ...[...APPS, ...FIXTURES].map(appEntry),
       ...GUEST_EXPORTS.map((path) => join(ROOT, path)),

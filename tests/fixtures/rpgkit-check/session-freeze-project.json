@@ -1,0 +1,32 @@
+{
+  "format": "rpgkit-project/v1",
+  "title": "Session module freeze fixture",
+  "tileSize": 16,
+  "start": { "map": "m1", "x": 1, "y": 1, "dir": "down" },
+  "sheets": [{ "id": "tile", "cols": 1, "rows": 1 }],
+  "items": [],
+  "maps": [
+    {
+      "id": "m1",
+      "name": "M1",
+      "width": 3,
+      "height": 3,
+      "sheets": ["tile"],
+      "ground": ["tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0", "tile.0"],
+      "events": [
+        {
+          "id": "locker",
+          "x": 0,
+          "y": 0,
+          "pages": [
+            {
+              "trigger": "autorun",
+              "condition": { "all": [{ "kind": "ext", "call": "fixture.freeze", "args": null }] },
+              "commands": [{ "op": "lockInput" }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

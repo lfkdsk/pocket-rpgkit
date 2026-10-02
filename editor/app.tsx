@@ -246,6 +246,11 @@ interface DocSlot {
   sourceText: string;
 }
 
+interface BootDoc {
+  slot: DocSlot;
+  warning: Notice | null;
+}
+
 interface PendingMapRead {
   entry: string;
   resolve(map: MapDef): void;
@@ -306,29 +311,47 @@ function documentErrors(text: string): { project: Project; errors: { path: strin
   return { project: loaded.project, errors: documentStructureErrors(loaded.project as unknown as ProjectSource) };
 }
 
-function bootDoc(index: number): DocSlot {
+function bootDoc(index: number): BootDoc {
   const bundled = BUNDLED_PROJECTS[index]!;
+  const bundledSlot = (): DocSlot => ({
+    id: bundled.id,
+    project: loadProject(bundled.json).project,
+    sourceText: bundled.json,
+  });
+  const rejected = (error: string): BootDoc => ({
+    slot: bundledSlot(),
+    warning: { kind: "bad", text: `EXPORTED COPY REJECTED: ${error}; OPENED BUNDLED ${bundled.id}` },
+  });
   // A previously exported copy on data.fs wins over the bundled document.
   const onFs = readProject(bundled.id);
   if (onFs && "text" in onFs) {
     const loaded = documentErrors(onFs.text);
-    if (loaded.errors.length === 0) return { id: bundled.id, project: loaded.project, sourceText: onFs.text };
+    if (loaded.errors.length === 0) {
+      return {
+        slot: { id: bundled.id, project: loaded.project, sourceText: onFs.text },
+        warning: null,
+      };
+    }
+    const error = `${loaded.errors[0]!.path} ${loaded.errors[0]!.msg}`;
+    return rejected(error);
   }
-  return { id: bundled.id, project: loadProject(bundled.json).project, sourceText: bundled.json };
+  if (onFs && "error" in onFs) return rejected(onFs.error);
+  return { slot: bundledSlot(), warning: null };
 }
 
 export function EditorApp(): JSX.Element {
   const svc: Svc | null = connectSvc();
   const fsOk = hasFs();
   const proposalSession = readProposalSession();
+  const initialDoc = bootDoc(0);
 
   const vp0 = hostViewport(getOps());
   const [vp, setVp] = createSignal(vp0 ? { w: vp0.w, h: vp0.h } : { w: SCREEN_W, h: SCREEN_H });
   const [docIndex, setDocIndex] = createSignal(0);
-  const [doc, setDoc] = createSignal<DocSlot>(bootDoc(0));
+  const [doc, setDoc] = createSignal<DocSlot>(initialDoc.slot);
   const [editor, setEditor] = createSignal<EditorState>(createEditorState(doc().project));
   const [cam, setCam] = createSignal({ x: 0, y: 0 });
-  const [notice, setNotice] = createSignal<Notice>({
+  const [notice, setNotice] = createSignal<Notice>(initialDoc.warning ?? {
     kind: "info",
     text: svc
       ? fsOk
@@ -771,10 +794,14 @@ export function EditorApp(): JSX.Element {
     const nextIndex = (docIndex() + 1) % BUNDLED_PROJECTS.length;
     leaveShardedProject("another document was opened");
     setDocIndex(nextIndex);
-    const slot = bootDoc(nextIndex);
+    const opened = bootDoc(nextIndex);
+    const slot = opened.slot;
     setDoc(slot);
     setSavedText(null);
-    resetForProject(slot.project, { kind: "info", text: `OPENED ${slot.id}: ${slot.project.title}` });
+    resetForProject(
+      slot.project,
+      opened.warning ?? { kind: "info", text: `OPENED ${slot.id}: ${slot.project.title}` },
+    );
   };
 
   const switchMap = (delta: number): void => {

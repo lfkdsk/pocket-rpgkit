@@ -251,6 +251,9 @@ kbd {
   pointer-events: none;
 }
 .map-drop-line::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.map-drop-line.no-change { background: var(--muted); box-shadow: none; }
+.map-drop-line.no-change::before { background: var(--muted); }
+.map-drop-line.no-change::after { content: attr(data-note); position: absolute; right: 2px; bottom: 4px; padding: 1px 5px; border-radius: 4px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); font-size: 10px; white-space: nowrap; }
 .map-name { overflow: hidden; text-overflow: ellipsis; }
 .map-id { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .map-size { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }

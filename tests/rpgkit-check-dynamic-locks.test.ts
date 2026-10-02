@@ -202,7 +202,7 @@ describe("rpgkit-check locks: cross-event release flow", () => {
     expect(report.findings).toHaveLength(1);
   });
 
-  test("restores a seeded local switch after map entry for an autorun release", () => {
+  test("does not seed a per-visit local prerequisite across map entry", () => {
     const project = baseProject([
       { op: "lockInput" },
       { op: "switch", id: "story.ready", value: true },
@@ -222,10 +222,10 @@ describe("rpgkit-check locks: cross-event release flow", () => {
       }],
     });
     const report = checkLocks(project, FAST);
-    expect(report.rows[0]!.outcome).toBe("unlocked");
+    expect(report.rows[0]!.outcome).toBe("unresolved");
     expect(report.rows[0]!.lockedAt).toBeGreaterThanOrEqual(0);
-    expect(report.summary.dynamicChecks).toBe(2);
-    expect(report.findings).toEqual([]);
+    expect(report.summary.dynamicChecks).toBe(1);
+    expect(report.findings).toHaveLength(1);
   });
 });
 

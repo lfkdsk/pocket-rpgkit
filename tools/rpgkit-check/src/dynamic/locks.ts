@@ -533,8 +533,10 @@ function resolutionConditions(
 }
 
 function seedable(condition: Condition): boolean {
-  return condition.kind === "variable" || condition.kind === "switch" ||
-    condition.kind === "selfSwitch" || condition.kind === "item" ||
+  if (condition.kind === "variable" || condition.kind === "switch") {
+    return !condition.id.startsWith("local.");
+  }
+  return condition.kind === "selfSwitch" || condition.kind === "item" ||
     condition.kind === "gold" || condition.kind === "facing";
 }
 
@@ -548,7 +550,8 @@ interface ResolutionSeed {
  *  written by the lock page. The causal guard is deliberately NOT seeded;
  *  only the other historical prerequisites are. Thus the real source flow
  *  must publish the linking fact after taking the lock before the sibling
- *  can release it. */
+ *  can release it. Per-visit `local.*` facts are not historical state: map
+ *  entry clears them, so a release path that requires one is not seedable. */
 function crossEventSeeds(
   project: Project,
   map: Project["maps"][number],

@@ -10,6 +10,11 @@ const SUNSTONE = join(import.meta.dir, "..", "examples", "sunstone", "data", "su
 const MEADOW = join(import.meta.dir, "..", "examples", "meadow", "data", "meadow.json");
 const SESSION_PROJECT = join(import.meta.dir, "fixtures", "rpgkit-check", "session-project.json");
 const SESSION_OPTIONS = join(import.meta.dir, "fixtures", "rpgkit-check", "session-options.ts");
+const FREEZE_SESSION_PROJECT = join(import.meta.dir, "fixtures", "rpgkit-check", "session-freeze-project.json");
+const FREEZE_SESSION_OPTIONS = join(import.meta.dir, "fixtures", "rpgkit-check", "session-options-freeze.ts");
+const SESSION_NO_EXPORT = join(import.meta.dir, "fixtures", "rpgkit-check", "session-options-no-export.ts");
+const SESSION_BAD_EXPORT = join(import.meta.dir, "fixtures", "rpgkit-check", "session-options-bad-export.ts");
+const SESSION_BAD_EXTENSIONS = join(import.meta.dir, "fixtures", "rpgkit-check", "session-options-bad-extensions.ts");
 
 async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn({
@@ -158,6 +163,38 @@ describe("rpgkit-check CLI", () => {
     expect(withReport.assumptions.join("\n")).toContain("loaded session module");
   });
 
+  test("freeze receives a named sessionOptions export from --session", async () => {
+    const without = await runCli([
+      "freeze", "--file", FREEZE_SESSION_PROJECT, "--json", '{"windowFrames":30}',
+    ]);
+    const withSession = await runCli([
+      "freeze", "--file", FREEZE_SESSION_PROJECT, "--session", FREEZE_SESSION_OPTIONS,
+      "--json", '{"windowFrames":30}',
+    ]);
+    expect(without.code).toBe(0);
+    expect(JSON.parse(without.stdout).summary.flagged).toBe(0);
+    expect(withSession.code).toBe(1);
+    const report = JSON.parse(withSession.stdout);
+    expect(report.summary.permanentLocks).toBe(1);
+    expect(report.findings[0].check).toBe("freeze/permanent-lock");
+  });
+
+  test("explore receives default-exported sessionOptions from --session", async () => {
+    const without = await runCli([
+      "explore", "--file", SESSION_PROJECT, "--json", '{"frames":600,"stuckFrames":200}',
+    ]);
+    const withSession = await runCli([
+      "explore", "--file", SESSION_PROJECT, "--session", SESSION_OPTIONS,
+      "--json", '{"frames":600,"stuckFrames":200}',
+    ]);
+    expect(without.code).toBe(0);
+    expect(JSON.parse(without.stdout).mapsVisited).toEqual(["m1"]);
+    expect(withSession.code).toBe(0);
+    const report = JSON.parse(withSession.stdout);
+    expect(report.mapsVisited).toEqual(["m1", "m2"]);
+    expect(report.summary.eventsNeverTriggered).toBe(0);
+  });
+
   test("--session without a value exits 2", async () => {
     const { code, stderr } = await runCli(["reach", "--file", SESSION_PROJECT, "--session"]);
     expect(code).toBe(2);
@@ -180,6 +217,30 @@ describe("rpgkit-check CLI", () => {
     ]);
     expect(code).toBe(2);
     expect(stderr).toContain("Cannot find module");
+  });
+
+  test("a --session module with no supported export exits 2", async () => {
+    const { code, stderr } = await runCli([
+      "explore", "--file", SESSION_PROJECT, "--session", SESSION_NO_EXPORT,
+    ]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("must export a SessionOptions object as default or sessionOptions");
+  });
+
+  test("a --session module whose exported value has the wrong type exits 2", async () => {
+    const { code, stderr } = await runCli([
+      "explore", "--file", SESSION_PROJECT, "--session", SESSION_BAD_EXPORT,
+    ]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("must export a SessionOptions object as default or sessionOptions");
+  });
+
+  test("a --session module with a malformed option type exits 2", async () => {
+    const { code, stderr } = await runCli([
+      "freeze", "--file", FREEZE_SESSION_PROJECT, "--session", SESSION_BAD_EXTENSIONS,
+    ]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("SessionOptions.extensions must be an object");
   });
 
   test("lint rejects --session instead of silently ignoring it", async () => {
