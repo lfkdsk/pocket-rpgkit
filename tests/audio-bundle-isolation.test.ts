@@ -96,9 +96,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // concrete modules are absent here, while GameView's generic factory seam
 // adds about 4.6 KB to Sunstone and the WAV fixture. Merged, the three
 // measure 525,365, 840,064 and 672,828.
+// Keeping the demo's warp toast inside the viewport and dismissing it
+// before a modal add 173 bytes to Sunstone's opted-in demo: 840,237.
 // Re-measure after every shared-path change.
 const EXPECTED_MEADOW_BYTES = 525_365;
-const EXPECTED_SUNSTONE_QOA_BYTES = 840_064;
+const EXPECTED_SUNSTONE_QOA_BYTES = 840_237;
 const EXPECTED_WAV_FIXTURE_BYTES = 672_828;
 
 const HOST_AUDIO_NEEDLES = [

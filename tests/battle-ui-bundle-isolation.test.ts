@@ -134,7 +134,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Reusing integer chunk windows and the generic opt-in connected-world
 // factory seam bring it to 840,064 bytes. The concrete renderer remains
 // absent, as verified by world-ui-bundle-isolation.test.ts.
-const EXPECTED_BYTES = 840_064;
+// The demo warp-toast fixes add 173 bytes to Sunstone's opted-in demo: 840,237.
+const EXPECTED_BYTES = 840_237;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
