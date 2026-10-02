@@ -12,8 +12,9 @@
 
 import type { GameEvent, MapDef, Sheet, SpriteDef, TileId } from "../../src/engine/types.ts";
 import { uniqueEventId } from "../engine/model.ts";
-import type { StudioApp } from "./app.ts";
+import type { StudioApp, ViewState } from "./app.ts";
 import { ArtRegistry, TILE, parseTileId } from "./art.ts";
+import { emptyState } from "./dom.ts";
 
 export const ZOOM_LEVELS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8] as const;
 
@@ -31,8 +32,8 @@ interface Theme {
 }
 
 type Drag =
-  | { kind: "pan"; startX: number; startY: number; panX: number; panY: number }
-  | { kind: "paint"; erase: boolean; cells: Map<number, true>; last: { x: number; y: number } }
+  | { kind: "pan"; startX: number; startY: number; panX: number; panY: number; lastX: number; lastY: number; lastAt: number; vx: number; vy: number }
+  | { kind: "paint"; erase: boolean; cells: Map<number, true>; origin: { x: number; y: number }; last: { x: number; y: number } }
   | { kind: "rect"; erase: boolean; from: { x: number; y: number }; to: { x: number; y: number } }
   | { kind: "move"; eventId: string; grabDX: number; grabDY: number; at: { x: number; y: number }; moved: boolean };
 
@@ -44,6 +45,7 @@ export interface FrameStats {
 
 export class MapCanvas {
   readonly canvas: HTMLCanvasElement;
+  private readonly emptyGuide: HTMLElement;
   private ctx: CanvasRenderingContext2D;
   private ground: HTMLCanvasElement = document.createElement("canvas");
   private upper: HTMLCanvasElement = document.createElement("canvas");
@@ -52,10 +54,17 @@ export class MapCanvas {
   /** Tile drawn in each cell of the cached bitmaps (undefined = not drawn). */
   private drawnGround: (TileId | null | undefined)[] = [];
   private drawnUpper: (TileId | null | undefined)[] = [];
+  /** Derived while refreshing the layer cache, so animated camera frames do
+   * not rescan every ground cell just to decide whether to show the guide. */
+  private mapBlank = false;
   private drag: Drag | null = null;
   /** A pulse around a cell rectangle that reveal() points at. */
   private flash: { x: number; y: number; w: number; h: number; start: number } | null = null;
-  private panAnimation = 0;
+  private cameraTarget: ViewState | null = null;
+  private cameraAnchor: { x: number; y: number; mapX: number; mapY: number } | null = null;
+  private inertia: { vx: number; vy: number } | null = null;
+  private cameraFrame = 0;
+  private cameraAt = 0;
   private spaceHeld = false;
   private pending = false;
   private theme!: Theme;
@@ -73,13 +82,17 @@ export class MapCanvas {
     this.canvas.tabIndex = 0;
     this.canvas.setAttribute("aria-label", "Map canvas");
     host.appendChild(this.canvas);
+    this.emptyGuide = emptyState("pencil", "Start with the ground", "Choose a tile, then paint with B or drag a rectangle with R.");
+    this.emptyGuide.classList.add("canvas-empty");
+    this.emptyGuide.hidden = true;
+    host.appendChild(this.emptyGuide);
     this.ctx = this.canvas.getContext("2d", { alpha: false })!;
     this.readTheme();
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
     this.bindPointer();
     app.on((reason) => {
-      if (reason === "load" || reason === "map") this.fit();
+      if (reason === "load" || reason === "map") this.fit(true);
       this.requestDraw();
     });
     art.onChange(() => this.requestDraw());
@@ -131,37 +144,143 @@ export class MapCanvas {
   // ---- view -------------------------------------------------------------------
 
   /** Center the map at the largest preset zoom that fits. */
-  fit(): void {
+  fit(immediate = false): void {
     const map = this.app.currentMap();
     if (!map) return;
     const fitZoom = Math.min((this.cssWidth - 48) / (map.width * TILE), (this.cssHeight - 48) / (map.height * TILE));
-    const zoom = [...ZOOM_LEVELS].reverse().find((level) => level <= fitZoom) ?? ZOOM_LEVELS[0];
-    this.setZoom(zoom, this.cssWidth / 2, this.cssHeight / 2, true);
+    const zoom = Math.max(0.0625, [...ZOOM_LEVELS].reverse().find((level) => level <= fitZoom) ?? fitZoom);
+    this.moveCamera({
+      zoom,
+      panX: (map.width * TILE) / 2 - this.cssWidth / 2 / zoom,
+      panY: (map.height * TILE) / 2 - this.cssHeight / 2 / zoom,
+    }, !immediate);
   }
 
-  setZoom(zoom: number, anchorX = this.cssWidth / 2, anchorY = this.cssHeight / 2, center = false): void {
-    const view = this.app.view;
+  setZoom(zoom: number, anchorX = this.cssWidth / 2, anchorY = this.cssHeight / 2, center = false, immediate = false): void {
+    zoom = Math.min(8, Math.max(0.0625, zoom));
+    const view = this.cameraTarget ?? this.app.view;
     const map = this.app.currentMap();
     if (center && map) {
-      view.zoom = zoom;
-      view.panX = (map.width * TILE) / 2 - this.cssWidth / 2 / zoom;
-      view.panY = (map.height * TILE) / 2 - this.cssHeight / 2 / zoom;
+      this.moveCamera({
+        zoom,
+        panX: (map.width * TILE) / 2 - this.cssWidth / 2 / zoom,
+        panY: (map.height * TILE) / 2 - this.cssHeight / 2 / zoom,
+      }, !immediate);
     } else {
       const mx = view.panX + anchorX / view.zoom;
       const my = view.panY + anchorY / view.zoom;
-      view.zoom = zoom;
-      view.panX = mx - anchorX / zoom;
-      view.panY = my - anchorY / zoom;
+      this.moveCamera(
+        { zoom, panX: mx - anchorX / zoom, panY: my - anchorY / zoom },
+        !immediate,
+        { x: anchorX, y: anchorY, mapX: mx, mapY: my },
+      );
     }
-    this.app.emit("view");
   }
 
   zoomStep(direction: 1 | -1, anchorX?: number, anchorY?: number): void {
-    const current = this.app.view.zoom;
+    const current = (this.cameraTarget ?? this.app.view).zoom;
     const next = direction > 0
       ? ZOOM_LEVELS.find((level) => level > current + 1e-6)
       : [...ZOOM_LEVELS].reverse().find((level) => level < current - 1e-6);
     if (next !== undefined) this.setZoom(next, anchorX, anchorY);
+  }
+
+  private moveCamera(target: ViewState, smooth = true, anchor: { x: number; y: number; mapX: number; mapY: number } | null = null): void {
+    this.inertia = null;
+    this.cameraAnchor = anchor;
+    this.clearHover();
+    if (!smooth || this.app.reducedMotion) {
+      this.cameraTarget = null;
+      this.cameraAnchor = null;
+      Object.assign(this.app.view, target);
+      this.app.emit("view");
+      return;
+    }
+    this.cameraTarget = target;
+    this.scheduleCamera();
+  }
+
+  private scheduleCamera(): void {
+    if (this.cameraFrame) return;
+    this.cameraAt = performance.now();
+    const step = (now: number): void => {
+      const dt = Math.max(1, Math.min(40, now - this.cameraAt));
+      this.cameraAt = now;
+      const view = this.app.view;
+      const target = this.cameraTarget;
+      if (target) {
+        const amount = 1 - Math.exp(-dt / 72);
+        view.zoom += (target.zoom - view.zoom) * amount;
+        if (this.cameraAnchor) {
+          view.panX = this.cameraAnchor.mapX - this.cameraAnchor.x / view.zoom;
+          view.panY = this.cameraAnchor.mapY - this.cameraAnchor.y / view.zoom;
+        } else {
+          view.panX += (target.panX - view.panX) * amount;
+          view.panY += (target.panY - view.panY) * amount;
+        }
+        if (Math.abs(target.zoom - view.zoom) < 0.0005 && Math.abs(target.panX - view.panX) < 0.02 && Math.abs(target.panY - view.panY) < 0.02) {
+          Object.assign(view, target);
+          this.cameraTarget = null;
+          this.cameraAnchor = null;
+        }
+      } else if (this.inertia) {
+        view.panX += this.inertia.vx * dt;
+        view.panY += this.inertia.vy * dt;
+        const decay = Math.exp(-dt / 150);
+        this.inertia.vx *= decay;
+        this.inertia.vy *= decay;
+        if (Math.hypot(this.inertia.vx, this.inertia.vy) < 0.008) this.inertia = null;
+      }
+      this.app.emit("view");
+      if (this.cameraTarget || this.inertia) this.cameraFrame = requestAnimationFrame(step);
+      else this.cameraFrame = 0;
+    };
+    this.cameraFrame = requestAnimationFrame(step);
+  }
+
+  private stopCamera(): void {
+    this.cameraTarget = null;
+    this.cameraAnchor = null;
+    this.inertia = null;
+  }
+
+  private clearHover(): void {
+    if (!this.app.hover) return;
+    this.app.hover = null;
+    this.app.emit("hover");
+  }
+
+  private startInertia(vx: number, vy: number): void {
+    if (this.app.reducedMotion || Math.hypot(vx, vy) < 0.02) return;
+    this.cameraTarget = null;
+    this.cameraAnchor = null;
+    this.inertia = { vx, vy };
+    this.scheduleCamera();
+  }
+
+  /** Move a map pixel to the viewport center. Minimap drags use the immediate
+   * path; clicks use the same smooth camera as wheel zoom. */
+  centerAt(mapX: number, mapY: number, immediate = false): void {
+    const zoom = this.app.view.zoom;
+    this.moveCamera({ zoom, panX: mapX - this.cssWidth / (2 * zoom), panY: mapY - this.cssHeight / (2 * zoom) }, !immediate);
+  }
+
+  viewport(): { x: number; y: number; width: number; height: number; mapWidth: number; mapHeight: number } | null {
+    const map = this.app.currentMap();
+    if (!map) return null;
+    const view = this.app.view;
+    return { x: view.panX, y: view.panY, width: this.cssWidth / view.zoom, height: this.cssHeight / view.zoom, mapWidth: map.width * TILE, mapHeight: map.height * TILE };
+  }
+
+  /** Paint the cached ground layer into a small destination canvas. */
+  drawGroundThumbnail(target: HTMLCanvasElement): void {
+    const map = this.app.currentMap();
+    const ctx = target.getContext("2d")!;
+    ctx.clearRect(0, 0, target.width, target.height);
+    if (!map) return;
+    this.ensureLayers(map);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.ground, 0, 0, target.width, target.height);
   }
 
   /** Bring a cell rectangle into view (a short glide when it is off screen)
@@ -176,22 +295,9 @@ export class MapCanvas {
     const inside = rect.x * TILE >= view.panX + margin && rect.y * TILE >= view.panY + margin &&
       (rect.x + w) * TILE <= view.panX + viewW - margin && (rect.y + h) * TILE <= view.panY + viewH - margin;
     if (!inside) {
-      const fromX = view.panX;
-      const fromY = view.panY;
       const toX = (rect.x + w / 2) * TILE - viewW / 2;
       const toY = (rect.y + h / 2) * TILE - viewH / 2;
-      const started = performance.now();
-      const id = ++this.panAnimation;
-      const step = () => {
-        if (id !== this.panAnimation) return;
-        const t = Math.min(1, (performance.now() - started) / 260);
-        const ease = 1 - (1 - t) ** 3;
-        view.panX = fromX + (toX - fromX) * ease;
-        view.panY = fromY + (toY - fromY) * ease;
-        this.app.emit("view");
-        if (t < 1) requestAnimationFrame(step);
-      };
-      step();
+      this.moveCamera({ zoom: view.zoom, panX: toX, panY: toY });
     }
     this.flash = { x: rect.x, y: rect.y, w, h, start: performance.now() };
     this.requestDraw();
@@ -259,10 +365,12 @@ export class MapCanvas {
     const g = this.ground.getContext("2d")!;
     const u = this.upper.getContext("2d")!;
     let redrawn = 0;
+    let blank = (map.upper?.length ?? 0) === 0 && (map.events?.length ?? 0) === 0;
     for (let i = 0; i < map.width * map.height; i++) {
       const x = (i % map.width) * TILE;
       const y = Math.floor(i / map.width) * TILE;
       const ground = map.ground[i] ?? null;
+      if (ground !== null) blank = false;
       if (this.drawnGround[i] !== ground) {
         g.clearRect(x, y, TILE, TILE);
         this.drawTile(g, ground, x, y);
@@ -279,6 +387,7 @@ export class MapCanvas {
     }
     this.cacheKey = key;
     this.cacheRevision = revision;
+    this.mapBlank = blank;
     this.lastRebuildMs = performance.now() - started;
     this.lastRebuildCells = redrawn;
   }
@@ -316,8 +425,14 @@ export class MapCanvas {
     ctx.fillStyle = t.backdrop;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     const map = this.app.currentMap();
-    if (!map) return;
+    if (!map) {
+      this.emptyGuide.hidden = true;
+      return;
+    }
     this.ensureLayers(map);
+    // Hide while a first stroke is only a bitmap preview; the committed edit
+    // changes the session revision and refreshes mapBlank on pointer-up.
+    this.emptyGuide.hidden = !this.mapBlank || this.drag !== null;
     const { zoom, panX, panY } = this.app.view;
     const scale = dpr * zoom;
     ctx.setTransform(scale, 0, 0, scale, -panX * scale, -panY * scale);
@@ -327,18 +442,44 @@ export class MapCanvas {
     ctx.fillStyle = t.void;
     ctx.fillRect(0, 0, W, H);
     const visible = this.app.visible;
-    if (visible.ground) ctx.drawImage(this.ground, 0, 0);
-    if (visible.events) this.drawEvents(ctx, map);
-    if (visible.upper) ctx.drawImage(this.upper, 0, 0);
+    const opacity = this.app.opacity;
+    if (visible.ground && opacity.ground > 0) {
+      ctx.save();
+      ctx.globalAlpha = opacity.ground;
+      ctx.drawImage(this.ground, 0, 0);
+      ctx.restore();
+    }
+    if (visible.events && opacity.events > 0) {
+      ctx.save();
+      ctx.globalAlpha = opacity.events;
+      this.drawEvents(ctx, map);
+      ctx.restore();
+    }
+    if (visible.upper && opacity.upper > 0) {
+      ctx.save();
+      ctx.globalAlpha = opacity.upper;
+      ctx.drawImage(this.upper, 0, 0);
+      ctx.restore();
+    }
 
     // Visible cell range for per-cell overlays.
     const x0 = Math.max(0, Math.floor(panX / TILE));
     const y0 = Math.max(0, Math.floor(panY / TILE));
     const x1 = Math.min(map.width, Math.ceil((panX + this.cssWidth / zoom) / TILE));
     const y1 = Math.min(map.height, Math.ceil((panY + this.cssHeight / zoom) / TILE));
-    if (visible.passage) this.drawPassage(ctx, map, x0, y0, x1, y1);
+    if (visible.passage && opacity.passage > 0) {
+      ctx.save();
+      ctx.globalAlpha = opacity.passage;
+      this.drawPassage(ctx, map, x0, y0, x1, y1);
+      ctx.restore();
+    }
     if (visible.grid && zoom * TILE >= 6) this.drawGrid(ctx, map, x0, y0, x1, y1, scale);
-    if (visible.events) this.drawEventFrames(ctx, map, scale);
+    if (visible.events && opacity.events > 0) {
+      ctx.save();
+      ctx.globalAlpha = opacity.events;
+      this.drawEventFrames(ctx, map, scale);
+      ctx.restore();
+    }
     this.drawSelection(ctx, map, scale);
     this.drawFlash(ctx, scale);
     this.drawDrag(ctx, scale);
@@ -364,12 +505,13 @@ export class MapCanvas {
     const sprites = this.app.session?.sprites() ?? {};
     const drag = this.drag;
     const moving = drag?.kind === "move" && drag.moved ? drag.eventId : null;
+    const layerAlpha = ctx.globalAlpha;
     for (const event of map.events ?? []) {
       // While an event is dragged its old place shows a faint ghost; the
       // event itself is drawn at the drop position by drawDrag().
-      if (event.id === moving) ctx.globalAlpha = 0.3;
+      if (event.id === moving) ctx.globalAlpha = layerAlpha * 0.3;
       this.drawEventBody(ctx, event, event.x, event.y, sprites);
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = layerAlpha;
     }
   }
 
@@ -500,6 +642,7 @@ export class MapCanvas {
 
   private drawSelection(ctx: CanvasRenderingContext2D, map: MapDef, scale: number): void {
     const selection = this.app.selection;
+    if (selection.kind === "event" && !this.app.visible.events) return;
     let rect: { x: number; y: number; w: number; h: number } | null = null;
     if (selection.kind === "cell") rect = { x: selection.x, y: selection.y, w: selection.w ?? 1, h: selection.h ?? 1 };
     if (selection.kind === "event") {
@@ -645,10 +788,21 @@ export class MapCanvas {
     const tool = this.app.tool;
     const tileLayer = this.app.layer === "ground" || this.app.layer === "upper";
     if (!this.drag && tileLayer && (tool === "pencil" || tool === "rect") && this.app.brush) {
-      // Show the brush where it would land.
+      // Pencil stamps the complete atlas selection. Rectangle uses the
+      // selected pattern to fill its bounds, so an idle click previews the
+      // single cell that a one-cell rectangle will actually commit.
+      const selection = this.app.tileSelection;
+      const width = tool === "pencil" ? selection?.width ?? 1 : 1;
+      const height = tool === "pencil" ? selection?.height ?? 1 : 1;
       ctx.globalAlpha = 0.6;
-      this.drawTile(ctx, this.app.brush, hover.x * TILE, hover.y * TILE);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        if (hover.x + x >= (map?.width ?? 0) || hover.y + y >= (map?.height ?? 0)) continue;
+        this.drawTile(ctx, this.app.tileAtBrushOffset(x, y), (hover.x + x) * TILE, (hover.y + y) * TILE);
+      }
       ctx.globalAlpha = 1;
+      ctx.lineWidth = 1 / scale;
+      ctx.strokeStyle = this.theme.hover;
+      ctx.strokeRect(hover.x * TILE, hover.y * TILE, Math.min(width, (map?.width ?? 0) - hover.x) * TILE, Math.min(height, (map?.height ?? 0) - hover.y) * TILE);
     }
     ctx.lineWidth = 1 / scale;
     ctx.strokeStyle = this.theme.hover;
@@ -668,16 +822,17 @@ export class MapCanvas {
       if (event.ctrlKey || event.metaKey || !event.shiftKey) {
         // Wheel and trackpad pinch (ctrlKey) zoom around the pointer;
         // continuous for pinch, preset steps for a mouse wheel.
-        if (event.ctrlKey && Math.abs(event.deltaY) < 40) {
-          const zoom = Math.min(8, Math.max(0.25, this.app.view.zoom * Math.exp(-event.deltaY * 0.01)));
+        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.cssHeight : 1;
+        if (event.ctrlKey && Math.abs(event.deltaY * unit) < 80) {
+          const zoom = Math.min(8, Math.max(0.0625, (this.cameraTarget ?? this.app.view).zoom * Math.exp(-event.deltaY * unit * 0.01)));
           this.setZoom(zoom, ax, ay);
         } else {
           this.zoomStep(event.deltaY < 0 ? 1 : -1, ax, ay);
         }
       } else {
-        this.app.view.panX += event.deltaX / this.app.view.zoom;
-        this.app.view.panY += event.deltaY / this.app.view.zoom;
-        this.app.emit("view");
+        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.cssHeight : 1;
+        const base = this.cameraTarget ?? this.app.view;
+        this.moveCamera({ zoom: base.zoom, panX: base.panX + event.deltaX * unit / base.zoom, panY: base.panY + event.deltaY * unit / base.zoom });
       }
     }, { passive: false });
     canvas.addEventListener("pointerdown", (event) => this.pointerDown(event));
@@ -709,10 +864,15 @@ export class MapCanvas {
     this.canvas.focus();
     const map = this.app.currentMap();
     if (!map) return;
+    this.stopCamera();
     if (event.button === 1 || (event.button === 0 && this.spaceHeld)) {
       event.preventDefault();
+      this.clearHover();
       this.canvas.setPointerCapture(event.pointerId);
-      this.drag = { kind: "pan", startX: event.clientX, startY: event.clientY, panX: this.app.view.panX, panY: this.app.view.panY };
+      this.drag = {
+        kind: "pan", startX: event.clientX, startY: event.clientY, panX: this.app.view.panX, panY: this.app.view.panY,
+        lastX: event.clientX, lastY: event.clientY, lastAt: performance.now(), vx: 0, vy: 0,
+      };
       this.canvas.classList.add("panning");
       return;
     }
@@ -725,7 +885,7 @@ export class MapCanvas {
 
     if (tool === "select" || tool === "event") {
       if (event.button === 2) return;
-      const hit = this.eventAt(map, cell.x, cell.y);
+      const hit = this.app.visible.events ? this.eventAt(map, cell.x, cell.y) : undefined;
       if (hit) {
         const current = this.app.selection;
         const page = current.kind === "event" && current.eventId === hit.id ? current.page : 0;
@@ -755,7 +915,7 @@ export class MapCanvas {
       return;
     }
     // pencil / eraser
-    this.drag = { kind: "paint", erase, cells: new Map(), last: { x: cell.x, y: cell.y } };
+    this.drag = { kind: "paint", erase, cells: new Map(), origin: { x: cell.x, y: cell.y }, last: { x: cell.x, y: cell.y } };
     this.addStrokeCell(map, cell.x, cell.y);
     this.requestDraw();
   }
@@ -763,6 +923,15 @@ export class MapCanvas {
   private pointerMove(event: PointerEvent): void {
     const drag = this.drag;
     if (drag?.kind === "pan") {
+      const now = performance.now();
+      const dt = Math.max(1, now - drag.lastAt);
+      const sampleX = -(event.clientX - drag.lastX) / this.app.view.zoom / dt;
+      const sampleY = -(event.clientY - drag.lastY) / this.app.view.zoom / dt;
+      drag.vx = drag.vx * 0.65 + sampleX * 0.35;
+      drag.vy = drag.vy * 0.65 + sampleY * 0.35;
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      drag.lastAt = now;
       this.app.view.panX = drag.panX - (event.clientX - drag.startX) / this.app.view.zoom;
       this.app.view.panY = drag.panY - (event.clientY - drag.startY) / this.app.view.zoom;
       this.app.emit("view");
@@ -819,8 +988,12 @@ export class MapCanvas {
     this.canvas.classList.toggle("panning", this.spaceHeld);
     if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
     const map = this.app.currentMap();
-    if (!drag || !map || drag.kind === "pan") return;
-    if (drag.kind === "paint") this.commitStroke(map, drag.cells, drag.erase);
+    if (!drag || !map) return;
+    if (drag.kind === "pan") {
+      this.startInertia(drag.vx, drag.vy);
+      return;
+    }
+    if (drag.kind === "paint") this.commitStroke(map, drag.cells, drag.erase, drag.origin);
     else if (drag.kind === "rect") this.commitRect(map, drag);
     else if (drag.kind === "move" && drag.moved) {
       this.app.run("update-event", { map: map.id, event: drag.eventId, changes: { x: drag.at.x, y: drag.at.y } }, `Move event ${drag.eventId}`);
@@ -836,15 +1009,24 @@ export class MapCanvas {
   private addStrokeCell(map: MapDef, x: number, y: number): void {
     const drag = this.drag;
     if (drag?.kind !== "paint") return;
-    const index = y * map.width + x;
-    if (drag.cells.has(index)) return;
-    drag.cells.set(index, true);
-    if (this.app.layer === "ground" || this.app.layer === "upper") {
-      this.previewCell(map, x, y, this.strokeValue(drag.erase) as TileId | null);
+    const patterned = !drag.erase && (this.app.layer === "ground" || this.app.layer === "upper") ? this.app.tileSelection : null;
+    const width = patterned?.width ?? 1;
+    const height = patterned?.height ?? 1;
+    for (let oy = 0; oy < height; oy++) for (let ox = 0; ox < width; ox++) {
+      const px = x + ox;
+      const py = y + oy;
+      if (px < 0 || py < 0 || px >= map.width || py >= map.height) continue;
+      const index = py * map.width + px;
+      if (drag.cells.has(index)) continue;
+      drag.cells.set(index, true);
+      if (this.app.layer === "ground" || this.app.layer === "upper") {
+        const tile = drag.erase ? null : this.app.tileAtBrushOffset(px - drag.origin.x, py - drag.origin.y);
+        this.previewCell(map, px, py, tile);
+      }
     }
   }
 
-  private commitStroke(map: MapDef, cells: Map<number, true>, erase: boolean): void {
+  private commitStroke(map: MapDef, cells: Map<number, true>, erase: boolean, origin?: { x: number; y: number }): void {
     const list = [...cells.keys()].map((index) => [index % map.width, Math.floor(index / map.width)]);
     if (list.length === 0) return;
     const noun = list.length === 1 ? "cell" : "cells";
@@ -854,7 +1036,11 @@ export class MapCanvas {
     } else {
       const value = this.strokeValue(erase);
       const verb = value === null ? "Erase" : "Paint";
-      const response = this.app.run("paint-cells", { map: map.id, layer: this.app.layer, cells: list, value }, `${verb} ${list.length} ${this.app.layer} ${noun}`);
+      const patterned = !erase && origin && (this.app.layer === "ground" || this.app.layer === "upper") && this.app.tileSelection;
+      const args = patterned
+        ? { map: map.id, layer: this.app.layer, cells: list, values: list.map(([x, y]) => this.app.tileAtBrushOffset(x - origin.x, y - origin.y)) }
+        : { map: map.id, layer: this.app.layer, cells: list, value };
+      const response = this.app.run("paint-cells", args, `${verb} ${list.length} ${this.app.layer} ${noun}`);
       // A refused stroke leaves the document unchanged; force a cache pass
       // so the preview cells are compared with it and repainted.
       if (response && !response.ok) this.cacheRevision = "";
@@ -868,6 +1054,16 @@ export class MapCanvas {
     const height = Math.abs(drag.from.y - drag.to.y) + 1;
     if (this.app.layer === "ground" || this.app.layer === "upper") {
       const tile = drag.erase ? null : this.app.brush;
+      if (!drag.erase && this.app.tileSelection) {
+        const cells: [number, number][] = [];
+        const values: TileId[] = [];
+        for (let py = y; py < y + height; py++) for (let px = x; px < x + width; px++) {
+          cells.push([px, py]);
+          values.push(this.app.tileAtBrushOffset(px - x, py - y));
+        }
+        this.app.run("paint-cells", { map: map.id, layer: this.app.layer, cells, values }, `Paint ${width}×${height} patterned rectangle`);
+        return;
+      }
       this.app.run("paint-rect", { map: map.id, layer: this.app.layer, x, y, width, height, tile }, `${tile === null ? "Erase" : "Paint"} ${width}×${height} rectangle`);
       return;
     }

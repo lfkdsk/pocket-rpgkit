@@ -18,7 +18,9 @@ import {
   type StoredProject,
   type StudioExample,
   type StudioHost,
+  type StudioPreferences,
   type ThemeChoice,
+  normalizeStudioPreferences,
 } from "./host.ts";
 import { MAX_PACK_BYTES, openFileProblem, PNG_HEADER_BYTES, pngProblem, utf8Bytes } from "../api/limits.ts";
 import { checkProblems } from "./problems.ts";
@@ -299,7 +301,9 @@ export class MemoryHost implements StudioHost {
   confirmAnswer = true;
   questions: string[] = [];
   themeChoice: ThemeChoice = "system";
+  studioPreferences: StudioPreferences = normalizeStudioPreferences(null);
   dark = false;
+  reducedMotion = false;
   storageFails = false;
   /** Answers agent runs when set (and makes the "agent" feature available);
    * unset, runs answer NEEDS_DESKTOP like the browser host. */
@@ -308,6 +312,7 @@ export class MemoryHost implements StudioHost {
   agentRequests: AgentRequest[] = [];
   private listeners = new Set<OpenListener>();
   private themeListeners = new Set<() => void>();
+  private motionListeners = new Set<() => void>();
 
   capabilities(): HostCapabilities {
     return {
@@ -435,5 +440,28 @@ export class MemoryHost implements StudioHost {
   onSystemThemeChange(listener: () => void): () => void {
     this.themeListeners.add(listener);
     return () => this.themeListeners.delete(listener);
+  }
+
+  preferences(): StudioPreferences {
+    return normalizeStudioPreferences(this.studioPreferences);
+  }
+
+  setPreferences(preferences: StudioPreferences): void {
+    this.studioPreferences = normalizeStudioPreferences(preferences);
+  }
+
+  systemPrefersReducedMotion(): boolean {
+    return this.reducedMotion;
+  }
+
+  /** Flip the reduced-motion media preference as an OS would. */
+  setSystemReducedMotion(reduced: boolean): void {
+    this.reducedMotion = reduced;
+    for (const listener of this.motionListeners) listener();
+  }
+
+  onSystemMotionChange(listener: () => void): () => void {
+    this.motionListeners.add(listener);
+    return () => this.motionListeners.delete(listener);
   }
 }

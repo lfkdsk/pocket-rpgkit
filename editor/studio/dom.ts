@@ -88,6 +88,9 @@ const ICONS: Record<string, string> = {
   close: "M5 5l10 10M15 5 5 15",
   agent: "M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6zM15 14l.6 1.4L17 16l-1.4.6L15 18l-.6-1.4L13 16l1.4-.6z",
   help: "M10 2a8 8 0 1 0 .01 0M7.5 7.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.7M10 14.5v.5",
+  search: "M9 3a6 6 0 1 0 0.01 0M13.5 13.5 18 18",
+  settings: "M10 3v2M10 15v2M3 10h2M15 10h2M5 5l1.5 1.5M13.5 13.5 15 15M15 5l-1.5 1.5M6.5 13.5 5 15M10 7a3 3 0 1 0 .01 0",
+  star: "M10 2.5l2.2 4.5 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L2.8 7.7l5-.7z",
 };
 
 export function icon(name: string, title?: string): SVGSVGElement {

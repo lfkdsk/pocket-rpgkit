@@ -3,9 +3,13 @@
 //
 //   bun run web && bun tools/studio-verify.ts
 //   bun tools/studio-verify.ts --site dist/web --out dist/studio-verify --shots docs/screenshots/studio
+//   bun tools/studio-verify.ts --tuxemon-project /path/to/pocket-tuxemon/dist/project.json
 //
 // Checks (any console error, exception or failed request also fails):
 //   load      Studio opens Sunstone and draws its map
+//   polish    command palette search/activation; layer visibility and opacity;
+//             event hover cards; tile search, favorites and 2×2 atlas brushes;
+//             anchored smooth zoom and the reduced-motion immediate path
 //   paint     palette pick + brush drag paints cells through paint-cells;
 //             Ctrl+Z / Ctrl+Shift+Z undo and redo it
 //   event     the event tool creates an event; the inspector adds a text
@@ -55,7 +59,8 @@
 //             shown; a document over the protocol's message limit is refused
 //             with its reason and never sent
 //   shots     dark, light, map editing, command tree, problems, narrow,
-//             and the play-test panel (light, dark, running, edited dialogue)
+//             and the play-test panel (light, dark, running, edited dialogue);
+//             the main light/dark shots pass layout, style and pixel checks
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -82,10 +87,15 @@ function option(name: string, fallback: string): string {
 const SITE = resolve(option("site", join(ROOT, "dist", "web")));
 const OUT = resolve(option("out", join(ROOT, "dist", "studio-verify")));
 const SHOTS = resolve(option("shots", join(ROOT, "docs", "screenshots", "studio")));
+const TUXEMON_PROJECT = option("tuxemon-project", "");
 const CHROME = option("chrome", Bun.which("google-chrome") ?? Bun.which("chromium") ?? "/usr/bin/google-chrome");
 
 if (!existsSync(join(SITE, "studio", "index.html"))) {
   console.error(`studio-verify: no Studio at ${SITE}/studio; run \`bun run web\` (or bun tools/studio-build.ts) first`);
+  process.exit(2);
+}
+if (TUXEMON_PROJECT && !existsSync(TUXEMON_PROJECT)) {
+  console.error(`studio-verify: no Tuxemon project at ${TUXEMON_PROJECT}`);
   process.exit(2);
 }
 
@@ -323,6 +333,134 @@ async function main(): Promise<void> {
       results[`shot:${name}`] = `rejected; see ${draft.slice(ROOT.length + 1)}`;
     }
   };
+  /** A Studio chrome shot is accepted only when the important overlays are
+   *  laid out inside the canvas, the computed palette matches the requested
+   *  theme, and the captured map/minimap contain real rendered pixels. */
+  const studioShot = async (name: string, wantTheme: "light" | "dark") => {
+    await evaluate(`(() => { __studio.app.notices = []; __studio.app.emit("notice"); })()`);
+    await sleep(200);
+    const layout = await evaluate<{
+      vw: number;
+      vh: number;
+      dpr: number;
+      theme: string;
+      colors: { panel: string; canvas: string; toolbar: string; layers: string; minimap: string };
+      boxes: Record<string, { x: number; y: number; w: number; h: number } | null>;
+      layers: number;
+      commandPalette: boolean;
+    }>(`(() => {
+      const box = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el || el.hidden || getComputedStyle(el).display === "none") return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left, y: r.top, w: r.width, h: r.height };
+      };
+      const root = getComputedStyle(document.documentElement);
+      return {
+        vw: innerWidth,
+        vh: innerHeight,
+        dpr: devicePixelRatio,
+        theme: document.documentElement.dataset.theme ?? "",
+        colors: {
+          panel: root.getPropertyValue("--panel").trim(),
+          canvas: root.getPropertyValue("--canvas-bg").trim(),
+          toolbar: getComputedStyle(document.getElementById("toolbar")).backgroundColor,
+          layers: getComputedStyle(document.querySelector('[data-testid="layers-panel"]')).backgroundColor,
+          minimap: getComputedStyle(document.querySelector('[data-testid="minimap"]')).backgroundColor,
+        },
+        commandPalette: !!document.querySelector('[data-testid="command-palette"]'),
+        boxes: {
+          toolbar: box("#toolbar"),
+          canvasHost: box("#canvas-host"),
+          canvas: box(".map-canvas"),
+          palette: box("#palette"),
+          inspector: box("#inspector"),
+          layers: box('[data-testid="layers-panel"]'),
+          minimap: box('[data-testid="minimap"]'),
+          minimapViewport: box('[data-testid="minimap-viewport"]'),
+        },
+        layers: document.querySelectorAll('[data-testid="layers-panel"] .layer-row').length,
+      };
+    })()`);
+    const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const bytes = Buffer.from(data.data, "base64");
+    const draft = join(OUT, `${name}.png`);
+    writeFileSync(draft, bytes);
+    const img = decodePng(new Uint8Array(bytes));
+    type RGB = [number, number, number];
+    const rgb = (css: string): RGB => {
+      const value = css.trim();
+      if (/^#[0-9a-f]{3}$/i.test(value)) return [...value.slice(1)].map((part) => parseInt(part + part, 16)) as RGB;
+      if (/^#[0-9a-f]{6}$/i.test(value)) return [1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16)) as RGB;
+      return (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number) as RGB;
+    };
+    const at = (x: number, y: number): RGB => {
+      const px = Math.max(0, Math.min(img.width - 1, Math.floor(x)));
+      const py = Math.max(0, Math.min(img.height - 1, Math.floor(y)));
+      const i = (py * img.width + px) * 4;
+      return [img.rgba[i]!, img.rgba[i + 1]!, img.rgba[i + 2]!];
+    };
+    const near = (a: RGB, b: RGB, tolerance = 3) => a.length === 3 && b.length === 3 && a.every((value, i) => Math.abs(value - b[i]!) <= tolerance);
+    const luma = (color: RGB) => 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2];
+    const share = (rect: { x: number; y: number; w: number; h: number }, test: (color: RGB) => boolean): number => {
+      let hits = 0;
+      let count = 0;
+      for (let y = Math.max(0, Math.ceil(rect.y)); y < Math.min(img.height, Math.floor(rect.y + rect.h)); y++) {
+        for (let x = Math.max(0, Math.ceil(rect.x)); x < Math.min(img.width, Math.floor(rect.x + rect.w)); x++) {
+          count++;
+          if (test(at(x, y))) hits++;
+        }
+      }
+      return count ? hits / count : 0;
+    };
+    const colorCount = (rect: { x: number; y: number; w: number; h: number }, stride: number): number => {
+      const colors = new Set<number>();
+      for (let y = Math.max(0, Math.ceil(rect.y)); y < Math.min(img.height, Math.floor(rect.y + rect.h)); y += stride) {
+        for (let x = Math.max(0, Math.ceil(rect.x)); x < Math.min(img.width, Math.floor(rect.x + rect.w)); x += stride) {
+          const p = at(x, y);
+          colors.add(((p[0] >> 4) << 8) | ((p[1] >> 4) << 4) | (p[2] >> 4));
+        }
+      }
+      return colors.size;
+    };
+    const inside = (inner: { x: number; y: number; w: number; h: number } | null, outer: { x: number; y: number; w: number; h: number } | null) =>
+      !!inner && !!outer && inner.x >= outer.x - 1 && inner.y >= outer.y - 1 && inner.x + inner.w <= outer.x + outer.w + 1 && inner.y + inner.h <= outer.y + outer.h + 1;
+    const inWindow = (box: { x: number; y: number; w: number; h: number } | null, minWidth: number, minHeight: number) =>
+      !!box && box.w >= minWidth && box.h >= minHeight && box.x >= 0 && box.y >= 0 && box.x + box.w <= layout.vw + 1 && box.y + box.h <= layout.vh + 1;
+    const { toolbar, canvasHost, canvas, palette, inspector, layers, minimap, minimapViewport } = layout.boxes;
+    const panel = rgb(layout.colors.panel);
+    const canvasBackground = rgb(layout.colors.canvas);
+    const toolbarBackground = rgb(layout.colors.toolbar);
+    const toolbarPixels = toolbar
+      ? share({ x: toolbar.x + toolbar.w * 0.42, y: toolbar.y + 1, w: toolbar.w * 0.16, h: 2 }, (p) => near(p, toolbarBackground))
+      : 0;
+    const canvasColors = canvas ? colorCount({ x: canvas.x + 8, y: canvas.y + 8, w: canvas.w - 16, h: canvas.h - 16 }, 7) : 0;
+    const minimapColors = minimap ? colorCount({ x: minimap.x + 2, y: minimap.y + 2, w: minimap.w - 4, h: minimap.h - 4 }, 3) : 0;
+    const light = luma(panel) > 220 && luma(canvasBackground) > 150;
+    const dark = luma(panel) < 70 && luma(canvasBackground) < 70;
+    const checks: [string, boolean, unknown][] = [
+      ["the capture is the 1440×900 CSS-pixel window", layout.vw === 1440 && layout.vh === 900 && layout.dpr === 1 && img.width === 1440 && img.height === 900, { image: `${img.width}×${img.height}`, viewport: `${layout.vw}×${layout.vh}`, dpr: layout.dpr }],
+      [`computed colors use the ${wantTheme} theme`, layout.theme === wantTheme && (wantTheme === "light" ? light : dark) && near(panel, toolbarBackground) && layout.colors.layers !== "rgba(0, 0, 0, 0)" && layout.colors.minimap !== "rgba(0, 0, 0, 0)", { theme: layout.theme, ...layout.colors }],
+      [layout.commandPalette ? "the modal scrim visibly dims the toolbar" : "the toolbar background is present in captured pixels",
+        layout.commandPalette ? toolbarPixels < 0.3 : toolbarPixels > 0.7,
+        toolbarPixels.toFixed(2)],
+      ["the map canvas and side panels have usable boxes inside the window", inWindow(canvasHost, 480, 400) && inWindow(canvas, 480, 400) && inside(canvas, canvasHost) && inWindow(palette, 180, 180) && inWindow(inspector, 220, 180), layout.boxes],
+      ["the four-layer panel and minimap have usable boxes inside the canvas", layout.layers === 4 && !!layers && layers.w >= 200 && layers.h >= 100 && !!minimap && minimap.w >= 44 && minimap.h >= 32 && !!minimapViewport && minimapViewport.w >= 5 && minimapViewport.h >= 5 && inside(layers, canvasHost) && inside(minimap, canvasHost) && inside(minimapViewport, minimap), { layers: layout.layers, panel: layers, minimap, viewport: minimapViewport }],
+      ["the map and minimap contain rendered art pixels", canvasColors >= 12 && minimapColors >= 6, { canvasColors, minimapColors }],
+    ];
+    let all = true;
+    for (const [label, pass, detail] of checks) {
+      expect(`shot ${name}: ${label}`, pass, JSON.stringify(detail));
+      all &&= pass;
+    }
+    if (all) {
+      const path = join(SHOTS, `${name}.png`);
+      writeFileSync(path, bytes);
+      results[`shot:${name}`] = path.slice(ROOT.length + 1);
+    } else {
+      results[`shot:${name}`] = `rejected; see ${draft.slice(ROOT.length + 1)}`;
+    }
+  };
   const mouse = async (type: string, x: number, y: number, button: "left" | "right" | "middle" | "none" = "left", extra: Record<string, unknown> = {}) => {
     await cdp.send("Input.dispatchMouseEvent", { type, x, y, button, buttons: type === "mouseReleased" || button === "none" ? 0 : button === "left" ? 1 : button === "right" ? 2 : 4, clickCount: 1, ...extra });
   };
@@ -399,6 +537,300 @@ async function main(): Promise<void> {
     expect("load: the canvas shows tile art", nonVoid > 30, `${nonVoid} distinct sampled colors`);
     // Headless Chrome reports a light system theme: pin it for the shots.
     await evaluate(`localStorage.setItem("pocket-rpgkit:studio:theme", "light")`);
+
+    // ---- Studio interaction polish ----
+    phase = "polish";
+
+    // Ctrl/Cmd+K exposes a real dialog + combobox + listbox. Search for one
+    // unambiguous command, then execute it through the keyboard.
+    await key("k", "KeyK", CTRL);
+    const commandShell = await evaluate<{
+      dialog: boolean;
+      dialogLabel: string | null;
+      inputRole: string | null;
+      controls: string | null;
+      listRole: string | null;
+      focused: boolean;
+    }>(`(() => {
+      const dialog = document.querySelector('[data-testid="command-palette"]');
+      const input = document.querySelector(".command-palette-input");
+      const list = document.getElementById("studio-command-results");
+      return {
+        dialog: dialog?.getAttribute("role") === "dialog",
+        dialogLabel: dialog?.getAttribute("aria-label") ?? null,
+        inputRole: input?.getAttribute("role") ?? null,
+        controls: input?.getAttribute("aria-controls") ?? null,
+        listRole: list?.getAttribute("role") ?? null,
+        focused: document.activeElement === input,
+      };
+    })()`);
+    expect("polish: Ctrl/Cmd+K opens the labelled command dialog and focuses its combobox",
+      commandShell.dialog && commandShell.dialogLabel === "Command palette" && commandShell.inputRole === "combobox" && commandShell.controls === "studio-command-results" && commandShell.listRole === "listbox" && commandShell.focused,
+      JSON.stringify(commandShell));
+    await evaluate(`(() => {
+      const input = document.querySelector(".command-palette-input");
+      input.value = "edit upper layer";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await sleep(80);
+    const commandMatches = await evaluate<{ ids: string[]; selected: string | null; active: string | null }>(`(() => {
+      const rows = [...document.querySelectorAll('.command-palette-row[role="option"][data-command-id]')];
+      return {
+        ids: rows.map((row) => row.dataset.commandId),
+        selected: rows.find((row) => row.getAttribute("aria-selected") === "true")?.dataset.commandId ?? null,
+        active: document.querySelector(".command-palette-input")?.getAttribute("aria-activedescendant") ?? null,
+      };
+    })()`);
+    expect("polish: command search filters to the matching layer action",
+      commandMatches.ids.length === 1 && commandMatches.ids[0] === "layer:upper" && commandMatches.selected === "layer:upper" && commandMatches.active === "studio-command-0",
+      JSON.stringify(commandMatches));
+    await studioShot("studio-command-palette-light", "light");
+    await key("Enter", "Enter");
+    const commandRan = await evaluate<{ closed: boolean; layer: string; recent: string[] }>(`({
+      closed: !document.querySelector('[data-testid="command-palette"]'),
+      layer: __studio.app.layer,
+      recent: __studio.app.recentCommands,
+    })`);
+    expect("polish: Enter runs the active command and remembers it", commandRan.closed && commandRan.layer === "upper" && commandRan.recent[0] === "layer:upper", JSON.stringify(commandRan));
+    await evaluate(`__studio.app.setLayer("ground")`);
+
+    // The layer controls must mirror view state, and both visibility and
+    // opacity must change actual canvas pixels, not just their own controls.
+    const rememberCanvasPixels = `(() => {
+      const canvas = document.querySelector(".map-canvas");
+      globalThis.__studioLayerPixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      return globalThis.__studioLayerPixels.length;
+    })()`;
+    const changedCanvasPixels = `(() => {
+      const canvas = document.querySelector(".map-canvas");
+      const after = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      const before = globalThis.__studioLayerPixels;
+      let changed = 0;
+      for (let i = 0; i < after.length; i += 4) {
+        if (after[i] !== before[i] || after[i + 1] !== before[i + 1] || after[i + 2] !== before[i + 2] || after[i + 3] !== before[i + 3]) changed++;
+      }
+      return changed;
+    })()`;
+    await evaluate(rememberCanvasPixels);
+    await clickSelector('[data-testid="layer-upper-visibility"]');
+    const hiddenUpper = await evaluate<{ pressed: string | null; label: string | null; visible: boolean; changed: number }>(`({
+      pressed: document.querySelector('[data-testid="layer-upper-visibility"]')?.getAttribute("aria-pressed") ?? null,
+      label: document.querySelector('[data-testid="layer-upper-visibility"]')?.getAttribute("aria-label") ?? null,
+      visible: __studio.app.visible.upper,
+      changed: ${changedCanvasPixels},
+    })`);
+    expect("polish: hiding the upper layer updates ARIA state and rendered pixels",
+      hiddenUpper.pressed === "false" && hiddenUpper.label === "Show Upper layer" && !hiddenUpper.visible && hiddenUpper.changed > 0,
+      JSON.stringify(hiddenUpper));
+    await clickSelector('[data-testid="layer-upper-visibility"]');
+    await sleep(80);
+    await evaluate(rememberCanvasPixels);
+    const opacity = await evaluate<{ value: string; valueText: string | null; state: number; changed: number }>(`(() => {
+      const input = document.querySelector('[data-testid="layer-upper-opacity"]');
+      input.value = "35";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+        value: input.value,
+        valueText: input.getAttribute("aria-valuetext"),
+        state: __studio.app.opacity.upper,
+        changed: ${changedCanvasPixels},
+      }))));
+    })()`);
+    expect("polish: upper-layer opacity exposes percent state and changes rendered pixels",
+      opacity.value === "35" && opacity.valueText === "35%" && Math.abs(opacity.state - 0.35) < 1e-9 && opacity.changed > 0,
+      JSON.stringify(opacity));
+    await studioShot("studio-layers-light", "light");
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-testid="layer-upper-opacity"]');
+      input.value = "100";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await sleep(80);
+
+    // Hovering an event long enough shows its semantic summary. The card is
+    // clamped to the map host and must disappear when the pointer leaves.
+    await key("v", "KeyV", 0, "v");
+    const hoverPoint = await cell(9, 5);
+    await mouse("mouseMoved", hoverPoint.x, hoverPoint.y, "none");
+    await waitFor("elder hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "elder"; })()`);
+    const hoverCard = await evaluate<{
+      event: string | null;
+      text: string;
+      commands: number;
+      inside: boolean;
+      box: number[];
+      host: number[];
+    }>(`(() => {
+      const card = document.querySelector(".event-hover-card");
+      const host = document.getElementById("canvas-host");
+      const r = card.getBoundingClientRect();
+      const h = host.getBoundingClientRect();
+      return {
+        event: card.dataset.event ?? null,
+        text: card.textContent ?? "",
+        commands: card.querySelectorAll("li").length,
+        inside: r.left >= h.left + 7 && r.top >= h.top + 7 && r.right <= h.right - 7 && r.bottom <= h.bottom - 7,
+        box: [r.left, r.top, r.width, r.height],
+        host: [h.left, h.top, h.width, h.height],
+      };
+    })()`);
+    expect("polish: the delayed event hover card contains identity, trigger, position and command summaries",
+      hoverCard.event === "elder" && /Village Elder/.test(hoverCard.text) && /elder/.test(hoverCard.text) && /action/.test(hoverCard.text) && /\(9, 5\)/.test(hoverCard.text) && hoverCard.commands === 3,
+      JSON.stringify(hoverCard));
+    expect("polish: the event hover card stays inside the canvas host", hoverCard.inside, JSON.stringify({ box: hoverCard.box, host: hoverCard.host }));
+    await studioShot("studio-event-hover-light", "light");
+    await mouse("mouseMoved", 2, 2, "none");
+    await sleep(80);
+    const hoverHidden = await evaluate<boolean>(`(() => { const card = document.querySelector(".event-hover-card"); return card.hidden && card.textContent === ""; })()`);
+    expect("polish: leaving the canvas hides and clears the event hover card", hoverHidden, String(hoverHidden));
+
+    // Smooth zoom keeps the map point below the pointer fixed. Reduced motion
+    // takes the same event path but applies the target before the event returns.
+    const smoothZoom = await evaluate<{
+      before: { zoom: number; panX: number; panY: number };
+      immediate: { zoom: number; panX: number; panY: number };
+      anchor: { x: number; y: number; mapX: number; mapY: number };
+    }>(`(() => {
+      __studio.app.setMotion("full");
+      const canvas = document.querySelector(".map-canvas");
+      const rect = canvas.getBoundingClientRect();
+      // MouseEvent client coordinates are exposed as integer CSS pixels.
+      // Compute the expected anchor from those effective coordinates rather
+      // than from the fractional point used to construct the event.
+      const clientX = Math.round(rect.left + rect.width * 0.31);
+      const clientY = Math.round(rect.top + rect.height * 0.43);
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      __studio.canvas.setZoom(1, x, y, false, true);
+      const before = { ...__studio.app.view };
+      const anchor = { x, y, mapX: before.panX + x / before.zoom, mapY: before.panY + y / before.zoom };
+      canvas.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX, clientY, deltaY: -100 }));
+      return { before, immediate: { ...__studio.app.view }, anchor };
+    })()`);
+    expect("polish: full-motion wheel zoom starts asynchronously",
+      smoothZoom.before.zoom === 1 && smoothZoom.immediate.zoom === smoothZoom.before.zoom && smoothZoom.immediate.panX === smoothZoom.before.panX && smoothZoom.immediate.panY === smoothZoom.before.panY,
+      JSON.stringify(smoothZoom));
+    const smoothDone = await waitFor<{ zoom: number; mapX: number; mapY: number }>("smooth pointer-anchored zoom", `(() => {
+      const view = __studio.app.view;
+      if (Math.abs(view.zoom - 1.5) > 0.0001) return null;
+      return { zoom: view.zoom, mapX: view.panX + ${smoothZoom.anchor.x} / view.zoom, mapY: view.panY + ${smoothZoom.anchor.y} / view.zoom };
+    })()`, 3000);
+    expect("polish: smooth zoom finishes at the next level without moving the pointer anchor",
+      Math.abs(smoothDone.mapX - smoothZoom.anchor.mapX) < 0.02 && Math.abs(smoothDone.mapY - smoothZoom.anchor.mapY) < 0.02,
+      JSON.stringify({ before: smoothZoom.anchor, after: smoothDone }));
+    await studioShot("studio-zoom-light", "light");
+    const reducedZoom = await evaluate<{
+      motion: string;
+      before: { zoom: number; panX: number; panY: number };
+      after: { zoom: number; panX: number; panY: number };
+      mapBefore: { x: number; y: number };
+      mapAfter: { x: number; y: number };
+    }>(`(() => {
+      __studio.app.setMotion("reduced");
+      const canvas = document.querySelector(".map-canvas");
+      const rect = canvas.getBoundingClientRect();
+      const clientX = Math.round(rect.left + rect.width * 0.67);
+      const clientY = Math.round(rect.top + rect.height * 0.36);
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const before = { ...__studio.app.view };
+      const mapBefore = { x: before.panX + x / before.zoom, y: before.panY + y / before.zoom };
+      canvas.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX, clientY, deltaY: -100 }));
+      const after = { ...__studio.app.view };
+      return {
+        motion: document.documentElement.dataset.motion ?? "",
+        before,
+        after,
+        mapBefore,
+        mapAfter: { x: after.panX + x / after.zoom, y: after.panY + y / after.zoom },
+      };
+    })()`);
+    expect("polish: reduced motion applies wheel zoom immediately and preserves the pointer anchor",
+      reducedZoom.motion === "reduced" && reducedZoom.before.zoom === 1.5 && reducedZoom.after.zoom === 2 &&
+        Math.abs(reducedZoom.mapAfter.x - reducedZoom.mapBefore.x) < 0.02 && Math.abs(reducedZoom.mapAfter.y - reducedZoom.mapBefore.y) < 0.02,
+      JSON.stringify(reducedZoom));
+    await evaluate(`(() => { __studio.app.setMotion("system"); __studio.canvas.fit(true); })()`);
+    await sleep(100);
+
+    // Search produces a semantic result row. Favoriting is reflected in ARIA,
+    // the favorites strip and browser preferences after a full reload.
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-testid="tile-search"]');
+      input.focus();
+      input.value = "town.37";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await sleep(80);
+    const tileSearch = await evaluate<{ rows: string[]; favorite: string | null }>(`(() => ({
+      rows: [...document.querySelectorAll('.tile-results[role="list"] .tile-result[role="listitem"]')].map((row) => row.dataset.tile),
+      favorite: document.querySelector('.tile-result[data-tile="town.37"] .tile-favorite')?.getAttribute("aria-pressed") ?? null,
+    }))()`);
+    expect("polish: tile search finds the exact tile in a semantic result list", tileSearch.rows.length === 1 && tileSearch.rows[0] === "town.37" && tileSearch.favorite === "false", JSON.stringify(tileSearch));
+    await clickSelector('.tile-result[data-tile="town.37"] .tile-favorite');
+    const favorite = await evaluate<{ pressed: string | null; state: boolean; stored: boolean }>(`(() => {
+      const saved = JSON.parse(localStorage.getItem("pocket-rpgkit:studio:preferences:v1") ?? "{}");
+      return {
+        pressed: document.querySelector('.tile-result[data-tile="town.37"] .tile-favorite')?.getAttribute("aria-pressed") ?? null,
+        state: __studio.app.favoriteTiles.includes("town.37"),
+        stored: saved.favoriteTiles?.includes("town.37") === true,
+      };
+    })()`);
+    expect("polish: the tile favorite button updates ARIA and persisted preferences", favorite.pressed === "true" && favorite.state && favorite.stored, JSON.stringify(favorite));
+    await studioShot("studio-tile-search-light", "light");
+    await navigate(`${base}?example=sunstone`);
+    await waitFor("sheet art after preference reload", `__studio.art.sheetStatus("town").source === "bundled"`);
+    const restoredPreferences = await evaluate<{ favorite: boolean; strip: boolean; recentCommand: boolean }>(`({
+      favorite: __studio.app.favoriteTiles.includes("town.37"),
+      strip: !!document.querySelector('[aria-label="Favorite tiles"] [data-tile="town.37"]'),
+      recentCommand: __studio.app.recentCommands.includes("layer:upper"),
+    })`);
+    expect("polish: favorites and recent commands survive a reload", restoredPreferences.favorite && restoredPreferences.strip && restoredPreferences.recentCommand, JSON.stringify(restoredPreferences));
+
+    const atlas = await evaluate<{ from: { x: number; y: number }; to: { x: number; y: number } }>(`(() => {
+      const canvas = document.querySelector('.palette-canvas[data-sheet="town"]');
+      const rect = canvas.getBoundingClientRect();
+      const point = (x, y) => ({ x: rect.left + (x + 0.5) * rect.width / 12, y: rect.top + (y + 0.5) * rect.height / 11 });
+      return { from: point(2, 2), to: point(3, 3) };
+    })()`);
+    await mouse("mouseMoved", atlas.from.x, atlas.from.y, "none");
+    await mouse("mousePressed", atlas.from.x, atlas.from.y);
+    await mouse("mouseMoved", atlas.to.x, atlas.to.y);
+    await mouse("mouseReleased", atlas.to.x, atlas.to.y);
+    await sleep(100);
+    const atlasSelection = await evaluate<{ sheet: string; width: number; height: number; tiles: string[] } | null>(`__studio.app.tileSelection`);
+    expect("polish: dragging the atlas selects a row-major 2×2 brush",
+      !!atlasSelection && atlasSelection.sheet === "town" && atlasSelection.width === 2 && atlasSelection.height === 2 && JSON.stringify(atlasSelection.tiles) === JSON.stringify(["town.26", "town.27", "town.38", "town.39"]),
+      JSON.stringify(atlasSelection));
+    await key("b", "KeyB", 0, "b");
+    const patternCells: [number, number][] = [[2, 2], [3, 2], [2, 3], [3, 3]];
+    const patternBefore = await evaluate<{ tiles: string[]; text: string }>(`({
+      tiles: [${patternCells.map(([x, y]) => `__studio.tileAt(${x}, ${y})`).join(",")}],
+      text: __studio.app.session.exportText(),
+    })`);
+    const patternTarget = await cell(2, 2);
+    await click(patternTarget.x, patternTarget.y);
+    const patternPaint = await evaluate<{ tiles: string[]; history: { label: string; commands: string[] }[] }>(`({
+      tiles: [${patternCells.map(([x, y]) => `__studio.tileAt(${x}, ${y})`).join(",")}],
+      history: __studio.app.session.history().map((step) => ({ label: step.label, commands: step.commands })),
+    })`);
+    expect("polish: one pencil click stamps all four atlas tiles",
+      JSON.stringify(patternPaint.tiles) === JSON.stringify(["town.26", "town.27", "town.38", "town.39"]),
+      JSON.stringify(patternPaint.tiles));
+    expect("polish: the 2×2 stamp is exactly one paint-cells history step",
+      patternPaint.history.length === 1 && patternPaint.history[0]!.commands.length === 1 && patternPaint.history[0]!.commands[0] === "paint-cells",
+      JSON.stringify(patternPaint.history));
+    await key("z", "KeyZ", CTRL);
+    const patternUndone = await evaluate<{ tiles: string[]; text: string; history: number }>(`({
+      tiles: [${patternCells.map(([x, y]) => `__studio.tileAt(${x}, ${y})`).join(",")}],
+      text: __studio.app.session.exportText(),
+      history: __studio.app.session.history().length,
+    })`);
+    expect("polish: undo restores every patterned cell and the original project bytes",
+      JSON.stringify(patternUndone.tiles) === JSON.stringify(patternBefore.tiles) && patternUndone.text === patternBefore.text && patternUndone.history === 0,
+      JSON.stringify(patternUndone));
+    // Start the original paint scenario with fresh document history.
+    await navigate(`${base}?example=sunstone`);
+    await waitFor("sheet art after atlas scenario", `__studio.art.sheetStatus("town").source === "bundled"`);
     const originalText = await evaluate<string>(`__studio.app.session.exportText()`);
 
     // ---- paint ----
@@ -638,7 +1070,7 @@ async function main(): Promise<void> {
 
     // ---- screenshots of the edited Sunstone ----
     phase = "shots";
-    await shot("studio-light");
+    await studioShot("studio-light", "light");
     const elder = await cell(9, 5);
     await key("v", "KeyV", 0, "v");
     await click(elder.x, elder.y);
@@ -1018,6 +1450,84 @@ async function main(): Promise<void> {
     await waitFor("large map", `__studio.app.mapId === "large"`);
     await sleep(400);
     const rebuild = await evaluate<number>(`__studio.canvas.lastRebuildMs`);
+    // At a zoom where the map is larger than the canvas, the minimap's box
+    // must be the canvas viewport projected into minimap coordinates.
+    await evaluate(`(() => { __studio.app.setMotion("reduced"); __studio.canvas.setZoom(2, 0, 0, true, true); })()`);
+    await sleep(100);
+    const minimapState = await evaluate<{
+      role: string | null;
+      label: string | null;
+      actual: number[];
+      expected: number[];
+      pan: { x: number; y: number };
+      consistent: boolean;
+    }>(`(() => {
+      const root = document.querySelector('[data-testid="minimap"]');
+      const box = document.querySelector('[data-testid="minimap-viewport"]');
+      const view = __studio.canvas.viewport();
+      const width = parseFloat(root.style.width);
+      const height = parseFloat(root.style.height);
+      const left = Math.max(0, Math.min(width, view.x / view.mapWidth * width));
+      const top = Math.max(0, Math.min(height, view.y / view.mapHeight * height));
+      const right = Math.max(0, Math.min(width, (view.x + view.width) / view.mapWidth * width));
+      const bottom = Math.max(0, Math.min(height, (view.y + view.height) / view.mapHeight * height));
+      const boxWidth = Math.max(5, right - left);
+      const boxHeight = Math.max(5, bottom - top);
+      const expected = [Math.min(left, width - boxWidth), Math.min(top, height - boxHeight), Math.min(width, boxWidth), Math.min(height, boxHeight)];
+      const actual = [box.style.left, box.style.top, box.style.width, box.style.height].map(parseFloat);
+      return {
+        role: root.getAttribute("role"),
+        label: root.getAttribute("aria-label"),
+        actual,
+        expected,
+        pan: { x: __studio.app.view.panX, y: __studio.app.view.panY },
+        consistent: actual.every((value, index) => Math.abs(value - expected[index]) < 0.1),
+      };
+    })()`);
+    expect("perf: minimap exposes an application control with viewport semantics", minimapState.role === "application" && /click or drag to pan/i.test(minimapState.label ?? ""), JSON.stringify(minimapState));
+    expect("perf: minimap viewport rectangle matches the canvas viewport math", minimapState.consistent, JSON.stringify({ actual: minimapState.actual, expected: minimapState.expected }));
+    const minimapDrag = await evaluate<{ from: { x: number; y: number }; to: { x: number; y: number } }>(`(() => {
+      const root = document.querySelector('[data-testid="minimap"]');
+      const viewport = document.querySelector('[data-testid="minimap-viewport"]');
+      const r = root.getBoundingClientRect();
+      const v = viewport.getBoundingClientRect();
+      return {
+        from: { x: v.left + v.width / 2, y: v.top + v.height / 2 },
+        to: { x: r.left + r.width * 0.78, y: r.top + r.height * 0.72 },
+      };
+    })()`);
+    await mouse("mouseMoved", minimapDrag.from.x, minimapDrag.from.y, "none");
+    await mouse("mousePressed", minimapDrag.from.x, minimapDrag.from.y);
+    await mouse("mouseMoved", minimapDrag.to.x, minimapDrag.to.y);
+    await mouse("mouseReleased", minimapDrag.to.x, minimapDrag.to.y);
+    await sleep(100);
+    const minimapMoved = await evaluate<{ pan: { x: number; y: number }; consistent: boolean; actual: number[]; expected: number[] }>(`(() => {
+      const root = document.querySelector('[data-testid="minimap"]');
+      const box = document.querySelector('[data-testid="minimap-viewport"]');
+      const view = __studio.canvas.viewport();
+      const width = parseFloat(root.style.width);
+      const height = parseFloat(root.style.height);
+      const left = Math.max(0, Math.min(width, view.x / view.mapWidth * width));
+      const top = Math.max(0, Math.min(height, view.y / view.mapHeight * height));
+      const right = Math.max(0, Math.min(width, (view.x + view.width) / view.mapWidth * width));
+      const bottom = Math.max(0, Math.min(height, (view.y + view.height) / view.mapHeight * height));
+      const boxWidth = Math.max(5, right - left);
+      const boxHeight = Math.max(5, bottom - top);
+      const expected = [Math.min(left, width - boxWidth), Math.min(top, height - boxHeight), Math.min(width, boxWidth), Math.min(height, boxHeight)];
+      const actual = [box.style.left, box.style.top, box.style.width, box.style.height].map(parseFloat);
+      return {
+        pan: { x: __studio.app.view.panX, y: __studio.app.view.panY },
+        actual,
+        expected,
+        consistent: actual.every((value, index) => Math.abs(value - expected[index]) < 0.1),
+      };
+    })()`);
+    expect("perf: dragging the minimap changes canvas pan and keeps its viewport synchronized",
+      Math.hypot(minimapMoved.pan.x - minimapState.pan.x, minimapMoved.pan.y - minimapState.pan.y) > 40 && minimapMoved.consistent,
+      JSON.stringify({ before: minimapState.pan, after: minimapMoved.pan, actual: minimapMoved.actual, expected: minimapMoved.expected }));
+    await studioShot("studio-minimap-light", "light");
+    await evaluate(`(() => { __studio.app.setMotion("system"); __studio.canvas.fit(true); })()`);
+    await sleep(100);
     // Zoom and pan as a user would: wheel steps at the pointer, then a long
     // middle-button drag. Frame cost is the draw() time Studio records.
     await evaluate(`__studio.canvas.stats.recent.length = 0`);
@@ -1059,6 +1569,144 @@ async function main(): Promise<void> {
     expect("perf: brush stroke frames stay under 8 ms (max)", perf.stroke.frames > 5 && perf.stroke.max < 8, JSON.stringify(perf.stroke));
     expect("perf: the commit repaints no cell the preview already drew", cacheUpdate.cells === 0, JSON.stringify(cacheUpdate));
     expect("perf: a 200-cell stroke commits as one step", /Paint \d+ ground cells/.test(perf.lastStep ?? "") , `${perf.lastStep}, commit ${perf.strokeCommitMs} ms`);
+
+    // Optional real-world scale run. This stays opt-in because the Tuxemon
+    // import is a separate repository, but records the same browser timings
+    // against all 263 imported maps when a caller supplies it.
+    if (TUXEMON_PROJECT) {
+      phase = "tuxemon-perf";
+      const openStarted = performance.now();
+      await setFile("#studio-open-input", resolve(TUXEMON_PROJECT));
+      await waitFor("Tuxemon project", `__studio.app.session?.maps().length >= 250 && __studio.app.mapId === "spyder_bedroom"`, 120_000);
+      await evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      const openWallMs = performance.now() - openStarted;
+      const facts = await evaluate<{
+        title: string;
+        maps: number;
+        events: number;
+        startMap: string;
+        largest: { id: string; width: number; height: number; events: number };
+        busiest: { id: string; width: number; height: number; events: number };
+      }>(`(() => {
+        const maps = __studio.app.session.maps();
+        const full = (map) => __studio.app.session.map(map.id);
+        const eventCount = (map) => full(map)?.events?.length ?? 0;
+        const describe = (map) => ({ id: map.id, width: map.width, height: map.height, events: eventCount(map) });
+        return {
+          title: __studio.app.session.title(),
+          maps: maps.length,
+          events: maps.reduce((sum, map) => sum + eventCount(map), 0),
+          startMap: __studio.app.mapId,
+          largest: describe(maps.reduce((best, map) => map.width * map.height > best.width * best.height ? map : best)),
+          busiest: describe(maps.reduce((best, map) => eventCount(map) > eventCount(best) ? map : best)),
+        };
+      })()`);
+      const switchMap = (mapId: string) => evaluate<{
+        map: string;
+        callMs: number;
+        firstPaintMs: number;
+        canvasRebuildMs: number;
+        canvasRebuildCells: number;
+        minimapBuildMs: number;
+      }>(`(async () => {
+        const started = performance.now();
+        __studio.app.openMap(${JSON.stringify(mapId)});
+        const callMs = performance.now() - started;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return {
+          map: __studio.app.mapId,
+          callMs,
+          firstPaintMs: performance.now() - started,
+          canvasRebuildMs: __studio.canvas.lastRebuildMs,
+          canvasRebuildCells: __studio.canvas.lastRebuildCells,
+          minimapBuildMs: __studio.minimap.lastBuildMs,
+        };
+      })()`);
+      const busiestSwitch = await switchMap(facts.busiest.id);
+      const largestSwitch = await switchMap(facts.largest.id);
+
+      await evaluate(`(() => {
+        __studio.app.setMotion("full");
+        __studio.canvas.fit(true);
+        __studio.canvas.stats.recent.length = 0;
+      })()`);
+      const realCenter = await evaluate<{ x: number; y: number }>(`(() => {
+        const r = document.querySelector(".map-canvas").getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      })()`);
+      const zoomStarted = performance.now();
+      for (let i = 0; i < 6; i++) {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: realCenter.x, y: realCenter.y, deltaX: 0, deltaY: -100 });
+      }
+      await waitFor("Tuxemon smooth zoom settle", `__studio.canvas.cameraTarget === null && __studio.canvas.cameraFrame === 0`, 10_000);
+      const zoomSettleWallMs = performance.now() - zoomStarted;
+      const zoom = await evaluate<{ value: number; frames: number[] }>(`({ value: __studio.app.view.zoom, frames: __studio.canvas.stats.recent.slice() })`);
+
+      await evaluate(`(() => {
+        __studio.app.setMotion("reduced");
+        __studio.canvas.setZoom(2, 0, 0, true, true);
+        __studio.canvas.stats.recent.length = 0;
+      })()`);
+      await evaluate(`new Promise((resolve) => requestAnimationFrame(resolve))`);
+      const minimapDrag = await evaluate<{
+        from: { x: number; y: number };
+        to: { x: number; y: number };
+        before: { x: number; y: number };
+      }>(`(() => {
+        const root = document.querySelector('[data-testid="minimap"]');
+        const viewport = document.querySelector('[data-testid="minimap-viewport"]');
+        const r = root.getBoundingClientRect();
+        const v = viewport.getBoundingClientRect();
+        return {
+          from: { x: v.left + v.width / 2, y: v.top + v.height / 2 },
+          to: { x: r.left + r.width * 0.82, y: r.top + r.height * 0.76 },
+          before: { x: __studio.app.view.panX, y: __studio.app.view.panY },
+        };
+      })()`);
+      const dragStarted = performance.now();
+      await mouse("mouseMoved", minimapDrag.from.x, minimapDrag.from.y, "none");
+      await mouse("mousePressed", minimapDrag.from.x, minimapDrag.from.y);
+      await mouse("mouseMoved", minimapDrag.to.x, minimapDrag.to.y);
+      await mouse("mouseReleased", minimapDrag.to.x, minimapDrag.to.y);
+      const minimapInputWallMs = performance.now() - dragStarted;
+      await evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      const minimapAfter = await evaluate<{ pan: { x: number; y: number }; frames: number[]; buildMs: number }>(`({
+        pan: { x: __studio.app.view.panX, y: __studio.app.view.panY },
+        frames: __studio.canvas.stats.recent.slice(),
+        buildMs: __studio.minimap.lastBuildMs,
+      })`);
+      const tuxemonPerf = {
+        sourceBytes: statSync(TUXEMON_PROJECT).size,
+        openWallMs: +openWallMs.toFixed(1),
+        ...facts,
+        switchToBusiest: {
+          ...busiestSwitch,
+          callMs: +busiestSwitch.callMs.toFixed(2),
+          firstPaintMs: +busiestSwitch.firstPaintMs.toFixed(2),
+          canvasRebuildMs: +busiestSwitch.canvasRebuildMs.toFixed(2),
+          minimapBuildMs: +busiestSwitch.minimapBuildMs.toFixed(2),
+        },
+        switchToLargest: {
+          ...largestSwitch,
+          callMs: +largestSwitch.callMs.toFixed(2),
+          firstPaintMs: +largestSwitch.firstPaintMs.toFixed(2),
+          canvasRebuildMs: +largestSwitch.canvasRebuildMs.toFixed(2),
+          minimapBuildMs: +largestSwitch.minimapBuildMs.toFixed(2),
+        },
+        smoothZoom: { settleWallMs: +zoomSettleWallMs.toFixed(1), finalZoom: zoom.value, draw: summary(zoom.frames) },
+        minimapDrag: {
+          inputWallMs: +minimapInputWallMs.toFixed(1),
+          panDistance: +Math.hypot(minimapAfter.pan.x - minimapDrag.before.x, minimapAfter.pan.y - minimapDrag.before.y).toFixed(1),
+          draw: summary(minimapAfter.frames),
+          cachedThumbnailBuildMs: +minimapAfter.buildMs.toFixed(2),
+        },
+      };
+      results.tuxemonPerf = tuxemonPerf;
+      expect("tuxemon perf: the complete imported project opens", facts.maps === 263 && facts.events > 7_000 && facts.startMap === "spyder_bedroom", JSON.stringify({ openWallMs: tuxemonPerf.openWallMs, maps: facts.maps, events: facts.events, startMap: facts.startMap }));
+      expect("tuxemon perf: switching renders both the busiest and largest maps", busiestSwitch.map === facts.busiest.id && largestSwitch.map === facts.largest.id && largestSwitch.canvasRebuildCells >= facts.largest.width * facts.largest.height, JSON.stringify({ busiest: tuxemonPerf.switchToBusiest, largest: tuxemonPerf.switchToLargest }));
+      expect("tuxemon perf: smooth zoom keeps browser draw work below one 60 Hz frame at p95", zoom.frames.length > 2 && summary(zoom.frames).p95 < 16.7, JSON.stringify(tuxemonPerf.smoothZoom));
+      expect("tuxemon perf: dragging the cached minimap moves the large-map camera", tuxemonPerf.minimapDrag.panDistance > 100 && tuxemonPerf.minimapDrag.cachedThumbnailBuildMs === tuxemonPerf.switchToLargest.minimapBuildMs, JSON.stringify(tuxemonPerf.minimapDrag));
+    }
 
     // ---- map editing shot: Sunstone forest, zoomed, passage overlay ----
     phase = "map-shot";
@@ -1382,7 +2030,82 @@ async function main(): Promise<void> {
     const elder2 = await cell(9, 5);
     await key("v", "KeyV", 0, "v");
     await click(elder2.x, elder2.y);
-    await shot("studio-dark");
+    await studioShot("studio-dark", "dark");
+
+    // Every new interaction shot has a dark-theme peer. Keep each state live
+    // while capturing so the PNG is evidence of the same DOM assertion used
+    // above rather than a staged mock-up.
+    await key("k", "KeyK", CTRL);
+    await evaluate(`(() => {
+      const input = document.querySelector(".command-palette-input");
+      input.value = "edit upper layer";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await sleep(80);
+    const darkCommand = await evaluate<boolean>(`document.querySelectorAll('.command-palette-row[data-command-id="layer:upper"]').length === 1`);
+    expect("theme: the filtered command palette is visible in the dark theme", darkCommand, String(darkCommand));
+    await studioShot("studio-command-palette-dark", "dark");
+    await key("Escape", "Escape");
+
+    const darkLayer = await evaluate<boolean>(`(() => {
+      const input = document.querySelector('[data-testid="layer-upper-opacity"]');
+      input.value = "35";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return input.getAttribute("aria-valuetext") === "35%" && Math.abs(__studio.app.opacity.upper - 0.35) < 1e-9;
+    })()`);
+    expect("theme: the layer opacity state is visible in the dark theme", darkLayer, String(darkLayer));
+    await studioShot("studio-layers-dark", "dark");
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-testid="layer-upper-opacity"]');
+      input.value = "100";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+
+    await mouse("mouseMoved", elder2.x, elder2.y, "none");
+    await waitFor("dark elder hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "elder"; })()`);
+    const darkHover = await evaluate<boolean>(`document.querySelector(".event-hover-card")?.querySelectorAll("li").length === 3`);
+    expect("theme: the event hover summary is visible in the dark theme", darkHover, String(darkHover));
+    await studioShot("studio-event-hover-dark", "dark");
+    await mouse("mouseMoved", 2, 2, "none");
+
+    const darkTileSearch = await evaluate<boolean>(`(() => {
+      const input = document.querySelector('[data-testid="tile-search"]');
+      input.focus();
+      input.value = "town.37";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return document.querySelector('.tile-result[data-tile="town.37"] .tile-favorite')?.getAttribute("aria-pressed") === "true";
+    })()`);
+    expect("theme: tile search and its favorite state are visible in the dark theme", darkTileSearch, String(darkTileSearch));
+    await studioShot("studio-tile-search-dark", "dark");
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-testid="tile-search"]');
+      input.value = "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      __studio.app.setMotion("reduced");
+      __studio.canvas.setZoom(2, 0, 0, true, true);
+    })()`);
+    await sleep(80);
+    const darkZoom = await evaluate<boolean>(`Math.abs(__studio.app.view.zoom - 2) < 1e-9 && document.getElementById("studio-zoom")?.textContent === "200%"`);
+    expect("theme: the zoomed canvas and 200% readout are visible in the dark theme", darkZoom, String(darkZoom));
+    await studioShot("studio-zoom-dark", "dark");
+
+    await evaluate(`__studio.files.openText(${JSON.stringify(largeProject())}, "large-100x100.json", "large-100x100.json")`);
+    await waitFor("dark large map", `__studio.app.mapId === "large"`);
+    await evaluate(`(() => { __studio.app.setMotion("reduced"); __studio.canvas.setZoom(2, 0, 0, true, true); })()`);
+    await sleep(120);
+    const darkMinimap = await evaluate<boolean>(`(() => {
+      const root = document.querySelector('[data-testid="minimap"]');
+      const box = document.querySelector('[data-testid="minimap-viewport"]');
+      return !!root && !!box && parseFloat(box.style.width) < parseFloat(root.style.width) * 0.75 && parseFloat(box.style.height) < parseFloat(root.style.height) * 0.75;
+    })()`);
+    expect("theme: the large-map minimap viewport is visible in the dark theme", darkMinimap, String(darkMinimap));
+    await studioShot("studio-minimap-dark", "dark");
+
+    await navigate(`${base}?example=sunstone`);
+    await waitFor("dark sheet art after feature shots", `__studio.art.sheetStatus("town").source === "bundled"`);
+    const elder3 = await cell(9, 5);
+    await key("v", "KeyV", 0, "v");
+    await click(elder3.x, elder3.y);
     // The drag feedback and the shortcuts panel in the dark theme.
     await waitFor("elder command tree", `document.querySelectorAll('[data-action="select-command"]').length >= 4`);
     await evaluate(`document.querySelector('[data-role="command-tree"]').scrollIntoView({ block: "start" })`);

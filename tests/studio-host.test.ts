@@ -304,6 +304,14 @@ describe("Studio on the memory host", () => {
     host.setSystemDark(true);
     expect(host.systemPrefersDark()).toBe(true);
     expect(changes).toBe(1);
+
+    let motionChanges = 0;
+    host.onSystemMotionChange(() => motionChanges++);
+    host.setPreferences({ motion: "reduced", favoriteTiles: ["town.4"], recentCommands: ["view:fit"] });
+    expect(host.preferences()).toEqual({ motion: "reduced", favoriteTiles: ["town.4"], recentCommands: ["view:fit"] });
+    host.setSystemReducedMotion(true);
+    expect(host.systemPrefersReducedMotion()).toBe(true);
+    expect(motionChanges).toBe(1);
   });
 });
 

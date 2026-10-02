@@ -2,7 +2,8 @@
 
 Studio is a map and event editor for `rpgkit-project/v1` projects that runs
 as an ordinary web page (DOM and canvas). It has no PocketJS bundle budget,
-so it can afford a full desktop-style layout: zoomable canvas, tile palette,
+so it can afford a full desktop-style layout: a command palette, zoomable
+canvas with a minimap and layer controls, searchable patterned tile palette,
 inspector forms, history panel and a problems list.
 
 Studio edits through the [`editor/api`](edit-api.md) operations — the same
@@ -117,8 +118,9 @@ in the problems list.
 
 ## Layout
 
-- **Toolbar**: file actions, undo/redo, tools, layer switch, overlays, zoom,
-  **Art…**, theme, shortcuts. Every button has a tooltip with its shortcut.
+- **Toolbar**: command search, file actions, undo/redo, tools, layer switch,
+  overlays, zoom, **Art…**, view settings, theme and shortcuts. Every button
+  has a tooltip with its shortcut.
 - **Maps** (left): every map, with a filter box. The list is virtualized, so
   packs with hundreds of maps scroll smoothly. Drag a map up or down to
   change the map order (Alt+↑/↓ moves the open map one place); a line shows
@@ -127,12 +129,14 @@ in the problems list.
   beside the map's current visible neighbour is a no-op and never silently
   crosses hidden maps. A sharded pack's map order is its fixed map index, so
   there the rows only open maps.
-- **Tiles** (left): the sheets the current map declares, with a recently-used
-  strip and a size control. With the passage or edges layer active this
-  panel shows those brushes instead.
-- **Canvas** (center): wheel or pinch to zoom around the pointer; Space+drag,
-  middle-drag or Shift+wheel to pan; `0` fits the map. The status bar shows
-  the hovered cell and its tiles.
+- **Tiles** (left): the sheets the current map declares, searchable by sheet
+  name, full tile id or cell number, with favorites, recently used tiles and
+  a size control. With the passage or edges layer active this panel shows
+  those brushes instead.
+- **Canvas** (center): wheel or pinch smoothly zooms around the pointer;
+  Space+drag, middle-drag or Shift+wheel pans; `0` fits the map. A cached
+  minimap sits over its lower-right corner and the layer controls over its
+  upper-right corner. The status bar shows the hovered cell and its tiles.
 - **Inspector** (right): map properties, or the selected event with its pages,
   conditions and command tree. **History** lists every step.
 - **Status bar**: map, hovered cell, selection, protocol time of the last
@@ -147,6 +151,38 @@ a map filter with no match offers **Clear filter**.
 
 Light and dark themes follow the system setting until you pick one with the
 theme button. Below 900 px the panels stack under the canvas.
+
+### Command palette and navigation
+
+Press Ctrl/Command+K or the toolbar's **Command palette** button to search
+every Studio action, map, event and command on the open map, plus every
+insertable command kind when an event page is selected. Search is fuzzy over
+labels, ids and context. Recently run results appear first; Up/Down selects,
+Enter runs and Escape closes the palette. Opening it does not eagerly load
+the other maps in a sharded project.
+
+![The command palette filtered to an event in the light theme](screenshots/studio/studio-command-palette-light.png)
+
+### Camera, minimap and layers
+
+The minimap shows a cached ground thumbnail, event dots and the current
+viewport. Click to center the map, drag the viewport to pan, or focus it and
+use the arrow keys. Panning and zooming only redraw its viewport overlay; the
+thumbnail is rebuilt after a map, document or art revision changes.
+
+Wheel and trackpad zoom is anchored to the pointer and eases to its target.
+Released Space/middle-button drags retain a short, decelerating motion. In
+**View settings**, **Follow system** disables both when
+`prefers-reduced-motion` asks for it, **Full motion** always enables them and
+**Reduced motion** always moves immediately.
+
+The layer card controls ground, upper, passage and event visibility and
+opacity. The editing layer has an accent marker; edges share the passage
+display row. Keys 1–4 still choose the editing layer, while Shift+1–4 show or
+hide ground, upper, passage and events. These controls, the minimap and the
+camera are view state only and never change exported project bytes.
+
+![The minimap viewport and layer card in the dark theme](screenshots/studio/studio-minimap-dark.png)
 
 ## Map editing
 
@@ -172,6 +208,18 @@ or `paint-edges`) and one undo step. While you drag, Studio previews the
 stroke in its cached layer image; on release the protocol validates and
 applies it, and an invalid stroke is reverted with a notice.
 
+For ground and upper tiles, type in **Find sheet, tile id or #** to search all
+sheets declared by the current map. Star a result or the current brush to put
+it in the persistent Favorites strip; committed choices appear in Recent.
+Drag over the atlas to select a rectangular pattern. With the atlas focused,
+Arrow keys move the selection and Shift+Arrow extends it; Enter or Space
+accepts it. Brush and rectangle strokes repeat the pattern from the stroke's
+origin. The patterned form of `paint-cells` sends parallel `cells` and
+`values` arrays as one operation, so the preview, commit and undo all remain
+one step.
+
+![Searching for a tile by number](screenshots/studio/studio-tile-search-light.png)
+
 ## Events
 
 Select an event to edit its id, name, position and size; copy or delete it
@@ -196,6 +244,15 @@ field rules are the same ones the PocketJS editor and `update-command` use
 every command and condition in the current schema is editable. **Add
 command** opens a searchable list of every command kind and inserts after
 the selection or into a chosen branch.
+
+Pause over an event on the canvas to see its sprite, id/name, first-page
+trigger and the first three meaningful command summaries. The card opens to
+the right of the event when it fits there and otherwise to its left, stays
+inside the canvas and disappears when you
+move, drag, edit, switch maps or hide events; hovering never changes the
+selection.
+
+![An event hover card in the dark theme](screenshots/studio/studio-event-hover-dark.png)
 
 ## Art
 
@@ -250,13 +307,16 @@ one undo step each.
 
 | Keys | Action |
 | --- | --- |
+| Ctrl/⌘+K | Open the command palette; Up/Down selects, Enter runs and Escape closes it |
 | Ctrl/⌘+Z, Ctrl/⌘+Shift+Z or Ctrl/⌘+Y | Undo, redo |
 | Ctrl/⌘+S, Ctrl/⌘+O, Ctrl/⌘+Shift+E | Save (in the browser, or back into the opened folder), open file, download |
 | V B R F E I N | Select, brush, rectangle, fill, eraser, eyedropper, events |
 | 1 2 3 4 | Ground, upper, passage, edges layer |
+| Shift+1 Shift+2 Shift+3 Shift+4 | Show or hide ground, upper, passage, events |
 | G, P | Grid, passage overlay |
 | = or +, -, 0 | Zoom in, zoom out, fit |
 | Space+drag, middle-drag, Shift+wheel | Pan |
+| Drag in the tile atlas; Shift+Arrow with it focused | Select a rectangular tile pattern |
 | Delete, Ctrl/⌘+D | Delete or duplicate the selected event |
 | Drag a map, Alt+↑/↓ in the map list | Reorder maps |
 | ↑/↓, Home/End in the map list | Open the previous/next, first/last map |

@@ -108,6 +108,45 @@ describe("paint-cells", () => {
     roundTrip("paint-cells", { map: "village", layer: "upper", cells: [[4, 4], [5, 4]], value: "town.3" });
   });
 
+  test("parallel values paint a pattern in one reversible operation", () => {
+    const patternCells = [[2, 2], [3, 2], [2, 3], [3, 3], [2, 2]];
+    const values = ["town.1", "town.2", "town.3", null, "town.4"];
+    const { edited, project } = roundTrip("paint-cells", {
+      map: "village", layer: "ground", cells: patternCells, values,
+    });
+    const village = mapOf(project, "village");
+    expect(village.ground[2 * village.width + 2]).toBe("town.4");
+    expect(village.ground[2 * village.width + 3]).toBe("town.2");
+    expect(village.ground[3 * village.width + 2]).toBe("town.3");
+    expect(village.ground[3 * village.width + 3]).toBeNull();
+    expect(edited.result).toEqual({ map: "village", layer: "ground", values: 5, cells: 4 });
+    expect(edited.addresses).toEqual([
+      "map:village/layer:ground/tile:2,2",
+      "map:village/layer:ground/tile:3,2",
+      "map:village/layer:ground/tile:2,3",
+      "map:village/layer:ground/tile:3,3",
+    ]);
+    expect(edited.patch?.changes.every((change) => change.path.startsWith("/maps/0/ground/"))).toBe(true);
+  });
+
+  test("parallel values support sparse upper and passage layers", () => {
+    const upper = roundTrip("paint-cells", {
+      map: "village", layer: "upper", cells: [[1, 1], [2, 1], [3, 1]], values: ["town.1", null, "town.3"],
+    }).project;
+    const upperValues = new Map(mapOf(upper, "village").upper ?? []);
+    expect(upperValues.get(1 * 20 + 1)).toBe("town.1");
+    expect(upperValues.has(1 * 20 + 2)).toBe(false);
+    expect(upperValues.get(1 * 20 + 3)).toBe("town.3");
+
+    const passage = roundTrip("paint-cells", {
+      map: "village", layer: "passage", cells: [[1, 1], [2, 1], [3, 1]], values: ["block", "pass", null],
+    }).project;
+    const passageValues = new Map(mapOf(passage, "village").passage ?? []);
+    expect(passageValues.get(1 * 20 + 1)).toBe("block");
+    expect(passageValues.get(1 * 20 + 2)).toBe("pass");
+    expect(passageValues.has(1 * 20 + 3)).toBe(false);
+  });
+
   test("passage strokes equal sequential paint-passage, including clear", () => {
     const passageCells = [[4, 4], [5, 4], [5, 5]];
     for (const value of ["block", "pass"] as const) {
@@ -137,6 +176,14 @@ describe("paint-cells", () => {
       .toMatchObject({ code: "INVALID_ARGUMENT", path: "$.value" });
     expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", cells: [[0, 0]] })))
       .toMatchObject({ code: "INVALID_ARGUMENT", path: "$.value" });
+    expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", cells: [[0, 0]], value: "town.1", values: ["town.2"] })))
+      .toMatchObject({ code: "INVALID_ARGUMENT", path: "$" });
+    expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", cells: [[0, 0], [1, 0]], values: ["town.1"] })))
+      .toMatchObject({ code: "INVALID_ARGUMENT", path: "$.values" });
+    expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", cells: [[0, 0]], values: ["dun.5"] })))
+      .toMatchObject({ code: "INVALID_TILE", path: "$.values[0]" });
+    expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", layer: "passage", cells: [[0, 0]], values: ["town.1"] })))
+      .toMatchObject({ code: "INVALID_ARGUMENT", path: "$.values[0]" });
     expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", cells: [[0, 0], [20, 0]], value: "town.1" })))
       .toMatchObject({ code: "OUT_OF_BOUNDS", path: "$.cells[1]" });
     expect(failure(executeEditOperation(SOURCE, "paint-cells", { map: "village", cells: [[0, -1]], value: "town.1" })))
@@ -254,6 +301,9 @@ describe("MCP schemas", () => {
   test("accept the documented argument shapes and reject malformed ones", () => {
     const schema = (name: string) => EDIT_TOOL_BY_NAME.get(name)!.inputSchema;
     expect(validateSchema(schema("rpgkit_cells_paint"), { file: "p.json", map: "village", layer: "passage", cells: [[0, 1]], value: null })).toEqual([]);
+    expect(validateSchema(schema("rpgkit_cells_paint"), { file: "p.json", map: "village", cells: [[0, 1], [1, 1]], values: ["town.1", "town.2"] })).toEqual([]);
+    expect(validateSchema(schema("rpgkit_cells_paint"), { file: "p.json", map: "village", cells: [[0, 1]], value: "town.1", values: ["town.2"] })).not.toEqual([]);
+    expect(validateSchema(schema("rpgkit_cells_paint"), { file: "p.json", map: "village", cells: [[0, 1]] })).not.toEqual([]);
     expect(validateSchema(schema("rpgkit_cells_paint"), { file: "p.json", map: "village", cells: [[0]], value: "town.1" })).not.toEqual([]);
     expect(validateSchema(schema("rpgkit_edges_paint"), { file: "p.json", map: "village", cells: [[0, 1]], brush: { kind: "enter", dir: "up" } })).toEqual([]);
     expect(validateSchema(schema("rpgkit_edges_paint"), { file: "p.json", map: "village", cells: [[0, 1]], brush: { kind: "clear" } })).toEqual([]);

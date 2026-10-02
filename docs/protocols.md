@@ -133,6 +133,12 @@ crash-atomic. See `editor/api/file.ts` and
   edit with the same per-change preconditions as `save`. Both editors keep
   patch-v1 history, so the same edits produce the same patches, undo/redo
   stacks and saved bytes (`tests/editor-api-equivalence.test.ts`).
+- **Patterned paint is additive.** `paint-cells` keeps its original
+  `{ cells, value }` form and also accepts `{ cells, values }`, where the
+  arrays have equal length and each coordinate receives its corresponding
+  tile or passage value. Exactly one form is accepted; either form remains
+  one operation, one reversible patch and one undo step. Project and patch
+  formats are unchanged.
 - **Sharded projects are first-class.** The same commands open a
   `ProjectShell` (`add-map`, `duplicate-map`, `delete-map` and
   `paint-edges` are inline-only); reads and ordinary mutations load only the addressed

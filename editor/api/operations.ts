@@ -47,6 +47,8 @@ import { eventEditorResources } from "../engine/event-resources.ts";
 import {
   addPage,
   canPaint,
+  compactPassage,
+  compactUpper,
   createEditorState,
   createEventAt,
   deleteMap,
@@ -72,6 +74,7 @@ import {
   setMapSheets,
   strokeEnd,
   strokeStart,
+  toDensePassage,
   toDenseUpper,
   updateSelectedEvent,
   updateSelectedPage,
@@ -139,7 +142,7 @@ const ARGUMENT_KEYS: Record<EditCommandName, readonly string[]> = {
   "paint-rect": ["map", "layer", "x", "y", "width", "height", "tile"],
   "fill-region": ["map", "layer", "x", "y", "tile"],
   "paint-passage": ["map", "x", "y", "value"],
-  "paint-cells": ["map", "layer", "cells", "value"],
+  "paint-cells": ["map", "layer", "cells", "value", "values"],
   "paint-edges": ["map", "cells", "brush"],
   "add-event": ["map", "event", "index"],
   "update-event": ["map", "event", "changes"],
@@ -964,15 +967,16 @@ function selectTileBrush(
   tile: unknown,
   key = "tile",
 ): { state: EditorState; tile: TileId } {
+  const path = `$.${key}`;
   if (tile !== null && typeof tile !== "string") {
-    throw new EditApiError("INVALID_ARGUMENT", `${key} must be a tile id such as town.43, or null to erase`, `$.${key}`, "tile id or null", tile);
+    throw new EditApiError("INVALID_ARGUMENT", `${key} must be a tile id such as town.43, or null to erase`, path, "tile id or null", tile);
   }
   if (tile !== null && !canPaint(state, tile)) {
     const map = state.project.maps[state.mapIndex]!;
     throw new EditApiError(
       "INVALID_TILE",
       `tile ${JSON.stringify(tile)} is not paintable on map ${map.id}; it must name a declared sheet and an in-range cell`,
-      `$.${key}`,
+      path,
       map.sheets ?? [],
       tile,
     );
@@ -1019,6 +1023,19 @@ function passageValueArg(args: Record<string, unknown>): "pass" | "block" | null
   return value;
 }
 
+function passageCellValue(value: unknown, key: string): "pass" | "block" | null {
+  if (value !== null && value !== "pass" && value !== "block") {
+    throw new EditApiError(
+      "INVALID_ARGUMENT",
+      `${key} must be pass, block, or null`,
+      `$.${key}`,
+      ["pass", "block", null],
+      value,
+    );
+  }
+  return value;
+}
+
 /** One passage stroke: a null value is the eraser (clears overrides). */
 function paintPassageIndices(
   project: Project,
@@ -1033,6 +1050,53 @@ function paintPassageIndices(
   for (const index of indices) state = paintCell(state, index);
   state = strokeEnd(state);
   return exportProject(state);
+}
+
+type CellPaintValue = TileId | "pass" | "block";
+
+/** Apply per-cell values with one layer copy. This is the patterned-brush
+ * counterpart to paintIndices: parsing, validation, diffing and history all
+ * still happen once for the enclosing paint-cells operation. */
+function paintCellValues(
+  project: Project,
+  mapIndex: number,
+  layer: Layer,
+  indices: readonly number[],
+  values: readonly CellPaintValue[],
+): Project {
+  const map = project.maps[mapIndex]!;
+  if (layer === "ground") {
+    const ground = map.ground.slice();
+    const touched = new Set<number>();
+    indices.forEach((index, at) => {
+      ground[index] = values[at] as TileId;
+      touched.add(index);
+    });
+    const changed = [...touched].filter((index) => ground[index] !== map.ground[index]).sort((a, b) => a - b);
+    if (changed.length === 0) return project;
+    const maps = project.maps.slice();
+    maps[mapIndex] = { ...map, ground };
+    KNOWN_ARRAY_DELTAS.set(ground, { base: map.ground, changed });
+    return { ...project, maps };
+  }
+
+  if (layer === "upper") {
+    const dense = toDenseUpper(map);
+    indices.forEach((index, at) => { dense[index] = values[at] as TileId; });
+    const upper = compactUpper(map.upper, dense);
+    if (semanticEqual(upper, map.upper ?? [])) return project;
+    const maps = project.maps.slice();
+    maps[mapIndex] = { ...map, upper };
+    return { ...project, maps };
+  }
+
+  const dense = toDensePassage(map);
+  indices.forEach((index, at) => { dense[index] = values[at] as "pass" | "block" | null; });
+  const passage = compactPassage(map.passage, dense);
+  if (semanticEqual(passage, map.passage ?? [])) return project;
+  const maps = project.maps.slice();
+  maps[mapIndex] = { ...map, passage };
+  return { ...project, maps };
 }
 
 interface CellList {
@@ -1343,15 +1407,61 @@ function mutate(command: EditCommandName, project: Project, args: Record<string,
     const { map, index: mapIndex } = findMap(project, mapId);
     const layer = enumArg(args, "layer", ["ground", "upper", "passage"] as const, "ground");
     const cells = cellsArg(args, map);
+    const hasValue = own(args, "value");
+    const hasValues = own(args, "values");
+    if (!hasValue && !hasValues) {
+      throw new EditApiError(
+        "INVALID_ARGUMENT",
+        "value is required; pass null explicitly to erase, or pass a parallel values array",
+        "$.value",
+        "value or values",
+      );
+    }
+    if (hasValue && hasValues) {
+      throw new EditApiError(
+        "INVALID_ARGUMENT",
+        "paint-cells requires exactly one of value or values",
+        "$",
+        "exactly one of value or values",
+        { value: hasValue, values: hasValues },
+      );
+    }
     let edited: Project;
+    if (hasValues) {
+      if (!Array.isArray(args.values) || args.values.length !== cells.indices.length) {
+        throw new EditApiError(
+          "INVALID_ARGUMENT",
+          "values must be an array with one entry for each cell",
+          "$.values",
+          `${cells.indices.length} values`,
+          Array.isArray(args.values) ? args.values.length : args.values,
+        );
+      }
+      let values: CellPaintValue[];
+      if (layer === "passage") {
+        values = args.values.map((value, at) => passageCellValue(value, `values[${at}]`));
+      } else {
+        let state = editorAt(project, mapIndex);
+        state = selectLayer(state, layer);
+        values = args.values.map((value, at) => {
+          const selected = selectTileBrush(state, value, `values[${at}]`);
+          state = selected.state;
+          return selected.tile;
+        });
+      }
+      edited = paintCellValues(project, mapIndex, layer, cells.indices, values);
+      return {
+        project: edited,
+        addresses: cells.distinct.map((cell) => tileAddress(mapId, layer, cell.x, cell.y)),
+        result: { map: mapId, layer, values: values.length, cells: cells.distinct.length },
+      };
+    }
+
     let value: unknown;
     if (layer === "passage") {
       value = passageValueArg(args);
       edited = paintPassageIndices(project, mapIndex, value as "pass" | "block" | null, cells.indices);
     } else {
-      if (!own(args, "value")) {
-        throw new EditApiError("INVALID_ARGUMENT", "value is required; pass null explicitly to erase", "$.value", "tile id or null");
-      }
       value = args.value;
       edited = paintIndices(project, mapIndex, layer, value, cells.indices, "value");
     }

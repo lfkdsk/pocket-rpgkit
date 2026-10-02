@@ -287,7 +287,7 @@ class Inspector {
 
   private content(): Child {
     const session = this.app.session;
-    if (!session) return h("div", { class: "ins-empty" }, "Open a project to inspect maps and events.");
+    if (!session) return emptyState("open", "Nothing to inspect", "Open or drop a project, then select a map cell or event.");
     const map = this.app.currentMap();
     if (!map) return h("div", { class: "ins-empty" }, "No map is open.");
     const selection = this.app.selection;

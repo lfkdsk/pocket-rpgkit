@@ -457,18 +457,28 @@ $ bun run rpgkit-edit paint-passage --file examples/sunstone/data/sunstone.json 
 
 Args: `map` (required), `cells` (required: non-empty array of in-bounds
 `[x, y]` integer pairs, at most `width * height` entries; duplicates are
-harmless), `value` (required), `layer` (`"ground"`, `"upper"`, or
-`"passage"`, default `"ground"`). For ground/upper `value` is a tile id
-declared by the map (`INVALID_TILE` otherwise) or `null` to erase; for
-passage it is `"pass"`, `"block"`, or `null` to clear. The cells are one
-free-form brush stroke: one operation, one patch. An out-of-bounds cell
-fails with `OUT_OF_BOUNDS` at `$.cells[i]`. `result.cells` and `addresses`
-count distinct cells.
+harmless), exactly one of `value` or `values`, and `layer` (`"ground"`,
+`"upper"`, or `"passage"`, default `"ground"`). `value` paints every cell
+uniformly. `values` is a parallel array with one value per `cells` entry and
+paints a pattern in the listed order; on duplicate coordinates the last value
+wins. For ground/upper each value is a tile id declared by the map
+(`INVALID_TILE` otherwise) or `null` to erase; for passage each value is
+`"pass"`, `"block"`, or `null` to clear. The cells are one free-form brush
+stroke: one operation, one patch. An out-of-bounds cell fails with
+`OUT_OF_BOUNDS` at `$.cells[i]`; an invalid patterned value reports
+`$.values[i]`. `result.cells` and `addresses` count distinct cells. A
+patterned result reports the submitted value count as `result.values`.
 
 ```sh
 $ bun run rpgkit-edit paint-cells --file examples/sunstone/data/sunstone.json --dry-run \
     --json '{"map":"village","cells":[[2,2],[3,2],[3,3]],"value":"town.1"}'
 {"ok":true,"changed":true,"addresses":["map:village/layer:ground/tile:2,2","map:village/layer:ground/tile:3,2","map:village/layer:ground/tile:3,3"],"result":{"map":"village","layer":"ground","value":"town.1","cells":3}}
+```
+
+```sh
+$ bun run rpgkit-edit paint-cells --file examples/sunstone/data/sunstone.json --dry-run \
+    --json '{"map":"village","cells":[[2,2],[3,2],[2,3],[3,3]],"values":["town.1","town.2","town.3","town.4"]}'
+{"ok":true,"changed":true,"addresses":["map:village/layer:ground/tile:2,2","map:village/layer:ground/tile:3,2","map:village/layer:ground/tile:2,3","map:village/layer:ground/tile:3,3"],"result":{"map":"village","layer":"ground","values":4,"cells":4}}
 ```
 
 ### `paint-edges`
@@ -1035,7 +1045,7 @@ that root after symlink resolution. Mutating tools also take `dryRun`.
 | `rpgkit_tile_rect` | `paint-rect` | `file`, `map`, `x`, `y`, `width`, `height`, `tile` | `layer`, `dryRun` |
 | `rpgkit_tile_fill` | `fill-region` | `file`, `map`, `x`, `y`, `tile` | `layer`, `dryRun` |
 | `rpgkit_passage_paint` | `paint-passage` | `file`, `map`, `x`, `y`, `value` | `dryRun` |
-| `rpgkit_cells_paint` | `paint-cells` | `file`, `map`, `cells`, `value` | `layer`, `dryRun` |
+| `rpgkit_cells_paint` | `paint-cells` | `file`, `map`, `cells`, exactly one of `value` / `values` | `layer`, `dryRun` |
 | `rpgkit_edges_paint` | `paint-edges` | `file`, `map`, `cells`, `brush` | `dryRun` |
 | `rpgkit_event_add` | `add-event` | `file`, `map`, `event` | `index`, `dryRun` |
 | `rpgkit_event_update` | `update-event` | `file`, `map`, `event`, `changes` | `dryRun` |

@@ -55,6 +55,12 @@ const paintValue = {
   type: ["string", "null"],
   description: "For ground/upper: a tile id such as town.43 declared by the map, or null to erase. For passage: pass, block, or null to clear the override.",
 };
+const paintValues = {
+  type: "array",
+  minItems: 1,
+  description: "One paint value per cells entry, in the same order. Use this instead of value for a patterned stroke.",
+  items: paintValue,
+};
 const edgeBrush = {
   oneOf: [
     {
@@ -193,6 +199,15 @@ function tool(
   return { kind: "edit", name, title, command, description, inputSchema: schema(properties, required, mutates), mutates };
 }
 
+function exactlyOneOf(
+  definition: EditToolDefinition,
+  first: string,
+  second: string,
+): EditToolDefinition {
+  definition.inputSchema.oneOf = [{ required: [first] }, { required: [second] }];
+  return definition;
+}
+
 /** Ordered registry used for both tools/list and tools/call dispatch. */
 export const EDIT_TOOLS: readonly EditToolDefinition[] = [
   tool("rpgkit_project_open", "Open RPG Kit project", "open", "Validate and summarize an inline project or editable ProjectShell. Opening a shell reads no map shards."),
@@ -209,7 +224,7 @@ export const EDIT_TOOLS: readonly EditToolDefinition[] = [
   tool("rpgkit_tile_rect", "Paint tile rectangle", "paint-rect", "Paint or erase a complete in-bounds rectangle as one editor stroke and one reversible patch.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 }, tile }, ["map", "x", "y", "width", "height", "tile"], true),
   tool("rpgkit_tile_fill", "Flood-fill tile region", "fill-region", "Four-way flood-fill the contiguous region containing x,y on ground or upper. null erases the region.", { map, layer, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, tile }, ["map", "x", "y", "tile"], true),
   tool("rpgkit_passage_paint", "Paint passage override", "paint-passage", "Set one map cell's passage override to pass or block, or clear it with null, through the editor stroke model.", { map, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, value: passage }, ["map", "x", "y", "value"], true),
-  tool("rpgkit_cells_paint", "Paint brush stroke", "paint-cells", "Paint an arbitrary list of cells on the ground, upper or passage layer as one editor stroke and one reversible patch. Ground/upper take a tile id or null; passage takes pass, block or null.", { map, layer: paintLayer, cells, value: paintValue }, ["map", "cells", "value"], true),
+  exactlyOneOf(tool("rpgkit_cells_paint", "Paint brush stroke", "paint-cells", "Paint an arbitrary list of cells on the ground, upper or passage layer as one editor stroke and one reversible patch. Pass one value for a uniform stroke, or a parallel values array for a patterned stroke. Ground/upper take tile ids or null; passage takes pass, block or null.", { map, layer: paintLayer, cells, value: paintValue, values: paintValues }, ["map", "cells"], true), "value", "values"),
   tool("rpgkit_edges_paint", "Paint sheet edges", "paint-edges", "Toggle or clear one-way passage edges (sheet dirEdges) for the ground tiles under the given cells, as one stroke. Edges are project-global: every map using that tile is affected, void cells are skipped, and each sheet cell toggles at most once per call. Inline projects only.", { map, cells, brush: edgeBrush }, ["map", "cells", "brush"], true),
   tool("rpgkit_event_add", "Add event", "add-event", "Add a complete schema-shaped event through the editor event transaction model, optionally at a zero-based index in the map's event list (default: append). IDs must be unique on the map and the footprint must fit.", { map, event: eventValue, index: { type: "integer", minimum: 0 } }, ["map", "event"], true),
   tool("rpgkit_event_update", "Update event fields", "update-event", "Update event id/name/x/y/w/h. Use null to remove optional name/w/h; page content is edited with page tools.", { map, event, changes: { type: "object", additionalProperties: false, properties: { id: { type: "string", pattern: "^[A-Za-z0-9_-]+$" }, name: { type: ["string", "null"] }, x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 }, w: { type: ["integer", "null"], minimum: 1 }, h: { type: ["integer", "null"], minimum: 1 } } } }, ["map", "event", "changes"], true),

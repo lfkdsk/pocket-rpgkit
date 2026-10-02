@@ -37,7 +37,10 @@ import {
   type StoredProject,
   type StudioExample,
   type StudioHost,
+  type StudioPreferences,
   type ThemeChoice,
+  normalizeStudioPreferences,
+  STUDIO_PREFERENCES_KEY,
 } from "./host.ts";
 import { checkProblems } from "./problems.ts";
 
@@ -64,6 +67,7 @@ export class DesktopHost implements StudioHost {
   private listeners = new Set<OpenListener>();
   private commandListeners = new Set<(command: MenuCommand) => void>();
   private systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+  private systemMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   private playTest: BrowserPreview | null = null;
   private lastDirty = false;
 
@@ -241,6 +245,29 @@ export class DesktopHost implements StudioHost {
   onSystemThemeChange(listener: () => void): () => void {
     this.systemDark.addEventListener("change", listener);
     return () => this.systemDark.removeEventListener("change", listener);
+  }
+
+  preferences(): StudioPreferences {
+    try {
+      return normalizeStudioPreferences(JSON.parse(localStorage.getItem(STUDIO_PREFERENCES_KEY) ?? "null"));
+    } catch {
+      return normalizeStudioPreferences(null);
+    }
+  }
+
+  setPreferences(preferences: StudioPreferences): void {
+    try {
+      localStorage.setItem(STUDIO_PREFERENCES_KEY, JSON.stringify(normalizeStudioPreferences(preferences)));
+    } catch { /* preferences remain available for this session */ }
+  }
+
+  systemPrefersReducedMotion(): boolean {
+    return this.systemMotion.matches;
+  }
+
+  onSystemMotionChange(listener: () => void): () => void {
+    this.systemMotion.addEventListener("change", listener);
+    return () => this.systemMotion.removeEventListener("change", listener);
   }
 }
 

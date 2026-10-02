@@ -9,6 +9,7 @@ import type { CommandAddress } from "../engine/commands.ts";
 import type { MapDef, Project, TileId } from "../../src/engine/types.ts";
 import { EditSession, type SessionOperation, type SessionProblem } from "../api/session.ts";
 import type { EditCommandName, EditResponse } from "../api/types.ts";
+import type { MotionChoice, StudioPreferences } from "./host.ts";
 
 export type Tool = "select" | "pencil" | "rect" | "fill" | "picker" | "eraser" | "event";
 export type PaintLayer = "ground" | "upper" | "passage" | "edges";
@@ -49,6 +50,19 @@ export interface LayerVisibility {
   grid: boolean;
 }
 
+export type PresentedLayer = "ground" | "upper" | "events" | "passage";
+export type LayerOpacity = Record<PresentedLayer, number>;
+
+export interface TileSelection {
+  sheet: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Row-major ids, one for each selected sheet cell. */
+  tiles: TileId[];
+}
+
 type Listener = (reason: string) => void;
 
 export class StudioApp {
@@ -62,8 +76,14 @@ export class StudioApp {
   passageBrush: PassageBrush = "block";
   edgeBrush: EdgeBrushValue = { kind: "enter", dir: "up" };
   recentTiles: TileId[] = [];
+  favoriteTiles: NonNullable<TileId>[] = [];
+  tileSelection: TileSelection | null = null;
   view: ViewState = { zoom: 2, panX: 0, panY: 0 };
   visible: LayerVisibility = { ground: true, upper: true, events: true, passage: false, grid: true };
+  opacity: LayerOpacity = { ground: 1, upper: 1, events: 1, passage: 0.82 };
+  motion: MotionChoice = "system";
+  systemReducedMotion = false;
+  recentCommands: string[] = [];
   hover: { x: number; y: number } | null = null;
   /** Set when a jump (from the problems list) should flash the inspector's
    * event section on its next render; the inspector clears it. */
@@ -100,11 +120,13 @@ export class StudioApp {
     this.mapId = maps.some((map) => map.id === start) ? start : maps[0]?.id ?? "";
     this.selection = { kind: "none" };
     this.recentTiles = [];
+    this.tileSelection = null;
     const sheet = session.sheets()[0];
     this.brush = sheet ? `${sheet.id}.0` : null;
     const map = this.currentMap();
     const firstTile = map?.ground.find((tile) => tile !== null);
     if (firstTile) this.brush = firstTile;
+    this.reconcileBrush();
     this.refreshProblems();
     this.emit("load");
   }
@@ -124,6 +146,7 @@ export class StudioApp {
     this.mapId = id;
     this.highlight = null;
     this.selection = { kind: "none" };
+    this.reconcileBrush();
     this.emit("map");
   }
 
@@ -164,7 +187,10 @@ export class StudioApp {
       this.notify("error", response.error.message);
       return;
     }
-    if (response.changed) this.refreshProblems();
+    if (response.changed) {
+      this.reconcileBrush();
+      this.refreshProblems();
+    }
     this.emit("edit");
   }
 
@@ -203,6 +229,32 @@ export class StudioApp {
       if (!event) this.selection = { kind: "none" };
       else if (selection.page >= event.pages.length) this.selection = { kind: "event", eventId: event.id, page: 0 };
     }
+    this.reconcileBrush();
+  }
+
+  /** A pattern is map-local because maps declare their usable sheets. Keep a
+   * valid brush when switching maps or editing that declaration, otherwise
+   * fall back to the first painted/current-sheet tile. */
+  private reconcileBrush(): void {
+    const map = this.currentMap();
+    const sheets = this.session?.sheets() ?? [];
+    if (!map) {
+      this.tileSelection = null;
+      this.brush = null;
+      return;
+    }
+    const valid = (tile: TileId): tile is string => {
+      if (tile === null) return false;
+      const match = /^([a-z0-9_-]+)\.(\d+)$/.exec(tile);
+      if (!match || !(map.sheets ?? []).includes(match[1]!)) return false;
+      const sheet = sheets.find((candidate) => candidate.id === match[1]);
+      return !!sheet && Number(match[2]) < sheet.cols * sheet.rows;
+    };
+    if (this.tileSelection && !this.tileSelection.tiles.every(valid)) this.tileSelection = null;
+    if (this.brush === null || valid(this.brush)) return;
+    const painted = map.ground.find(valid);
+    const firstSheet = sheets.find((sheet) => (map.sheets ?? []).includes(sheet.id));
+    this.brush = painted ?? (firstSheet ? `${firstSheet.id}.0` : null);
   }
 
   refreshProblems(): void {
@@ -241,10 +293,60 @@ export class StudioApp {
 
   setBrush(tile: TileId | null): void {
     this.brush = tile;
+    this.tileSelection = null;
     if (tile !== null) {
       this.recentTiles = [tile, ...this.recentTiles.filter((item) => item !== tile)].slice(0, 12);
     }
     this.emit("brush");
+  }
+
+  setTileSelection(selection: TileSelection): void {
+    this.tileSelection = selection;
+    this.brush = selection.tiles[0] ?? null;
+    const selected = [...new Set(selection.tiles)];
+    this.recentTiles = [...selected, ...this.recentTiles.filter((item) => !selected.includes(item))].slice(0, 12);
+    this.emit("brush");
+  }
+
+  tileAtBrushOffset(dx: number, dy: number): TileId | null {
+    const selection = this.tileSelection;
+    if (!selection) return this.brush;
+    const x = ((dx % selection.width) + selection.width) % selection.width;
+    const y = ((dy % selection.height) + selection.height) % selection.height;
+    return selection.tiles[y * selection.width + x] ?? this.brush;
+  }
+
+  toggleFavoriteTile(tile: NonNullable<TileId>): void {
+    this.favoriteTiles = this.favoriteTiles.includes(tile)
+      ? this.favoriteTiles.filter((item) => item !== tile)
+      : [tile, ...this.favoriteTiles].slice(0, 48);
+    this.emit("preferences");
+  }
+
+  rememberCommand(id: string): void {
+    this.recentCommands = [id, ...this.recentCommands.filter((item) => item !== id)].slice(0, 24);
+    this.emit("preferences");
+  }
+
+  setMotion(choice: MotionChoice): void {
+    this.motion = choice;
+    this.emit("preferences");
+    this.emit("view");
+  }
+
+  get reducedMotion(): boolean {
+    return this.motion === "reduced" || (this.motion === "system" && this.systemReducedMotion);
+  }
+
+  loadPreferences(preferences: StudioPreferences, systemReducedMotion: boolean): void {
+    this.motion = preferences.motion;
+    this.favoriteTiles = preferences.favoriteTiles;
+    this.recentCommands = preferences.recentCommands;
+    this.systemReducedMotion = systemReducedMotion;
+  }
+
+  preferences(): StudioPreferences {
+    return { motion: this.motion, favoriteTiles: [...this.favoriteTiles], recentCommands: [...this.recentCommands] };
   }
 
   notify(level: Notice["level"], text: string): void {

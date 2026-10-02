@@ -26,6 +26,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   {
     title: "Edit",
     items: [
+      { keys: [["Mod", "K"]], action: "Open the command palette" },
       { keys: [["Mod", "Z"]], action: "Undo" },
       { keys: [["Mod", "Shift", "Z"], ["Mod", "Y"]], action: "Redo" },
       { keys: [["Delete"]], action: "Delete the selected event" },
@@ -38,6 +39,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     items: [
       { keys: [["V"], ["B"], ["R"], ["F"], ["E"], ["I"], ["N"]], action: "Select, brush, rectangle, fill, eraser, eyedropper, events" },
       { keys: [["1"], ["2"], ["3"], ["4"]], action: "Ground, upper, passage, edges layer" },
+      { keys: [["Shift", "1"], ["Shift", "2"], ["Shift", "3"], ["Shift", "4"]], action: "Show or hide ground, upper, passage, events" },
       { keys: [["Right-drag"]], action: "Erase while painting" },
       { keys: [["Drag event"]], action: "Move an event (select or event tool)" },
     ],

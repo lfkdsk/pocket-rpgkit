@@ -128,7 +128,9 @@ export function mountMapTree(root: HTMLElement, app: StudioApp): void {
     const empty = shown.length === 0
       ? filter
         ? emptyState("map", "No map matches", `No map id or name contains “${filter}”.`, { label: "Clear filter", onClick: () => { search.value = ""; filter = ""; renderRows(); } })
-        : app.session ? emptyState("map", "No maps", "This project has no maps yet.") : null
+        : app.session
+          ? emptyState("map", "No maps", "Create or import a map to begin building the world.")
+          : emptyState("open", "No project open", "Open or drop a project to start editing maps.")
       : null;
     replace(scroller, spacer, ...rows, dragging ? dropLine : null, empty);
   }

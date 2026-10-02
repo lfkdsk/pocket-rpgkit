@@ -42,6 +42,7 @@ function sunstonePack(): string {
 /** One representative call per modifying operation Studio issues. */
 const EDITS: { name: string; command: Parameters<EditSession["run"]>[0]; args: Record<string, unknown> }[] = [
   { name: "brush stroke", command: "paint-cells", args: { map: "village", layer: "ground", cells: [[1, 1], [2, 1], [3, 2]], value: "town.37" } },
+  { name: "pattern brush stroke", command: "paint-cells", args: { map: "village", layer: "ground", cells: [[1, 1], [2, 1], [1, 2], [2, 2]], values: ["town.1", "town.2", "town.3", "town.4"] } },
   { name: "upper stroke", command: "paint-cells", args: { map: "village", layer: "upper", cells: [[4, 4]], value: "town.12" } },
   { name: "eraser", command: "paint-cells", args: { map: "village", layer: "upper", cells: [[0, 0], [1, 0]], value: null } },
   { name: "passage stroke", command: "paint-cells", args: { map: "village", layer: "passage", cells: [[2, 2], [3, 3]], value: "block" } },

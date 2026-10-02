@@ -134,6 +134,35 @@ export type AgentOutcome =
 // ---- preferences -------------------------------------------------------------------
 
 export type ThemeChoice = "system" | "light" | "dark";
+export type MotionChoice = "system" | "full" | "reduced";
+
+/** Small, project-independent UI preferences. Project bytes and edit history
+ * never contain these values. Hosts may persist them, but must tolerate an
+ * unavailable or corrupt preference store. */
+export interface StudioPreferences {
+  motion: MotionChoice;
+  favoriteTiles: string[];
+  recentCommands: string[];
+}
+
+export const DEFAULT_STUDIO_PREFERENCES: Readonly<StudioPreferences> = {
+  motion: "system",
+  favoriteTiles: [],
+  recentCommands: [],
+};
+
+export const STUDIO_PREFERENCES_KEY = "pocket-rpgkit:studio:preferences:v1";
+
+/** Keep persisted preferences small and turn arbitrary storage bytes into a
+ * complete value. */
+export function normalizeStudioPreferences(value: unknown): StudioPreferences {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const strings = (item: unknown, limit: number): string[] => Array.isArray(item)
+    ? [...new Set(item.filter((entry): entry is string => typeof entry === "string" && entry.length > 0 && entry.length <= 160))].slice(0, limit)
+    : [];
+  const motion = raw.motion === "full" || raw.motion === "reduced" ? raw.motion : "system";
+  return { motion, favoriteTiles: strings(raw.favoriteTiles, 48), recentCommands: strings(raw.recentCommands, 24) };
+}
 
 /** Commands from a host's own menus (the desktop app's menu bar). Studio
  * carries them out, since it owns the document and its history. */
@@ -196,6 +225,11 @@ export interface StudioHost {
   setTheme(choice: ThemeChoice): void;
   systemPrefersDark(): boolean;
   onSystemThemeChange(listener: () => void): () => void;
+
+  preferences(): StudioPreferences;
+  setPreferences(preferences: StudioPreferences): void;
+  systemPrefersReducedMotion(): boolean;
+  onSystemMotionChange(listener: () => void): () => void;
 }
 
 /** Shared by hosts that run rpgkit-check in-process. */

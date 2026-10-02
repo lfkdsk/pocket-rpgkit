@@ -11,12 +11,18 @@ import { mountAgentPanel } from "./agent-panel.ts";
 import { StudioApp, type PaintLayer, type Tool } from "./app.ts";
 import { ArtRegistry, parseTileId } from "./art.ts";
 import { MapCanvas, isTyping } from "./canvas.ts";
+import { CommandPalette, type StudioCommand } from "./command-palette.ts";
 import { emptyState, h, icon, iconButton, MOD, replace } from "./dom.ts";
 import { StudioFiles } from "./files.ts";
 import type { HostCommand, HostFeature, StudioHost, ThemeChoice } from "./host.ts";
 import { BrowserHost } from "./host-browser.ts";
 import { mountInspector } from "./inspector.ts";
-import { eventCopyOp } from "./inspector-model.ts";
+import { eventCopyOp, insertionAddress, insertCommandOp, opLabel, PICKER_ENTRIES } from "./inspector-model.ts";
+import { defaultCommand, flattenCommands } from "../engine/commands.ts";
+import { uniqueEventId } from "../engine/model.ts";
+import { mountLayersPanel } from "./layers-panel.ts";
+import { mountMinimap } from "./minimap.ts";
+import { mountEventHoverCard } from "./event-hover-card.ts";
 import { PlayTest, type PreviewArtImage } from "./preview.ts";
 import { mountPlayTestPanel } from "./preview-panel.ts";
 import { mountMapTree } from "./map-tree.ts";
@@ -29,6 +35,13 @@ const app = new StudioApp();
 const art = new ArtRegistry();
 const files = new StudioFiles(app, art, host);
 const can = (feature: HostFeature) => host.capabilities()[feature];
+app.loadPreferences(host.preferences(), host.systemPrefersReducedMotion());
+document.documentElement.dataset.motion = app.reducedMotion ? "reduced" : "full";
+host.onSystemMotionChange(() => {
+  app.systemReducedMotion = host.systemPrefersReducedMotion();
+  document.documentElement.dataset.motion = app.reducedMotion ? "reduced" : "full";
+  app.emit("view");
+});
 
 const $ = (id: string) => {
   const element = document.getElementById(id);
@@ -62,6 +75,15 @@ host.onSystemThemeChange(() => { if (themeChoice === "system") applyTheme(); });
 let canvas: MapCanvas | null = null;
 applyTheme();
 canvas = new MapCanvas($("canvas-host"), app, art);
+const layersPanel = h("section", { id: "studio-layers", "aria-label": "Map layers" });
+$("canvas-host").appendChild(layersPanel);
+mountLayersPanel(layersPanel, app);
+const minimapRoot = h("div", { id: "studio-minimap", "aria-label": "Map overview" });
+$("canvas-host").appendChild(minimapRoot);
+const minimap = mountMinimap(minimapRoot, app, canvas, art);
+const hoverCardRoot = h("aside", { id: "studio-event-hover", "aria-label": "Event summary" });
+$("canvas-host").appendChild(hoverCardRoot);
+const hoverCard = mountEventHoverCard(hoverCardRoot, app, canvas, art);
 mountMapTree($("maps"), app);
 mountPalette($("palette"), app, art);
 mountInspector($("inspector"), app);
@@ -91,6 +113,7 @@ const agentPanel = mountAgentPanel($("agent"), agent, () => {
   // Like the play-test panel: show the whole map once the canvas has resized.
   requestAnimationFrame(() => requestAnimationFrame(() => canvas?.fit()));
 });
+const commandPalette = new CommandPalette(app, studioCommands);
 
 const TOOLS: [Tool, string, string, string][] = [
   ["select", "select", "Select / move events", "V"],
@@ -107,6 +130,111 @@ const LAYERS: [PaintLayer, string, string][] = [
   ["passage", "Passage", "3"],
   ["edges", "Edges", "4"],
 ];
+
+function addEventFromPalette(): void {
+  const map = app.currentMap();
+  if (!map) return;
+  const selection = app.selection;
+  if (selection.kind !== "cell") {
+    app.setTool("event");
+    app.notify("info", "Event tool active — click an empty map cell to create the event.");
+    canvas?.canvas.focus();
+    return;
+  }
+  const id = uniqueEventId(map.events ?? []);
+  const response = app.run("add-event", {
+    map: map.id,
+    event: { id, x: selection.x, y: selection.y, pages: [{ trigger: "action", commands: [] }] },
+  }, `New event ${id}`);
+  if (response?.ok) {
+    app.select({ kind: "event", eventId: id, page: 0 });
+    selectTab("inspector");
+  }
+}
+
+function addCommandFromPalette(op: string): void {
+  const selection = app.selection;
+  const map = app.currentMap();
+  if (!map || selection.kind !== "event") return;
+  const event = map.events?.find((item) => item.id === selection.eventId);
+  const page = event?.pages[selection.page];
+  if (!event || !page) return;
+  const address = insertionAddress(page.commands, selection.command);
+  if (!address) return;
+  const operation = insertCommandOp({ map: map.id, event: event.id, page: selection.page }, address, defaultCommand(op as Parameters<typeof defaultCommand>[0]));
+  const response = app.run(operation.command, operation.args ?? {}, `Add ${op} command`);
+  if (response?.ok) {
+    app.select({ ...selection, command: address });
+    selectTab("inspector");
+  }
+}
+
+/** Build only from the open map. In a sharded project this never parses an
+ * unopened shard merely because the palette opened. */
+function studioCommands(): StudioCommand[] {
+  const session = app.session;
+  const map = app.currentMap();
+  const selection = app.selection;
+  const noDocument = session ? undefined : "Open a project first";
+  const commands: StudioCommand[] = [
+    { id: "file:open", label: "Open project…", detail: "Open a file", keywords: "file folder project", shortcut: `${MOD}+O`, section: "Actions", run: () => files.openFile() },
+    { id: "file:save", label: "Save", detail: saveLabel(), shortcut: `${MOD}+S`, section: "Actions", disabled: noDocument, run: () => void files.save() },
+    { id: "file:download", label: "Download export", detail: "Export the current project", shortcut: `${MOD}+Shift+E`, section: "Actions", disabled: noDocument, run: () => void files.download() },
+    { id: "edit:undo", label: "Undo", shortcut: `${MOD}+Z`, section: "Actions", disabled: session?.canUndo() ? undefined : "Nothing to undo", run: () => app.undo() },
+    { id: "edit:redo", label: "Redo", shortcut: `${MOD}+Shift+Z`, section: "Actions", disabled: session?.canRedo() ? undefined : "Nothing to redo", run: () => app.redo() },
+    { id: "event:new", label: "New event", detail: selection.kind === "cell" ? `At (${selection.x}, ${selection.y})` : "Activate the event tool", keywords: "create npc", shortcut: "N", section: "Actions", disabled: noDocument, run: addEventFromPalette },
+    { id: "view:fit", label: "Fit map", detail: "Center the whole map", shortcut: "0", section: "Actions", disabled: noDocument, run: () => canvas?.fit() },
+    { id: "view:settings", label: "View settings", detail: "Motion and camera behavior", section: "Actions", run: openViewSettings },
+    { id: "view:theme", label: `Use ${effectiveTheme() === "dark" ? "light" : "dark"} theme`, keywords: "appearance color", section: "Actions", run: toggleTheme },
+    { id: "view:art", label: "Manage project art…", keywords: "image png sheet sprite", section: "Actions", disabled: noDocument, run: openArtDialog },
+    { id: "play:start", label: "Play-test", detail: "Run from the selected cell", shortcut: `${MOD}+Enter`, section: "Actions", disabled: !session ? "Open a project first" : can("preview").available ? undefined : can("preview").reason, run: () => playPanel.open() },
+    ...TOOLS.map(([tool, , label, shortcut]): StudioCommand => ({
+      id: `tool:${tool}`, label, detail: "Select editing tool", shortcut, section: "Actions", disabled: noDocument, run: () => app.setTool(tool),
+    })),
+    ...LAYERS.map(([layer, label, shortcut]): StudioCommand => ({
+      id: `layer:${layer}`, label: `Edit ${label} layer`, detail: "Change the active editing layer", shortcut, section: "Actions", disabled: noDocument, run: () => app.setLayer(layer),
+    })),
+    ...(["ground", "upper", "passage", "events"] as const).map((layer, index): StudioCommand => ({
+      id: `visibility:${layer}`, label: `${app.visible[layer] ? "Hide" : "Show"} ${layer} layer`, detail: "Canvas visibility", shortcut: `Shift+${index + 1}`, section: "Actions", disabled: noDocument,
+      run: () => { app.visible[layer] = !app.visible[layer]; app.emit("view"); renderToolbar(); },
+    })),
+  ];
+  if (!session) return commands;
+
+  commands.push(...session.maps().map((item): StudioCommand => ({
+    id: `map:${item.id}`, label: item.name ?? item.id, detail: `${item.id} · ${item.width}×${item.height}`, keywords: `map ${item.id}`, section: "Maps",
+    run: () => { app.openMap(item.id); canvas?.canvas.focus(); },
+  })));
+  if (!map) return commands;
+  commands.push(...(map.events ?? []).map((event): StudioCommand => ({
+    id: `event:${map.id}:${event.id}`, label: event.name ?? event.id, detail: `${event.id} · (${event.x}, ${event.y}) · ${event.pages.length} page${event.pages.length === 1 ? "" : "s"}`, keywords: "event npc", section: "Events",
+    run: () => {
+      app.select({ kind: "event", eventId: event.id, page: 0 });
+      selectTab("inspector");
+      canvas?.reveal({ x: event.x, y: event.y, w: event.w, h: event.h });
+    },
+  })));
+
+  if (selection.kind === "event") {
+    const event = map.events?.find((item) => item.id === selection.eventId);
+    const page = event?.pages[selection.page];
+    if (event && page) {
+      commands.push(...flattenCommands(page.commands).map((row): StudioCommand => ({
+        id: `command:${map.id}:${event.id}:${selection.page}:${row.key}`,
+        label: opLabel(String(row.command.op)),
+        detail: `${event.name ?? event.id} · ${row.summary}`,
+        keywords: `existing command ${String(row.command.op)} ${row.branchLabel ?? ""}`,
+        section: "Commands",
+        run: () => { app.select({ ...selection, command: row.address }); selectTab("inspector"); },
+      })));
+      commands.push(...PICKER_ENTRIES.map((entry): StudioCommand => ({
+        id: `command:add:${entry.op}`, label: `Add ${entry.label}`, detail: entry.description,
+        keywords: `${entry.op} ${entry.category} insert`, section: "Commands", run: () => addCommandFromPalette(entry.op),
+      })));
+    }
+  }
+  return commands;
+}
 
 /** Menu rows: label, action, shortcut hint, and the reason when disabled. */
 type MenuItem = [string, () => void, string?, string?];
@@ -166,6 +294,8 @@ function renderToolbar(): void {
   replace($("toolbar"),
     h("div", { class: "brand", title: "Pocket RPG Kit Studio" }, h("span", { class: "logo" }, "◆"), h("span", null, "Studio")),
     h("div", { class: "group" },
+      iconButton("search", "Command palette", () => commandPalette.open(), { shortcut: `${MOD}+K`, id: "studio-command-palette", text: true })),
+    h("div", { class: "group" },
       openButton,
       iconButton("save", saveLabel(), () => void files.save(), { shortcut: `${MOD}+S`, disabled: !session || files.saving > 0 || (!files.target && !can("storage").available), id: "studio-save" }),
       iconButton("download", "Download", () => void files.download(), { shortcut: `${MOD}+Shift+E`, disabled: !session, id: "studio-download" })),
@@ -188,6 +318,7 @@ function renderToolbar(): void {
       iconButton("image", "Art…", () => openArtDialog(), { disabled: !session, id: "studio-art", text: true }),
       iconButton("play", can("preview").available ? "Play-test the open document" : `Play-test: ${can("preview").reason}`, () => playPanel.open(), { shortcut: `${MOD}+Enter`, disabled: !session || !can("preview").available, id: "studio-play", pressed: play.open }),
       iconButton("agent", can("agent").available ? "Ask an agent" : `Agent: ${can("agent").reason}`, () => agentPanel.toggle(), { disabled: !session || !can("agent").available, id: "studio-agent", pressed: agentPanel.isOpen }),
+      iconButton("settings", "View settings", () => openViewSettings(), { id: "studio-view-settings" }),
       iconButton(effectiveTheme() === "dark" ? "sun" : "moon", effectiveTheme() === "dark" ? "Light theme" : "Dark theme", toggleTheme, { id: "studio-theme" }),
       iconButton("help", "Keyboard shortcuts", () => openShortcuts(), { shortcut: "?" })),
   );
@@ -353,10 +484,32 @@ function savedText(): string {
   return `saved to ${files.target?.name ?? "disk"}`;
 }
 
+const noticeNodes = new Map<number, HTMLElement>();
+
 function renderNotices(): void {
-  replace($("notices"), app.notices.map((notice) => h("div", { class: `notice ${notice.level}`, role: notice.level === "error" ? "alert" : "status" },
-    h("span", null, notice.text),
-    h("button", { type: "button", class: "icon-button tiny", "aria-label": "Dismiss", onclick: () => app.dismiss(notice.id) }, "×"))));
+  const root = $("notices");
+  const live = new Set(app.notices.map((notice) => notice.id));
+  for (const [id, node] of noticeNodes) {
+    if (live.has(id)) continue;
+    node.remove();
+    noticeNodes.delete(id);
+  }
+  for (const notice of app.notices) {
+    let node = noticeNodes.get(notice.id);
+    if (!node) {
+      node = h("div", {
+        class: `notice ${notice.level}`,
+        role: notice.level === "error" ? "alert" : "status",
+        dataset: { noticeId: String(notice.id) },
+      },
+      h("span", null, notice.text),
+      h("button", { type: "button", class: "icon-button tiny", "aria-label": "Dismiss", onclick: () => app.dismiss(notice.id) }, "×"));
+      noticeNodes.set(notice.id, node);
+    }
+    // appendChild also establishes chronological order without recreating an
+    // existing toast (and therefore without replaying its entrance animation).
+    root.appendChild(node);
+  }
 }
 
 // ---- history ---------------------------------------------------------------------------
@@ -399,6 +552,28 @@ function dialog(title: string, ...content: (Node | null)[]): HTMLDialogElement {
   document.body.appendChild(element);
   element.showModal();
   return element;
+}
+
+function openViewSettings(): void {
+  const choices = [
+    ["system", "Follow system", "Reduce motion when the operating system asks for it."],
+    ["full", "Full motion", "Use smooth zoom, camera glides and pan inertia."],
+    ["reduced", "Reduced motion", "Move the camera immediately and disable inertia."],
+  ] as const;
+  dialog("View settings",
+    h("fieldset", { class: "view-settings", "data-role": "motion-settings" },
+      h("legend", null, "Camera motion"),
+      choices.map(([value, label, hint]) => h("label", { class: "view-setting" },
+        h("input", {
+          type: "radio",
+          name: "studio-motion",
+          value,
+          checked: app.motion === value,
+          onchange: () => app.setMotion(value),
+        }),
+        h("span", null, h("strong", null, label), h("small", null, hint)))),
+      h("p", { class: "hint" }, `System currently ${app.systemReducedMotion ? "prefers reduced motion" : "allows motion"}.`)),
+  );
 }
 
 function openArtDialog(): void {
@@ -490,12 +665,17 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-tab]"))
 // ---- events ------------------------------------------------------------------------------
 
 app.on((reason) => {
-  if (reason === "hover" || reason === "view") {
+  if (reason === "preferences") {
+    host.setPreferences(app.preferences());
+    document.documentElement.dataset.motion = app.reducedMotion ? "reduced" : "full";
+  }
+  if (reason === "hover") {
     renderStatus();
-    if (reason === "view") {
-      const zoom = document.getElementById("studio-zoom");
-      if (zoom) zoom.textContent = `${Math.round(app.view.zoom * 100)}%`;
-    }
+    return;
+  }
+  if (reason === "view") {
+    const zoom = document.getElementById("studio-zoom");
+    if (zoom) zoom.textContent = `${Math.round(app.view.zoom * 100)}%`;
     return;
   }
   if (reason === "notice") {
@@ -535,6 +715,12 @@ function duplicateSelectedEvent(): void {
 window.addEventListener("keydown", (event) => {
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (mod && key === "k") {
+    event.preventDefault();
+    commandPalette.open();
+    return;
+  }
+  if (commandPalette.isOpen) return;
   if (mod && key === "z") {
     if (isTyping(event)) return;
     event.preventDefault();
@@ -549,6 +735,14 @@ window.addEventListener("keydown", (event) => {
   if (mod && key === "d") { if (isTyping(event)) return; event.preventDefault(); duplicateSelectedEvent(); return; }
   if (mod || event.altKey || isTyping(event)) return;
   if (document.querySelector("dialog[open]")) return;
+  if (event.shiftKey && /^Digit[1-4]$/.test(event.code)) {
+    event.preventDefault();
+    const layer = (["ground", "upper", "passage", "events"] as const)[Number(event.code.slice(-1)) - 1]!;
+    app.visible[layer] = !app.visible[layer];
+    app.emit("view");
+    renderToolbar();
+    return;
+  }
   const tool = TOOLS.find(([, , , shortcut]) => shortcut.toLowerCase() === key);
   if (tool) { app.setTool(tool[0]); return; }
   const layer = LAYERS.find(([, , shortcut]) => shortcut === key);
@@ -616,6 +810,9 @@ host.onCommand?.(runHostCommand);
   play,
   agent,
   agentPanel,
+  commandPalette,
+  minimap,
+  hoverCard,
   askAgent,
   frameStats: () => canvas?.stats,
   cellToClient: (x: number, y: number) => canvas?.cellToClient(x, y),
