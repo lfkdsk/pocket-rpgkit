@@ -249,6 +249,17 @@ describe("rpgkit edit event and page operations", () => {
     expect(deleted.result).toMatchObject({ deleted: { id: "gate-greeter" } });
   });
 
+  test("adds an event at an index in the map's event list", () => {
+    const source = serializeProject(fixture());
+    const event = { id: "first", x: 0, y: 0, pages: [{ trigger: "action", commands: [] }] };
+    const added = success(executeEditOperation(source, "add-event", { map: "map", event, index: 0 }));
+    const afterAdd = JSON.parse(added.output) as Project;
+    expect(afterAdd.maps[0]!.events!.map((item) => item.id)).toEqual(["first", "npc"]);
+    expect(applyEditPatch(afterAdd, added.patch!, "reverse")).toEqual(fixture());
+    expect(executeEditOperation(source, "add-event", { map: "map", event, index: 2 }).response)
+      .toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT", path: "$.index" } });
+  });
+
   test("rejects invalid event ids instead of silently normalizing response addresses", () => {
     const rejected = executeEditOperation(serializeProject(fixture()), "add-event", {
       map: "map",

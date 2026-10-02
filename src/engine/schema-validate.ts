@@ -14,10 +14,30 @@ export interface VError {
   msg: string;
 }
 
+/** Values already known to satisfy a schema node: objects/arrays by
+ * identity, and scalar array items by value (a map's ground cells repeat a
+ * few tile ids thousands of times). Only callers that never mutate a
+ * validated value in place may pass one (the editor's protocol keeps every
+ * document revision immutable); a value is skipped only where a previous
+ * walk proved it valid, so the error list is unchanged. */
+export interface SchemaMemo {
+  objects: WeakMap<Schema, WeakSet<object>>;
+  items: WeakMap<Schema, Set<unknown>>;
+  /** Arrays known to equal `base` except at `changed` indexes (ascending,
+   *  distinct; a diff's output). When `base` was proven valid under the same
+   *  schema, only those items are walked. */
+  deltas?: WeakMap<object, { base: unknown[]; changed: readonly number[] }>;
+}
+
+export function createSchemaMemo(): SchemaMemo {
+  return { objects: new WeakMap(), items: new WeakMap() };
+}
+
 export function validateSchema(
   root: Schema,
   instance: unknown,
   schema: Schema = root,
+  memo?: SchemaMemo,
 ): VError[] {
   const errs: VError[] = [];
   const path: (string | number)[] = [];
@@ -27,24 +47,40 @@ export function validateSchema(
 
   const pathText = (): string => "$" + path.map((part) =>
     typeof part === "number" ? `[${part}]` : `.${part}`).join("");
-  const typeMatches = (type: string | readonly string[], v: unknown): boolean => {
-    const types = Array.isArray(type) ? type : [type];
-    return types.some((ty: string) => ({
-      object: v !== null && typeof v === "object" && !Array.isArray(v),
-      array: Array.isArray(v),
-      string: typeof v === "string",
-      integer: typeof v === "number" && Number.isInteger(v),
-      number: typeof v === "number",
-      boolean: typeof v === "boolean",
-      null: v === null,
-    })[ty]);
+  const typeIs = (ty: string, v: unknown): boolean => {
+    switch (ty) {
+      case "object": return v !== null && typeof v === "object" && !Array.isArray(v);
+      case "array": return Array.isArray(v);
+      case "string": return typeof v === "string";
+      case "integer": return typeof v === "number" && Number.isInteger(v);
+      case "number": return typeof v === "number";
+      case "boolean": return typeof v === "boolean";
+      case "null": return v === null;
+      default: return false;
+    }
   };
+  const typeMatches = (type: string | readonly string[], v: unknown): boolean =>
+    Array.isArray(type) ? type.some((ty: string) => typeIs(ty, v)) : typeIs(type as string, v);
 
   const walk = (sch: Schema, v: unknown): boolean => {
     if (sch.$ref) {
       const name = sch.$ref.split("/").pop()!;
       return walk(root.$defs[name], v);
     }
+    if (memo !== undefined && v !== null && typeof v === "object") {
+      if (memo.objects.get(sch)?.has(v)) return true;
+      const valid = check(sch, v);
+      if (valid) {
+        let known = memo.objects.get(sch);
+        if (!known) memo.objects.set(sch, known = new WeakSet());
+        known.add(v);
+      }
+      return valid;
+    }
+    return check(sch, v);
+  };
+
+  const check = (sch: Schema, v: unknown): boolean => {
     let valid = true;
     const fail = (msg: string): void => {
       valid = false;
@@ -81,11 +117,29 @@ export function validateSchema(
         const seen = new Set(v.map((x) => JSON.stringify(x)));
         if (seen.size !== v.length) fail("items must be unique");
       }
-      if (sch.items) v.forEach((item, index) => {
-        path.push(index);
-        if (!walk(sch.items, item)) valid = false;
-        path.pop();
-      });
+      if (sch.items) {
+        let known: Set<unknown> | undefined;
+        if (memo !== undefined) {
+          known = memo.items.get(sch.items);
+          if (!known) memo.items.set(sch.items, known = new Set());
+        }
+        const delta = memo?.deltas?.get(v);
+        const only = delta !== undefined && delta.base.length === v.length && memo!.objects.get(sch)?.has(delta.base)
+          ? delta.changed
+          : undefined;
+        const count = only ? only.length : v.length;
+        for (let at = 0; at < count; at++) {
+          const index = only ? only[at]! : at;
+          const item = v[index];
+          if (item === undefined && !(index in v)) continue; // a hole, as forEach skips
+          const scalar = item === null || typeof item !== "object";
+          if (scalar && known?.has(item)) continue;
+          path.push(index);
+          if (!walk(sch.items, item)) valid = false;
+          else if (scalar) known?.add(item);
+          path.pop();
+        }
+      }
       if (sch.prefixItems) sch.prefixItems.forEach((itemSchema: Schema, index: number) => {
         if (index >= v.length) return;
         path.push(index);

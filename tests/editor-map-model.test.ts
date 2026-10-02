@@ -145,7 +145,8 @@ describe("passage override strokes", () => {
     s = selectLayer(s, "passage");
     s = selectPassageBrush(s, "block");
     s = paint(s, [0, 1, 2]);
-    expect(currentMap(s).passage).toBeUndefined(); // sparse only at export
+    // each stroke commits as one paint-cells operation: sparse at once
+    expect(currentMap(s).passage).toEqual([[0, "block"], [1, "block"], [2, "block"]]);
     expect(s.passageDense[0]!.slice(0, 3)).toEqual(["block", "block", "block"]);
     expect(exportProject(s).maps[0]!.passage).toEqual([[0, "block"], [1, "block"], [2, "block"]]);
     // erase clears
@@ -154,14 +155,17 @@ describe("passage override strokes", () => {
     // switch brush to pass
     s = selectPassageBrush(s, "pass");
     s = paint(s, [1]);
-    expect(exportProject(s).maps[0]!.passage).toEqual([[0, "block"], [1, "pass"], [2, "block"]]);
+    // a new pair appends after the authored ones, as every paint-cells
+    // operation compacts (the runtime reads pairs by index)
+    expect(exportProject(s).maps[0]!.passage).toEqual([[0, "block"], [2, "block"], [1, "pass"]]);
     // undo the pass stroke, then the erase, then the block stroke
     s = undo(s);
     expect(exportProject(s).maps[0]!.passage).toEqual([[0, "block"], [2, "block"]]);
     s = undo(s);
     expect(exportProject(s).maps[0]!.passage).toEqual([[0, "block"], [1, "block"], [2, "block"]]);
     s = undo(s);
-    expect(exportProject(s).maps[0]!.passage).toEqual([]);
+    // undo restores the exact earlier revision, which had no passage layer
+    expect(exportProject(s).maps[0]!.passage).toBeUndefined();
     s = redo(s);
     expect(exportProject(s).maps[0]!.passage).toEqual([[0, "block"], [1, "block"], [2, "block"]]);
     expectValid(s);
@@ -537,9 +541,14 @@ describe("map management", () => {
     expect(copy.name).toBe("First");
     // event ids kept verbatim (map-local uniqueness preserved)
     expect(copy.events!.map((e) => e.id)).toEqual(["evt", "edge"]);
-    // the copy is a deep copy: mutating it leaves the original alone
-    copy.ground[0] = "town.9";
-    expect(s.project.maps[0]!.ground[0]).toBe("town.0");
+    // the copy is a deep copy: it shares no containers with the original
+    // (revisions are immutable, so this is checked by identity, not by
+    // mutating the live document)
+    const original = s.project.maps[0]!;
+    expect(copy.ground).not.toBe(original.ground);
+    expect(copy.ground).toEqual(original.ground);
+    expect(copy.events).not.toBe(original.events);
+    expect(copy.events![0]!.pages).not.toBe(original.events![0]!.pages);
     expectValid(s);
     // undo removes the copy
     s = undo(s);

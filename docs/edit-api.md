@@ -431,7 +431,9 @@ $ bun run rpgkit-edit paint-edges --file examples/sunstone/data/sunstone.json --
 Args: `map` (required), `event` (required: a full event object). Required
 fields: `id` (`^[A-Za-z0-9_-]+$`, unique on the map), `x`, `y` (non-negative
 integers), `pages` (non-empty array). Optional: `name`, `w`, `h` (positive
-integers). The footprint must fit the map.
+integers). The footprint must fit the map. Optional `index` (0..event
+count; default appends) places the new event at that position in the map's
+event list.
 
 ```sh
 $ bun run rpgkit-edit add-event --file examples/sunstone/data/sunstone.json --dry-run \
@@ -934,7 +936,7 @@ that root after symlink resolution. Mutating tools also take `dryRun`.
 | `rpgkit_passage_paint` | `paint-passage` | `file`, `map`, `x`, `y`, `value` | `dryRun` |
 | `rpgkit_cells_paint` | `paint-cells` | `file`, `map`, `cells`, `value` | `layer`, `dryRun` |
 | `rpgkit_edges_paint` | `paint-edges` | `file`, `map`, `cells`, `brush` | `dryRun` |
-| `rpgkit_event_add` | `add-event` | `file`, `map`, `event` | `dryRun` |
+| `rpgkit_event_add` | `add-event` | `file`, `map`, `event` | `index`, `dryRun` |
 | `rpgkit_event_update` | `update-event` | `file`, `map`, `event`, `changes` | `dryRun` |
 | `rpgkit_event_delete` | `delete-event` | `file`, `map`, `event` | `dryRun` |
 | `rpgkit_page_add` | `add-page` | `file`, `map`, `event`, `page` | `index`, `dryRun` |

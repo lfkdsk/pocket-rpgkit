@@ -77,6 +77,26 @@ function projectWithMaps(count: number): Project {
   return project;
 }
 
+/** Meadow with `count` 1x1 maps (ids m0, m1, …): the shard-count limit
+ * needs many shards, not big ones. With Meadow's full map the fixture alone
+ * (validate + SHA-256 of every shard, on a cold JIT) took about 3 s per
+ * build and the test ran past the 5 s default when run on its own. */
+function projectWithTinyMaps(count: number): Project {
+  const project = JSON.parse(MEADOW) as Project;
+  const map = project.maps[0]!;
+  project.maps = Array.from({ length: count }, (_, i) => ({
+    id: `m${i}`,
+    name: map.name,
+    width: 1,
+    height: 1,
+    sheets: map.sheets,
+    ground: [map.ground[0]!],
+    events: [],
+  }));
+  project.start = { ...project.start, map: "m0", x: 0, y: 0 };
+  return project;
+}
+
 /** Meadow whose map has exactly `count` small events. */
 function projectWithEvents(count: number): Project {
   const project = JSON.parse(MEADOW) as Project;
@@ -455,8 +475,8 @@ describe("loose folder limits (checked from file sizes before reading)", () => {
   });
 
   test(`${MAX_SHARDS} map files are read; ${MAX_SHARDS + 1} are refused before any is read`, async () => {
-    expect((await openProjectDirectory(looseFolder(projectWithMaps(MAX_SHARDS)))).shardCount).toBe(MAX_SHARDS);
-    const dir = looseFolder(projectWithMaps(MAX_SHARDS + 1));
+    expect((await openProjectDirectory(looseFolder(projectWithTinyMaps(MAX_SHARDS)))).shardCount).toBe(MAX_SHARDS);
+    const dir = looseFolder(projectWithTinyMaps(MAX_SHARDS + 1));
     await expect(openProjectDirectory(dir)).rejects.toThrow("game/: the pack has 1,025 map shards; a pack can have at most 1,024.");
     expect(dir.reads).toEqual(["project.json"]);
   });

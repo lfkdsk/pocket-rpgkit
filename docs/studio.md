@@ -8,15 +8,16 @@ inspector forms, history panel and a problems list.
 Studio edits through the [`editor/api`](edit-api.md) operations — the same
 ones `rpgkit-edit` and its MCP tools run — so every change Studio makes is a
 reversible `rpgkit-edit/patch-v1` patch. The
-[PocketJS editor](../editor/README.md) does not use `editor/api` yet: it
-edits with its own reducers and undo/redo in `editor/engine/model.ts`. The
-two editors share the file formats (`rpgkit-project/v1` and the sharded
-shell, shard and pack formats), schema validation and the save serializer.
-The test "export matches the PocketJS editor's save bytes for the same
-edits" in `tests/studio-session.test.ts` checks that the same edits on the
-same input save to identical bytes in both. Moving the PocketJS editor onto
-`editor/api` is planned. The PocketJS editor is the one to use on the
-desktop host or a device; Studio is the one to use in a browser.
+[PocketJS editor](../editor/README.md) runs the same operations through
+`editor/api`'s in-memory entry point (Studio uses the text one; see
+[Protocols](protocols.md#2-edit-protocol--rpgkit-edit)) and keeps the same
+patch-v1 history. The two editors also share the file formats
+(`rpgkit-project/v1` and the sharded shell, shard and pack formats), schema
+validation and the save serializer. `tests/editor-api-equivalence.test.ts`
+drives the same edit sequence through both and checks identical patches
+after every step, identical undo/redo stacks and identical saved bytes. The
+PocketJS editor is the one to use on the desktop host or a device; Studio
+is the one to use in a browser.
 
 ![Studio, dark theme](screenshots/studio/studio-dark.png)
 
@@ -353,7 +354,9 @@ draws plus overlays for the visible cells.
 
 Tests: `tests/studio-session.test.ts` (every edit kind is one reversible
 protocol step, packs only rewrite touched shards, export matches the
-PocketJS editor), `tests/studio-host.test.ts` (the host boundary; open, save,
+PocketJS editor), `tests/editor-api-equivalence.test.ts` (the PocketJS
+editor and Studio produce the same patches, history and bytes for the same
+edits), `tests/studio-host.test.ts` (the host boundary; open, save,
 restore, export and folder saves on the in-memory host),
 `tests/studio-directory-save.test.ts` (folder saves with injected write
 failures leave the old version), `tests/studio-import-limits.test.ts`,

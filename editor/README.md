@@ -11,12 +11,13 @@ assets.
 Working in a browser? [Studio](../docs/studio.md) is a browser-native editor
 (DOM + canvas) with a zoomable canvas, inspector forms and a history panel;
 this PocketJS editor is the one that also runs on the desktop host and
-devices. Studio edits through the `editor/api` operations; this editor does
-not use `editor/api` yet and edits with its own reducers and undo/redo in
-`engine/model.ts` (moving it onto `editor/api` is planned). The two share
-the file formats, schema validation and the save serializer, and a test in
-`tests/studio-session.test.ts` checks that the same edits save to identical
-bytes in both.
+devices. Both editors make every change through the `editor/api`
+operations that `rpgkit-edit` runs, and both keep reversible
+`rpgkit-edit/patch-v1` history: Studio through the text entry point, this
+editor through the in-memory one (see
+[Protocols](../docs/protocols.md#2-edit-protocol--rpgkit-edit)).
+`tests/editor-api-equivalence.test.ts` checks that the same edits produce
+identical patches, undo/redo stacks and saved bytes in both.
 
 New to the editor? [`docs/editor-tutorial.md`](../docs/editor-tutorial.md)
 follows one small scenario — a villager NPC with branching dialog and a
@@ -51,8 +52,18 @@ a guard test.
   parent, `text@then`, `text@else`, `text@option1`, `text@cancel`,
   `text@win`/`text@lose`/`text@escape` (battle), or `text@done`/`text@cancel`
   (scene) inserts directly into that branch.
-- **Undo/redo**: every tile drag and every event/page/condition/command
-  transaction is one history step, 64 steps deep.
+- **Undo/redo**: every edit is one `editor/api` operation and one history
+  step, 64 steps deep. A paint drag previews cell by cell and commits as one
+  `paint-cells` (or, for PASS-mode edges, `paint-edges`) operation when it
+  ends; event, page, condition and command edits are `add-event`,
+  `update-event`, `delete-event`, `add-page`, `update-page` or
+  `delete-page`. Undo applies the step's reversible patch backwards and
+  restores the exact earlier document; redo applies it forwards. A stroke on
+  the upper or PASS layer stores its cells as sparse pairs when it commits,
+  so a newly painted cell's pair follows the existing ones. An
+  operation the protocol refuses (for example a resize that would leave the
+  start position outside the map) changes nothing and shows
+  `EDIT REFUSED: ...` in the status bar.
   **UNDO**/**REDO** in the header, or Cmd+Z / Cmd+Shift+Z / Cmd+Y (Cmd is
   Ctrl on Linux).
 - **Compact and resizable layouts**: the editor follows live desktop and web
@@ -90,7 +101,8 @@ a guard test.
     names the old id), display name, width/height (resize expands with void
     or crops; events fully outside are cropped and listed in a persistent
     inspector notice, partially outside clamp — every resize is one undo
-    step), and the sheet list. Unknown fields the schema adds later are
+    step; a resize that would leave the start position outside the map is
+    refused), and the sheet list. Unknown fields the schema adds later are
     preserved untouched.
   - **NEW** creates an empty map after the current one (20×14, its sheets,
     filled with cell 0 of its first declared sheet) and selects it; **DUP**
@@ -151,8 +163,8 @@ a guard test.
   An unedited document saves back byte for byte. After an edit, unchanged
   source spans — including other event and map objects, their property order,
   and whitespace — are reused rather than reformatting the whole file.
-  In a sharded project, switching or saving flushes the active reducer into
-  its shard workspace. Save emits canonical text for dirty shards only plus a
+  In a sharded project, switching or saving flushes the active map's edits
+  into its shard workspace. Save emits canonical text for dirty shards only plus a
   refreshed index/checksum/manifest shell. Dirty state clears only after the
   host acknowledges that exact save; a failed or stale acknowledgement keeps
   unsaved and newer edits dirty.
@@ -258,7 +270,7 @@ desktop bridge writes a single inline document. `rpgkit-edit` can rename an
 indexed map and rewrite its
 transfers, but patch-v1 keeps entry keys stable and does not add/remove map
 shards. Switching away preserves unsaved map content, while reactivating a
-map starts a fresh per-map reducer history. The browser needs a self-contained
+map starts a fresh per-map undo history. The browser needs a self-contained
 pack; a loose shell alone cannot answer map requests.
 
 ## Running on the desktop
@@ -386,11 +398,12 @@ required”; proposal files created elsewhere can still be reviewed there.
 
 ```sh
 bun run build:editor        # dist/editor.{js,pak} for the sim tests
-bun test tests/editor-model.test.ts tests/editor-sim.test.ts \
-  tests/editor-event-sim.test.ts tests/editor-proposal-sim.test.ts \
-  tests/editor-agent-companion.test.ts tests/editor-agent-sim.test.ts \
-  tests/editor-playtest-sim.test.ts
+bun test tests/editor-model.test.ts tests/editor-api-equivalence.test.ts \
+  tests/editor-sim.test.ts tests/editor-event-sim.test.ts \
+  tests/editor-proposal-sim.test.ts tests/editor-agent-companion.test.ts \
+  tests/editor-agent-sim.test.ts tests/editor-playtest-sim.test.ts
 tools/editor-large-quickjs-bench.sh # real-QuickJS 100x100 interaction timing
+tools/editor-sharded-quickjs-check.sh # real-QuickJS sharded open, paint, save
 bun editor/gen-assets.ts    # regenerate the editor's baked inputs
 ```
 
@@ -435,7 +448,10 @@ editor/
                         operations, tool schemas and shared types (the
                         rpgkit-edit CLI/MCP server is a thin adapter over it)
   engine/document.ts    parse, schema-check, source-preserving serialize
-  engine/model.ts       pure tile/event/page reducer and shared history
+  engine/model.ts       edit model: selection, stroke preview, undo/redo;
+                        every change is an editor/api operation
+  engine/edit-rules.ts  history-free edit rules the editor/api operations run
+                        (strokes, event/page edits, maps, sheet edges)
   engine/commands.ts    recursive command addresses and immutable edits
   engine/event-fields.ts validated page/condition/command field adapters
   engine/event-layout.ts responsive inspector geometry and hit-testing

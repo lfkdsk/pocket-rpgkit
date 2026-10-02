@@ -11,6 +11,7 @@ import {
   validateMapDefStructure,
   validateMapIndex,
 } from "../../src/engine/map-repository.ts";
+import { deepClone } from "../../src/engine/clone.ts";
 import type {
   MapDef,
   MapIndexEntry,
@@ -53,7 +54,9 @@ interface PendingSave {
   maps: Map<string, SavedMapRevision>;
 }
 
-const clone = <T>(value: T): T => structuredClone(value);
+// deepClone, not structuredClone: the desktop QuickJS guest has no
+// structuredClone (tests/guest-globals.test.ts).
+const clone = deepClone;
 
 /**
  * Editor-side working set for a ProjectShell. Read accessors return stable,

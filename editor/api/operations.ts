@@ -1,8 +1,14 @@
 // editor/api/operations.ts — pure JSON-in/JSON-out project edit operations.
 //
-// The API deliberately composes editor/engine's reducers and validators. It
+// The API deliberately composes editor/engine's edit rules and validators. It
 // owns wire-level argument checks, stable addresses, diffs and reversible
 // patches; it does not duplicate the editor's mutation rules.
+//
+// Two entry points share one mutation path: executeEditOperation works on
+// source text (CLI, MCP, the Studio session), executeProjectOperation on an
+// immutable in-memory revision (the PocketJS editor, whose QuickJS guest
+// cannot afford to re-parse, re-hash and re-serialize a large project on
+// every brush stroke). Both produce the same changes and patch-v1 values.
 
 import type {
   Command,
@@ -17,6 +23,7 @@ import type {
   TileId,
 } from "../../src/engine/types.ts";
 import { validateMapDefStructure } from "../../src/engine/map-repository.ts";
+import { createSchemaMemo, type SchemaMemo } from "../../src/engine/schema-validate.ts";
 import { sha256Text } from "../../src/engine/map-repository.ts";
 import { canonicalJson } from "../../src/engine/save.ts";
 import {
@@ -70,10 +77,10 @@ import {
   updateSelectedPage,
   movePage,
   type EdgeBrush,
-  type EditorState,
+  type EditRulesState as EditorState,
   type Layer,
   type NewMapOptions,
-} from "../engine/model.ts";
+} from "../engine/edit-rules.ts";
 import {
   loadProject,
   semanticEqual,
@@ -132,7 +139,7 @@ const ARGUMENT_KEYS: Record<EditCommandName, readonly string[]> = {
   "paint-passage": ["map", "x", "y", "value"],
   "paint-cells": ["map", "layer", "cells", "value"],
   "paint-edges": ["map", "cells", "brush"],
-  "add-event": ["map", "event"],
+  "add-event": ["map", "event", "index"],
   "update-event": ["map", "event", "changes"],
   "delete-event": ["map", "event"],
   "add-page": ["map", "event", "page", "index"],
@@ -286,8 +293,23 @@ function objectArg(args: Record<string, unknown>, key: string): Record<string, u
   return value;
 }
 
+/** Deep copy of a JSON value. Not structuredClone: the QuickJS guest the
+ * PocketJS editor runs in has none. Own `__proto__` keys stay data. */
 function cloneJson<T>(value: T): T {
-  return structuredClone(value);
+  if (Array.isArray(value)) return value.map(cloneJson) as T;
+  if (value !== null && typeof value === "object") {
+    const copy: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      const item = cloneJson((value as Record<string, unknown>)[key]);
+      if (key === "__proto__") {
+        Object.defineProperty(copy, key, { value: item, enumerable: true, configurable: true, writable: true });
+      } else {
+        copy[key] = item;
+      }
+    }
+    return copy as T;
+  }
+  return value;
 }
 
 function isInlineProject(project: ProjectSource): project is Project {
@@ -317,7 +339,7 @@ interface DocumentError {
 
 /** Invariants the JSON Schema cannot express but the runtime assumes. Also
  * reject duplicate ids so every advertised map/event address is unambiguous. */
-function structuralErrors(project: ProjectSource): DocumentError[] {
+function structuralErrors(project: ProjectSource, checkedMaps?: WeakSet<object>, trace?: DiffTrace): DocumentError[] {
   const errors: DocumentError[] = [];
   if (!isInlineProject(project)) {
     const seen = new Set<string>();
@@ -329,10 +351,16 @@ function structuralErrors(project: ProjectSource): DocumentError[] {
   }
   const mapIds = new Set<string>();
   project.maps.forEach((map, mapIndex) => {
-    try {
-      validateMapDefStructure(map);
-    } catch (error) {
-      errors.push({ path: `$.maps[${mapIndex}]`, msg: error instanceof Error ? error.message : String(error) });
+    const base = trace?.bases.get(map) as MapDef | undefined;
+    if (checkedMaps && trace && base && checkedMaps.has(base) && groundCellsOnly(map, base, trace)) {
+      checkedMaps.add(map);
+    } else if (!checkedMaps?.has(map)) {
+      try {
+        validateMapDefStructure(map);
+        checkedMaps?.add(map);
+      } catch (error) {
+        errors.push({ path: `$.maps[${mapIndex}]`, msg: error instanceof Error ? error.message : String(error) });
+      }
     }
     if (mapIds.has(map.id)) errors.push({ path: `$.maps[${mapIndex}].id`, msg: `duplicate map id ${JSON.stringify(map.id)}` });
     mapIds.add(map.id);
@@ -355,6 +383,14 @@ function structuralErrors(project: ProjectSource): DocumentError[] {
     }
   }
   return errors;
+}
+
+/** Problems the schema cannot express that make a schema-valid document
+ * uneditable through this protocol (duplicate ids, events or the start
+ * position outside their map, inconsistent layer sizes). Editors refuse to
+ * open such a document rather than refuse every later edit. */
+export function documentStructureErrors(project: ProjectSource): { path: string; msg: string }[] {
+  return structuralErrors(project);
 }
 
 function loadValidProject(source: string): ProjectSource {
@@ -456,7 +492,7 @@ function tileAddress(mapId: string, layer: Layer, x: number, y: number): string 
 }
 
 function editorAt(project: Project, mapIndex: number, eventId?: string, pageIndex?: number): EditorState {
-  let state = createEditorState(project);
+  let state = createEditorState(project, { lazyCaches: true });
   state = selectMap(state, mapIndex);
   if (eventId !== undefined) {
     state = selectEvent(state, eventId, pageIndex ?? 0);
@@ -560,22 +596,87 @@ const ABSENT: PatchValue = Object.freeze({ exists: false });
  * compared per element (tile edits stay small); a length change replaces the
  * array as one reversible unit (event/page/command insertion stays atomic). */
 export function diffJson(before: unknown, after: unknown, path = ""): EditChange[] {
-  if (semanticEqual(before, after)) return [];
-  if (Array.isArray(before) && Array.isArray(after) && before.length === after.length) {
-    return before.flatMap((value, index) => diffJson(value, after[index], `${path}/${index}`));
-  }
-  if (isRecord(before) && isRecord(after)) {
+  const changes: EditChange[] = [];
+  diffInto(before, after, path, changes);
+  return changes;
+}
+
+/** Same-length arrays an edit rule built from a base array, with the
+ * indexes it changed (ascending, distinct, each item !== the base item).
+ * The diff walk visits only those items instead of the whole array. */
+const KNOWN_ARRAY_DELTAS = new WeakMap<object, { base: unknown[]; changed: readonly number[] }>();
+
+/** What a diff walk learned about two revisions: the before container of
+ *  every container it descended into, and for same-length arrays the
+ *  indexes whose items are not the same value. Validation uses it to
+ *  re-check only those items (see SchemaMemo.deltas). */
+interface DiffTrace {
+  bases: WeakMap<object, object>;
+  arrays: WeakMap<object, { base: unknown[]; changed: readonly number[] }>;
+}
+
+/** Equal values (including shared, untouched revisions) add nothing; the
+ * walk only descends where containers differ, so diffing two revisions that
+ * share structure costs the size of what changed. */
+function diffInto(before: unknown, after: unknown, path: string, changes: EditChange[], trace?: DiffTrace): void {
+  if (before === after) return;
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (before.length === after.length) {
+      const known = KNOWN_ARRAY_DELTAS.get(after);
+      let changed: number[];
+      if (known !== undefined && known.base === before) {
+        changed = known.changed as number[];
+        for (const index of changed) diffInto(before[index], after[index], `${path}/${index}`, changes, trace);
+      } else {
+        changed = [];
+        for (let index = 0; index < before.length; index++) {
+          const value = before[index];
+          const next = after[index];
+          if (value === next) continue;
+          changed.push(index);
+          diffInto(value, next, `${path}/${index}`, changes, trace);
+        }
+      }
+      if (trace) {
+        trace.bases.set(after, before);
+        trace.arrays.set(after, { base: before, changed });
+      }
+      return;
+    }
+  } else if (isRecord(before) && isRecord(after)) {
+    trace?.bases.set(after, before);
     const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-    const changes: EditChange[] = [];
     for (const key of keys) {
       const child = `${path}/${pointerEscape(key)}`;
       if (!own(before, key)) changes.push({ path: child, before: ABSENT, after: present(after[key]) });
       else if (!own(after, key)) changes.push({ path: child, before: present(before[key]), after: ABSENT });
-      else changes.push(...diffJson(before[key], after[key], child));
+      else diffInto(before[key], after[key], child, changes, trace);
     }
-    return changes;
+    return;
+  } else if (semanticEqual(before, after)) {
+    return;
   }
-  return [{ path, before: present(before), after: present(after) }];
+  changes.push({ path, before: present(before), after: present(after) });
+}
+
+/** A map whose only difference from an already structure-checked map is
+ * some ground cells, each a string or null, passes the same check. */
+function groundCellsOnly(map: MapDef, base: MapDef, trace: DiffTrace): boolean {
+  const next = map as unknown as Record<string, unknown>;
+  const prior = base as unknown as Record<string, unknown>;
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(prior).length) return false;
+  for (const key of keys) {
+    if (key === "ground") continue;
+    if (!own(prior, key) || next[key] !== prior[key]) return false;
+  }
+  const delta = trace.arrays.get(map.ground);
+  if (!delta || delta.base !== base.ground) return false;
+  for (const index of delta.changed) {
+    const tile = map.ground[index];
+    if (tile !== null && typeof tile !== "string") return false;
+  }
+  return true;
 }
 
 export function semanticHash(value: unknown): string {
@@ -861,8 +962,18 @@ function paintIndices(
   state = brush.state;
   state = strokeStart(state, brush.tile === null);
   for (const index of indices) state = paintCell(state, index);
+  const stroke = state.stroke;
   state = strokeEnd(state);
-  return exportProject(state);
+  const edited = exportProject(state);
+  if (layer === "ground" && stroke && stroke.cells.length > 0) {
+    // The stroke painted a fresh copy of the ground and changed each listed
+    // cell exactly once, so these are the only items that differ.
+    const ground = edited.maps[mapIndex]!.ground;
+    if (ground === stroke.working) {
+      KNOWN_ARRAY_DELTAS.set(ground, { base: stroke.before, changed: stroke.cells.slice().sort((a, b) => a - b) });
+    }
+  }
+  return edited;
 }
 
 function passageValueArg(args: Record<string, unknown>): "pass" | "block" | null {
@@ -1303,12 +1414,23 @@ function mutate(command: EditCommandName, project: Project, args: Record<string,
     }
     const event = cloneJson(raw) as unknown as GameEvent;
     assertEventBounds(map, event, "$.event");
+    const count = map.events?.length ?? 0;
+    const index = integerArg(args, "index", { min: 0, max: count, optional: true }) ?? count;
     let state = editorAt(project, mapIndex);
     state = createEventAt(state, event.x, event.y);
     state = updateSelectedEvent(state, () => event);
-    const edited = exportProject(state);
+    let edited = exportProject(state);
     const inserted = edited.maps[mapIndex]!.events!.find((candidate) => candidate.id === event.id);
     if (!inserted) throw new EditApiError("INVALID_EDIT", "editor model could not create the requested event", "$.event");
+    if (index !== count) {
+      // Events append; an explicit index places the new event (for example a
+      // duplicate directly after its source) without touching the others.
+      const events = edited.maps[mapIndex]!.events!.slice();
+      events.splice(index, 0, events.pop()!);
+      const maps = edited.maps.slice();
+      maps[mapIndex] = { ...maps[mapIndex]!, events };
+      edited = { ...edited, maps };
+    }
     return { project: edited, addresses: [eventAddress(mapId, event.id)], result: cloneJson(inserted) };
   }
 
@@ -1623,5 +1745,240 @@ export function executeEditOperation(
     return { response, output };
   } catch (error) {
     return fail(commandValue || undefined, error);
+  }
+}
+
+// ---- in-memory revisions -----------------------------------------------------
+
+/** Caches for one chain of immutable project revisions. Every value reached
+ * from a revision handed to executeProjectOperation must never be mutated in
+ * place: the caches are keyed by object identity. */
+export interface EditMemo {
+  /** Subtrees already proven schema-valid (see SchemaMemo). */
+  readonly schema: SchemaMemo;
+  /** Maps whose runtime structure check already passed. */
+  readonly maps: WeakSet<object>;
+  /** semanticHash per revision. */
+  readonly hashes: WeakMap<object, string>;
+}
+
+export function createEditMemo(): EditMemo {
+  return { schema: createSchemaMemo(), maps: new WeakSet(), hashes: new WeakMap() };
+}
+
+/** The changes between two revisions. Its patch-v1 value is computed on
+ * demand (projectEditPatch): the hashes cover the whole document, which a
+ * QuickJS guest cannot afford on every stroke of a large map. */
+export interface ProjectEdit {
+  readonly before: Project;
+  readonly after: Project;
+  readonly changes: readonly EditChange[];
+}
+
+export interface ProjectOperationSuccess {
+  ok: true;
+  command: EditCommandName;
+  changed: boolean;
+  /** The resulting revision; the input revision itself when unchanged. */
+  project: Project;
+  addresses: string[];
+  result: unknown;
+  edit: ProjectEdit;
+}
+
+export type ProjectOperationResult = ProjectOperationSuccess | EditFailure;
+
+export interface ProjectOperation {
+  command: EditCommandName;
+  args?: Record<string, unknown>;
+}
+
+function validateRevision(project: Project, memo: EditMemo, trace: DiffTrace): void {
+  const errors: DocumentError[] = validateProject(project, { ...memo.schema, deltas: trace.arrays });
+  if (errors.length === 0) errors.push(...structuralErrors(project, memo.maps, trace));
+  if (errors.length > 0) {
+    const first = errors[0]!;
+    throw new EditApiError(
+      "INVALID_EDIT",
+      `edit would make the project invalid at ${first.path}: ${first.msg}`,
+      first.path,
+      first.msg,
+      undefined,
+      errors,
+    );
+  }
+}
+
+/** Execute one operation against an in-memory revision with the same
+ * mutation, validation and diff executeEditOperation uses for text. The input
+ * must be a valid revision (one this API produced, or a validated load). */
+export function executeProjectOperation(
+  project: Project,
+  commandValue: string,
+  rawArgs: unknown,
+  memo: EditMemo,
+): ProjectOperationResult {
+  try {
+    const { command, args } = validateEditOperationInput(commandValue, rawArgs);
+    if (!WRITE_COMMANDS.has(command)) {
+      return {
+        ok: true,
+        command,
+        changed: false,
+        project,
+        addresses: [],
+        result: command === "validate" ? { valid: true, errors: [] } : readOperation(command, project, args),
+        edit: { before: project, after: project, changes: [] },
+      };
+    }
+    const mutation = mutate(command, project, args);
+    const changes: EditChange[] = [];
+    const trace: DiffTrace = { bases: new WeakMap(), arrays: new WeakMap() };
+    diffInto(project, mutation.project, "", changes, trace);
+    validateRevision(mutation.project, memo, trace);
+    const after = changes.length > 0 ? mutation.project : project;
+    return {
+      ok: true,
+      command,
+      changed: changes.length > 0,
+      project: after,
+      addresses: mutation.addresses,
+      result: mutation.result,
+      edit: { before: project, after, changes },
+    };
+  } catch (error) {
+    return fail(commandValue || undefined, error).response as EditFailure;
+  }
+}
+
+/** Several operations as one edit: all apply or none does. */
+export function executeProjectTransaction(
+  project: Project,
+  operations: readonly ProjectOperation[],
+  memo: EditMemo,
+): ProjectOperationResult {
+  let current = project;
+  let last: ProjectOperationSuccess | undefined;
+  for (const operation of operations) {
+    const response = executeProjectOperation(current, operation.command, operation.args ?? {}, memo);
+    if (!response.ok) return response;
+    last = response;
+    current = response.project;
+  }
+  if (!last) {
+    return { ok: false, command: "transaction", error: { code: "EMPTY_TRANSACTION", message: "a transaction needs at least one operation" } };
+  }
+  const changes = current === project ? [] : diffJson(project, current);
+  const after = changes.length > 0 ? current : project;
+  return { ...last, changed: changes.length > 0, project: after, edit: { before: project, after, changes } };
+}
+
+function revisionHash(project: Project, memo: EditMemo): string {
+  let hash = memo.hashes.get(project);
+  if (hash === undefined) {
+    hash = semanticHash(project);
+    memo.hashes.set(project, hash);
+  }
+  return hash;
+}
+
+/** The patch-v1 value of an edit: byte-identical to the patch the text
+ * protocol reports for the same operation on the same document. */
+export function projectEditPatch(edit: ProjectEdit, memo: EditMemo): EditPatch {
+  return {
+    format: "rpgkit-edit/patch-v1",
+    beforeHash: revisionHash(edit.before, memo),
+    afterHash: revisionHash(edit.after, memo),
+    changes: edit.changes.map((change) => ({ path: change.path, before: change.before, after: change.after })),
+  };
+}
+
+/** Copy-on-write counterpart of setSide: only the containers on the path
+ * are copied, so the result shares every untouched subtree. */
+function setSideShared(root: unknown, tokens: readonly string[], at: number, side: PatchValue): unknown {
+  if (at === tokens.length) {
+    if (!side.exists) throw new EditApiError("INVALID_PATCH", "a patch cannot remove the document root", "$.patch.changes[].after");
+    return cloneJson(side.value);
+  }
+  const token = tokens[at]!;
+  const last = at === tokens.length - 1;
+  if (Array.isArray(root)) {
+    const index = Number(token);
+    if (!/^\d+$/.test(token) || index >= root.length || (last && !side.exists)) {
+      throw new EditApiError(
+        "INVALID_PATCH",
+        last ? "array patch entries must replace an existing index" : "patch path contains a missing array index",
+        "$.patch.changes[].path",
+        "existing array index",
+        token,
+      );
+    }
+    const copy = root.slice();
+    copy[index] = last ? cloneJson((side as { value: JsonValue }).value) : setSideShared(root[index], tokens, at + 1, side);
+    return copy;
+  }
+  if (!isRecord(root)) {
+    throw new EditApiError("INVALID_PATCH", "patch path parent is not a container", "$.patch.changes[].path");
+  }
+  if (!last && !own(root, token)) {
+    throw new EditApiError("INVALID_PATCH", "patch path contains a missing object property", "$.patch.changes[].path", "existing own property", token);
+  }
+  const copy: Record<string, unknown> = {};
+  for (const key of Object.keys(root)) {
+    Object.defineProperty(copy, key, { value: root[key], enumerable: true, configurable: true, writable: true });
+  }
+  if (!last) {
+    copy[token] = setSideShared(root[token], tokens, at + 1, side);
+  } else if (side.exists) {
+    Object.defineProperty(copy, token, { value: cloneJson(side.value), enumerable: true, configurable: true, writable: true });
+  } else {
+    delete copy[token];
+  }
+  return copy;
+}
+
+/** Undo (`reverse`) or redo (`forward`) an edit on the revision it left (or
+ * found). Every change's precondition is checked like the `save` operation
+ * does; the result must equal the edit's other revision, which is returned
+ * itself so the history keeps the exact earlier document. */
+export function applyProjectEdit(
+  project: Project,
+  edit: ProjectEdit,
+  direction: "forward" | "reverse",
+): { ok: true; project: Project } | EditFailure {
+  try {
+    const source = direction === "forward" ? edit.before : edit.after;
+    const target = direction === "forward" ? edit.after : edit.before;
+    if (project === source) {
+      // The document is the very revision the edit was recorded against, so
+      // the patch's result is the other recorded revision. Diff changes never
+      // overlap, which lets every precondition be checked on it directly.
+      for (const change of edit.changes) {
+        const expected = direction === "forward" ? change.before : change.after;
+        const actual = sideAt(project, pointerTokens(change.path));
+        if (!samePatchSide(actual, expected)) {
+          throw new EditApiError("PATCH_CHANGE_MISMATCH", `patch precondition failed at ${change.path || "$"}`, change.path || "$", expected, actual);
+        }
+      }
+      return { ok: true, project: target };
+    }
+    let next: unknown = project;
+    const ordered = direction === "forward" ? edit.changes : [...edit.changes].reverse();
+    for (const change of ordered) {
+      const tokens = pointerTokens(change.path);
+      const expected = direction === "forward" ? change.before : change.after;
+      const replacement = direction === "forward" ? change.after : change.before;
+      const actual = sideAt(next, tokens);
+      if (!samePatchSide(actual, expected)) {
+        throw new EditApiError("PATCH_CHANGE_MISMATCH", `patch precondition failed at ${change.path || "$"}`, change.path || "$", expected, actual);
+      }
+      next = setSideShared(next, tokens, 0, replacement);
+    }
+    if (!semanticEqual(next, target)) {
+      throw new EditApiError("INVALID_PATCH", "patch result does not match its recorded revision", "$.patch");
+    }
+    return { ok: true, project: target };
+  } catch (error) {
+    return fail("save", error).response as EditFailure;
   }
 }

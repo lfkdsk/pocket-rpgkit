@@ -266,13 +266,12 @@ For editing in a browser there is also **Studio**
 [desktop app](docs/studio-desktop.md) that saves project folders in place,
 runs local agents and runs `rpgkit-check`'s engine checks): a DOM + canvas
 editor with a zoomable canvas, tile palette, inspector forms and a history
-panel. Studio edits through the `editor/api` operations that `rpgkit-edit`
-runs; this PocketJS editor still uses its own reducers and undo/redo in
-`editor/engine/model.ts` (moving it onto `editor/api` is planned). The two
-share the file formats, schema validation and the save serializer, and a
-test in `tests/studio-session.test.ts` checks that the same edits save to
-identical bytes in both. This PocketJS editor is the one that also runs on
-devices.
+panel. Both Studio and this PocketJS editor make every change through the
+`editor/api` operations that `rpgkit-edit` runs and keep reversible
+`rpgkit-edit/patch-v1` undo/redo history; a test in
+`tests/editor-api-equivalence.test.ts` checks that the same edits produce
+identical patches, history and saved bytes in both. This PocketJS editor is
+the one that also runs on devices.
 
 What it does today:
 
@@ -1959,6 +1958,29 @@ letterboxes small maps and follows the player on large ones.
 | `web-app` (wasm) | wasm core, `tools/web.ts` player pages | same bundle; save codes when no fs mount |
 | sim (`hosts/sim`) | wasm core, headless | deterministic tapes and framebuffer hashes; the example suites run here |
 | `psp` | PSP core | not gated by this repo; the vendor build's `pocket check --target psp` is the admission path for a consuming app (512px baked canvases, PSM_4444) |
+
+### Guest globals
+
+The desktop host runs bundles on QuickJS, which has the ECMAScript built-ins,
+`console`, `performance`, `queueMicrotask` and `atob`/`btoa`, and the host's
+objects (`ui`, `fs`, `audio`, ...), but none of Bun's or the browser's extras:
+no `structuredClone`, `TextEncoder`/`TextDecoder`, `setTimeout`/`setInterval`,
+`crypto`, `URL` or `fetch`, and `console` has only `log`, `info`, `warn`,
+`error` and `debug`. The tests run on Bun, so a call to one of those passes
+every sim test and throws on the desktop. Use the engine's helpers instead
+(`deepClone` in `src/engine/clone.ts`, `utf8Encode` in `src/engine/save.ts`,
+`sha256Text` in `src/engine/map-repository.ts`).
+
+`tests/guest-globals.test.ts` enforces this: it walks the module graph of
+every app, test fixture and package export (the code that ends up in a guest
+bundle; `pocket-rpgkit/editor-api` is the Bun/Node edit protocol and is not
+included), type-checks it, and fails on any identifier the TypeScript or Bun
+libraries declare that the guest lacks, any missing built-in member, and any
+import other than relative files, `solid-js` and `@pocketjs/framework`
+(`typeof X` feature checks are allowed). The allowlist,
+`tests/fixtures/quickjs-guest-globals.json`, is measured in the real desktop
+QuickJS realm; after a PocketJS update, `tools/editor-sharded-quickjs-check.sh`
+reports any difference and `--write-globals` refreshes it.
 
 ## Repository layout
 

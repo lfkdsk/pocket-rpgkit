@@ -5,6 +5,7 @@ import type { GameEvent, JsonValue, MapDef, Project, TileId } from "../../src/en
 import { validateSchema, type VError } from "../../src/engine/schema-validate.ts";
 import { validateMapDefStructure, sha256Text } from "../../src/engine/map-repository.ts";
 import { canonicalJson } from "../../src/engine/save.ts";
+import { deepClone } from "../../src/engine/clone.ts";
 import { validateProject } from "../engine/document.ts";
 import type { EditChange, PatchValue } from "../api/types.ts";
 import proposalSchema from "./schema.json";
@@ -50,7 +51,7 @@ function pointerTokens(path: string): string[] {
 }
 
 function present(value: unknown): PatchValue {
-  return { exists: true, value: structuredClone(value) as JsonValue };
+  return { exists: true, value: deepClone(value) as JsonValue };
 }
 
 const ABSENT: PatchValue = { exists: false };
@@ -83,7 +84,7 @@ function setSide(root: unknown, path: string, side: PatchValue): unknown {
   const tokens = pointerTokens(path);
   if (tokens.length === 0) {
     if (!side.exists) throw new ProposalError("INVALID_PROPOSAL", "proposal cannot remove the document root", path);
-    return structuredClone(side.value);
+    return deepClone(side.value);
   }
   let cursor = root;
   for (let index = 0; index < tokens.length - 1; index++) {
@@ -101,9 +102,9 @@ function setSide(root: unknown, path: string, side: PatchValue): unknown {
     if (!Number.isInteger(index) || index < 0 || index >= cursor.length || !side.exists) {
       throw new ProposalError("INVALID_PROPOSAL", `proposal array change must replace an existing index at ${path}`, path);
     }
-    cursor[index] = structuredClone(side.value);
+    cursor[index] = deepClone(side.value);
   } else if (cursor !== null && typeof cursor === "object") {
-    if (side.exists) Object.defineProperty(cursor, last, { value: structuredClone(side.value), enumerable: true, configurable: true, writable: true });
+    if (side.exists) Object.defineProperty(cursor, last, { value: deepClone(side.value), enumerable: true, configurable: true, writable: true });
     else delete (cursor as Record<string, unknown>)[last];
   } else throw new ProposalError("INVALID_PROPOSAL", `proposal path parent is not a container at ${path}`, path);
   return root;
@@ -145,7 +146,7 @@ function validateCandidate(project: Project): void {
 }
 
 function applyChanges(project: Project, changes: readonly EditChange[]): Project {
-  let next: unknown = structuredClone(project);
+  let next: unknown = deepClone(project);
   for (const change of changes) {
     const actual = sideAt(next, change.path);
     if (!sameSide(actual, change.before)) {
@@ -213,7 +214,7 @@ export function parseProposal(value: unknown): EditProposal {
       errors,
     );
   }
-  return structuredClone(value) as EditProposal;
+  return deepClone(value) as EditProposal;
 }
 
 export function assessHunk(project: Project, hunk: EditProposal["hunks"][number]): HunkAssessment {

@@ -13,7 +13,9 @@ mod editor_large_quickjs_bench {
     const RIGHT: u32 = 0x0020;
     const DOWN: u32 = 0x0040;
     const LEFT: u32 = 0x0080;
+    const TRIANGLE: u32 = 0x1000;
     const CIRCLE: u32 = 0x2000;
+    const SQUARE: u32 = 0x8000;
     const VIEWPORT: (u32, u32) = (480, 272);
     const FRAME_BUDGET_MS: f64 = 1_000.0 / 60.0;
 
@@ -181,6 +183,12 @@ mod editor_large_quickjs_bench {
 
     fn print_stats(pass: &str, case: &str, samples: &[Sample]) {
         assert!(samples.len() >= 600, "benchmark cases need at least 600 frames");
+        print_sampled(pass, case, samples);
+    }
+
+    /// Stats for one kind of frame (a commit, an undo), which a run cannot
+    /// repeat 600 times on one document.
+    fn print_sampled(pass: &str, case: &str, samples: &[Sample]) {
         let mut qjs: Vec<f64> = samples.iter().map(|sample| sample.qjs_ms).collect();
         let mut surface: Vec<f64> = samples.iter().map(|sample| sample.surface_ms).collect();
         let mut total: Vec<f64> = samples
@@ -279,6 +287,45 @@ mod editor_large_quickjs_bench {
         print_stats(pass, "paint-stroke-100x100", &samples);
     }
 
+    /// Single edits: each click paints one new cell (press frame) and the
+    /// release commits it as one edit (commit frame). Then the history is
+    /// walked back and forth one step per frame.
+    fn single_edits(dist: &std::path::Path, pass: &str) {
+        let mut bench = Bench::boot(dist, "click");
+        let mut press = Vec::with_capacity(198);
+        let mut commit = Vec::with_capacity(198);
+        let mut undo = Vec::with_capacity(128);
+        let mut redo = Vec::with_capacity(128);
+        for repetition in 0..2 {
+            if repetition > 0 {
+                bench.inject_large_map();
+            }
+            let mut setup = Vec::new();
+            bench.pulse(LEFT, &mut setup);
+            bench.pulse(DOWN, &mut setup);
+            bench.pulse(CIRCLE, &mut setup);
+            bench.pulse(RIGHT, &mut setup);
+            for _ in 0..99 {
+                bench.pulse(RIGHT, &mut setup);
+                press.push(bench.frame(CIRCLE));
+                commit.push(bench.frame(0));
+            }
+            assert_eq!(bench.state()["dirty"].as_bool(), Some(true));
+            for _ in 0..64 {
+                undo.push(bench.frame(SQUARE));
+                bench.frame(0);
+            }
+            for _ in 0..64 {
+                redo.push(bench.frame(TRIANGLE));
+                bench.frame(0);
+            }
+        }
+        print_sampled(pass, "click-press-100x100", &press);
+        print_sampled(pass, "click-commit-100x100", &commit);
+        print_sampled(pass, "undo-100x100", &undo);
+        print_sampled(pass, "redo-100x100", &redo);
+    }
+
     #[test]
     #[ignore]
     fn large_editor_interactions() {
@@ -288,5 +335,6 @@ mod editor_large_quickjs_bench {
         canvas_pan(&dist, &pass);
         palette_scroll(&dist, &pass);
         paint(&dist, &pass);
+        single_edits(&dist, &pass);
     }
 }

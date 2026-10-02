@@ -2,7 +2,7 @@
 // against src/data/schema.json, and canonical serialize. Pure TS (no
 // host imports), so the same gate runs in bun unit tests and the guest.
 
-import { validateSchema, type VError } from "../../src/engine/schema-validate.ts";
+import { validateSchema, type SchemaMemo, type VError } from "../../src/engine/schema-validate.ts";
 import type { Project } from "../../src/engine/types.ts";
 import { PROJECT_SCHEMA } from "./projects.ts";
 
@@ -24,9 +24,10 @@ export function loadProject(text: string): LoadedProject {
   return { project: parsed as Project, errors: validateSchema(PROJECT_SCHEMA, parsed) };
 }
 
-/** Validate an in-memory project before export. */
-export function validateProject(project: Project): VError[] {
-  return validateSchema(PROJECT_SCHEMA, project);
+/** Validate an in-memory project before export. `memo` skips subtrees an
+ *  earlier call proved valid; see SchemaMemo for the immutability contract. */
+export function validateProject(project: Project, memo?: SchemaMemo): VError[] {
+  return validateSchema(PROJECT_SCHEMA, project, PROJECT_SCHEMA, memo);
 }
 
 /** Canonical wire form: 2-space indent + trailing LF, the exact spelling

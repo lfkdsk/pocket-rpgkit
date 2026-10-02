@@ -448,6 +448,24 @@ describe("editor tile edit reducer", () => {
     expect(paletteTiles(meadow)).toHaveLength(1 + 12 * 11);
   });
 
+  test("a stroke the protocol refuses leaves document, history and dirty unchanged", () => {
+    // Opening such a document is refused by the editor; the model still
+    // fails closed if it is handed one.
+    const broken = bundled("sunstone");
+    broken.maps[0]!.events = [{ id: "far", x: 99, y: 0, pages: [{ trigger: "action", commands: [] }] }];
+    let s = selectTile(createEditorState(broken), "town.43");
+    s = strokeStart(s);
+    s = paintCell(s, 5);
+    expect(s.dirty).toBe(true); // the preview marks the document dirty
+    s = strokeEnd(s);
+    expect(s.error?.message).toContain("outside");
+    expect(s.dirty).toBe(false);
+    expect(s.past).toHaveLength(0);
+    expect(s.stroke).toBeNull();
+    expect(currentMap(s).ground[5]).toBe(broken.maps[0]!.ground[5]);
+    expect(exportProject(s)).toBe(broken);
+  });
+
   test("history caps at HISTORY_LIMIT and keeps the newest steps", () => {
     let s = createEditorState(bundled("sunstone"));
     // Erase DISTINCT cells so every stroke actually changes the layer.

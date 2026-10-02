@@ -584,6 +584,21 @@ simDescribe("editor pointer mode (svc companion)", () => {
 // --- round trip + runtime playability --------------------------------------
 
 simDescribe("editor document round trip and playability", () => {
+  test("a document the edit protocol cannot edit is refused when it opens", async () => {
+    const inbox: string[] = [];
+    const outbox: string[] = [];
+    const world = await bootSvc(inbox, outbox);
+    const project = JSON.parse(SUNSTONE.json) as Project;
+    project.maps[0]!.events!.push({ ...project.maps[0]!.events![0]!, x: 99 }); // duplicate id, off the map
+    const text = JSON.stringify(project);
+    expect(g().inject(text)).toMatchObject({ ok: false });
+    svcLine(inbox, world, { t: "load", text });
+    expect(g().state().notice).toMatchObject({ kind: "bad" });
+    expect(g().state().notice.text).toContain("HOST FILE REJECTED");
+    expect(g().state().hostFile).toBe(false);
+    expect(g().export().text).toBe(SUNSTONE.json);
+  });
+
   test("no-edit export of sunstone.json and meadow.json is byte-identical", async () => {
     const inbox: string[] = [];
     const outbox: string[] = [];
@@ -689,7 +704,14 @@ simDescribe("editor budget", () => {
     // measured text fitting and responsive chrome baseline is 1,242,030 B;
     // AI4's local-agent protocol/request UI and responsive integration add
     // 16,949 B, for 1,258,979 B. The shared immutable-session engine/UI
-    // paths add 31,070 B: measured 1,290,049 B.
-    expect(js).toBeLessThan(1_310_000);
+    // paths add 31,070 B: measured 1,290,049 B; 1,304,853 B before the
+    // PocketJS editor moved onto editor/api. Every edit now runs through the
+    // shared protocol: editor/api/operations.ts joins the bundle (66,881 B:
+    // argument checks, addresses, diff/patch-v1, in-memory revisions), the
+    // edit rules move out of the model (edit-rules.ts 33,258 B, model.ts
+    // 42,405 -> 25,393 B for the operation/history layer), plus the
+    // validation memo (1,632 B) and refusal reporting in the app (1,225 B):
+    // measured 1,391,375 B.
+    expect(js).toBeLessThan(1_400_000);
   });
 });

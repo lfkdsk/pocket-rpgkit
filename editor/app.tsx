@@ -25,13 +25,14 @@
 // then on SAVE writes that file and DOC stays on it, so the open document
 // can never be saved over a different project's file.
 
-import { batch, createMemo, createSignal, For } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { getOps, hostViewport } from "@pocketjs/framework/host";
 import { BTN } from "@pocketjs/framework/input";
 import type { GameEvent, MapDef, MapIndexEntry, Page, Project, ProjectShell, ProjectSource, TileId } from "../src/engine/types.ts";
 import { canonicalMapJson, isProjectShell, mapManifestHash, sha256Text } from "../src/engine/map-repository.ts";
+import { deepClone } from "../src/engine/clone.ts";
 import {
   addPage,
   canRedo,
@@ -81,6 +82,7 @@ import {
   type MapReference,
 } from "./engine/model.ts";
 import { loadProject, serializeProjectPreservingSource, validateProject } from "./engine/document.ts";
+import { documentStructureErrors } from "./api/operations.ts";
 import { BUNDLED_PROJECTS } from "./engine/projects.ts";
 import { createTileTextures } from "./engine/textures.ts";
 import {
@@ -268,7 +270,7 @@ function projectForShardedMap(shell: ProjectShell, map: MapDef): Project {
   const start = shell.start.map === map.id
     ? shell.start
     : { map: map.id, x: 0, y: 0, dir: shell.start.dir };
-  return { ...structuredClone(globals), start: structuredClone(start), maps: [structuredClone(map)] };
+  return { ...deepClone(globals), start: deepClone(start), maps: [deepClone(map)] };
 }
 
 interface HostSaveGuard {
@@ -295,12 +297,20 @@ function saveRequestId(expectedSourceHash: string, projectHash: string): string 
   return sha256Text(`${Date.now()}\n${saveRequestSequence}\n${expectedSourceHash}\n${projectHash}`);
 }
 
+/** The document gate: schema errors, then the edit protocol's structural
+ *  checks (a document the protocol cannot edit is not opened). */
+function documentErrors(text: string): { project: Project; errors: { path: string; msg: string }[] } {
+  const loaded = loadProject(text);
+  if (loaded.errors.length > 0) return loaded;
+  return { project: loaded.project, errors: documentStructureErrors(loaded.project as unknown as ProjectSource) };
+}
+
 function bootDoc(index: number): DocSlot {
   const bundled = BUNDLED_PROJECTS[index]!;
   // A previously exported copy on data.fs wins over the bundled document.
   const onFs = readProject(bundled.id);
   if (onFs && "text" in onFs) {
-    const loaded = loadProject(onFs.text);
+    const loaded = documentErrors(onFs.text);
     if (loaded.errors.length === 0) return { id: bundled.id, project: loaded.project, sourceText: onFs.text };
   }
   return { id: bundled.id, project: loadProject(bundled.json).project, sourceText: bundled.json };
@@ -324,6 +334,15 @@ export function EditorApp(): JSX.Element {
         ? "POINTER MODE (companion): LEFT PAINT, RIGHT/SHIFT ERASE"
         : "POINTER MODE (companion; no data.fs: SAVE GOES TO THE HOST FILE)"
       : "NO COMPANION - GAMEPAD MODE (SEE BANNER)",
+  });
+  // Every edit runs as an editor/api operation; one the protocol refuses
+  // leaves the document unchanged and is reported here, once.
+  let reportedRefusal: EditorState["error"] = null;
+  createEffect(() => {
+    const refusal = editor().error;
+    if (!refusal || refusal === reportedRefusal) return;
+    reportedRefusal = refusal;
+    setNotice({ kind: "bad", text: `EDIT REFUSED: ${refusal.message.toUpperCase()}` });
   });
   const [palScroll, setPalScroll] = createSignal(0);
   const [hover, setHover] = createSignal<{ x: number; y: number } | null>(null);
@@ -644,6 +663,8 @@ export function EditorApp(): JSX.Element {
       const loadedMap = await workspace.activateMap(meta.id);
       if (generation !== activationGeneration || shardedWorkspace() !== workspace) return;
       const project = projectForShardedMap(workspace.shell, loadedMap);
+      const problem = documentStructureErrors(project)[0];
+      if (problem) throw new Error(`${problem.path} ${problem.msg}`);
       const sourceText = serializeProjectPreservingSource(JSON.stringify(project), project, project);
       syncedMapText.set(meta.id, canonicalMapJson(loadedMap));
       batch(() => {
@@ -1319,6 +1340,7 @@ export function EditorApp(): JSX.Element {
       try {
         candidate = applyProposalHunks(project, proposal, cleanIds);
         committed = commitProjectReplacement(editor(), candidate);
+        if (committed.error !== null && committed.error !== editor().error) throw new Error(committed.error.message);
       } catch (error) {
         setNotice({ kind: "bad", text: `ACCEPT REFUSED: ${error instanceof Error ? error.message : String(error)}` });
         return;
@@ -1408,7 +1430,7 @@ export function EditorApp(): JSX.Element {
    * desktop host omits request, so the extra reply is harmless there. */
   const loadHostDocument = (line: HostLine): void => {
     const text = line.text!;
-    const loaded = loadProject(text);
+    const loaded = documentErrors(text);
     const source = loaded.project as unknown as ProjectSource;
     if (loaded.errors.length === 0 && isProjectShell(source)) {
       loadHostShardedProject({ ...line, t: "project", shell: text });
@@ -1703,6 +1725,15 @@ export function EditorApp(): JSX.Element {
     return null;
   };
 
+  /** Install an edit-model result. False when the protocol refused the edit:
+   *  the document is unchanged and the refusal is already on the status line,
+   *  so the caller must not report success over it. */
+  const applyEdit = (next: EditorState): boolean => {
+    const refused = next.error !== null && next.error !== editor().error;
+    setEditor(next);
+    return !refused;
+  };
+
   const finishFieldEdit = (message?: string): void => {
     clearInspectorInput();
     if (message) setNotice({ kind: "info", text: message });
@@ -1714,7 +1745,7 @@ export function EditorApp(): JSX.Element {
     if (!event || !page) return false;
     if (action.kind === "event-field") {
       if (action.field === "name") {
-        setEditor(renameSelectedEvent(editor(), raw));
+        if (!applyEdit(renameSelectedEvent(editor(), raw))) return false;
         finishFieldEdit("EVENT NAME UPDATED");
         return true;
       }
@@ -1723,10 +1754,11 @@ export function EditorApp(): JSX.Element {
         setNotice({ kind: "bad", text: parsed.error.toUpperCase() });
         return false;
       }
-      if (action.field === "x") setEditor(moveSelectedEvent(editor(), parsed.value, event.y));
-      else if (action.field === "y") setEditor(moveSelectedEvent(editor(), event.x, parsed.value));
-      else if (action.field === "w") setEditor(resizeSelectedEvent(editor(), parsed.value, event.h ?? 1));
-      else setEditor(resizeSelectedEvent(editor(), event.w ?? 1, parsed.value));
+      const next = action.field === "x" ? moveSelectedEvent(editor(), parsed.value, event.y)
+        : action.field === "y" ? moveSelectedEvent(editor(), event.x, parsed.value)
+          : action.field === "w" ? resizeSelectedEvent(editor(), parsed.value, event.h ?? 1)
+            : resizeSelectedEvent(editor(), event.w ?? 1, parsed.value);
+      if (!applyEdit(next)) return false;
       finishFieldEdit("EVENT GEOMETRY UPDATED");
       return true;
     }
@@ -1738,7 +1770,7 @@ export function EditorApp(): JSX.Element {
         setNotice({ kind: "bad", text: edited.error.toUpperCase() });
         return false;
       }
-      setEditor(updateSelectedPage(editor(), () => edited.value));
+      if (!applyEdit(updateSelectedPage(editor(), () => edited.value))) return false;
       finishFieldEdit("PAGE UPDATED");
       return true;
     }
@@ -1754,7 +1786,7 @@ export function EditorApp(): JSX.Element {
         setNotice({ kind: "bad", text: edited.error.toUpperCase() });
         return false;
       }
-      setEditor(updateSelectedPage(editor(), () => edited.value));
+      if (!applyEdit(updateSelectedPage(editor(), () => edited.value))) return false;
       finishFieldEdit("CONDITION UPDATED");
       return true;
     }
@@ -1771,7 +1803,7 @@ export function EditorApp(): JSX.Element {
         return false;
       }
       const commands = updateCommand(page.commands, row.address, edited.value);
-      setEditor(updateSelectedPage(editor(), (current) => ({ ...current, commands })));
+      if (!applyEdit(updateSelectedPage(editor(), (current) => ({ ...current, commands })))) return false;
       finishFieldEdit("COMMAND UPDATED");
       return true;
     }
@@ -1976,7 +2008,7 @@ export function EditorApp(): JSX.Element {
   const activateEventTool = (tool: (typeof EVENT_TOOL_IDS)[number]): void => {
     if (tool === "new") {
       const at = eventPlacement();
-      setEditor(createEventAt(editor(), at.x, at.y));
+      if (!applyEdit(createEventAt(editor(), at.x, at.y))) return;
       setNotice({ kind: "info", text: `NEW EVENT AT ${at.x},${at.y}` });
       // The newly created event is selected synchronously by the model.
       setInspectorSelection({ condition: null, command: null });
@@ -1989,10 +2021,8 @@ export function EditorApp(): JSX.Element {
     }
     if (tool === "edit") openInspector();
     else if (tool === "copy") {
-      setEditor(duplicateSelectedEvent(editor()));
-      setNotice({ kind: "info", text: "EVENT COPIED" });
-    } else {
-      setEditor(deleteSelectedEvent(editor()));
+      if (applyEdit(duplicateSelectedEvent(editor()))) setNotice({ kind: "info", text: "EVENT COPIED" });
+    } else if (applyEdit(deleteSelectedEvent(editor()))) {
       setNotice({ kind: "info", text: "EVENT DELETED" });
     }
   };
@@ -2278,7 +2308,10 @@ export function EditorApp(): JSX.Element {
     }
     const commands = updateCommand(page.commands, pick.address, edited.value);
     const next = updateSelectedPage(e, (current) => ({ ...current, commands }));
-    setEditor(next);
+    if (!applyEdit(next)) {
+      setPendingPick(null);
+      return;
+    }
     // The pick may have switched maps; clamp the camera back to the event's map.
     setCam(clampCameraTo(next, cam()));
     setPendingPick(null);
@@ -3026,7 +3059,7 @@ export function EditorApp(): JSX.Element {
     playStartCell: playStartCell(),
   });
   (globalThis as Record<string, unknown>).__rpgkitEditorInject = (json: string) => {
-    const loaded = loadProject(json);
+    const loaded = documentErrors(json);
     if (loaded.errors.length > 0) return { ok: false, errors: loaded.errors };
     const source = loaded.project as unknown as ProjectSource;
     if (isProjectShell(source)) return { ok: false, errors: [{ path: "$", msg: "sharded injection requires a file host" }] };

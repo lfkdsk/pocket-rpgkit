@@ -96,11 +96,13 @@ of already-published shards if a later rename fails; this is **not**
 crash-atomic. See `editor/api/file.ts` and
 [`edit-api.md`](edit-api.md#response-envelope) (the atomicity paragraph).
 
-- **Operations** (21): `open`, `list-maps`, `list-events`, `list-pages`,
-  `list-commands`, `validate`, `update-map`, `paint-tile`, `paint-rect`,
-  `fill-region`, `paint-passage`, `add-event`, `update-event`,
-  `delete-event`, `add-page`, `update-page`, `delete-page`,
-  `insert-command`, `delete-command`, `update-command`, `save`.
+- **Operations** (26): `open`, `list-maps`, `list-events`, `list-pages`,
+  `list-commands`, `validate`, `update-map`, `add-map`, `duplicate-map`,
+  `delete-map`, `paint-tile`, `paint-rect`, `fill-region`, `paint-passage`,
+  `paint-cells`, `paint-edges`, `add-event` (optional `index` places the
+  event in the map's event list), `update-event`, `delete-event`,
+  `add-page`, `update-page`, `delete-page`, `insert-command`,
+  `delete-command`, `update-command`, `save`.
 - **Addresses** are stable text paths: `map:<id>`,
   `map:<id>/event:<eid>/page:<i>/command:<key>`, with recursive command keys
   such as `i2:then#0` (if), `c2:option:1#0` (choices), `b2:win#0`
@@ -112,8 +114,20 @@ crash-atomic. See `editor/api/file.ts` and
   expecting `before`; reverse applies backwards expecting `after`; a base
   hash mismatch fails closed. Implementation: `editor/api/operations.ts`
   (`diffJson`, `applyEditPatch`).
-- **Sharded projects are first-class.** The same 21 commands open a
-  `ProjectShell`; reads and ordinary mutations load only the addressed
+- **Both editors edit through this protocol.** Studio's `EditSession`, the
+  CLI and the MCP tools call the text entry point
+  (`executeEditOperation` on the document source). The PocketJS editor calls
+  the in-memory entry point (`executeProjectOperation` /
+  `executeProjectTransaction`), which runs the same mutation, validation and
+  diff on an immutable in-memory revision without re-parsing or
+  re-serializing per edit; `projectEditPatch` gives the same patch-v1 bytes
+  the text entry point reports, and `applyProjectEdit` undoes or redoes an
+  edit with the same per-change preconditions as `save`. Both editors keep
+  patch-v1 history, so the same edits produce the same patches, undo/redo
+  stacks and saved bytes (`tests/editor-api-equivalence.test.ts`).
+- **Sharded projects are first-class.** The same commands open a
+  `ProjectShell` (`add-map`, `duplicate-map`, `delete-map` and
+  `paint-edges` are inline-only); reads and ordinary mutations load only the addressed
   shard, and `save` publishes only the changed shards plus the shell. Two
   operations load every shard: `validate`, and a real map-id rename (so
   transfers in other maps can follow the rename). A

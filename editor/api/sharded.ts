@@ -23,6 +23,7 @@ import {
   validateMapIndex,
 } from "../../src/engine/map-repository.ts";
 import { loadProject, semanticEqual } from "../engine/document.ts";
+import { deepClone } from "../../src/engine/clone.ts";
 import { eventCountProblem, MAX_SHARD_BYTES, shardProblem, utf8Bytes } from "./limits.ts";
 import {
   EditApiError,
@@ -80,7 +81,7 @@ function own(value: object, key: string): boolean {
 }
 
 function cloneJson<T>(value: T): T {
-  return structuredClone(value);
+  return deepClone(value);
 }
 
 function failure(command: string | undefined, error: unknown): ShardedEditExecution {

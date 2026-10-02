@@ -1138,6 +1138,9 @@ simDescribe("map inspector (pointer)", () => {
       { id: "keep", x: 0, y: 0, pages: [{ trigger: "action", commands: [] }] },
       { id: "cropped-review", x: 19, y: 12, pages: [{ trigger: "action", commands: [] }] },
     ];
+    // Keep the start cell inside the cropped map: the edit protocol refuses
+    // a resize that would leave the start position outside it.
+    project.start = { ...project.start, x: 0, y: 0 };
     expect(probes().inject(JSON.stringify(project))).toEqual({ ok: true });
     clickHeader(inbox, world, "map");
     const layout = createMapInspectorLayout({ width: 480, height: 272 - HEADER_H - STATUS_H });
