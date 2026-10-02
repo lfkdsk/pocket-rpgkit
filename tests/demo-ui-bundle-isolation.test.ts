@@ -41,6 +41,7 @@ describe("ui/demo bundle isolation", () => {
       "demo.tsx",
       "index.ts",
       "runtime.ts",
+      "text.ts",
       "types.ts",
     ]);
     expect(readFileSync(join(ROOT, "dist", "sunstone.js"), "utf8")).toContain("DEMO CONTROLS");

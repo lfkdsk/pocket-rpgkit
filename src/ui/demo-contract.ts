@@ -3,6 +3,7 @@ import type { AttractController, AttractRewindOptions } from "../engine/attract.
 import type { Session, SessionState } from "../engine/session.ts";
 import type { ProjectSource } from "../engine/types.ts";
 import type { UiTheme } from "./theme.ts";
+import type { UiTextOverrides } from "../engine/ui-text.ts";
 
 /** Stable host surface available to an opt-in GameView demo runtime. */
 export interface GameViewDemoHost {
@@ -25,7 +26,9 @@ export interface GameViewDemoStepResult {
 export interface GameViewDemoRuntime {
   step(buttons: number, pressed: number): GameViewDemoStepResult;
   isOpen(): boolean;
-  render(theme?: Partial<UiTheme>): JSX.Element;
+  /** `uiText` is the game's replacements of the kit's words (project
+   *  `uiText` under GameView's prop); undefined when there are none. */
+  render(theme?: Partial<UiTheme>, uiText?: UiTextOverrides): JSX.Element;
 }
 
 /** Opt-in factory kept outside ui/demo so the base GameView never reaches a

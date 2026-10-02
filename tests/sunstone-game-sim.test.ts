@@ -275,7 +275,6 @@ simDescribe("sunstone — NPC motion is live and deterministic", () => {
   });
 });
 
-// The fixed village->forest tape, byte-identical to the golden oracle's
 // The golden tape (PocketJS rpgkit-game spec): west to column 8, north past
 // the elder, east back, onto the gate, arrive in the forest.
 const TAPE_GAME: number[] = [
@@ -447,12 +446,16 @@ simDescribe("sunstone — render budget", () => {
     // labels that never cut text (3,357 B) bring it, with the
     // streamed tile loader, to 822,635 B measured.
     // The loop/break commands, the eventTouch trigger and the {v:} text
-    // token add shared interpreter/session/save-check code: 831,224 B
-    // measured. The optional playerStep hook adds 1,218 B: 832,442 B.
-    // The keyframe count cap, shared immutable keyframes and the reused
-    // rollback checkpoint (with its success-path resync), the
-    // attractRewindOptions helper and the opted-in DemoOptions.rewind
-    // validation bring it to 835,407 B measured.
+    // token add shared interpreter/session/save-check code.
+    // Replaceable interface words (the shared table and helpers, DialogBox's
+    // shop words, GameView's legends and attract chrome, 3,653 B, and the
+    // opted-in demo menu's words and wrapping, 2,307 B) join it, plus the
+    // long-translation wrapping (5,686 B): 842,870 B measured.
+    // The optional playerStep hook adds 1,218 B. The keyframe count cap,
+    // shared immutable keyframes and the reused rollback checkpoint (with
+    // its success-path resync), the attractRewindOptions helper and the
+    // opted-in DemoOptions.rewind validation bring the merged product to
+    // 847,053 B measured.
     // Integer chunk-window reuse and GameView's generic connected-world
     // factory seam (its concrete implementation is absent by input graph)
     // bring it to 840,064 B measured. KRM2's shared engine/compiler/save
@@ -462,10 +465,12 @@ simDescribe("sunstone — render budget", () => {
     // The W3 cache fixes (parsed-only rebuild, staged-preparation trim,
     // the falsy-rejection normalizer) and the coordinate-contract
     // promotion helper bring it to 873,965 B measured.
+    // Merging the interface-text branch (uiText words, BoundedLine, bounded
+    // SaveMenu/DialogBox/demo paths) brings the merged product to 898,897 B.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(875_000);
+    expect(jsBytes).toBeLessThan(900_000);
   });
 });
 

@@ -29,6 +29,7 @@ bun tests/fixtures/schema-compat/witness.ts "$dir" <case>   # $dir as above
 
 | Directory | Written by | Loads | Counterexample |
 | --- | --- | --- | --- |
+| `gen-4a9a8310` | `855712e3` | yes | |
 | `gen-ff6b9237` | `2ac18d18` | yes | |
 | `gen-ed562c6f` | `2f8b60ab` | yes | |
 | `gen-c0588207` | `1c1d3ea2` | yes | |

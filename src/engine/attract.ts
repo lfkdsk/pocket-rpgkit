@@ -321,6 +321,10 @@ export class AttractController {
   private readonly idleFrames: number;
   private readonly endHoldFrames: number;
   private readonly rewindFrames: number;
+  /** The configured rewind window in seconds (AttractOptions.rewindSeconds,
+   *  default 3): the `demo.rewind` interface word fills its {seconds}
+   *  placeholder with this. */
+  readonly rewindSeconds: number;
   private readonly keyframeIntervalFrames: number;
   private readonly keyframeMaxBytes: number;
   private readonly keyframeMaxCount: number;
@@ -402,7 +406,8 @@ export class AttractController {
     });
     this.idleFrames = opts.idleFrames ?? this.hz * 10;
     this.endHoldFrames = opts.endHoldFrames ?? this.timelineHz * 2;
-    this.rewindFrames = Math.max(1, Math.round((opts.rewindSeconds ?? 3) * this.timelineHz));
+    this.rewindSeconds = opts.rewindSeconds ?? 3;
+    this.rewindFrames = Math.max(1, Math.round(this.rewindSeconds * this.timelineHz));
     this.keyframeIntervalFrames = optionInteger(
       "keyframeIntervalFrames",
       opts.keyframeIntervalFrames,

@@ -2325,7 +2325,8 @@ older kit's, though: the no-truncation work changed shared style records
 Limits: Simplified Chinese glyphs only (no language-selected Han variants);
 curly quotes, `…` and `—` come from Inter and are proportional; no vertical
 text, ruby or justification; the kit's own fixed words (`Buy`, `Sell`,
-`Gold`, the save menu) are English; the name-input scene is a Latin
+`Gold`, the save menu) are English unless the game replaces them (see
+[Interface words](#interface-words-uitext)); the name-input scene is a Latin
 keyboard and there is no input method.
 
 ### Long text is never cut
@@ -2350,10 +2351,12 @@ No box in the kit drops characters or adds `…`:
 - **Choices and shops.** A prompt, option or item name wider than the box
   wraps onto more rows (the cursor prefix on its first row, the price on the
   first row of an item); the whole option takes the selected colour, and the
-  box grows upward, up to five extra rows on a 272 px screen. Past that the
-  window shows fewer items, always the whole selected one. The icon choices
-  box does the same with its 24 px rows, and its cursor bar covers every row
-  of the selected option.
+  248 px box grows upward only to 166 px (its top remains at or below the
+  viewport's 8 px safe edge). Its pixel-budgeted window normally shows four
+  items and narrows when wrapped rows or taller chrome consume the budget,
+  always retaining the whole selected item. The icon choices box does the
+  same with its 24 px rows, and its cursor bar covers every row of the
+  selected option.
 - **Battle and save menus.** The message band grows by a row per extra row
   of text. `ListMenu` labels, title and description wrap. A `CommandGrid`
   cell has a fixed size, so its label wraps onto two rows, then steps down
@@ -2362,10 +2365,110 @@ No box in the kit drops characters or adds `…`:
   a label there that would need two 12 px rows goes straight to 10 px. A label that two 10 px rows still
   cannot hold shows its start, and the focused cell scrolls it sideways (a
   marquee driven by the tick, so a rewind shows the same frame); unfocused
-  cells show their first characters. Save-menu titles, slot
-  summaries and messages wrap.
+  cells show their first characters. The 420 px save panel starts at 232 px
+  high and grows only to 256 px (8 px clear at the top and bottom of the
+  480x272 viewport). Its titles, slot summaries, messages and hints wrap
+  within page-specific row budgets, then use the same clipped marquee.
+- **Interface words.** A replaced `uiText` value wraps the same way: the
+  attract badge grows its plate, the demo menu's label and detail wrap in
+  their own columns and its pixel-windowed row list keeps the selected row
+  inside a 256 px panel, the shop gold and price wrap in their columns and
+  the header/rows grow, the shop/choices/message and save-menu legends wrap,
+  and the demo and fatal error bodies wrap. A bounded cell that exceeds its
+  row allowance becomes a clipped marquee: it holds at the first pixel,
+  moves one pixel every two ticks to exactly its measured overflow (so the
+  final character's right edge is inside the window), holds there, then
+  repeats. It reselects wrap or marquee when the text or available width
+  changes at run time. Name-input action cells and a reserved `StatBar`
+  readout use the CommandGrid ladder above (wrap → 10 px → focused scroll).
 
 Text that already fits renders exactly as before.
+
+### Interface words (`uiText`)
+
+Every word the kit itself draws — button legend labels, the shop box, the
+save menu, the name input's caption and action cells, the attract and demo
+chrome, the event-error title and `StatBar`'s readout — is a key of one
+table with an English default. A game replaces any subset; a key it leaves
+out stays English. Sentences that carry a value are one template with
+named placeholders, so a translation can put the value anywhere:
+
+```json
+{
+  "format": "rpgkit-project/v1",
+  "uiText": {
+    "shop.buy": "购买",
+    "shop.gold": "持有金币：{gold}",
+    "shop.priceStock": "{price}金（剩{stock}）",
+    "save.emptyTitle": "{slot}号存档位是空的",
+    "legend.next": "下一页"
+  }
+}
+```
+
+There are two places to set it:
+
+- **`Project.uiText`** in the project document (an optional root field). A
+  game that ships one project shard per language puts each language's words
+  in its own shard, next to the dialogue the importer wrote for it. The
+  editor and Studio keep it and validate it with the schema (an unknown key
+  or a non-string is an error); there is no form for it yet, but an
+  `editor/api` patch (`rpgkit-edit`) edits it like any other field. The
+  Studio play-test runs the document, so it shows the replaced words (and
+  bakes their glyphs) with no extra wiring.
+- **GameView's `uiText` prop**, layered over the project's table, for a game
+  that switches language at run time without rebuilding the project.
+  Components used on their own (`SaveMenu`, `DialogBox`, `StatBar`) take the
+  same `uiText` prop; GameView hands its merged table to scene views
+  (`uiText` in their props, which `NameInputScene` reads), to the demo menu
+  and to an `overlay`'s `render(theme, uiText)`. Give the same table to
+  `menuStep`'s `text` so the empty-slot message matches.
+
+The table is presentation only: it never enters session state, saves,
+tapes or the reducer, and it is excluded from a sharded shell's map
+manifest hash (see [Manifest identity](src/data/CHANGELOG.md)), so a
+save or a replay is the same in every language and a save loads across
+shards that differ only in their `uiText`. Map content is still hashed,
+though: dialogue written in events, item names and the rest of the map
+payload change the manifest, so a save from one language's shard is
+refused by a shard whose maps differ (only the interface words are
+language-neutral). Placeholders are filled first, then the result is fitted
+to its box like any other label ([Long text is never
+cut](#long-text-is-never-cut)). Every key's schema limit is tested on the
+page that actually displays it at 480x272. A value wraps while its page has
+row budget; beyond that it scrolls through a clipped pixel window, so the
+panel stays on screen and both ends remain reachable. The `{name}`
+player-name token of message text is separate and not used here.
+
+| Keys | Where | Placeholders |
+| --- | --- | --- |
+| `legend.talk` `legend.next` `legend.ok` `legend.back` | Button legend labels (the shell adds the glyph) | |
+| `shop.buy` `shop.sell` `shop.gold` `shop.rowSell` `shop.rowLeave` `shop.rowBack` `shop.price` `shop.priceStock` | Shop box header, control rows, price column | `{gold}`, `{price}`, `{stock}` |
+| `save.title` `save.toSlot` `save.fromSlot` `save.codeExport` `save.codeImport` | Save menu root page | |
+| `save.slotsSaveTitle` `save.slotsLoadTitle` `save.slotEmpty` `save.slotDamaged` `save.slotSummary` | Slot pages | `{map}`, `{frame}` |
+| `save.emptyTitle` `save.emptyBody` | `menuStep`'s empty-slot message | `{slot}` |
+| `save.codeTitle` `save.codeHint` `save.importTitle` `save.importHint` | Save code export and import pages | `{page}`, `{pages}` |
+| `nameInput.title` `nameInput.back` `nameInput.ok` `nameInput.cancel` | Name input caption (when the `scene` sets no `title`) and its three action cells | |
+| `demo.badge` `demo.control` `demo.rewind` | Attract badge, takeover and rewind notices | `{frame}` (zero-padded), `{frames}`, `{seconds}` |
+| `demo.menuTitle` `demo.tabChapters` `demo.tabWarp` `demo.tabAutoplay` `demo.tabSelected` `demo.empty` `demo.speed` `demo.speedHint` `demo.legend` `demo.legendBack` `demo.loading` `demo.warped` `demo.error` `demo.badLink` `demo.errorUnknownChapter` `demo.errorUnknownMap` `demo.errorUnknownAutoplay` `demo.errorXY` `demo.badLinkChooseOne` `demo.badLinkSpeed` | Demo menu (`pocket-rpgkit/ui/demo`); the error sentence templates replace the fixed English reasons a bad chapter/map/link produces | `{tab}`, `{speed}`, `{id}` |
+| `battle.statValue` | `StatBar` readout | `{current}`, `{max}` |
+| `error.event` | GameView's event-error screen title | |
+
+`UiTextTable` (`pocket-rpgkit/engine`) types the whole table; the English
+defaults live beside the component that draws them (`KIT_UI_TEXT`,
+`SAVE_MENU_UI_TEXT`, `NAME_INPUT_UI_TEXT`, `DEMO_MENU_UI_TEXT`,
+`STAT_BAR_UI_TEXT`), so a game that never mounts the demo menu does not
+bundle its words. The schema lists every key with its default.
+
+Not covered: the message of an event error is the interpreter's
+developer-facing reason and stays as thrown; a demo error's fixed sentences
+(unknown chapter/map, bad link) are the `demo.error*` / `demo.badLink*`
+templates above, while an arbitrary exception's message stays as its
+diagnostic text; the player name a fresh playthrough starts with is
+`Project.playerName` (default `Player`), which is saved state, not a word
+of this table; the `> ` cursor and the `?` of a missing choice icon are
+glyphs, not words. A game that never sets a table draws exactly what it
+drew before.
 
 ## Target matrix
 

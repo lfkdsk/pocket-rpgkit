@@ -23,6 +23,13 @@ function pixelAt(frame: Uint8Array, width: number, x: number, y: number): number
   return [...frame.subarray(offset, offset + 4)];
 }
 
+function horizontalRun(frame: Uint8Array, width: number, y: number, x0: number, x1: number, colour: readonly number[]): boolean {
+  for (let x = x0; x <= x1; x++) {
+    if (!pixelAt(frame, width, x, y).every((channel, index) => channel === colour[index])) return false;
+  }
+  return true;
+}
+
 simDescribe("GameView battle scene host", () => {
   test("deactivates a kept-alive battle renderer when a generic scene takes foreground", async () => {
     const active: boolean[] = [];
@@ -87,7 +94,15 @@ simDescribe("GameView battle scene host", () => {
     expect(world.probes().state.sw.variables["toy.result"]).toBe("escape");
     expect(world.probes().state.interp.modal).toEqual(parked);
     expect(treeHasText(world.getTree(), "PARKED MAP CHOICE")).toBe(true);
-    expect(pixelAt(world.render(), 480, 220, 78)).toEqual([93, 127, 163, 255]);
+    // The choice box now sizes to its two options. Find its complete top
+    // border instead of pinning the old fixed-height box's y coordinate.
+    const restored = world.render();
+    const border = [93, 127, 163, 255] as const;
+    const top = Array.from({ length: 175 }, (_, y) => y)
+      .find((y) => horizontalRun(restored, 480, y, 220, 467, border));
+    expect(top, "the restored choice panel has a full-width on-screen border").toBeDefined();
+    expect(top!).toBeGreaterThanOrEqual(0);
+    expect(top!).toBeLessThan(174);
   });
 
   test("keeps the map mounted but hidden, renders only reducer state plus resolution, then restores the map", async () => {

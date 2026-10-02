@@ -79,12 +79,17 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 4,140 for compiling and running loop/break and scanning eventTouch pages
 // (Sunstone 4,982: it also carries the save checks for the new
 // instructions), and 2,887 for detecting bumps and refused steps.
-// Merged with everything above, the three measure 524,071, 831,224 and
-// 665,381.
+// Replaceable interface words (engine/ui-text.ts: the shared English table
+// and its merge/format helpers, 1,164-1,510 bytes; DialogBox's shop words,
+// 669; GameView's legends, attract chrome and table hand-off, 1,402; the
+// compatible schema identity, 72) add 1,905 bytes to Meadow and 3,653 to
+// the WAV fixture; Sunstone's opted-in demo menu words and wrapping add
+// 2,307 more (5,960). The long-translation wrapping (StatBar/name-input
+// ladders, shop gold/legend wrap, demo error templates) adds 1,517 bytes
+// to Meadow, 5,686 to Sunstone and 2,390 to the WAV fixture.
 // The optional playerStep extension hook (a null check and two number
-// reads per tick when unused) adds 1,218 shared bytes to each bundle:
-// 525,289, 832,442 and 666,599.
-// The attract controller GameView bundles gains the keyframe count cap,
+// reads per tick when unused) adds 1,218 shared bytes to each bundle. The
+// attract controller GameView bundles gains the keyframe count cap,
 // shared immutable keyframes, the reused rollback checkpoint and its
 // success-path resync, plus the attractRewindOptions helper GameView
 // forwards through: shared bytes in Sunstone and the WAV fixture (Meadow
@@ -111,12 +116,15 @@ const maybeTest = preflight.ok ? test : test.skip;
 // warp toast inside the viewport and dismissing it before a modal then adds
 // 173 bytes only to Sunstone: 543,193, 872,013 and 692,217 bytes.
 // The W3 cache fixes and the world coordinate-contract promotion helper
-// add shared GameView bytes. Merged, the three measure 543,736, 873,965
-// and 694,169.
+// add shared GameView bytes, bringing main to 543,736, 873,965 and 694,169.
+// Merging the interface-text branch (the uiText table, BoundedLine and the
+// bounded SaveMenu/DialogBox/demo paths) adds the kit's replaceable words
+// and the bounded-line machinery: the merged product measures 555,516,
+// 898,897 and 708,561 bytes.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 543_736;
-const EXPECTED_SUNSTONE_QOA_BYTES = 873_965;
-const EXPECTED_WAV_FIXTURE_BYTES = 694_169;
+const EXPECTED_MEADOW_BYTES = 555_516;
+const EXPECTED_SUNSTONE_QOA_BYTES = 898_897;
+const EXPECTED_WAV_FIXTURE_BYTES = 708_561;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

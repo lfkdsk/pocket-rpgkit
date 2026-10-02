@@ -22,6 +22,7 @@ export {
   type Tween,
 } from "./effects.ts";
 export { StatBar, type StatBarProps } from "./StatBar.tsx";
+export { STAT_BAR_UI_TEXT } from "./text.ts";
 export { CommandGrid, type CommandCell, type CommandGridProps } from "./CommandGrid.tsx";
 export { ListMenu, type ListMenuRow, type ListMenuProps } from "./ListMenu.tsx";
 export { MessageBand, type MessageBandProps } from "./MessageBand.tsx";

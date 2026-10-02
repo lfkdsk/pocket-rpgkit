@@ -109,11 +109,12 @@ const simDescribe = preflight.ok ? describe : describe.skip;
 if (!preflight.ok) console.warn(`preview-glyphs: ${preflight.reason}`);
 
 /** The preview demo's sample project with the gardener saying `lines`. */
-function sampleDocument(lines: string[]): string {
+function sampleDocument(lines: string[], uiText?: Record<string, string>): string {
   const html = readFileSync(join(ROOT, "tools/web/preview-demo.html"), "utf8");
   const json = html.match(/<script type="application\/json" id="sample-project">([\s\S]*?)<\/script>/)![1]!;
   const doc = JSON.parse(json);
   doc.maps[0].events[0].pages[0].commands[0].lines = lines;
+  if (uiText) doc.uiText = uiText;
   return JSON.stringify(doc);
 }
 
@@ -148,8 +149,8 @@ simDescribe("the preview draws a loaded document's Chinese text", () => {
 
   /** Load a document whose gardener says `lines`, talk to him, let the
    *  typewriter finish, and return the load reply and the frame. */
-  function talk(lines: string[], name: string) {
-    const load = hook().load(sampleDocument(lines));
+  function talk(lines: string[], name: string, uiText?: Record<string, string>) {
+    const load = hook().load(sampleDocument(lines, uiText));
     pump(2);
     hook().start({ kind: "tile", map: "yard", x: 5, y: 3, dir: "up" });
     pump(4);
@@ -214,5 +215,34 @@ simDescribe("the preview draws a loaded document's Chinese text", () => {
     const englishAgain = talk(LINE_EN, "english-again");
     expect(englishAgain.load.glyphs).toEqual({ added: 0, missing: "" });
     expect(englishAgain.hash).toBe(english.hash);
+  }, 60_000);
+
+  test("a document's uiText replaces the kit's words in the play-test, glyphs baked", () => {
+    const legendText = () => {
+      const find = (node: { n?: string; t?: string; x?: string; k?: unknown[] }): string | null => {
+        if (node.n === "rpgkit-message-legend") {
+          const texts: string[] = [];
+          const walk = (n: { t?: string; x?: string; k?: unknown[] }) => {
+            if (n.t === "#text" && n.x) texts.push(n.x);
+            for (const c of (n.k ?? []) as { t?: string; x?: string; k?: unknown[] }[]) walk(c);
+          };
+          walk(node);
+          return texts.join("");
+        }
+        for (const c of (node.k ?? []) as { n?: string; t?: string; x?: string; k?: unknown[] }[]) {
+          const hit = find(c);
+          if (hit !== null) return hit;
+        }
+        return null;
+      };
+      return find(world.getTree() as { k?: unknown[] });
+    };
+    const english = talk(LINE_EN, "legend-english");
+    expect(legendText()).toContain("next");
+    const zh = talk(LINE_EN, "legend-chinese", { "legend.next": "下一页" });
+    expect(zh.load.glyphs).toEqual({ added: 3, missing: "" });
+    expect(legendText()).toContain("下一页");
+    expect(legendText()).not.toContain("next");
+    expect(zh.hash).not.toBe(english.hash);
   }, 60_000);
 });

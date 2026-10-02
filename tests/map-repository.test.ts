@@ -712,6 +712,39 @@ describe("sharded map repository", () => {
     expect(second.reads).toHaveLength(readsBefore);
   });
 
+  test("a save survives a change of the presentation-only uiText table", () => {
+    // uiText is a root presentation field: it never reaches the reducer,
+    // the session or the save codec, so it is excluded from the manifest
+    // identity (map-repository.ts MANIFEST_EXCLUDED_ROOT_FIELDS). A save
+    // taken under one language's table loads under another's; per-language
+    // map content (dialogue in events) is hashed through mapIndex and still
+    // changes the identity, as the test above shows.
+    const first = trackingSession();
+    let state = startSession(first.split.shell, first.session);
+    for (let i = 0; i < 7; i++) state = pulse(first.session, state);
+    const envelope = encodeEnvelope(
+      createSnapshot(state.mapId, state.move, state.interp, 0),
+      first.session.content,
+    );
+
+    const translated = fixture();
+    translated.uiText = { "legend.ok": "确认" };
+    const second = trackingSession(translated);
+    expect(second.split.shell.mapManifestHash).toBe(first.split.shell.mapManifestHash);
+    expect(second.session.content?.manifest).toBe(first.session.content?.manifest);
+    const restored = restoreSessionEnvelope(second.session, envelope);
+    expect(restored.mapId).toBe(state.mapId);
+    expect(restored.interp).toEqual(state.interp);
+
+    // The same shell, only its uiText swapped, hashes identically whether
+    // the table is absent, present or replaced.
+    const shell = first.split.shell;
+    const base = mapManifestHash(shell);
+    expect(mapManifestHash({ ...shell, uiText: { "legend.ok": "确认" } })).toBe(base);
+    expect(mapManifestHash({ ...shell, uiText: { "legend.ok": "Bestätigen" } })).toBe(base);
+    expect(mapManifestHash({ ...shell, uiText: undefined })).toBe(base);
+  });
+
   test("two runs and four host rates produce identical semantic hashes", () => {
     const drive = (hz: number): string => {
       const { session, split } = trackingSession(fixture(), hz);

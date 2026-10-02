@@ -104,7 +104,11 @@ function expectFrame(
 }
 
 const MSG = { x0: 8, x1: 472, y0: 172, y1: 264 };
-const CHOICES = { x0: 220, x1: 468, y0: 78, y1: 174 };
+// The choices/shop boxes are content-sized (capped to the viewport): a
+// one-row prompt/header, four 14 px rows and a one-row legend measure
+// 92 px; the shop buy box with five rows measures 120 px.
+const CHOICES = { x0: 220, x1: 468, y0: 82, y1: 174 };
+const SHOP_BUY = { x0: 220, x1: 468, y0: 68, y1: 174 };
 const SAVE = { x0: 30, x1: 450, y0: 20, y1: 252 };
 const FACE = { x: 18, y: 182 };
 const ROWS = { y0: 182, y1: 242 }; // four 15 px text rows
@@ -113,11 +117,13 @@ const ROWS = { y0: 182, y1: 242 }; // four 15 px text rows
 // the fourth row's line.
 const LEGEND = [420, 462, 227, 242] as const;
 const TEXT_X = { plain: 18, portrait: 90 };
-// The shop box shares the choices box's footprint (CHOICES): a header row
-// (stage label left, gold right) where the choices prompt sits, then up to
-// four 14 px rows from y 104, same as a choices box's options.
-const SHOP_HEADER = { x0: 228, x1: 460, y0: 86, y1: 100 };
-const shopRow = (row: number) => ({ x0: 228, x1: 460, y0: 104 + row * 14, y1: 118 + row * 14 });
+// The shop box's header row (stage label left, gold right) where the
+// choices prompt sits, then 14 px item rows. The buy box (four visible
+// rows) is 106 px; the sell/stock boxes (three rows) are 92 px.
+const SHOP_HEADER = { x0: 228, x1: 460, y0: 76, y1: 89 };
+const shopRow = (row: number) => ({ x0: 228, x1: 460, y0: 94 + row * 14, y1: 107 + row * 14 });
+const SHOP_SMALL_HEADER = { x0: 228, x1: 460, y0: 90, y1: 103 };
+const shopSmallRow = (row: number) => ({ x0: 228, x1: 460, y0: 108 + row * 14, y1: 121 + row * 14 });
 
 let world: SimWorld;
 let opCount = 0;
@@ -157,13 +163,13 @@ simDescribe("ui theme — built fixture on the sim host", () => {
   // components still had their colours as constants).
   const DEFAULT_PINS: Record<string, [FixtureScene, string]> = {
     plain: [{ modal: "plain" }, "e4663bbb"],
-    choices: [{ modal: "choices" }, "b48e4476"],
+    choices: [{ modal: "choices" }, "bd9b0056"],
     speaker: [{ modal: "speaker" }, "46169520"],
     typing: [{ modal: "typing" }, "45d47e65"],
     unknown: [{ modal: "unknown" }, "e098841d"],
     "save-root": [{ menu: "root" }, "f11324b4"],
     "save-slots": [{ menu: "slots" }, "6dfecb21"],
-    "save-code": [{ menu: "code" }, "2d663238"],
+    "save-code": [{ menu: "code" }, "892510f8"],
     "save-message": [{ menu: "message" }, "957a3521"],
   };
 
@@ -208,13 +214,13 @@ simDescribe("ui theme — built fixture on the sim host", () => {
   test("the choices box takes the theme: frame, prompt in dim, selected row in accent", () => {
     const fb = shot({ modal: "choices", theme: "parchment" });
     expectFrame(fb, CHOICES, PARCHMENT.border, PARCHMENT.rim);
-    // Content from (228, 86): prompt row y 86..99, a 4 px gap, then 14 px
-    // option rows from y 104. Index 1 ("> Wait for dawn") is selected.
-    expect(count(fb, PARCHMENT.dim, 228, 460, 86, 100)).toBeGreaterThan(30);
-    expect(count(fb, PARCHMENT.ink, 228, 460, 104, 118)).toBeGreaterThan(20);
-    expect(count(fb, PARCHMENT.accent, 228, 460, 104, 118)).toBe(0);
-    expect(count(fb, PARCHMENT.accent, 228, 460, 118, 132)).toBeGreaterThan(15);
-    expect(count(fb, PARCHMENT.ink, 228, 460, 118, 132)).toBe(0);
+    // Content from (228, 90): prompt row y 90..103, a 4 px gap, then 14 px
+    // option rows from y 108. Index 1 ("> Wait for dawn") is selected.
+    expect(count(fb, PARCHMENT.dim, 228, 460, 90, 103)).toBeGreaterThan(30);
+    expect(count(fb, PARCHMENT.ink, 228, 460, 108, 121)).toBeGreaterThan(20);
+    expect(count(fb, PARCHMENT.accent, 228, 460, 108, 121)).toBe(0);
+    expect(count(fb, PARCHMENT.accent, 228, 460, 122, 135)).toBeGreaterThan(15);
+    expect(count(fb, PARCHMENT.ink, 228, 460, 122, 135)).toBe(0);
   });
 
   test("a partial theme without a rim keeps the other colours default", () => {
@@ -412,11 +418,11 @@ simDescribe("ui theme — built fixture on the sim host", () => {
       "  Scholar route", "> A label far too long to fit the choices", "  box at all", "  Hermit route", "  Wanderer route",
     ]);
     expect(treeHasText(tree, "\u2026")).toBe(false);
-    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 104, 118)).toBeGreaterThan(15);
-    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 118, 132)).toBeGreaterThan(15);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 94, 107)).toBeGreaterThan(15);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 108, 121)).toBeGreaterThan(15);
     // (Tall glyphs of the accent row reach 2 px into the row above.)
-    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 90, 102)).toBe(0);
-    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 132, 146)).toBe(0);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 80, 92)).toBe(0);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 122, 136)).toBe(0);
 
     // Cursor at the top (index 0): window [0..3], the tail options are
     // out of view — the window follows the cursor, it is not pinned
@@ -439,24 +445,24 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     expect(treeHasText(tree, "\u2026")).toBe(false);
     // Disabled wins over selected: the "> " cursor remains, but both rows
     // of the option are dim and contribute no accent pixels.
-    expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 104, 118)).toBeGreaterThan(15);
-    expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 118, 132)).toBeGreaterThan(15);
-    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 104, 132)).toBe(0);
+    expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 94, 107)).toBeGreaterThan(15);
+    expect(count(fb, DEFAULT_UI_THEME.dim, 228, 460, 108, 121)).toBeGreaterThan(15);
+    expect(count(fb, DEFAULT_UI_THEME.accent, 228, 460, 94, 121)).toBe(0);
   });
 
   test("extension choices keep their fixed frame and semantic colours in a 960x544 viewport", () => {
     const stride = 960;
-    // 96 px plus one row for the wrapped long option.
-    const wideChoices = { x0: 700, x1: 948, y0: 336, y1: 446 };
+    // 120 px: the 96 px base plus one row for the wrapped long option.
+    const wideChoices = { x0: 700, x1: 948, y0: 326, y1: 446 };
     try {
       world.resizeViewport(stride, 544);
       const fb = shot({ modal: "choicesDynamic" });
       expect(fb.length).toBe(stride * 544 * 4);
       expectFrame(fb, wideChoices, DEFAULT_UI_THEME.border, DEFAULT_UI_THEME.paper, stride);
-      // Content starts at (708, 344); selected index 5 is window item 1,
-      // two rows.
-      expect(count(fb, DEFAULT_UI_THEME.dim, 708, 940, 376, 404, stride)).toBeGreaterThan(30);
-      expect(count(fb, DEFAULT_UI_THEME.accent, 708, 940, 376, 404, stride)).toBe(0);
+      // Content starts at (708, 334); selected index 5 is window item 1,
+      // two rows (352..365 and 366..379), dimmed.
+      expect(count(fb, DEFAULT_UI_THEME.dim, 708, 940, 352, 380, stride)).toBeGreaterThan(30);
+      expect(count(fb, DEFAULT_UI_THEME.accent, 708, 940, 352, 380, stride)).toBe(0);
     } finally {
       world.resizeViewport(W, 272);
       show({});
@@ -471,11 +477,10 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     expect(treeHasText(tree, "Buy")).toBe(true);
     expect(treeHasText(tree, "Gold: 42")).toBe(true);
     expect(count(fb, DEFAULT_UI_THEME.dim, ...([SHOP_HEADER.x0, SHOP_HEADER.x1, SHOP_HEADER.y0, SHOP_HEADER.y1] as const))).toBeGreaterThan(10);
-    // Window [0..3]: Iron Key (row0, affordable, unselected -> ink),
-    // Torch (row1, selected but unaffordable -> dim, not accent),
-    // Rope (row2, unselected but at the backpack cap -> dim),
-    // Sell (row3, a control row, never disabled -> ink). "Leave" (row4)
-    // scrolled out of the 4-row window at this cursor position.
+    // The four-row window [0..3]: Iron Key (row0, affordable, unselected
+    // -> ink), Torch (row1, selected but unaffordable -> dim, not accent),
+    // Rope (row2, at the backpack cap -> dim), Sell (row3, a control row,
+    // never disabled -> ink). "Leave" (row4) is scrolled out of the window.
     expect(treeHasText(tree, "Iron Key")).toBe(true);
     expect(treeHasText(tree, "Torch")).toBe(true);
     expect(treeHasText(tree, "Rope")).toBe(true);
@@ -507,14 +512,14 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     expect(treeHasText(tree, "Iron Key")).toBe(true);
     expect(treeHasText(tree, "Rope")).toBe(true);
     expect(treeHasText(tree, "Back")).toBe(true);
-    const row1 = shopRow(1); // Rope, index 1, selected
+    const row1 = shopSmallRow(1); // Rope, index 1, selected
     expect(count(fb, DEFAULT_UI_THEME.accent, row1.x0, row1.x1, row1.y0, row1.y1)).toBeGreaterThan(5);
     expect(count(fb, DEFAULT_UI_THEME.dim, row1.x0, row1.x1, row1.y0, row1.y1)).toBe(0);
   });
 
   test("the shop box takes the theme like the choices box", () => {
     const fb = shot({ modal: "shopBuy", items: true, theme: "parchment" });
-    expectFrame(fb, CHOICES, PARCHMENT.border, PARCHMENT.rim);
+    expectFrame(fb, SHOP_BUY, PARCHMENT.border, PARCHMENT.rim);
     expect(count(fb, PARCHMENT.dim, SHOP_HEADER.x0, SHOP_HEADER.x1, SHOP_HEADER.y0, SHOP_HEADER.y1)).toBeGreaterThan(10);
   });
 
@@ -541,7 +546,7 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     const fb = shot({ modal: "shopBuyStock", items: true });
     const tree = world.getTree();
     expect(treeHasText(tree, "5g (0)")).toBe(true);
-    const row1 = shopRow(1); // Torch, stock 0
+    const row1 = shopSmallRow(1); // Torch, stock 0
     expect(count(fb, DEFAULT_UI_THEME.dim, row1.x0, row1.x1, row1.y0, row1.y1)).toBeGreaterThan(5);
   });
 
@@ -550,9 +555,9 @@ simDescribe("ui theme — built fixture on the sim host", () => {
     const tree = world.getTree();
     expect(treeHasText(tree, "Iron Key")).toBe(true);
     expect(treeHasText(tree, "Rope")).toBe(true);
-    const row0 = shopRow(0); // Iron Key, selected and sellable -> accent
+    const row0 = shopSmallRow(0); // Iron Key, selected and sellable -> accent
     expect(count(fb, DEFAULT_UI_THEME.accent, row0.x0, row0.x1, row0.y0, row0.y1)).toBeGreaterThan(5);
-    const row1 = shopRow(1); // Rope, unsellable -> dim even though unselected
+    const row1 = shopSmallRow(1); // Rope, unsellable -> dim even though unselected
     expect(count(fb, DEFAULT_UI_THEME.dim, row1.x0, row1.x1, row1.y0, row1.y1)).toBeGreaterThan(5);
     expect(count(fb, DEFAULT_UI_THEME.accent, row1.x0, row1.x1, row1.y0, row1.y1)).toBe(0);
   });

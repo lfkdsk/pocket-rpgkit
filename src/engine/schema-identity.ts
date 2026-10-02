@@ -24,21 +24,23 @@
 /** SHA-256 of canonical src/data/schema.json. A test derives it from the file
  * so schema edits cannot leave it stale; keeping the literal avoids hashing
  * the schema at startup. */
-export const MAP_SCHEMA_HASH = "4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1";
+export const MAP_SCHEMA_HASH = "bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906";
 
 /** Earlier schema identities whose shells and saves remain loadable, newest
  * first. Each entry names the change that superseded it.
  *
  * History of cleared lists (each break refuses every identity before it):
- * - `ff6b9237…` → current only added RPG Maker-compatible picture, timer,
+ * - `4a9a8310…` → current only added the optional root `uiText` table, so it
+ *   is listed.
+ * - `ff6b9237…` → `4a9a8310…` only added RPG Maker-compatible picture, timer,
  *   map-scroll, number-input, scene-host, name and map-name-display commands,
  *   a timer condition, and the optional `system.mapNameDisplay` field, so it
  *   is listed.
  * - `ed562c6f…` → `ff6b9237…` only added commands (`loop`, `break`), a trigger
  *   (`eventTouch`) and an optional system field (`textVariables`), so it is
  *   listed.
- * - `c0588207…` → `ed562c6f…` only added optional world layout data, so it is
- *   listed.
+ * - `c0588207…` → `ed562c6f…` only added optional world layout data, so it
+ *   is listed.
  * - `0b9fff5b…` → `c0588207…` only added an optional field, so it is listed.
  * - `47cf3d8f…` → `0b9fff5b…` added the `scene` command, but the same change
  *   made a parallel page's queued battle drop when the page stops being
@@ -53,6 +55,8 @@ export const MAP_SCHEMA_HASH = "4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5
  * tests/fixtures/schema-compat keeps a refused fixture and a recorded
  * counterexample for each of these. */
 export const MAP_SCHEMA_COMPATIBLE_HASHES: readonly string[] = Object.freeze([
+  // superseded by: optional root `uiText`
+  "4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1",
   // superseded by: KRM2 picture/timer/system commands and optional system.mapNameDisplay
   "ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611",
   // superseded by: `loop` / `break` commands, `eventTouch` trigger, `system.textVariables`

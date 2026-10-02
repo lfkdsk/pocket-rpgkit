@@ -4,7 +4,33 @@
 // the signal holding MenuState and performs the side effect a CONFIRM
 // returns (write a slot, read a slot, open the code export, open the OSK);
 // the reducer only decides the next page. A target without data.fs gets
-// the two code rows only — the save code is then the sole channel.
+// the two code rows only — the save code is then the sole channel. Row
+// labels and the empty-slot message come from the ui-text table (ctx.text
+// over SAVE_MENU_UI_TEXT's English).
+
+import { formatUiText, withUiText, type UiTextKey, type UiTextOverrides, type UiTextTable } from "./ui-text.ts";
+
+/** English defaults of the save menu's words (engine/ui-text.ts keys). */
+export const SAVE_MENU_UI_TEXT = {
+  "save.title": "POCKET RPG KIT — SAVE",
+  "save.toSlot": "Save to slot",
+  "save.fromSlot": "Load from slot",
+  "save.codeExport": "Save code (export)",
+  "save.codeImport": "Load code (import)",
+  "save.slotsSaveTitle": "SAVE TO SLOT",
+  "save.slotsLoadTitle": "LOAD FROM SLOT",
+  "save.slotEmpty": "- empty",
+  "save.slotDamaged": "! damaged save",
+  "save.slotSummary": "{map}  f{frame}",
+  "save.emptyTitle": "SLOT {slot} IS EMPTY",
+  "save.emptyBody": "Nothing to load there.",
+  "save.codeTitle": "SAVE CODE — page {page}/{pages}  (up/down: page)",
+  "save.codeHint": "Write this code down; import it with \"Load code\". x: back.",
+  "save.importTitle": "TYPE A SAVE CODE",
+  "save.importHint": "The keyboard opens below; START commits, x cancels.",
+} as const satisfies Partial<UiTextTable>;
+
+export type SaveMenuTextKey = keyof typeof SAVE_MENU_UI_TEXT;
 
 export type MenuState =
   | { kind: "closed" }
@@ -31,16 +57,25 @@ export interface MenuStepResult {
   command?: MenuCommand;
 }
 
-export const ROOT_FS: readonly { id: "slots-save" | "slots-load" | "code-export" | "code-import"; label: string }[] = [
-  { id: "slots-save", label: "Save to slot" },
-  { id: "slots-load", label: "Load from slot" },
-  { id: "code-export", label: "Save code (export)" },
-  { id: "code-import", label: "Load code (import)" },
+/** A root row: `label` is the English default, `textKey` its ui-text key. */
+export interface RootRow<Id extends string> {
+  id: Id;
+  label: string;
+  textKey: SaveMenuTextKey & UiTextKey;
+}
+
+// Literal rows (no helper call) so a game that never opens the menu can
+// drop them from its bundle; a test keeps `label` equal to the default.
+export const ROOT_FS: readonly RootRow<"slots-save" | "slots-load" | "code-export" | "code-import">[] = [
+  { id: "slots-save", label: "Save to slot", textKey: "save.toSlot" },
+  { id: "slots-load", label: "Load from slot", textKey: "save.fromSlot" },
+  { id: "code-export", label: "Save code (export)", textKey: "save.codeExport" },
+  { id: "code-import", label: "Load code (import)", textKey: "save.codeImport" },
 ];
 
-export const ROOT_CODE: readonly { id: "code-export" | "code-import"; label: string }[] = [
-  { id: "code-export", label: "Save code (export)" },
-  { id: "code-import", label: "Load code (import)" },
+export const ROOT_CODE: readonly RootRow<"code-export" | "code-import">[] = [
+  { id: "code-export", label: "Save code (export)", textKey: "save.codeExport" },
+  { id: "code-import", label: "Load code (import)", textKey: "save.codeImport" },
 ];
 
 const SLOT_MIN = 1;
@@ -53,12 +88,13 @@ function cycle(index: number, len: number, delta: number): number {
 /**
  * Fold one pressed-edge action. `slotNonEmpty[slot-1]` gates CONFIRM on
  * the load page (an empty slot shows a message instead of issuing a load);
- * `codePages` pages the export screen.
+ * `codePages` pages the export screen; `text` (default English) words the
+ * empty-slot message.
  */
 export function menuStep(
   state: MenuState,
   action: MenuAction,
-  ctx: { hasFs: boolean; slotNonEmpty: readonly boolean[]; codePages: number },
+  ctx: { hasFs: boolean; slotNonEmpty: readonly boolean[]; codePages: number; text?: UiTextOverrides },
 ): MenuStepResult {
   switch (state.kind) {
     case "closed":
@@ -99,11 +135,12 @@ export function menuStep(
       if (action === "confirm") {
         const slot = SLOT_MIN + state.index;
         if (!ctx.slotNonEmpty[state.index]) {
+          const text = withUiText(SAVE_MENU_UI_TEXT, ctx.text);
           return {
             state: {
               kind: "message",
-              title: `SLOT ${slot} IS EMPTY`,
-              body: "Nothing to load there.",
+              title: formatUiText(text["save.emptyTitle"], { slot }),
+              body: text["save.emptyBody"],
               back: { kind: "slots-load", index: state.index },
             },
           };

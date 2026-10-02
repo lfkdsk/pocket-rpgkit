@@ -38,3 +38,4 @@ export * from "./save.ts";
 export * from "./save-validate.ts";
 export * from "./save-restore.ts";
 export * from "./save-menu.ts";
+export * from "./ui-text.ts";

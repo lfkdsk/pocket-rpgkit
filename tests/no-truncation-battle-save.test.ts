@@ -20,6 +20,8 @@
 //                last character is inside the clip. An unfocused cell never
 //                scrolls, and the grid's own clock costs zero ops while
 //                nothing overflows.
+//   DialogBox    an option beyond the choice row budget stays inside a clip
+//                and scrolls until its final character is visible.
 //   SaveMenu     title, slot summaries and message wrap; a page whose rows
 //                need it grows the panel.
 //
@@ -154,6 +156,14 @@ function expectNoEllipsis(root: TreeNode): void {
 function rgbaAt(fb: Uint8Array, x: number, y: number): string {
   const i = (y * W + x) * 4;
   return "#" + [fb[i]!, fb[i + 1]!, fb[i + 2]!].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function colourPixels(fb: Uint8Array, colour: string, x0: number, y0: number, width: number, height: number): number {
+  let count = 0;
+  for (let y = y0; y < y0 + height; y++) {
+    for (let x = x0; x < x0 + width; x++) if (rgbaAt(fb, x, y) === colour) count++;
+  }
+  return count;
 }
 
 simDescribe("no truncation: battle MessageBand / CommandGrid / ListMenu and SaveMenu", () => {
@@ -446,6 +456,75 @@ simDescribe("no truncation: battle MessageBand / CommandGrid / ListMenu and Save
     }
   });
 
+  test("BoundedLine reacts wrap to marquee to wrap and reaches its last character", () => {
+    const short = "Short";
+    const long = han(0, 200);
+    const width = 96;
+
+    // Mount the component on its common wrap branch.
+    show({ bounded: { text: short, width, maxRows: 2, tick: 0 } });
+    let bounded = find(tree(), "nt-bounded")!;
+    expect((bounded.k ?? []).some((node) => node.t === "#text"), "short value is a wrap Text").toBe(true);
+    expect(textOf(bounded)).toBe(short);
+
+    // Update the already-mounted prop to a schema-maximum value. It must
+    // replace the Text with a clipping View, retain the complete string,
+    // and apply the terminal marquee offset to the nested Text node.
+    const overflow = Math.ceil(measure(long) - width);
+    const terminalTick = MARQUEE_HOLD + overflow * MARQUEE_TICKS_PER_PX;
+    show({ bounded: { text: long, width, maxRows: 2, tick: terminalTick } });
+    bounded = find(tree(), "nt-bounded")!;
+    expect((bounded.k ?? []).some((node) => node.t === "#text"), "long value is a clipping View").toBe(false);
+    const marqueeText = textNodes(bounded)[0]!;
+    expect(textOf(marqueeText)).toBe(long);
+    expect(textOf(marqueeText).at(-1)).toBe(long.at(-1));
+    expect(offsetOf(marqueeText), "terminal marquee offset").toBe(overflow);
+    expect(measure(long) - offsetOf(marqueeText), "last character's right edge is inside the clip").toBeLessThanOrEqual(width);
+
+    // Changing the same mounted prop back must remove the clipping View and
+    // restore the plain wrap Text branch.
+    show({ bounded: { text: short, width, maxRows: 2, tick: terminalTick } });
+    bounded = find(tree(), "nt-bounded")!;
+    expect((bounded.k ?? []).some((node) => node.t === "#text"), "short value returns to wrap Text").toBe(true);
+    expect(textOf(bounded)).toBe(short);
+  });
+
+  test("DialogBox clips a long choice row and scrolls through its final character", () => {
+    const label = han(7, 63) + "Z";
+    const prefixed = `> ${label}`;
+    const choiceWidth = 248 - 2 * (2 + 6);
+    // Six prompt rows leave only three rows for options. The schema-valid
+    // 64-character option needs four, so it takes the marquee path.
+    show({ dialog: { modal: {
+      kind: "choices",
+      fiber: "long-choice",
+      prompt: han(0, 100),
+      options: [label],
+      index: 0,
+      cancellable: false,
+    } } });
+    let row = find(tree(), "rpgkit-choice-0")!;
+    expect(textOf(row)).toBe(prefixed);
+    expect(textOf(row).at(-1), "the underlying row keeps its final character").toBe("Z");
+    const marqueeText = textNodes(row)[0]!;
+    const overflow = Math.ceil(measure(prefixed) - choiceWidth);
+    expect(overflow).toBeGreaterThan(0);
+    expect(offsetOf(marqueeText)).toBe(0);
+
+    // The selected row paints in accent inside the 232 px content window,
+    // never in the six-pixel paper padding between it and the right frame.
+    const initial = world.render().slice();
+    expect(colourPixels(initial, DEFAULT_UI_THEME.accent, 228, 0, choiceWidth, 174)).toBeGreaterThan(0);
+    expect(colourPixels(initial, DEFAULT_UI_THEME.accent, 460, 0, 6, 174)).toBe(0);
+
+    for (let i = 0; i < MARQUEE_HOLD + overflow * MARQUEE_TICKS_PER_PX; i++) frame();
+    row = find(tree(), "rpgkit-choice-0")!;
+    const terminalText = textNodes(row)[0]!;
+    expect(offsetOf(terminalText), "terminal choice marquee offset").toBe(overflow);
+    expect(measure(prefixed) - offsetOf(terminalText), "choice final character is inside the clip").toBeLessThanOrEqual(choiceWidth);
+    expect(textOf(terminalText).at(-1)).toBe("Z");
+  });
+
   test("CommandGrid: only a label too long for two 10 px rows is clipped, at 10 px, and still holds the whole label", () => {
     show({ grid: { cells: CELLS, index: 0, tick: 0 } });
     const root = tree();
@@ -576,9 +655,11 @@ simDescribe("no truncation: battle MessageBand / CommandGrid / ListMenu and Save
       const slot = find(root, `rpgkit-slot-${row}`)!;
       const summary = `${info.map}  f${info.frame}`;
       const shown = row === 2 ? textOf(slot).slice(`  3. `.length) : textOf(find(root, `rpgkit-slot-${row}-summary`));
-      if (row < 2) {
+      // The first summary wraps to two rows; the 60-character CJK summary
+      // exceeds the two-row budget and scrolls sideways (one row, full text).
+      if (row === 0) {
         expect(shown.split("\n").length).toBeGreaterThan(1);
-        expect(textNodes(slot).map(textOf)[0]).toBe(`${row === 1 ? "> " : "  "}${row + 1}. `);
+        expect(textNodes(slot).map(textOf)[0]).toBe(`  ${row + 1}. `);
       }
       expect(dense(shown)).toBe(dense(summary));
     }
@@ -595,9 +676,8 @@ simDescribe("no truncation: battle MessageBand / CommandGrid / ListMenu and Save
     expect(dense(rowsOf(root, "rpgkit-message-body").join(""))).toBe(dense(body));
     expect(panelTop(world.render().slice())).toBe((H - 232) / 2);
 
-    // More rows than 232 px hold (each 18 px, plus the 6 px gap, the 14 px
-    // legend and the 20 px frame): the panel grows, centred, instead of
-    // cutting a row.
+    // A title and body longer than the panel's row budgets scroll sideways
+    // (marquee) instead of pushing the panel off the 272 px viewport.
     const longTitle = `${title} ${title}`;
     const longBody = `${body} ${body} ${body} ${body} ${body}`;
     show({ save: { menu: { kind: "message", title: longTitle, body: longBody, back: { kind: "root", index: 0 } }, slots: SLOTS } });
@@ -606,9 +686,9 @@ simDescribe("no truncation: battle MessageBand / CommandGrid / ListMenu and Save
     const bodyRows = rowsOf(root, "rpgkit-message-body");
     expect(dense(titleRows.join(""))).toBe(dense(longTitle));
     expect(dense(bodyRows.join(""))).toBe(dense(longBody));
-    const height = Math.max(232, (titleRows.length + bodyRows.length) * 18 + 6 + 14 + 20);
-    expect(height).toBeGreaterThan(232);
-    expect(height).toBeLessThanOrEqual(H);
-    expect(panelTop(world.render().slice())).toBe(Math.floor((H - height) / 2));
+    // The panel stays inside the 272 px viewport (it is capped at 256 px).
+    const top = panelTop(world.render().slice());
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top).toBeLessThanOrEqual(20);
   });
 });

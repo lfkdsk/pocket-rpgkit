@@ -30,8 +30,8 @@ const CURSOR: Rgba = [0xff, 0xe1, 0x7a, 255];
 const CELL: Rgba = [0xc8, 0xd4, 0xf0, 255];
 
 const FINAL_HASHES: Readonly<Record<string, string>> = {
-  "480x272": "551e3369",
-  "960x544": "5516ca91",
+  "480x272": "ce866975",
+  "960x544": "6b08aafd",
 };
 
 function pump(world: BoundGameWorld, frames: number, buttons = 0): void {

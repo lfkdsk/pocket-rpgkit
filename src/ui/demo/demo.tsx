@@ -1,6 +1,11 @@
 // src/ui/demo/demo.tsx — opt-in chapter, warp and autoplay controls for
 // GameView. This module is reachable only through pocket-rpgkit/ui/demo;
 // GameView depends on the tiny demo-contract seam in the opposite direction.
+//
+// The menu's own words are DEMO_MENU_UI_TEXT's keys (engine/ui-text.ts),
+// replaced by the game's table GameView passes to render(); a translation
+// wider than its row wraps and the panel grows. Error bodies are the
+// developer-facing messages of the failed request and stay as thrown.
 
 import { createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
@@ -15,6 +20,12 @@ import type {
 } from "../demo-contract.ts";
 import { Panel } from "../Panel.tsx";
 import { resolveUiTheme, type UiTheme } from "../theme.ts";
+import { fitBounded, marqueeOffset, windowByRows, wrapLabel, type BoundedCell } from "../list-window.ts";
+import { useMarqueeTick } from "../use-marquee-tick.ts";
+import { BoundedLine } from "../BoundedLine.tsx";
+import { slotMeasure, TEXT_XS_SLOT } from "../text-measure.ts";
+import { formatUiText, withUiText, type UiTextOverrides } from "../../engine/ui-text.ts";
+import { DEMO_MENU_UI_TEXT } from "./text.ts";
 import {
   chapterTapeFrames,
   demoMaps,
@@ -47,38 +58,163 @@ interface DemoRow {
   detail?: string;
 }
 
+type DemoMenuText = { readonly [K in keyof typeof DEMO_MENU_UI_TEXT]: string };
+/** A menu message's title: one of the table's error titles. */
+type DemoMessageTitle = "demo.error" | "demo.badLink";
+/** A fixed sentence the demo runtime produces (a uiText template, so a
+ *  translation can reword it) or an arbitrary exception's diagnostic text
+ *  (kept as thrown). */
+type DemoMessageBody =
+  | { kind: "uiText"; key: DemoErrorKey; params?: Record<string, string> }
+  | { kind: "text"; text: string };
+type DemoErrorKey =
+  | "demo.errorUnknownChapter"
+  | "demo.errorUnknownMap"
+  | "demo.errorUnknownAutoplay"
+  | "demo.errorXY"
+  | "demo.badLinkChooseOne"
+  | "demo.badLinkSpeed";
+
 interface DemoMenuModel {
   open: boolean;
   page: DemoPage;
   pageNumber: number;
   rows: readonly DemoRow[];
   selected: number;
-  message: { title: string; body: string } | null;
+  message: { title: DemoMessageTitle; body: DemoMessageBody } | null;
   busy: boolean;
-  toast: string | null;
+  toast: "demo.warped" | null;
 }
 
 const PAGES: readonly DemoPage[] = ["chapters", "warp", "autoplay"];
-const PAGE_TITLES: Readonly<Record<DemoPage, string>> = {
-  chapters: "CHAPTERS",
-  warp: "MAP WARP",
-  autoplay: "AUTOPLAY",
+const PAGE_TITLES: Readonly<Record<DemoPage, keyof typeof DEMO_MENU_UI_TEXT>> = {
+  chapters: "demo.tabChapters",
+  warp: "demo.tabWarp",
+  autoplay: "demo.tabAutoplay",
 };
+/** Content width of the menu panel (430 px less border and padding) and of
+ *  the toast (360 px less 10 px each side). */
+const MENU_TEXT_W = 430 - 2 * (2 + 8);
+const TOAST_TEXT_W = 360 - 2 * 10;
+/** Font slot of `text-sm`. */
+const TEXT_SM_SLOT = 1;
 const SPEEDS: readonly AttractSpeed[] = [1, 2, 4];
 const TOAST_FRAMES = 180;
-const VISIBLE_ROWS = 8;
+
+/** The panel is capped to PANEL_CAP_H (top >= 8 on the 272 playfield); the
+ *  chrome (title, tabs, legend) is bounded to a few rows each and the row
+ *  list is budgeted the pixels left, scrolling by selection. */
+const PANEL_CAP_H = 256;
+const PANEL_FRAME = 2 * (2 + 8);
+const TITLE_MAX_ROWS = 2;
+const TABS_MAX_ROWS = 2;
+const LEGEND_MAX_ROWS = 2;
+const ERROR_TITLE_MAX_ROWS = 2;
+const ROW_LABEL_MAX_ROWS = 2;
+const ROW_DETAIL_MAX_ROWS = 2;
+const LIST_ROW_H = 19;
+const MAX_LIST_ITEMS = 8;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function DemoMenu(props: { model: Accessor<DemoMenuModel>; theme?: Partial<UiTheme> }) {
+function DemoMenu(props: { model: Accessor<DemoMenuModel>; theme?: Partial<UiTheme>; text: DemoMenuText }) {
   const theme = createMemo(() => resolveUiTheme(props.theme));
-  const firstVisible = createMemo(() => {
+  // Read through an accessor so a new table handed to render() rewords the
+  // menu on the next frame (GameView's uiText prop is reactive).
+  const text = () => props.text;
+  const wrapXs = (line: string, width = MENU_TEXT_W): string[] => wrapLabel(line, width, slotMeasure(TEXT_XS_SLOT));
+  const sameCell = (a: BoundedCell, b: BoundedCell): boolean =>
+    a.kind === b.kind && a.overflow === b.overflow &&
+    a.rows.length === b.rows.length && a.rows.every((r, i) => r === b.rows[i]);
+  const title = createMemo(
+    () => fitBounded(text()["demo.menuTitle"], MENU_TEXT_W, TITLE_MAX_ROWS, slotMeasure(TEXT_SM_SLOT)),
+    undefined,
+    { equals: sameCell },
+  );
+  const tabs = createMemo(
+    () => fitBounded(PAGES.map((page) => {
+      const word = text()[PAGE_TITLES[page]];
+      return page === props.model().page ? formatUiText(text()["demo.tabSelected"], { tab: word }) : word;
+    }).join("  "), MENU_TEXT_W, TABS_MAX_ROWS, slotMeasure(TEXT_XS_SLOT)),
+    undefined,
+    { equals: sameCell },
+  );
+  const legend = createMemo(() => {
     const model = props.model();
-    return Math.max(0, Math.min(model.selected - 3, model.rows.length - VISIBLE_ROWS));
+    return fitBounded(text()[model.busy ? "demo.loading" : model.message ? "demo.legendBack" : "demo.legend"], MENU_TEXT_W, LEGEND_MAX_ROWS, slotMeasure(TEXT_XS_SLOT));
+  }, undefined, { equals: sameCell });
+  const errorTitle = createMemo(() => {
+    const message = props.model().message;
+    return message
+      ? fitBounded(text()[message.title], MENU_TEXT_W, ERROR_TITLE_MAX_ROWS, slotMeasure(TEXT_SM_SLOT))
+      : { kind: "wrap" as const, rows: [] as string[], overflow: 0 };
+  }, undefined, { equals: sameCell });
+  const toast = createMemo(() => {
+    const key = props.model().toast;
+    return key ? wrapXs(text()[key], TOAST_TEXT_W) : [""];
   });
-  const visible = createMemo(() => props.model().rows.slice(firstVisible(), firstVisible() + VISIBLE_ROWS));
+  // A row's label and detail wrap separately (they are two replaceable
+  // fields, not one concatenated line), each bounded to two rows; the row
+  // grows by the taller column and scrolls sideways when longer.
+  const DETAIL_W = 120;
+  const LABEL_W = MENU_TEXT_W - DETAIL_W - 12;
+  const rowMeasure = slotMeasure(TEXT_SM_SLOT);
+  const cursorW = Math.max(rowMeasure("> "), rowMeasure("  "));
+  const rowLayout = (row: DemoRow): { label: BoundedCell; detail: BoundedCell; h: number } => {
+    // The clip holds both the cursor prefix and label. Fit the label to the
+    // pixels left after that prefix so the terminal marquee offset really
+    // brings its final character inside the clip.
+    const label = fitBounded(row.label, (row.detail ? LABEL_W : MENU_TEXT_W) - cursorW, ROW_LABEL_MAX_ROWS, rowMeasure);
+    const detail = row.detail ? fitBounded(row.detail, DETAIL_W, ROW_DETAIL_MAX_ROWS, rowMeasure) : { kind: "wrap" as const, rows: [] as string[], overflow: 0 };
+    return { label, detail, h: LIST_ROW_H * Math.max(label.rows.length, detail.rows.length, 1) };
+  };
+  // The panel keeps its 242 px unless the chrome needs more, capped to
+  // PANEL_CAP_H; the row list is budgeted the pixels left.
+  const chromeH = () => title().rows.length * 18 + tabs().rows.length * 15 + 4 + legend().rows.length * 14;
+  const panelH = createMemo(() => {
+    const extra = (title().rows.length - 1) * 18 + (tabs().rows.length - 1) * 15 + (legend().rows.length - 1) * 14;
+    return Math.min(PANEL_CAP_H, 242 + extra);
+  });
+  const listH = () => panelH() - PANEL_FRAME - chromeH();
+  // The error view replaces the list; its title takes two rows (38 px) and a
+  // 6 px gap, so with the chrome at its two-row maximum the body has the
+  // list area's remainder: six 15 px rows. A longer body scrolls sideways.
+  const errorBodyMaxRows = () => Math.max(1, Math.floor((listH() - 38 - 6) / 15));
+  // The error body: a fixed runtime sentence is a uiText template (formatted
+  // with the current table), an arbitrary exception's message is diagnostic
+  // text. Either is bounded to the error area's rows; nothing is cut.
+  const errorBody = createMemo(() => {
+    const message = props.model().message;
+    if (!message) return { kind: "wrap" as const, rows: [] as string[], overflow: 0 };
+    const body = message.body;
+    const raw = body.kind === "uiText" ? formatUiText(text()[body.key], body.params ?? {}) : body.text;
+    return fitBounded(raw, MENU_TEXT_W, errorBodyMaxRows(), slotMeasure(TEXT_XS_SLOT));
+  }, undefined, { equals: sameCell });
+  // The row window: whole items around the cursor, narrowed to the list's
+  // pixel budget. A pure function of the selection, so it never desyncs.
+  const rowWindow = createMemo(() => {
+    const model = props.model();
+    const heights = model.rows.map((row) => rowLayout(row).h);
+    const { start, end } = windowByRows(model.selected, heights, MAX_LIST_ITEMS, listH());
+    return { start, rows: model.rows.slice(start, end) };
+  });
+  const emptyMaxRows = () => Math.max(1, Math.floor(listH() / 20));
+  const emptyCell = createMemo(
+    () => fitBounded(text()["demo.empty"], MENU_TEXT_W, emptyMaxRows(), slotMeasure(TEXT_SM_SLOT)),
+    undefined,
+    { equals: sameCell },
+  );
+  // One tick for every marquee cell; it rests when none scroll.
+  const marqueeTick = useMarqueeTick(createMemo(() =>
+    title().kind === "marquee" || tabs().kind === "marquee" || legend().kind === "marquee" ||
+    errorTitle().kind === "marquee" || errorBody().kind === "marquee" || emptyCell().kind === "marquee" ||
+    rowWindow().rows.some((row) => {
+      const layout = rowLayout(row);
+      return layout.label.kind === "marquee" || layout.detail.kind === "marquee";
+    }),
+  ));
   return (
     <>
       <Show when={props.model().open}>
@@ -89,69 +225,143 @@ function DemoMenu(props: { model: Accessor<DemoMenuModel>; theme?: Partial<UiThe
         >
           <Panel
             theme={theme()}
-            style={{ posType: 1, width: 430, height: 242 }}
+            style={{ posType: 1, width: 430, height: panelH() }}
             paperClass="flex-col grow p-[8]"
             debugName="rpgkit-demo-menu-panel"
           >
-            <Text class="text-sm" style={{ textColor: theme().accent, lineHeight: 18, height: 18 }} debugName="rpgkit-demo-menu-title">
-              DEMO CONTROLS
-            </Text>
-            <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 15, height: 15 }} debugName="rpgkit-demo-menu-tabs">
-              {PAGES.map((page) => page === props.model().page ? `[${PAGE_TITLES[page]}]` : PAGE_TITLES[page]).join("  ")}
-            </Text>
+            <BoundedLine
+              cell={title()}
+              tick={marqueeTick}
+              textColor={theme().accent}
+              rowH={18}
+              width={MENU_TEXT_W}
+              sizeClass="text-sm"
+              debugName="rpgkit-demo-menu-title"
+            />
+            <BoundedLine
+              cell={tabs()}
+              tick={marqueeTick}
+              textColor={theme().dim}
+              rowH={15}
+              width={MENU_TEXT_W}
+              debugName="rpgkit-demo-menu-tabs"
+            />
             <View style={{ height: 4 }} />
             <Show
               when={!props.model().message}
               fallback={
-                <View class="flex-col grow justify-center">
-                  <Text class="text-sm" style={{ textColor: "#ff8a8a", lineHeight: 19, height: 19 }} debugName="rpgkit-demo-menu-error-title">
-                    {props.model().message?.title ?? "ERROR"}
-                  </Text>
+                <View class="flex-col justify-center" style={{ height: listH(), overflow: 1 }}>
+                  <BoundedLine
+                    cell={errorTitle()}
+                    tick={marqueeTick}
+                    textColor="#ff8a8a"
+                    rowH={19}
+                    width={MENU_TEXT_W}
+                    sizeClass="text-sm"
+                    debugName="rpgkit-demo-menu-error-title"
+                  />
                   <View style={{ height: 6 }} />
-                  <Text class="text-xs" style={{ textColor: theme().ink, lineHeight: 15, height: 45 }} debugName="rpgkit-demo-menu-error-body">
-                    {props.model().message?.body ?? ""}
-                  </Text>
+                  <BoundedLine
+                    cell={errorBody()}
+                    tick={marqueeTick}
+                    textColor={theme().ink}
+                    rowH={15}
+                    width={MENU_TEXT_W}
+                    debugName="rpgkit-demo-menu-error-body"
+                  />
                 </View>
               }
             >
-              <View class="flex-col grow">
+              <View class="flex-col" style={{ height: listH(), overflow: 1 }}>
                 <Show when={props.model().rows.length === 0}>
-                  <Text class="text-sm" style={{ textColor: theme().dim, lineHeight: 20, height: 20 }}>
-                    No entries configured.
-                  </Text>
+                  <BoundedLine
+                    cell={emptyCell()}
+                    tick={marqueeTick}
+                    textColor={theme().dim}
+                    rowH={20}
+                    width={MENU_TEXT_W}
+                    sizeClass="text-sm"
+                    debugName="rpgkit-demo-menu-empty"
+                  />
                 </Show>
-                <For each={visible()}>
-                  {(row, localIndex) => {
-                    const absolute = () => firstVisible() + localIndex();
-                    const selected = () => absolute() === props.model().selected;
+                <For each={rowWindow().rows}>
+                  {(row, windowIndex) => {
+                    // model.rows is derived afresh on every read, so object
+                    // identity cannot locate `row` in another copy. The
+                    // window's stable start plus For's live index identifies
+                    // the same logical row and keeps its cursor reactive.
+                    const selected = () => rowWindow().start + windowIndex() === props.model().selected;
+                    const layout = () => rowLayout(row);
+                    const colour = () => (selected() ? theme().accent : theme().ink);
+                    const prefix = () => (selected() ? "> " : "  ");
                     return (
-                      <Text
-                        class="text-sm"
-                        style={{ textColor: selected() ? theme().accent : theme().ink, lineHeight: 19, height: 19 }}
+                      <View
+                        class="flex-row"
+                        style={{ height: layout().h }}
                         debugName={`rpgkit-demo-menu-row-${row.key}`}
                       >
-                        {`${selected() ? "> " : "  "}${row.label}${row.detail ? `  ${row.detail}` : ""}`}
-                      </Text>
+                        {layout().label.kind === "wrap" ? (
+                          <Text
+                            class="text-sm"
+                            style={{ textColor: colour(), lineHeight: 19, height: 19 * layout().label.rows.length, width: row.detail ? LABEL_W : MENU_TEXT_W }}
+                          >
+                            {`${prefix()}${layout().label.rows.join("\n  ")}`}
+                          </Text>
+                        ) : (
+                          <View style={{ width: row.detail ? LABEL_W : MENU_TEXT_W, height: LIST_ROW_H, overflow: 1 }}>
+                            <Text
+                              class="text-sm"
+                              style={{ textColor: colour(), lineHeight: 19, height: LIST_ROW_H, shrink: 0, translateX: -marqueeOffset(layout().label.overflow, marqueeTick()) }}
+                            >
+                              {`${prefix()}${layout().label.rows[0]}`}
+                            </Text>
+                          </View>
+                        )}
+                        {row.detail ? (
+                          layout().detail.kind === "wrap" ? (
+                            <Text
+                              class="text-sm"
+                              style={{ textColor: colour(), lineHeight: 19, height: 19 * layout().detail.rows.length, width: DETAIL_W, textAlign: 2 }}
+                            >
+                              {layout().detail.rows.join("\n")}
+                            </Text>
+                          ) : (
+                            <View style={{ width: DETAIL_W, height: LIST_ROW_H, overflow: 1 }}>
+                              <Text
+                                class="text-sm"
+                                style={{ textColor: colour(), lineHeight: 19, height: LIST_ROW_H, shrink: 0, translateX: -marqueeOffset(layout().detail.overflow, marqueeTick()), textAlign: 2 }}
+                              >
+                                {layout().detail.rows[0]}
+                              </Text>
+                            </View>
+                          )
+                        ) : null}
+                      </View>
                     );
                   }}
                 </For>
               </View>
             </Show>
-            <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-demo-menu-legend">
-              {props.model().busy ? "Loading map..." : props.model().message ? "A/B: back" : "left/right: page   up/down: choose   A: select   B: close"}
-            </Text>
+            <BoundedLine
+              cell={legend()}
+              tick={marqueeTick}
+              textColor={theme().dim}
+              rowH={14}
+              width={MENU_TEXT_W}
+              debugName="rpgkit-demo-menu-legend"
+            />
           </Panel>
         </View>
       </Show>
       <Show when={!props.model().open && props.model().toast !== null}>
         <View
           class="absolute left-0 right-0 flex-row justify-center"
-          style={{ posType: 1, insetB: 12, height: 38 }}
+          style={{ posType: 1, insetB: 12, height: 38 + (toast().length - 1) * 15 }}
           debugName="rpgkit-demo-toast"
         >
-          <Panel theme={theme()} style={{ posType: 1, width: 360, height: 38 }} paperClass="flex-row justify-center items-center">
-            <Text class="text-xs" style={{ textColor: theme().accent, lineHeight: 15, height: 15 }}>
-              {props.model().toast ?? ""}
+          <Panel theme={theme()} style={{ posType: 1, width: 360, height: 38 + (toast().length - 1) * 15 }} paperClass="flex-row justify-center items-center">
+            <Text class="text-xs" style={{ textColor: theme().accent, lineHeight: 15, height: 15 * toast().length }}>
+              {toast().join("\n")}
             </Text>
           </Panel>
         </View>
@@ -176,7 +386,10 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
   const [speed, setSpeed] = createSignal<AttractSpeed>(1);
   const [message, setMessage] = createSignal<DemoMenuModel["message"]>(null);
   const [busy, setBusy] = createSignal(false);
-  const [toast, setToast] = createSignal<string | null>(null);
+  const [toast, setToast] = createSignal<DemoMenuModel["toast"]>(null);
+  // The game's words, set when GameView renders the menu (before any row
+  // is read).
+  let menuText: DemoMenuText = DEMO_MENU_UI_TEXT;
   let toastFrames = 0;
   let currentChapter: string | null = chaptersById.has(host.attract.state.mapId) ? host.attract.state.mapId : null;
   let currentChapterMap: string | null = currentChapter ? host.attract.state.mapId : null;
@@ -195,7 +408,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
         const playable = autoplayChapters();
         return playable.length > 0
           ? [
-              { key: "speed", label: `Speed ${speed()}x`, detail: "A: change" },
+              { key: "speed", label: formatUiText(menuText["demo.speed"], { speed: speed() }), detail: menuText["demo.speedHint"] },
               ...playable.map((chapter) => ({ key: chapter.id, label: chapter.title })),
             ]
           : [];
@@ -210,11 +423,21 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
     const next = count === 0 ? 0 : (value + count) % count;
     setSelectedByPage((all) => ({ ...all, [page()]: next }));
   };
-  const fail = (title: string, error: unknown): void => {
+  const fail = (title: DemoMessageTitle, error: unknown): void => {
     pending = null;
     setBusy(false);
     setOpen(true);
-    setMessage({ title, body: errorText(error).slice(0, 180) });
+    // An arbitrary exception's message is diagnostic text: kept as thrown,
+    // never cut (the menu wraps it and grows).
+    setMessage({ title, body: { kind: "text", text: errorText(error) } });
+  };
+  // A fixed sentence the demo runtime produces: a uiText template, so a
+  // translation rewords it. Formatted at render time with the current table.
+  const failTemplate = (title: DemoMessageTitle, key: DemoErrorKey, params?: Record<string, string>): void => {
+    pending = null;
+    setBusy(false);
+    setOpen(true);
+    setMessage({ title, body: { kind: "uiText", key, params } });
   };
   const attempt = (action: () => void): boolean => {
     try {
@@ -236,7 +459,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
         );
         return false;
       }
-      fail("DEMO ERROR", error);
+      fail("demo.error", error);
       return false;
     }
   };
@@ -260,42 +483,45 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
     currentChapterMap = null;
     setMessage(null);
     setOpen(false);
-    setToast("Warped — story state may not match this map");
+    setToast("demo.warped");
     toastFrames = TOAST_FRAMES;
   };
   const boot = options.boot === undefined ? globalThis.__rpgkitBoot : options.boot ?? undefined;
   if (boot && typeof boot === "object") {
     const directives = [boot.chapter !== undefined, boot.map !== undefined, boot.autoplay !== undefined].filter(Boolean).length;
     if (directives > 1) {
-      fail("BAD DEMO LINK", "choose exactly one of chapter, map, or autoplay");
+      failTemplate("demo.badLink", "demo.badLinkChooseOne");
     } else if (boot.chapter !== undefined) {
       const chapter = typeof boot.chapter === "string" ? chaptersById.get(boot.chapter) : undefined;
-      if (!chapter) fail("BAD DEMO LINK", `unknown chapter ${JSON.stringify(boot.chapter)}`);
+      if (!chapter) failTemplate("demo.badLink", "demo.errorUnknownChapter", { id: JSON.stringify(boot.chapter) });
       else attempt(chapterAction(chapter, false));
     } else if (boot.autoplay !== undefined) {
       const chapter = typeof boot.autoplay === "string" ? chaptersById.get(boot.autoplay) : undefined;
       try {
         const nextSpeed = parseDemoSpeed(boot.speed);
         setSpeed(nextSpeed);
-        if (!chapter) fail("BAD DEMO LINK", `unknown autoplay chapter ${JSON.stringify(boot.autoplay)}`);
+        if (!chapter) failTemplate("demo.badLink", "demo.errorUnknownAutoplay", { id: JSON.stringify(boot.autoplay) });
         else attempt(chapterAction(chapter, true));
       } catch (error) {
-        fail("BAD DEMO LINK", error);
+        fail("demo.badLink", error);
       }
     } else if (boot.map !== undefined) {
-      try {
-        if (typeof boot.map !== "string" || !mapsById.has(boot.map)) throw new Error(`unknown map ${JSON.stringify(boot.map)}`);
-        const oneCoordinate = (boot.x === undefined) !== (boot.y === undefined);
-        if (oneCoordinate) throw new Error("x and y must be supplied together");
-        const requested = boot.x === undefined
-          ? undefined
-          : { x: parseDemoCoordinate("x", boot.x), y: parseDemoCoordinate("y", boot.y) };
-        attempt(warpAction(boot.map, requested));
-      } catch (error) {
-        fail("BAD DEMO LINK", error);
+      if (typeof boot.map !== "string" || !mapsById.has(boot.map)) {
+        failTemplate("demo.badLink", "demo.errorUnknownMap", { id: JSON.stringify(boot.map) });
+      } else if ((boot.x === undefined) !== (boot.y === undefined)) {
+        failTemplate("demo.badLink", "demo.errorXY");
+      } else {
+        try {
+          const requested = boot.x === undefined
+            ? undefined
+            : { x: parseDemoCoordinate("x", boot.x), y: parseDemoCoordinate("y", boot.y) };
+          attempt(warpAction(boot.map, requested));
+        } catch (error) {
+          fail("demo.badLink", error);
+        }
       }
     } else if (boot.speed !== undefined || boot.x !== undefined || boot.y !== undefined) {
-      fail("BAD DEMO LINK", "speed requires autoplay; x and y require map");
+      failTemplate("demo.badLink", "demo.badLinkSpeed");
     }
   }
 
@@ -341,7 +567,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
       }
       if (pending) {
         if (pending.error !== undefined) {
-          fail("DEMO ERROR", pending.error);
+          fail("demo.error", pending.error);
           return { consumed: true };
         }
         if (!pending.ready) return { consumed: true };
@@ -381,7 +607,8 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
       return { consumed: true };
     },
     isOpen: open,
-    render(theme?: Partial<UiTheme>) {
+    render(theme?: Partial<UiTheme>, uiText?: UiTextOverrides) {
+      menuText = withUiText(DEMO_MENU_UI_TEXT, uiText);
       const model = (): DemoMenuModel => ({
         open: open(),
         page: page(),
@@ -392,7 +619,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
         busy: busy(),
         toast: toast(),
       });
-      return <DemoMenu model={model} theme={theme} />;
+      return <DemoMenu model={model} theme={theme} text={menuText} />;
     },
   };
 
@@ -401,18 +628,18 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
     jump(id: string): void {
       const chapter = chaptersById.get(id);
       if (!chapter) {
-        fail("DEMO ERROR", `unknown chapter ${JSON.stringify(id)}`);
+        failTemplate("demo.error", "demo.errorUnknownChapter", { id: JSON.stringify(id) });
         return;
       }
       queueExternal(chapterAction(chapter, false));
     },
     warp(mapId: string, x?: number, y?: number): void {
       if (!mapsById.has(mapId)) {
-        fail("DEMO ERROR", `unknown map ${JSON.stringify(mapId)}`);
+        failTemplate("demo.error", "demo.errorUnknownMap", { id: JSON.stringify(mapId) });
         return;
       }
       if ((x === undefined) !== (y === undefined)) {
-        fail("DEMO ERROR", "x and y must be supplied together");
+        failTemplate("demo.error", "demo.errorXY");
         return;
       }
       try {
@@ -421,7 +648,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
           : { x: parseDemoCoordinate("x", String(x)), y: parseDemoCoordinate("y", String(y)) };
         queueExternal(warpAction(mapId, requested));
       } catch (error) {
-        fail("DEMO ERROR", error);
+        fail("demo.error", error);
       }
     },
     autoplay(id: string, requestedSpeed: AttractSpeed = speed()): void {
@@ -429,7 +656,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
       try {
         const nextSpeed = parseDemoSpeed(requestedSpeed);
         if (!chapter) {
-          fail("DEMO ERROR", `unknown autoplay chapter ${JSON.stringify(id)}`);
+          failTemplate("demo.error", "demo.errorUnknownAutoplay", { id: JSON.stringify(id) });
           return;
         }
         queueExternal(() => {
@@ -437,7 +664,7 @@ function makeRuntime(options: DemoOptions, host: GameViewDemoHost): GameViewDemo
           chapterAction(chapter, true)();
         });
       } catch (error) {
-        fail("DEMO ERROR", error);
+        fail("demo.error", error);
       }
     },
     current() {

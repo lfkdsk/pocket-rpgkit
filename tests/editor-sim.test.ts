@@ -752,7 +752,10 @@ simDescribe("editor budget", () => {
     // Studio command palette, minimap, layers and canvas polish add 3,595 B;
     // timer-aware immutable cache keys add 317 B: measured 1,496,504 B.
     // The W3 cache driver's editor-visible types and the world-bounded
-    // fixture's shared paths: measured 1,498,456 B. Keep a narrow margin.
-    expect(js).toBeLessThan(1_502_000);
+    // fixture's shared paths: measured 1,498,456 B. The interface-text merge
+    // adds the bundled schema's uiText keys, BoundedLine and the bounded
+    // editor paths: the merged editor measures 1,522,089 B. Keep a narrow
+    // margin.
+    expect(js).toBeLessThan(1_525_000);
   });
 });

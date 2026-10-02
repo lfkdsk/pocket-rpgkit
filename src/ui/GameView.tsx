@@ -92,6 +92,8 @@ import {
 import { DialogBox } from "./DialogBox.tsx";
 import { createDialogPaginator } from "./dialog-pages.ts";
 import { slotMeasure } from "./text-measure.ts";
+import { wrapLabel } from "./list-window.ts";
+import { formatUiText, KIT_UI_TEXT, mergeUiText, withUiText, type UiTextOverrides } from "../engine/ui-text.ts";
 import { resolveChoiceIcon, type ChoiceIconBoxComponent } from "./choice-icons.ts";
 import { resolveUiTheme, type UiTheme } from "./theme.ts";
 import type {
@@ -783,6 +785,10 @@ export interface BattleSceneViewProps {
   /** False while the once-mounted scene is hidden between battles. Resource
    * scopes use this edge to release the completed battle's texture pins. */
   active: boolean;
+  /** The kit's words replaced by the game (project `uiText` under
+   *  GameView's prop), for scene views that draw kit text such as the name
+   *  input. Undefined when the game replaces none. */
+  uiText?: UiTextOverrides;
 }
 
 export type BattleSceneComponent = Component<BattleSceneViewProps>;
@@ -874,6 +880,9 @@ export interface GameViewProps {
   screenPresentation?: Readonly<GameScreenPresentation>;
   /** DialogBox colours (ui/theme.ts); missing keys keep the kit default. */
   theme?: Partial<UiTheme>;
+  /** The kit's interface words (engine/ui-text.ts), over the project's
+   *  `uiText`: any subset of keys, English for the rest. */
+  uiText?: UiTextOverrides;
   /** DialogBox speaker portraits: NAME -> 64x64 image src. */
   faces?: Readonly<Record<string, string>>;
   /** DialogBox portrait column width (default 72). */
@@ -929,8 +938,9 @@ function SceneRenderer(props: {
   /** False while the once-mounted scene is hidden (same contract as the
    *  battle view's active prop). */
   active: boolean;
+  uiText: UiTextOverrides | undefined;
 }) {
-  return <props.view state={props.state} width={props.width} height={props.height} active={props.active} />;
+  return <props.view state={props.state} width={props.width} height={props.height} active={props.active} uiText={props.uiText} />;
 }
 
 export function GameView(props: GameViewProps) {
@@ -946,6 +956,39 @@ export function GameView(props: GameViewProps) {
     project.items.map((it) => [it.id, { name: it.name }]),
   );
   startupProfileMark("game-view:item-names");
+  // The kit's words: English unless the project or the prop replaces some.
+  // Reactive memos, so swapping the `uiText` prop at run time (a language
+  // switch without rebuilding the project) reaches every reader next frame.
+  const uiTextOverrides = createMemo(() => mergeUiText(project.uiText, props.uiText));
+  const uiText = createMemo(() => withUiText(KIT_UI_TEXT, uiTextOverrides()));
+  const badgeTemplate = createMemo(() => uiTextOverrides()?.["demo.badge"]);
+  // A full-screen banner's `text-sm` rows: one unless a translation is
+  // wider than the screen (less 8 px each side). Read only while shown.
+  const bannerRows = (key: "demo.control" | "error.event"): string[] =>
+    wrapLabel(uiText()[key], viewport().w - 16, slotMeasure(1));
+  // The rewind banner fills {seconds} from the attract config before
+  // wrapping, so a translation names the real window, not a fixed 3.
+  const rewindRows = (): string[] =>
+    wrapLabel(
+      formatUiText(uiText()["demo.rewind"], { seconds: attract?.rewindSeconds ?? 3 }),
+      viewport().w - 16,
+      slotMeasure(1),
+    );
+  // The fatal-error message wraps to the screen (less 16 px each side) and
+  // the screen grows with it; nothing is cut.
+  const fatalRows = (): string[] =>
+    wrapLabel(fatalError() ?? "", viewport().w - 32, slotMeasure(0));
+  // The attract badge repaints every frame. The English badge stays a
+  // template literal on one fixed row; a replaced template is formatted and,
+  // when wider than the plate, wrapped (the plate grows by its rows).
+  const badgeRows = (): string[] => {
+    const frame = String(demo()?.demoFrame ?? 0).padStart(3, "0");
+    const frames = demo()?.tapeFrames ?? 0;
+    const template = badgeTemplate();
+    if (template === undefined) return [`DEMO ${frame}/${frames}`];
+    const text = formatUiText(template, { frame, frames });
+    return wrapLabel(text, Math.min(viewport().w - 16, 200), slotMeasure(0));
+  };
   if ((props.battle === undefined) !== (props.battleScene === undefined)) {
     throw new Error("GameView: battle and battleScene must be registered together");
   }
@@ -1335,12 +1378,15 @@ export function GameView(props: GameViewProps) {
   const edge = { confirm: false, cancel: false };
   const confirm = attract ? undefined : () => { edge.confirm = true; };
   const cancel = attract ? undefined : () => { edge.cancel = true; };
-  const talkActions = { confirm: { label: "talk", run: confirm } };
-  const textActions = { confirm: { label: "next", run: confirm } };
-  const choiceActions = { confirm: { label: "ok", run: confirm } };
-  const backActions = { ...choiceActions, back: { label: "back", run: cancel } };
   const actions = useActions(createMemo(() => {
     if (demoRuntime?.isOpen() || overlayRuntime?.isOpen()) return {};
+    // Built inside the memo so a run-time uiText prop swap rewords the
+    // legend labels on the next frame.
+    const t = uiText();
+    const talkActions = { confirm: { label: t["legend.talk"], run: confirm } };
+    const textActions = { confirm: { label: t["legend.next"], run: confirm } };
+    const choiceActions = { confirm: { label: t["legend.ok"], run: confirm } };
+    const backActions = { ...choiceActions, back: { label: t["legend.back"], run: cancel } };
     // A full-screen scene is the sole foreground input owner. Map modals
     // remain parked in reducer state while the world is frozen, but must not
     // capture confirm/back until the scene closes and reveals them again.
@@ -1894,6 +1940,7 @@ export function GameView(props: GameViewProps) {
           choiceIconBox={props.choiceIcons}
           choiceIcon={props.choiceIcons && ((icon) => resolveChoiceIcon(icon, sprites, assets.npcSrc))}
           viewportWidth={viewport().w}
+          uiText={uiTextOverrides()}
         />
       </ProfileMount>
       <ScreenFadeLayer screen={presentedScreen} />
@@ -1919,6 +1966,7 @@ export function GameView(props: GameViewProps) {
                 width={viewport().w}
                 height={viewport().h}
                 active={scene()?.kind === "battle"}
+                uiText={uiTextOverrides()}
               />
             </ProfileMount>
           ) : null}
@@ -1950,6 +1998,7 @@ export function GameView(props: GameViewProps) {
                 width={viewport().w}
                 height={viewport().h}
                 active={activeSceneId() === id}
+                uiText={uiTextOverrides()}
               />
             </ProfileMount>
           </View>
@@ -1969,9 +2018,9 @@ export function GameView(props: GameViewProps) {
         >
           <Text
             class="text-xs"
-            style={{ textColor: "#ffe97a", lineHeight: 13, height: 13, insetL: 6, insetT: 2, insetR: 6 }}
+            style={{ textColor: "#ffe97a", lineHeight: 13, height: 13 * badgeRows().length, insetL: 6, insetT: 2, insetR: 6 }}
           >
-            {`DEMO ${String(demo()?.demoFrame ?? 0).padStart(3, "0")}/${demo()?.tapeFrames ?? 0}`}
+            {badgeRows().join("\n")}
           </Text>
         </View>
       </Show>
@@ -1981,8 +2030,8 @@ export function GameView(props: GameViewProps) {
           style={{ posType: 1, insetT: 18, insetL: 0, insetR: 0 }}
           debugName="rpgkit-control-notice"
         >
-          <Text class="text-sm" style={{ textColor: "#ffe97a", lineHeight: 18, height: 18 }}>
-            YOU HAVE CONTROL
+          <Text class="text-sm" style={{ textColor: "#ffe97a", lineHeight: 18, height: 18 * bannerRows("demo.control").length }}>
+            {bannerRows("demo.control").join("\n")}
           </Text>
         </View>
       </Show>
@@ -1992,8 +2041,8 @@ export function GameView(props: GameViewProps) {
           style={{ posType: 1, insetT: 40, insetL: 0, insetR: 0 }}
           debugName="rpgkit-rewind-notice"
         >
-          <Text class="text-sm" style={{ textColor: "#8ad0ff", lineHeight: 18, height: 18 }}>
-            REWIND 3 SEC
+          <Text class="text-sm" style={{ textColor: "#8ad0ff", lineHeight: 18, height: 18 * rewindRows().length }}>
+            {rewindRows().join("\n")}
           </Text>
         </View>
       </Show>
@@ -2005,8 +2054,8 @@ export function GameView(props: GameViewProps) {
       />
       {/* Opt-in demo chrome stays above the world/fade but below fatal
           errors. Its implementation is supplied by the isolated demo entry. */}
-      {demoRuntime ? demoRuntime.render(props.theme) : null}
-      {overlayRuntime ? overlayRuntime.render(props.theme) : null}
+      {demoRuntime ? demoRuntime.render(props.theme, uiTextOverrides()) : null}
+      {overlayRuntime ? overlayRuntime.render(props.theme, uiTextOverrides()) : null}
       <Show when={fatalError() !== null}>
         <View
           class="absolute inset-0 flex-col justify-center items-center"
@@ -2015,18 +2064,18 @@ export function GameView(props: GameViewProps) {
         >
           <Text
             class="text-sm"
-            style={{ textColor: "#ff8a8a", lineHeight: 18, height: 18 }}
+            style={{ textColor: "#ff8a8a", lineHeight: 18, height: 18 * bannerRows("error.event").length }}
             debugName="rpgkit-fatal-error-title"
           >
-            EVENT ERROR
+            {bannerRows("error.event").join("\n")}
           </Text>
           <View style={{ height: 8 }} />
           <Text
             class="text-xs"
-            style={{ textColor: "#f3dfe8", lineHeight: 14, height: 28 }}
+            style={{ textColor: "#f3dfe8", lineHeight: 14, height: 14 * fatalRows().length, insetL: 16, insetR: 16 }}
             debugName="rpgkit-fatal-error-message"
           >
-            {fatalError() ?? ""}
+            {fatalRows().join("\n")}
           </Text>
         </View>
       </Show>

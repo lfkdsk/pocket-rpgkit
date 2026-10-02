@@ -169,7 +169,7 @@ simDescribe("Sunstone demo boot requests", () => {
     const before = structuredClone(state());
     const tree = world.getTree();
     expect(treeHasText(tree, "BAD DEMO LINK")).toBe(true);
-    expect(treeHasText(tree, "unknown chapter")).toBe(true);
+    expect(treeHasText(tree, "Unknown chapter")).toBe(true);
     expect(state()).toEqual(before);
   });
 });

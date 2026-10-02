@@ -39,6 +39,7 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906` | optional root `uiText` (the kit's interface words, including the demo error sentence templates) | additive |
 | `4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1` | `scrollMap`; `showPicture` / `movePicture` / `rotatePicture` / `tintPicture` / `erasePicture`; `timer`; `inputNumber`; `openMenu` / `openSave` / `gameOver` / `returnTitle`; `changeName`; `mapNameDisplay`; `timer` condition; optional `system.mapNameDisplay` | additive |
 | `ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611` | `loop` / `break` commands, `eventTouch` trigger, `system.textVariables` | additive |
 | `ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2` | optional `worldLayout` with topology identity, connected components, placements, seams and per-portal opening compatibility | additive |
@@ -56,6 +57,27 @@ under the row's schema.
 | `462299c3e20212f9a5a092a88fc563164a87bd4e473214c1e909389baa12cc90` | `ext` and `battle` commands, `ext` condition, variable transfer targets; a transfer to an unknown map enters the content-error state instead of throwing | breaking |
 | `c8ca2ce77e5bff0af2d15f33863014d51dfb4acf4cef14fb678a17f7dc1ecba3` | `system.messageBlocksPlayer`; moving characters are stopped only by `blocks: true` pages | breaking |
 | `9570c570df1ddb497b6f5a0c9d1f1a0a265e22cf1ae83e8da8dcd5310e9f2a21` | first sharded generation (`mapIndex`) | first |
+
+## Manifest identity
+
+A sharded shell's `mapManifestHash` is SHA-256 over the canonical shell
+with `mapManifestHash` and `mapSchemaHash` removed. It identifies the
+content build a save belongs to: a save names it (`content.manifest`) and
+is refused when the live shell's manifest differs (save error code
+`content`).
+
+Root fields that are **presentation only** are excluded from this hash:
+they are proven never to reach the reducer, the session, the interpreter
+or the save codec, so changing them cannot alter a save, a tape or a
+replay. The current list is just `uiText` (the kit's interface words):
+the engine never reads it — only UI components do, through GameView's /
+a component's `uiText` prop — so a save taken in one language loads into
+another language's shard. Per-language map content (dialogue written in
+events, item names, and so on) is hashed through `mapIndex` and still
+changes the identity. The exclusion list lives in
+`src/engine/map-repository.ts` (`MANIFEST_EXCLUDED_ROOT_FIELDS`); a field
+joins it only with a test that a save survives the field's change
+(`tests/map-repository.test.ts`).
 
 ## v1 — 2026-09-23 (component extraction release 0.1.0)
 

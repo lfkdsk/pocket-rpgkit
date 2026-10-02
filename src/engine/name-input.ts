@@ -28,6 +28,7 @@ import { deepClone } from "./clone.ts";
 import type { ExtensionReadContext } from "./extensions.ts";
 import type { SceneCompletion, SceneRules, SceneStart } from "./scene.ts";
 import type { JsonValue } from "./types.ts";
+import type { UiTextTable } from "./ui-text.ts";
 
 export const NAME_INPUT_SCENE_ID = "rpgkit.nameInput";
 
@@ -38,7 +39,20 @@ const REPEAT_RATE = 6;
 
 const DEFAULT_MAX_LENGTH = 8;
 const DEFAULT_COLUMNS = 10;
-const DEFAULT_TITLE = "Name";
+/** The caption a scene started without `title` stores. NameInputScene
+ *  draws the ui-text table's `nameInput.title` in its place (English
+ *  "Name"), so the stored state stays the same in every language. */
+export const NAME_INPUT_DEFAULT_TITLE = "Name";
+
+/** English defaults of NameInputScene's words (engine/ui-text.ts keys):
+ *  the default caption and the BACK / OK / CANCEL cells. */
+export const NAME_INPUT_UI_TEXT = {
+  "nameInput.title": NAME_INPUT_DEFAULT_TITLE,
+  "nameInput.back": "<",
+  "nameInput.ok": "OK",
+  "nameInput.cancel": "X",
+} as const satisfies Partial<UiTextTable>;
+const DEFAULT_TITLE = NAME_INPUT_DEFAULT_TITLE;
 /** 67 chars + BACK/OK/CANCEL = 70 entries = a neat 7×10 grid. */
 const DEFAULT_CHARSET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'-.!?";
@@ -84,6 +98,12 @@ export interface NameInputState {
   rows: number;
   maxLength: number;
   title: string;
+  /** True when the scene set `title` itself (no `title` arg): the view
+   *  draws the ui-text table's `nameInput.title` in its place, so the
+   *  stored state stays the same in every language. A game that passes an
+   *  explicit title (even the literal "Name") sets this false and keeps
+   *  its own wording. */
+  titleIsDefault: boolean;
   variable: string | null;
   allowEmpty: boolean;
   phase: "edit" | "done";
@@ -172,6 +192,7 @@ export const nameInputRules: SceneRules = {
     const variable = typeof args.variable === "string" && args.variable.length > 0
       ? args.variable
       : null;
+    const titleArg = typeof args.title === "string" && args.title.length > 0 ? args.title : null;
     const state: NameInputState = {
       buffer: prefill(args, ctx, maxLength),
       cursor: 0,
@@ -179,7 +200,8 @@ export const nameInputRules: SceneRules = {
       columns,
       rows: Math.ceil((charset.length + ACTION_COUNT) / columns),
       maxLength,
-      title: typeof args.title === "string" && args.title.length > 0 ? args.title : DEFAULT_TITLE,
+      title: titleArg ?? DEFAULT_TITLE,
+      titleIsDefault: titleArg === null,
       variable,
       allowEmpty: args.allowEmpty === true,
       swallowCancel: args.swallowCancel === true,

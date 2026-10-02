@@ -123,9 +123,15 @@ const maybeTest = preflight.ok ? test : test.skip;
 // The loop/break commands, the eventTouch trigger and the {v:} text token
 // add 8,587 shared interpreter/session/save-check bytes: 718 for the token,
 // 4,982 for loop/break and the eventTouch scan, 2,887 for contact detection.
-// Merged with everything above, Sunstone measures 831,224.
-// The optional playerStep extension hook adds 1,218 shared bytes: 832,442.
-// The attract controller every GameView bundles gains the keyframe count
+// Replaceable interface words add 5,960 bytes: the shared table and
+// helpers (engine/ui-text.ts, 1,510), DialogBox's shop words (669), GameView's
+// legends, attract chrome and table hand-off (1,402), the compatible schema
+// identity (72), and the opted-in demo menu's words and wrapping
+// (ui/demo/text.ts 642, demo.tsx 1,665). The long-translation wrapping
+// (StatBar/name-input ladders, shop gold/legend wrap, demo error templates)
+// adds 5,686 more.
+// The optional playerStep extension hook adds 1,218 shared bytes. The
+// attract controller every GameView bundles gains the keyframe count
 // cap, keyframes that keep immutable states by reference, the reused
 // rollback checkpoint and its success-path resync, plus the
 // attractRewindOptions helper; Sunstone's opted-in demo adds
@@ -144,7 +150,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // Timer-aware immutable page and trigger-scan keys add 317 shared bytes, and
 // the demo warp-toast fixes add 173 bytes: 872,013 total.
 // The W3 cache fixes and the coordinate-contract helper: 873,965 measured.
-const EXPECTED_BYTES = 873_965;
+// Merging the interface-text branch (uiText words, BoundedLine, bounded
+// SaveMenu/DialogBox/demo paths) brings the merged product to 898,897 bytes.
+const EXPECTED_BYTES = 898_897;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

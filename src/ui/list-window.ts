@@ -66,6 +66,33 @@ export function truncateLabel(label: string, max: number): string {
   return `${sliceScalars(label, max - 1)}…`;
 }
 
+/** A text cell bounded to `maxRows` wrapped rows. A label whose rows fit
+ *  draws them all; a longer label becomes a one-row marquee: the row is
+ *  clipped to the cell and scrolled sideways by marqueeOffset on the
+ *  cell's tick, so every character is reachable and nothing is cut. The
+ *  kit's fixed chrome (shop header, legends, panel titles) uses this to
+ *  stay inside the 480x272 viewport for every schema-valid value: the
+ *  schema allows 200 characters per interface word, and a cell that
+ *  cannot grow paginates by scrolling instead. */
+export interface BoundedCell {
+  kind: "wrap" | "marquee";
+  /** wrap: every row (at most maxRows); marquee: the one unscrolled row. */
+  rows: readonly string[];
+  /** marquee: px the row is wider than the cell (0 for wrap). */
+  overflow: number;
+}
+
+/** Lay `label` out for a cell `width` px wide that may grow to `maxRows`
+ *  rows. Returns the wrapped rows when they fit, else a one-row marquee
+ *  spec. A non-positive width or maxRows yields a marquee with no
+ *  overflow (the caller clips an empty cell). */
+export function fitBounded(label: string, width: number, maxRows: number, measure: Measure): BoundedCell {
+  if (!(width > 0) || maxRows <= 0) return { kind: "marquee", rows: [label], overflow: 0 };
+  const rows = wrapLabel(label, width, measure);
+  if (rows.length <= maxRows) return { kind: "wrap", rows, overflow: 0 };
+  return { kind: "marquee", rows: [label], overflow: Math.max(0, measure(label) - width) };
+}
+
 /** Ticks a marquee rests at each end before moving. */
 export const MARQUEE_HOLD = 45;
 /** Marquee speed: one pixel per this many ticks. */

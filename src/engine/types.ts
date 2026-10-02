@@ -5,6 +5,8 @@
 // (interpreter.ts) is a pure fold over these types: no host imports. P1②
 // adds the sheet dirBlock directional masks consumed by passability.ts.
 
+import type { UiTextOverrides } from "./ui-text.ts";
+
 export type Dir = "down" | "left" | "right" | "up";
 
 /** Values which can cross the project/session/save boundary. Extension and
@@ -847,6 +849,10 @@ export interface Project {
    *  playthrough. Stored in the switch bank after that, so a rename (a future
    *  op) survives saves and transfers. */
   playerName?: string;
+  /** Replacements for the kit's own interface words (engine/ui-text.ts):
+   *  any subset of keys, English for the rest. Presentation only — never in
+   *  session state or saves. */
+  uiText?: UiTextOverrides;
   sheets: Sheet[];
   items: Item[];
   /** Page.sprite key -> static character image. */

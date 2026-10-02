@@ -22,7 +22,9 @@
 //   └───────────────────────────┘
 //
 // All three boxes are Panels coloured by the `theme` prop (ui/theme.ts); without
-// one they draw the kit's default palette.
+// one they draw the kit's default palette. The shop's own words (stage,
+// gold, Sell/Leave/Back, the price column) come from the `uiText` table
+// (engine/ui-text.ts), English by default, and wrap like item names.
 //
 // Portraits. With a `faces` table, a text whose first line opens with a
 // listed speaker ("KEEPER: The lamp is lit.") shows that speaker's 64x64
@@ -42,7 +44,9 @@
 import { createMemo, For, Show, type Accessor } from "solid-js";
 import { Image, Text, View } from "@pocketjs/framework/components";
 import type { Modal, ShopRow } from "../engine/interpreter.ts";
-import { windowByRows, wrapLabel } from "./list-window.ts";
+import { fitBounded, marqueeOffset, windowByRows, wrapLabel, type BoundedCell } from "./list-window.ts";
+import { useMarqueeTick } from "./use-marquee-tick.ts";
+import { BoundedLine } from "./BoundedLine.tsx";
 import { flowRows, revealRows } from "./text-flow.ts";
 import { DIALOG_ROWS, FACE_WIDTH, dialogColumnWidth, messagePage, messageSpeaker, pageRevealed, shownMessageLines } from "./dialog-pages.ts";
 import { slotMeasure } from "./text-measure.ts";
@@ -50,6 +54,9 @@ import { Panel } from "./Panel.tsx";
 import { resolveUiTheme, speakerLabel, type SpeakerSplit, type UiTheme } from "./theme.ts";
 import { startupProfileMark } from "../startup-profile.ts";
 import type { ChoiceIconBoxComponent, ChoiceIconResolver } from "./choice-icons.ts";
+import { formatUiText, KIT_UI_TEXT, withUiText, type UiTextOverrides } from "../engine/ui-text.ts";
+
+type ShopText = { readonly [K in keyof typeof KIT_UI_TEXT]: string };
 
 /** Portrait images are 64x64: pak images must be power-of-two. */
 const FACE_PX = 64;
@@ -84,24 +91,30 @@ export interface DialogBoxProps {
    *  resolveChoiceIcon over the project's sprites). An icon this returns
    *  null for (or every icon, without the prop) shows a "?" placeholder. */
   choiceIcon?: ChoiceIconResolver;
+  /** The kit's words (engine/ui-text.ts): any subset of keys; missing keys
+   *  keep English. */
+  uiText?: UiTextOverrides;
 }
 
-/** Rows visible at once in the choices/shop box (T2-9: up to 8 choice
- *  options and an unbounded shop goods list scroll a 4-item window). */
+/** The choices/shop list shows at most this many items around the cursor;
+ *  the pixel budget may narrow it further when the chrome is tall. */
 const VISIBLE_ROWS = 4;
 /** Content width of the choices and shop boxes: 248 outer, 2 px border and
  *  6 px padding each side, 1 px more each side for a theme rim. A label
  *  wider than it (after the cursor prefix) wraps onto more rows; nothing
  *  is cut. */
 const LIST_TEXT_WIDTH = 248 - 2 * (2 + 6);
-/** The choices/shop box: 96 px for a one-row prompt/header and four item
- *  rows; each further row adds LIST_ROW_H and the box grows upward. */
+/** The choices/shop box's fallback height (an empty list): one-row
+ *  prompt/header and legend, no item rows. A populated box grows to fit
+ *  its window, capped to BOX_CAP_H. */
 const LIST_BOX_H = 96;
 const LIST_ROW_H = 14;
-/** Rows the choices/shop box may add before it would leave a 272 px
- *  screen (its bottom sits 98 px up): 272 - 98 - 96 = 78 px, five rows.
- *  Past that the item window scrolls by rows. */
-const LIST_EXTRA_ROWS = 5;
+/** Width of the shop header's gold column and of an item's price column:
+ *  each wraps inside its column and the row/header grows by its rows. */
+const SHOP_GOLD_W = 110;
+const SHOP_PRICE_W = 90;
+/** Row height of a box's bottom legend (`text-xs`, 12 px). */
+const LEGEND_ROW_H = 12;
 /** The message box: 92 px for four rows; a page that needs more rows at
  *  a window narrower than the design width grows it upward. */
 const MESSAGE_BOX_H = 92;
@@ -123,42 +136,31 @@ interface ListRow {
   right: string;
 }
 
-/** The rows of a scrolled list: the window around `index` (windowByRows)
- *  with every row of every item in it. */
-function listRows(
-  index: number,
-  labels: readonly (readonly string[])[],
-  rights: readonly string[],
-  maxRows: number,
-): ListRow[] {
-  const { start, end } = windowByRows(index, labels.map((rows) => rows.length), VISIBLE_ROWS, maxRows);
-  const out: ListRow[] = [];
-  for (let item = start; item < end; item++) {
-    labels[item]!.forEach((text, j) => {
-      out.push({
-        item,
-        left: `${j > 0 ? CURSOR_OFF : item === index ? CURSOR_ON : CURSOR_OFF}${text}`,
-        right: j === 0 ? rights[item] ?? "" : "",
-      });
-    });
-  }
-  return out;
+interface ChoiceListRow extends ListRow {
+  /** Pixels the complete prefixed row must travel inside its clip. */
+  leftMarquee: number;
 }
+
 const sameLines = (a: readonly string[], b: readonly string[]): boolean =>
   a === b || (a.length === b.length && a.every((line, i) => line === b[i]));
+const sameCell = (a: BoundedCell, b: BoundedCell): boolean =>
+  a.kind === b.kind && a.overflow === b.overflow && sameLines(a.rows, b.rows);
+
+let warnedNoIconBox = false;
 
 /** A shop item row's right column. Finite shop stock (B1) shows next to the
  *  price; unlimited goods (stock: null, and every sell-stage row) show the
  *  price alone. */
-function priceLabel(r: Extract<ShopRow, { kind: "item" }>): string {
-  const stockSuffix = r.stock !== null ? ` (${r.stock})` : "";
-  return `${r.price}g${stockSuffix}`;
+function priceLabel(r: Extract<ShopRow, { kind: "item" }>, text: ShopText): string {
+  return r.stock !== null
+    ? formatUiText(text["shop.priceStock"], { price: r.price, stock: r.stock })
+    : formatUiText(text["shop.price"], { price: r.price });
 }
-let warnedNoIconBox = false;
 
 export function DialogBox(props: DialogBoxProps) {
   startupProfileMark("ui-dialog:start");
   const theme = createMemo(() => resolveUiTheme(props.theme));
+  const text = createMemo(() => withUiText(KIT_UI_TEXT, props.uiText));
   const choice = createMemo(() => {
     const modal = props.modal();
     return modal?.kind === "choices" ? modal : null;
@@ -217,46 +219,164 @@ export function DialogBox(props: DialogBoxProps) {
   const textBudget = createMemo(() => textWidth() - (theme().rim ? 2 : 0));
   const listBudget = createMemo(() => LIST_TEXT_WIDTH - (theme().rim ? 2 : 0));
   const labelBudget = createMemo(() => listBudget() - Math.max(measure(CURSOR_ON), measure(CURSOR_OFF)));
-  // Choices: the prompt and each option wrap at the box's width; the
-  // window shows whole options, four at most, and the box grows by the
-  // extra rows (up to LIST_EXTRA_ROWS, then the window narrows). The
-  // window is a pure function of the live cursor index: never desyncs
-  // from the reducer, and wrap-around (top<->bottom) recomputes it with
-  // no leftover scroll state.
-  const choicePrompt = createMemo(() => wrapLabel(textChoice()?.prompt ?? "", listBudget(), measure), [""], { equals: sameLines });
-  const promptSlots = createMemo(() => range(choicePrompt().length), [0], { equals: sameRange });
-  // Compared by content, so a cursor move does not re-wrap the labels.
+  // The choices and shop boxes dock 98 px up in the 180 px message layer,
+  // so their bottom sits at y = 272 - 98 = 174 on the 480x272 playfield.
+  // They may grow to BOX_CAP_H (top >= 8); past that the row window scrolls
+  // by rows and the chrome (prompt/header, legend) is bounded to a few rows
+  // and scrolls sideways (a marquee) when a schema-valid value is longer,
+  // so every character stays reachable and the box never leaves the
+  // viewport.
+  const BOX_CAP_H = 166;
+  const BOX_FRAME = 2 * (2 + 6);
+  const BOX_GAP = 4;
+  const LEGEND_MAX_ROWS = 2;
+  const HEADER_MAX_ROWS = 2;
+  const PROMPT_MAX_ROWS = 6;
+  // The bottom legend (shop and choices boxes) is bounded to LEGEND_MAX_ROWS
+  // rows at the box width and scrolls sideways when longer. The message box
+  // (below) keeps its unbounded legend: it has the whole upward growth
+  // budget and a 200-char legend still fits it.
+  const legendCell = createMemo(
+    () => fitBounded(props.legend() ?? "", LIST_TEXT_WIDTH, LEGEND_MAX_ROWS, measure),
+    { kind: "wrap", rows: [], overflow: 0 } as BoundedCell,
+    { equals: sameCell },
+  );
+  const legendRows = createMemo(() => wrapLabel(props.legend() ?? "", LIST_TEXT_WIDTH, measure), [""], { equals: sameLines });
+  const legendExtra = () => (legendRows().length - 1) * LEGEND_ROW_H;
+  // Choices: the prompt is bounded to PROMPT_MAX_ROWS rows (it scrolls
+  // sideways when longer) and each option label to the row window's
+  // capacity; the window shows whole options around the cursor and the box
+  // is capped to the viewport. The window is a pure function of the live
+  // cursor index: never desyncs from the reducer.
+  const choicePromptCell = createMemo(
+    () => fitBounded(textChoice()?.prompt ?? "", listBudget(), PROMPT_MAX_ROWS, measure),
+    { kind: "wrap", rows: [], overflow: 0 } as BoundedCell,
+    { equals: sameCell },
+  );
   const choiceOptions = createMemo(() => textChoice()?.options ?? EMPTY_LINES, EMPTY_LINES, { equals: sameLines });
-  const choiceLabels = createMemo(() => choiceOptions().map((option) => wrapLabel(option, labelBudget(), measure)));
-  const choiceRows = createMemo(() => {
+  // The option labels' row capacity depends on the chrome the cap leaves;
+  // computed together so a taller prompt or legend narrows the window and
+  // the labels with it.
+  const choiceLayout = createMemo(() => {
     const m = textChoice();
-    if (!m) return [];
-    return listRows(m.index, choiceLabels(), [], VISIBLE_ROWS + LIST_EXTRA_ROWS - (choicePrompt().length - 1));
+    if (!m) return { rows: [] as ChoiceListRow[], slots: [] as number[], boxH: LIST_BOX_H };
+    const promptRows = choicePromptCell().rows.length;
+    const legendBlock = BOX_GAP + LEGEND_ROW_H * legendCell().rows.length;
+    const windowPx = BOX_CAP_H - BOX_FRAME - promptRows * LIST_ROW_H - BOX_GAP - legendBlock;
+    const maxRows = Math.max(1, Math.floor(windowPx / LIST_ROW_H));
+    const labels = choiceOptions().map((option) => fitBounded(option, labelBudget(), maxRows, measure));
+    const rowCounts = labels.map((cell) => cell.rows.length);
+    const { start, end } = windowByRows(m.index, rowCounts, VISIBLE_ROWS, maxRows);
+    const rows: ChoiceListRow[] = [];
+    for (let item = start; item < end; item++) {
+      const count = rowCounts[item]!;
+      const labelCell = labels[item]!;
+      for (let j = 0; j < count; j++) {
+        const left = `${j > 0 ? CURSOR_OFF : item === m.index ? CURSOR_ON : CURSOR_OFF}${labelCell.rows[j] ?? ""}`;
+        rows.push({
+          item,
+          left,
+          right: "",
+          // A marquee is one row. Measure the actual prefixed string against
+          // the clip, as the shop does, so its final glyph reaches the edge.
+          leftMarquee: j === 0 && labelCell.kind === "marquee" ? Math.max(0, measure(left) - listBudget()) : 0,
+        });
+      }
+    }
+    const boxH = BOX_FRAME + promptRows * LIST_ROW_H + BOX_GAP + rows.length * LIST_ROW_H + legendBlock;
+    return { rows, slots: range(rows.length), boxH };
   });
-  const choiceSlots = createMemo(() => range(Math.max(VISIBLE_ROWS, choiceRows().length)), range(VISIBLE_ROWS), { equals: sameRange });
-  const choiceBoxH = () => LIST_BOX_H + LIST_ROW_H * (promptSlots().length - 1 + choiceSlots().length - VISIBLE_ROWS);
+  const choiceBoxH = () => choiceLayout().boxH;
   // Shop: an item name wraps beside its price column (plus a 6 px gap);
-  // the price stays on the name's first row.
-  const shopLabels = createMemo(() => {
+  // the price wraps inside its own column and the item takes the taller of
+  // the two. A control row (Sell/Leave/Back) wraps to the full label width.
+  // Every cell is bounded to the row window's capacity and scrolls
+  // sideways when longer, so a schema-valid value never grows the box past
+  // the viewport.
+  const shopGold = createMemo(() => {
     const m = shop();
-    if (!m) return { labels: [] as string[][], rights: [] as string[] };
-    const rights = m.rows.map((r) => (r.kind === "item" ? priceLabel(r) : ""));
-    const labels = m.rows.map((r, i) => {
-      if (r.kind !== "item") return [r.kind === "sell" ? "Sell" : r.kind === "leave" ? "Leave" : "Back"];
+    return m ? formatUiText(text()["shop.gold"], { gold: m.gold }) : "";
+  });
+  const shopStageText = createMemo(
+    () => {
+      const m = shop();
+      if (!m) return "";
+      return text()[m.stage === "buy" ? "shop.buy" : "shop.sell"];
+    },
+    "",
+    { equals: (a, b) => a === b },
+  );
+  const shopLayout = createMemo(() => {
+    const m = shop();
+    if (!m) {
+      return {
+        stage: { kind: "wrap", rows: [], overflow: 0 } as BoundedCell,
+        gold: { kind: "wrap", rows: [], overflow: 0 } as BoundedCell,
+        rows: [] as (ListRow & { leftWidth: number; leftMarquee: number; rightMarquee: number })[],
+        slots: [] as number[],
+        boxH: LIST_BOX_H,
+        headerH: 0,
+      };
+    }
+    const words = text();
+    const stage = fitBounded(shopStageText(), listBudget() - SHOP_GOLD_W - 6, HEADER_MAX_ROWS, measure);
+    const gold = fitBounded(shopGold(), SHOP_GOLD_W, HEADER_MAX_ROWS, measure);
+    const headerRows = Math.max(stage.rows.length, gold.rows.length);
+    const legendBlock = BOX_GAP + LEGEND_ROW_H * legendCell().rows.length;
+    const windowPx = BOX_CAP_H - BOX_FRAME - headerRows * LIST_ROW_H - BOX_GAP - legendBlock;
+    const maxRows = Math.max(1, Math.floor(windowPx / LIST_ROW_H));
+    const labels = m.rows.map((r) => {
+      if (r.kind !== "item") {
+        const word = words[r.kind === "sell" ? "shop.rowSell" : r.kind === "leave" ? "shop.rowLeave" : "shop.rowBack"];
+        return fitBounded(word, labelBudget(), maxRows, measure);
+      }
       const name = props.items?.[r.item]?.name ?? r.item;
-      return wrapLabel(name, labelBudget() - measure(rights[i]!) - 6, measure);
+      return fitBounded(name, labelBudget() - SHOP_PRICE_W - 6, maxRows, measure);
     });
-    return { labels, rights };
+    const rights = m.rows.map((r) => (r.kind === "item" ? fitBounded(priceLabel(r, words), SHOP_PRICE_W, maxRows, measure) : null));
+    const rowCounts = m.rows.map((_, i) => Math.max(labels[i]!.rows.length, rights[i]?.rows.length ?? 0));
+    const { start, end } = windowByRows(m.index, rowCounts, VISIBLE_ROWS, maxRows);
+    const rows: (ListRow & { leftWidth: number; leftMarquee: number; rightMarquee: number })[] = [];
+    for (let item = start; item < end; item++) {
+      const count = rowCounts[item]!;
+      const labelCell = labels[item]!;
+      const priceCell = rights[item];
+      const leftWidth = m.rows[item]!.kind === "item" ? listBudget() - SHOP_PRICE_W - 6 : listBudget();
+      for (let j = 0; j < count; j++) {
+        const left = labelCell.rows[j] ?? "";
+        const right = priceCell?.rows[j] ?? "";
+        const prefixedLeft = `${j > 0 ? CURSOR_OFF : item === m.index ? CURSOR_ON : CURSOR_OFF}${left}`;
+        rows.push({
+          item,
+          left: prefixedLeft,
+          right,
+          leftWidth,
+          // A marquee cell shows its one row on the item's first row only.
+          // Its clip includes the cursor prefix, so measure that same drawn
+          // string rather than leaving the last prefix-width of text hidden.
+          leftMarquee: j === 0 && labelCell.kind === "marquee" ? Math.max(0, measure(prefixedLeft) - leftWidth) : 0,
+          rightMarquee: j === 0 && priceCell?.kind === "marquee" ? priceCell.overflow : 0,
+        });
+      }
+    }
+    const boxH = BOX_FRAME + headerRows * LIST_ROW_H + BOX_GAP + rows.length * LIST_ROW_H + legendBlock;
+    return { stage, gold, rows, slots: range(rows.length), boxH, headerH: headerRows * LIST_ROW_H };
   });
-  const shopRows = createMemo(() => {
-    const m = shop();
-    if (!m) return [];
-    const { labels, rights } = shopLabels();
-    return listRows(m.index, labels, rights, VISIBLE_ROWS + LIST_EXTRA_ROWS);
-  });
-  const shopSlots = createMemo(() => range(Math.max(VISIBLE_ROWS, shopRows().length)), range(VISIBLE_ROWS), { equals: sameRange });
-  const shopBoxH = () => LIST_BOX_H + LIST_ROW_H * (shopSlots().length - VISIBLE_ROWS);
+  const shopBoxH = () => shopLayout().boxH;
+  // One tick for every marquee cell in the boxes; it rests when none scroll.
+  const marqueeTick = useMarqueeTick(createMemo(() => {
+    if (legendCell().kind === "marquee" || choicePromptCell().kind === "marquee") return true;
+    if (choiceLayout().rows.some((row) => row.leftMarquee > 0)) return true;
+    const shop = shopLayout();
+    return shop.stage.kind === "marquee" || shop.gold.kind === "marquee" ||
+      shop.rows.some((row) => row.leftMarquee > 0 || row.rightMarquee > 0);
+  }));
   const messageLegend = createMemo(() => message()?.complete ? props.legend() : "");
+  const messageLegendRows = createMemo(
+    () => (messageLegend() ? wrapLabel(messageLegend()!, textBudget(), measure) : []),
+    [] as string[],
+    { equals: sameLines },
+  );
   // The rows a message lays out in (text-flow.ts): authored lines that fit
   // stay as they are; a wider line wraps at the text column's pixel width
   // (CJK between characters with kinsoku, Latin at spaces). A message the
@@ -283,7 +403,10 @@ export function DialogBox(props: DialogBoxProps) {
   // Four rows, more only when a page needs them (a window narrower than
   // the width pages are cut at).
   const textRows = createMemo(() => range(Math.max(DIALOG_ROWS, flow().rows.length)), range(DIALOG_ROWS), { equals: sameRange });
-  const extraTextH = () => (textRows().length - DIALOG_ROWS) * MESSAGE_ROW_H;
+  // The box grows by the text rows past four and by the wrapped legend's
+  // extra rows (shown once the message is complete).
+  const extraTextH = () =>
+    (textRows().length - DIALOG_ROWS) * MESSAGE_ROW_H + (messageLegend() ? legendExtra() : 0);
   const textLines = createMemo(() => {
     const m = message();
     if (m?.kind !== "text") return textRows().map(() => "");
@@ -319,20 +442,20 @@ export function DialogBox(props: DialogBoxProps) {
           );
         }}
       </For>
-      <View class="flex-row justify-end" style={{ height: 12 }}>
+      <View class="flex-row justify-end" style={{ height: LEGEND_ROW_H * messageLegendRows().length }}>
         <Text
           class="text-xs"
           style={{
             textColor: theme().dim,
-            lineHeight: 12,
-            height: 12,
+            lineHeight: LEGEND_ROW_H,
+            height: LEGEND_ROW_H * messageLegendRows().length,
             width: textWidth(),
             textAlign: 2,
             display: messageLegend() ? 0 : 1,
           }}
           debugName="rpgkit-message-legend"
         >
-          {messageLegend() || " "}
+          {messageLegendRows().join("\n") || " "}
         </Text>
       </View>
     </>
@@ -346,47 +469,66 @@ export function DialogBox(props: DialogBoxProps) {
     >
       {/* Choices box: docked right, immediately above the message box.
           During choices the message box is hidden (the prompt lives in
-          this box, MV parity). A long prompt or option wraps and the box
-          grows upward. */}
+          this box, MV parity). A long prompt or option is bounded to the
+          row window's capacity and scrolls sideways when longer, so the
+          box stays inside the viewport. */}
       <Panel
         theme={theme()}
         style={{ posType: 1, width: 248, height: choiceBoxH(), insetR: 12, insetB: 98, display: choicesDisplay() }}
         paperClass="flex-col p-[6]"
         debugName="rpgkit-choices-box"
       >
-        <For each={promptSlots()}>
-          {(row) => (
-            <Text
-              class="text-xs"
-              style={{ textColor: theme().dim, lineHeight: LIST_ROW_H, height: LIST_ROW_H }}
-              debugName={row === 0 ? "rpgkit-choice-prompt" : `rpgkit-choice-prompt-${row}`}
-            >
-              {`${choicePrompt()[row] ?? ""}`}
-            </Text>
-          )}
-        </For>
+        <BoundedLine
+          cell={choicePromptCell()}
+          tick={marqueeTick}
+          textColor={theme().dim}
+          rowH={LIST_ROW_H}
+          width={listBudget()}
+          debugName="rpgkit-choice-prompt"
+        />
         <View class="flex-col" style={{ height: 4 }} />
-        <For each={choiceSlots()}>
+        <For each={choiceLayout().slots}>
           {(slot) => {
             const m = textChoice;
-            const row = () => choiceRows()[slot];
+            const row = () => choiceLayout().rows[slot];
             const selected = () => row() !== undefined && m()!.index === row()!.item;
             const disabled = () => row() !== undefined && m()!.enabled?.[row()!.item] === false;
+            const rowColor = () => disabled() ? theme().dim : selected() ? theme().accent : theme().ink;
+            const left = () => row()?.left ?? "";
             return (
-              <Text
-                class="text-xs"
-                style={{ textColor: disabled() ? theme().dim : selected() ? theme().accent : theme().ink, lineHeight: LIST_ROW_H, height: LIST_ROW_H }}
-                debugName={`rpgkit-choice-${slot}`}
-              >
-                {`${row()?.left ?? ""}`}
-              </Text>
+              row()?.leftMarquee ? (
+                <View
+                  style={{ width: listBudget(), height: LIST_ROW_H, overflow: 1 }}
+                  debugName={`rpgkit-choice-${slot}`}
+                >
+                  <Text
+                    class="text-xs"
+                    style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H, shrink: 0, translateX: -marqueeOffset(row()!.leftMarquee, marqueeTick()) }}
+                  >
+                    {left()}
+                  </Text>
+                </View>
+              ) : (
+                <Text
+                  class="text-xs"
+                  style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}
+                  debugName={`rpgkit-choice-${slot}`}
+                >
+                  {left()}
+                </Text>
+              )
             );
           }}
         </For>
-        <View class="flex-row justify-end" style={{ height: 14, insetT: 4 }}>
-          <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 12, height: 12 }} debugName="rpgkit-choice-legend">
-            {`${props.legend()}`}
-          </Text>
+        <View class="flex-row justify-end" style={{ height: 4 + LEGEND_ROW_H * legendCell().rows.length, insetT: 4 }}>
+          <BoundedLine
+            cell={legendCell()}
+            tick={marqueeTick}
+            textColor={theme().dim}
+            rowH={LEGEND_ROW_H}
+            width={LIST_TEXT_WIDTH}
+            debugName="rpgkit-choice-legend"
+          />
         </View>
       </Panel>
       {IconBox && (
@@ -400,32 +542,39 @@ export function DialogBox(props: DialogBoxProps) {
             list (T2-10). Buy rows a player cannot afford, has capped out
             (backpack cap) or that are out of stock (B1) render dimmed;
             sell rows for an unsellable item (B4) do too. Every dimmed row
-            stays navigable, just unconfirmable. */}
+            stays navigable, just unconfirmable. The header and legend are
+            bounded cells; a schema-valid value scrolls sideways instead
+            of growing the box past the viewport. */}
       <Panel
             theme={theme()}
             style={{ posType: 1, width: 248, height: shopBoxH(), insetR: 12, insetB: 98, display: shopDisplay() }}
             paperClass="flex-col p-[6]"
             debugName="rpgkit-shop-box"
           >
-            <View class="flex-row justify-between" style={{ height: 14 }}>
-              <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-shop-stage">
-                {`${(() => {
-                  const m = shop();
-                  return m?.kind === "shop" ? (m.stage === "buy" ? "Buy" : "Sell") : "";
-                })()}`}
-              </Text>
-              <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 14, height: 14 }} debugName="rpgkit-shop-gold">
-                {`${(() => {
-                  const m = shop();
-                  return m?.kind === "shop" ? `Gold: ${m.gold}` : "";
-                })()}`}
-              </Text>
+            <View class="flex-row justify-between" style={{ height: shopLayout().headerH }}>
+              <BoundedLine
+                cell={shopLayout().stage}
+                tick={marqueeTick}
+                textColor={theme().dim}
+                rowH={LIST_ROW_H}
+                width={listBudget() - SHOP_GOLD_W - 6}
+                debugName="rpgkit-shop-stage"
+              />
+              <BoundedLine
+                cell={shopLayout().gold}
+                tick={marqueeTick}
+                textColor={theme().dim}
+                rowH={LIST_ROW_H}
+                width={SHOP_GOLD_W}
+                textAlign={2}
+                debugName="rpgkit-shop-gold"
+              />
             </View>
             <View class="flex-col" style={{ height: 4 }} />
-            <For each={shopSlots()}>
+            <For each={shopLayout().slots}>
               {(slot) => {
                 const m = shop;
-                const row = () => shopRows()[slot];
+                const row = () => shopLayout().rows[slot];
                 const shopRow = (): ShopRow | null => (row() ? m()!.rows[row()!.item]! : null);
                 const selected = () => row() !== undefined && m()!.index === row()!.item;
                 // Buy: unaffordable, capped, or out-of-stock rows are inert
@@ -438,22 +587,51 @@ export function DialogBox(props: DialogBoxProps) {
                   return m()!.stage === "buy" ? !r.canAfford || r.atCap : !r.sellable;
                 };
                 const rowColor = () => (disabled() ? theme().dim : selected() ? theme().accent : theme().ink);
+                const left = () => row()?.left ?? "";
+                const right = () => row()?.right ?? "";
                 return (
                   <View class="flex-row justify-between" style={{ height: LIST_ROW_H }} debugName={`rpgkit-shop-row-${slot}`}>
-                    <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}>
-                      {`${row()?.left ?? ""}`}
-                    </Text>
-                    <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}>
-                      {`${row()?.right ?? ""}`}
-                    </Text>
+                    {row()?.leftMarquee ? (
+                      <View style={{ width: row()!.leftWidth, height: LIST_ROW_H, overflow: 1 }}>
+                        <Text
+                          class="text-xs"
+                          style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H, shrink: 0, translateX: -marqueeOffset(row()!.leftMarquee, marqueeTick()) }}
+                        >
+                          {left()}
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}>
+                        {left()}
+                      </Text>
+                    )}
+                    {row()?.rightMarquee ? (
+                      <View style={{ width: SHOP_PRICE_W, height: LIST_ROW_H, overflow: 1 }}>
+                        <Text
+                          class="text-xs"
+                          style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H, shrink: 0, translateX: -marqueeOffset(row()!.rightMarquee, marqueeTick()) }}
+                        >
+                          {right()}
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text class="text-xs" style={{ textColor: rowColor(), lineHeight: LIST_ROW_H, height: LIST_ROW_H }}>
+                        {right()}
+                      </Text>
+                    )}
                   </View>
                 );
               }}
             </For>
-            <View class="flex-row justify-end" style={{ height: 14, insetT: 4 }}>
-              <Text class="text-xs" style={{ textColor: theme().dim, lineHeight: 12, height: 12 }} debugName="rpgkit-shop-legend">
-                {`${props.legend()}`}
-              </Text>
+            <View class="flex-row justify-end" style={{ height: 4 + LEGEND_ROW_H * legendCell().rows.length, insetT: 4 }}>
+              <BoundedLine
+                cell={legendCell()}
+                tick={marqueeTick}
+                textColor={theme().dim}
+                rowH={LEGEND_ROW_H}
+                width={LIST_TEXT_WIDTH}
+                debugName="rpgkit-shop-legend"
+              />
             </View>
       </Panel>
 

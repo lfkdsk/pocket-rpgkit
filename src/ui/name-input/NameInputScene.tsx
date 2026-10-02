@@ -7,15 +7,41 @@
 // replay and rewind reproduce the same screen. The layout scales by an
 // integer factor (1× at 480×272, 2× at 960×544); text uses the framework's
 // fixed size classes, matching the framework OSK convention.
+//
+// The default caption and the three action cells are the ui-text table's
+// `nameInput.*` words (GameView passes its resolved table as `uiText`). A
+// caption wider than the panel wraps and pushes the box and grid down. The
+// fixed action cells fit a long translation by the CommandGrid ladder —
+// one 14 px row, one 10 px row, two 10 px rows, then a clipped 10 px row
+// the focused cell scrolls — so a word is never cut.
 
 import { Text, View } from "@pocketjs/framework/components";
+import { onFrame } from "@pocketjs/framework/lifecycle";
+import { createMemo, createSignal } from "solid-js";
 import type { JsonValue } from "../../engine/types.ts";
+import { breakText, hasForcedBreak } from "../../engine/text-break.ts";
 import {
+  NAME_INPUT_UI_TEXT,
   nameInputCharAt,
   type NameInputState,
 } from "../../engine/name-input.ts";
+import { withUiText, type UiTextOverrides } from "../../engine/ui-text.ts";
+import { fitBounded, marqueeOffset } from "../list-window.ts";
+import { BoundedLine } from "../BoundedLine.tsx";
+import { slotMeasure, TEXT_2XS_SLOT } from "../text-measure.ts";
 
-const ACTION_LABELS = ["<", "OK", "X"] as const;
+/** BACK, OK, CANCEL: the cells after the charset. */
+const ACTION_KEYS = ["nameInput.back", "nameInput.ok", "nameInput.cancel"] as const;
+/** Font slot of `text-sm`. */
+const TEXT_SM_SLOT = 1;
+/** Font slot of `text-xs` (12 px). */
+const TEXT_XS_SLOT = 0;
+/** Row pitch of a one-row action label, and of a two-row 10 px label. */
+const ONE_ROW_H = 14;
+const SMALL_TWO_ROW_H = 10;
+/** Leading of a two-row 10 px label (the core centres the 13 px atlas cell
+ *  on the line height, so 8 lifts it within its 10 px row). */
+const SMALL_TWO_ROW_LEADING = 8;
 
 const COLOURS = {
   panelBg: "#141c30",
@@ -30,10 +56,49 @@ const COLOURS = {
   cursorText: "#0b1626",
 };
 
+/** How an action label sits in its fixed 40×20 cell: size (`small` =
+ *  10 px), rows, and for a text too long for two 10 px rows how far its one
+ *  clipped row overflows the cell. */
+interface ActionLayout {
+  kind: "one" | "two" | "clip";
+  small: boolean;
+  rows: string[];
+  overflow: number;
+}
+
+/** A label's rows at one size: one row, or two broken where a row may
+ *  break; null when it needs more, or a cut inside a word. */
+function fitAction(label: string, slot: number, width: number): string[] | null {
+  const measure = slotMeasure(slot);
+  if (measure(label) <= width) return [label];
+  const rows = breakText(label, width, measure);
+  return rows.length <= 2 && !hasForcedBreak(label, rows) ? rows.map((row) => row.text) : null;
+}
+
+/** Lay out an action label for a cell of `cellW` px. */
+function actionLayout(label: string, cellW: number): ActionLayout {
+  // A 14 px row, then a 10 px row, then two 10 px rows (the cell is 20 px
+  // tall, so two 14 px rows cannot physically fit).
+  const one = fitAction(label, TEXT_XS_SLOT, cellW);
+  if (one && one.length === 1) return { kind: "one", small: false, rows: one, overflow: 0 };
+  const smallOne = fitAction(label, TEXT_2XS_SLOT, cellW);
+  if (smallOne && smallOne.length === 1) return { kind: "one", small: true, rows: smallOne, overflow: 0 };
+  const smallTwo = fitAction(label, TEXT_2XS_SLOT, cellW);
+  if (smallTwo) return { kind: "two", small: true, rows: smallTwo, overflow: 0 };
+  const overflow = Math.max(0, slotMeasure(TEXT_2XS_SLOT)(label) - cellW);
+  return { kind: "clip", small: true, rows: [label], overflow };
+}
+
+const sameLayout = (a: ActionLayout, b: ActionLayout): boolean =>
+  a.kind === b.kind && a.small === b.small && a.overflow === b.overflow &&
+  a.rows.length === b.rows.length && a.rows.every((r, i) => r === b.rows[i]);
+
 export interface NameInputSceneProps {
   state: JsonValue;
   width: number;
   height: number;
+  /** The game's replacements of the kit's words (GameView passes them). */
+  uiText?: UiTextOverrides;
 }
 
 export function NameInputScene(props: NameInputSceneProps) {
@@ -47,15 +112,58 @@ export function NameInputScene(props: NameInputSceneProps) {
     w: 440 * s(),
     h: 252 * s(),
   });
-  const edit = () => ({ x: 32 * s(), y: 38 * s(), w: 416 * s(), h: 30 * s() });
-  const grid = () => ({ x: 40 * s(), y: 80 * s(), cellW: 40 * s(), cellH: 20 * s() });
+  const text = () => withUiText(NAME_INPUT_UI_TEXT, props.uiText);
+  // The grid's row count (charset rows plus the action row) sets how many
+  // title rows fit before the action row would leave the panel: the panel
+  // is 252 px, the grid starts at y = 80 + drop and each row is 20 px, so
+  // the caption may grow to floor((172 - rows*20) / 18) + 1 rows. A longer
+  // caption scrolls sideways (a marquee) instead of pushing the grid out.
+  const gridRowCount = (): number => Math.ceil((st().charset.length + ACTION_KEYS.length) / st().columns);
+  const maxTitleRows = (): number => Math.max(1, Math.floor((172 - gridRowCount() * 20) / 18) + 1);
+  const titleCell = createMemo(() => {
+    const state = st();
+    // Only a scene that omitted its title takes the table's word; an
+    // explicit title (even the literal "Name") is kept as authored.
+    const title = state.titleIsDefault ? text()["nameInput.title"] : state.title;
+    return fitBounded(title, panel().w - 24 * s(), maxTitleRows(), slotMeasure(TEXT_SM_SLOT));
+  });
+  // Rows a wrapped caption adds push the edit box and grid down, capped so
+  // the action row never leaves the panel.
+  const drop = (): number => Math.min((titleCell().rows.length - 1) * 18, 172 - gridRowCount() * 20) * s();
+  const edit = () => ({ x: 32 * s(), y: 38 * s() + drop(), w: 416 * s(), h: 30 * s() });
+  const grid = () => ({ x: 40 * s(), y: 80 * s() + drop(), cellW: 40 * s(), cellH: 20 * s() });
   const charW = (): number => 16 * s();
 
   const entryLabel = (index: number): string => {
     const state = st();
     if (index < state.charset.length) return nameInputCharAt(state, index);
-    return ACTION_LABELS[index - state.charset.length] ?? "";
+    const key = ACTION_KEYS[index - state.charset.length];
+    return key ? text()[key] : "";
   };
+
+  // Each action cell's layout, recomputed only when its label changes.
+  const actionLayouts = [0, 1, 2].map((i) =>
+    createMemo(
+      () => {
+        const state = st();
+        const index = state.charset.length + i;
+        return actionLayout(entryLabel(index), grid().cellW - 4 * s());
+      },
+      undefined,
+      { equals: sameLayout },
+    ));
+  // The focused action cell's marquee ticks only while it overflows, and
+  // the caption's marquee while it does.
+  const [tick, setTick] = createSignal(0);
+  const focusedOverflow = createMemo(() => {
+    const state = st();
+    const actionIndex = state.cursor - state.charset.length;
+    if (actionIndex < 0 || actionIndex >= ACTION_KEYS.length) return 0;
+    return actionLayouts[actionIndex]?.().overflow ?? 0;
+  });
+  onFrame(() => {
+    if (focusedOverflow() > 0 || titleCell().kind === "marquee") setTick((t) => t + 1);
+  });
 
   const cellStyle = (index: number) => {
     const state = st();
@@ -74,18 +182,69 @@ export function NameInputScene(props: NameInputSceneProps) {
     } as Record<string, number | string>;
   };
 
-  const cellTextStyle = (index: number) => {
-    const cursor = index === st().cursor;
-    return {
-      textColor: cursor ? COLOURS.cursorText : COLOURS.cell,
-      height: 20 * s(),
-      lineHeight: 20 * s(),
-    } as Record<string, number | string>;
-  };
-
   const entries = (): number[] => {
     const state = st();
-    return Array.from({ length: state.charset.length + ACTION_LABELS.length }, (_, i) => i);
+    return Array.from({ length: state.charset.length + ACTION_KEYS.length }, (_, i) => i);
+  };
+
+  /** A charset cell's text (single character, fixed 20 px row). */
+  const charsetCell = (index: number) => (
+    <View
+      class="absolute items-center justify-center"
+      style={cellStyle(index)}
+      debugName={`rpgkit-name-input-cell-${index}`}
+    >
+      <Text
+        class="text-sm"
+        style={{
+          textColor: index === st().cursor ? COLOURS.cursorText : COLOURS.cell,
+          height: 20 * s(),
+          lineHeight: 20 * s(),
+        }}
+      >
+        {entryLabel(index)}
+      </Text>
+    </View>
+  );
+
+  /** An action cell: the ladder's one/two/clip layout for its label. */
+  const actionCell = (index: number) => {
+    const actionIndex = index - st().charset.length;
+    const layout = actionLayouts[actionIndex]!;
+    const cursor = () => index === st().cursor;
+    const colour = () => cursor() ? COLOURS.cursorText : COLOURS.cell;
+    const size = () => (layout().small ? "text-2xs" : "text-xs");
+    const offset = () => (cursor() ? marqueeOffset(layout().overflow, tick()) : 0);
+    const debug = `rpgkit-name-input-cell-${index}`;
+    return (
+      <View class="absolute items-center justify-center" style={cellStyle(index)} debugName={debug}>
+        {layout().kind === "clip" ? (
+          <View
+            style={{ width: grid().cellW - 4 * s(), height: ONE_ROW_H * s(), overflow: 1 }}
+            debugName={`${debug}-clip`}
+          >
+            <Text
+              class={size()}
+              style={{ textColor: colour(), lineHeight: ONE_ROW_H * s(), height: ONE_ROW_H * s(), shrink: 0, translateX: -offset() }}
+              debugName={`${debug}-marquee`}
+            >
+              {layout().rows[0]!}
+            </Text>
+          </View>
+        ) : (
+          <Text
+            class={size()}
+            style={{
+              textColor: colour(),
+              lineHeight: (layout().kind === "two" ? SMALL_TWO_ROW_LEADING : ONE_ROW_H) * s(),
+              height: (layout().kind === "two" ? 2 * SMALL_TWO_ROW_H : ONE_ROW_H) * s(),
+            }}
+          >
+            {layout().rows.join("\n")}
+          </Text>
+        )}
+      </View>
+    );
   };
 
   return (
@@ -108,19 +267,45 @@ export function NameInputScene(props: NameInputSceneProps) {
         }}
         debugName="rpgkit-name-input-panel"
       >
-        <Text
-          class="text-sm"
-          style={{
-            posType: 1,
-            insetL: 12 * s(),
-            insetT: 6 * s(),
-            textColor: COLOURS.title,
-            height: 18 * s(),
-            lineHeight: 18 * s(),
-          }}
-        >
-          {st().title}
-        </Text>
+        {titleCell().kind === "wrap" ? (
+          <Text
+            class="text-sm"
+            style={{
+              posType: 1,
+              insetL: 12 * s(),
+              insetT: 6 * s(),
+              textColor: COLOURS.title,
+              height: 18 * s() * titleCell().rows.length,
+              lineHeight: 18 * s(),
+            }}
+          >
+            {titleCell().rows.join("\n")}
+          </Text>
+        ) : (
+          <View
+            style={{
+              posType: 1,
+              insetL: 12 * s(),
+              insetT: 6 * s(),
+              width: panel().w - 24 * s(),
+              height: 18 * s(),
+              overflow: 1,
+            }}
+          >
+            <Text
+              class="text-sm"
+              style={{
+                textColor: COLOURS.title,
+                height: 18 * s(),
+                lineHeight: 18 * s(),
+                shrink: 0,
+                translateX: -marqueeOffset(titleCell().overflow, tick()) * s(),
+              }}
+            >
+              {titleCell().rows[0]}
+            </Text>
+          </View>
+        )}
 
         <View
           class="absolute"
@@ -164,17 +349,7 @@ export function NameInputScene(props: NameInputSceneProps) {
           </Text>
         </View>
 
-        {entries().map((index) => (
-          <View
-            class="absolute items-center justify-center"
-            style={cellStyle(index)}
-            debugName={`rpgkit-name-input-cell-${index}`}
-          >
-            <Text class="text-sm" style={cellTextStyle(index)}>
-              {entryLabel(index)}
-            </Text>
-          </View>
-        ))}
+        {entries().map((index) => (index < st().charset.length ? charsetCell(index) : actionCell(index)))}
       </View>
     </View>
   );

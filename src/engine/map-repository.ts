@@ -145,10 +145,26 @@ export interface MapContentIdentity {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+/**
+ * Root shell fields that are presentation only and therefore excluded from
+ * the manifest content identity. A field qualifies only when it is proven
+ * never to reach the reducer, the session, the interpreter or the save
+ * codec: no engine module reads it, so changing it (another language's
+ * interface words, a restyled label table) cannot alter a save, a tape or a
+ * replay, and a save taken under one value loads under another. The map
+ * payloads (dialogue, events, commands) are hashed separately through
+ * `mapIndex`, so per-language map content still changes the identity — only
+ * the root presentation table is exempt. Each addition here needs a test
+ * that a save survives the field's change (tests/map-repository.test.ts,
+ * "a save survives a change of the presentation-only uiText table").
+ */
+const MANIFEST_EXCLUDED_ROOT_FIELDS: readonly string[] = ["uiText"];
+
 function shellWithoutDeclaredHashes(shell: ProjectShell): Record<string, unknown> {
   const value = { ...shell } as Record<string, unknown>;
   delete value.mapManifestHash;
   delete value.mapSchemaHash;
+  for (const field of MANIFEST_EXCLUDED_ROOT_FIELDS) delete value[field];
   return value;
 }
 

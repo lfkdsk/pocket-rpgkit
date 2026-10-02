@@ -236,6 +236,7 @@ describe("shells and saves from earlier schema generations", () => {
     expect(REFUSED).toContain(hash);
     const accepted = [MAP_SCHEMA_HASH, ...MAP_SCHEMA_COMPATIBLE_HASHES].map((h) => `${h.slice(0, 8)}…`).join(", ");
     expect(MAP_SCHEMA_COMPATIBLE_HASHES).toEqual([
+      "4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1",
       "ff6b923750b1078d15a8d2443251d14a5b5b17055b88445515a9b34e38056611",
       "ed562c6fa8e20c0d0d20a755e19b49581b49127328343c87231801a19f297de2",
       "c0588207c28d2ffcec9e2ac981f9859ca55576fb7dc53f221466c249d07bfa06",
@@ -246,7 +247,7 @@ describe("shells and saves from earlier schema generations", () => {
         "it comes from before a breaking format change or from a different RPG Kit build, " +
         "see Schema identities in the rpgkit-project CHANGELOG",
     );
-    expect(accepted).toBe("4a9a8310…, ff6b9237…, ed562c6f…, c0588207…, 0b9fff5b…");
+    expect(accepted).toBe("bc4e7242…, 4a9a8310…, ff6b9237…, ed562c6f…, c0588207…, 0b9fff5b…");
     const current = open(readShell(MAP_SCHEMA_COMPATIBLE_HASHES[0]!));
     expect(() => restoreSessionEnvelope(current, readSave(hash))).toThrow(/schema 47cf3d8f… is not one this runtime reads/);
     expect(() => loadValidatedProjectShell(readFileSync(join(genDir(hash), "project.json"), "utf8")))

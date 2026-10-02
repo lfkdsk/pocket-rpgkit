@@ -11,16 +11,23 @@ import { mount } from "@pocketjs/framework";
 import { View } from "@pocketjs/framework/components";
 import { createOsk } from "@pocketjs/framework/osk";
 import type { MenuState } from "../../../src/engine/save-menu.ts";
+import type { Modal } from "../../../src/engine/interpreter.ts";
 import { CommandGrid, type CommandGridProps } from "../../../src/ui/battle/CommandGrid.tsx";
 import { ListMenu, type ListMenuProps } from "../../../src/ui/battle/ListMenu.tsx";
 import { MessageBand, type MessageBandProps } from "../../../src/ui/battle/MessageBand.tsx";
+import { DialogBox } from "../../../src/ui/DialogBox.tsx";
 import { SaveMenu, type SlotInfo } from "../../../src/ui/SaveMenu.tsx";
+import { BoundedLine } from "../../../src/ui/BoundedLine.tsx";
+import { fitBounded } from "../../../src/ui/list-window.ts";
+import { slotMeasure } from "../../../src/ui/text-measure.ts";
 
 export interface NoTruncationScene {
   band?: Pick<MessageBandProps, "lines" | "revealed" | "rows">;
   grid?: Pick<CommandGridProps, "cells" | "index" | "tick">;
   list?: Pick<ListMenuProps, "rows" | "index" | "title" | "description" | "visibleRows" | "width">;
   save?: { menu: MenuState; slots: SlotInfo; title?: string };
+  bounded?: { text: string; width: number; maxRows: number; tick: number };
+  dialog?: { modal: Modal; legend?: string };
 }
 
 declare global {
@@ -35,6 +42,8 @@ function Fixture() {
   const [menu, setMenu] = createSignal<MenuState>({ kind: "closed" });
   const [slots, setSlots] = createSignal<SlotInfo>([null, null, null]);
   const [title, setTitle] = createSignal<string | undefined>(undefined);
+  const [bounded, setBounded] = createSignal<NoTruncationScene["bounded"]>(undefined);
+  const [dialog, setDialog] = createSignal<NoTruncationScene["dialog"]>(undefined);
   const [code, setCode] = createSignal("");
   const osk = createOsk({ value: code, setValue: setCode, onCommit: () => {} });
 
@@ -47,6 +56,8 @@ function Fixture() {
         setMenu(scene.save?.menu ?? { kind: "closed" });
         setSlots(scene.save?.slots ?? [null, null, null]);
         setTitle(scene.save?.title);
+        setBounded(scene.bounded);
+        setDialog(scene.dialog);
       });
     },
   };
@@ -85,6 +96,18 @@ function Fixture() {
           debugName="nt-band"
         />
       </Show>
+      <Show when={bounded()}>
+        <View style={{ posType: 1, insetL: 8, insetT: 80 }}>
+          <BoundedLine
+            cell={fitBounded(bounded()!.text, bounded()!.width, bounded()!.maxRows, slotMeasure())}
+            tick={() => bounded()!.tick}
+            textColor="#ffffff"
+            rowH={15}
+            width={bounded()!.width}
+            debugName="nt-bounded"
+          />
+        </View>
+      </Show>
       <SaveMenu
         menu={menu}
         hasFs={true}
@@ -93,6 +116,11 @@ function Fixture() {
         osk={osk}
         legend={() => "ok  back"}
         title={title()}
+      />
+      <DialogBox
+        modal={() => dialog()?.modal ?? null}
+        legend={() => dialog()?.legend ?? "ok  back"}
+        viewportWidth={480}
       />
     </View>
   );

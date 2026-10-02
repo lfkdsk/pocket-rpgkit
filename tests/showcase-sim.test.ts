@@ -139,11 +139,11 @@ const pins: Record<string, string> = {
   battle: "be26dddf",
   streaming: "8f1494d7",
   theme: "0ad10d88",
-  "save-code": "66f83b1c",
+  "save-code": "3d2bba30",
   "save-verified": "c1156966",
   attract: "72f143e6",
   rewind: "e817e2e9",
-  registration: "006fb657",
+  registration: "d98a9771",
 };
 
 async function pinned(name: keyof typeof pins, frame: Uint8Array): Promise<void> {

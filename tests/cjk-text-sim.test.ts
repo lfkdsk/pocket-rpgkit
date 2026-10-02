@@ -307,7 +307,8 @@ simDescribe("CJK text in the kit's boxes", () => {
       pump(world, 1, BTN.DOWN);
       pump(world, 1);
       expect(modal(world)?.index).toBe(1);
-      const accentRows = choiceRowsWithInk(world.render().slice(), width, height, DEFAULT_UI_THEME.accent);
+      // The box is 106 px: 16 frame + 14 prompt + 4 gap + 4 option rows + 16 legend.
+      const accentRows = choiceRowsWithInk(world.render().slice(), width, height, DEFAULT_UI_THEME.accent, 106);
       expect(accentRows).toEqual([false, true, true, false]);
       expect(nodeText(findNode(world.getTree() as TreeNode, "rpgkit-choice-1")).startsWith("> ")).toBe(true);
       pump(world, 1, BTN.UP);
@@ -333,14 +334,14 @@ simDescribe("CJK text in the kit's boxes", () => {
       expect(shopRows[3]).toEqual([`  ${ITEMS[2]!.name}`, "200g (3)"]);
       expectNoEllipsis(world);
       await goldenFrame(world, `cjk-text.shop.${size}`, width, height);
-      // The cursor on the wrapped name colours both of its rows (the box is
-      // one row taller: 110 px).
-      expect(choiceRowsWithInk(world.render().slice(), width, height, DEFAULT_UI_THEME.accent, 110, 5))
+      // The four-item window contains five painted rows because the second
+      // item wraps. With its header and legend the box is 120 px tall.
+      expect(choiceRowsWithInk(world.render().slice(), width, height, DEFAULT_UI_THEME.accent, 120, 5))
         .toEqual([true, false, false, false, false]);
       pump(world, 1, BTN.DOWN);
       pump(world, 1);
       expect(modal(world)?.index).toBe(1);
-      expect(choiceRowsWithInk(world.render().slice(), width, height, DEFAULT_UI_THEME.accent, 110, 5))
+      expect(choiceRowsWithInk(world.render().slice(), width, height, DEFAULT_UI_THEME.accent, 120, 5))
         .toEqual([false, true, true, false, false]);
     }, 60_000);
   }
