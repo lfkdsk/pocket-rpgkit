@@ -58,6 +58,7 @@ import {
   randInt,
   replaceItemCounts,
   rngNext,
+  runExtensionHookInPlace,
   secondsToFrames,
   shareInterp,
   stepInterpWithExtensionsInPlace,
@@ -1996,6 +1997,8 @@ function stepReferenceTick(
   //    (review C10) unless the project opts in with
   //    system.messageBlocksPlayer: then any open box holds the player.
   const prevFacing = s.move.facing;
+  const playerCellBeforeMovementX = s.move.tx;
+  const playerCellBeforeMovementY = s.move.ty;
   const busy = isBusy(s.interp);
   const capturesDpad = s.interp.modal?.kind === "choices" || s.interp.modal?.kind === "shop";
   const held = messageHoldsPlayer(world, s.interp);
@@ -2126,6 +2129,18 @@ function stepReferenceTick(
   s.sw = s.interp.sw;
   if (s.playerRoute) {
     stepPlayerRoute(s, sess, playerRouteSettings, playerRouteEventSettings, contacts);
+  }
+  const playerStep = sess.extensions.playerStep;
+  if (playerStep !== null &&
+      (s.move.tx !== playerCellBeforeMovementX || s.move.ty !== playerCellBeforeMovementY)) {
+    s.ext = runExtensionHookInPlace(
+      world,
+      s.interp,
+      s.ext,
+      playerStep.call,
+      playerStep.args,
+    );
+    s.sw = s.interp.sw;
   }
 
   // 4. Interpreter — only displaced NPC cells need to supplement the

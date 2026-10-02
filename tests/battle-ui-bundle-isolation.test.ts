@@ -124,7 +124,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // add 8,587 shared interpreter/session/save-check bytes: 718 for the token,
 // 4,982 for loop/break and the eventTouch scan, 2,887 for contact detection.
 // Merged with everything above, Sunstone measures 831,224.
-const EXPECTED_BYTES = 831_224;
+// The optional playerStep extension hook adds 1,218 shared bytes: 832,442.
+const EXPECTED_BYTES = 832_442;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

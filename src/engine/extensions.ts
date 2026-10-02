@@ -96,6 +96,13 @@ export interface ExtensionOptions {
   commands?: Readonly<Record<string, ExtensionCommandHandler>>;
   conditions?: Readonly<Record<string, ExtensionConditionHandler>>;
   choices?: Readonly<Record<string, ExtensionChoiceHandler>>;
+  /** Optional game-owned command run once after each completed player tile.
+   * Placement and transfers are not steps. The handler uses the same saved
+   * RNG and atomic result contract as an authored `ext` command. */
+  playerStep?: {
+    call: string;
+    args?: JsonValue;
+  };
   codec?: ExtensionCodec;
   validate?: ExtensionValidator;
   /** Editor/preview escape hatch. Unknown commands become no-ops and unknown
@@ -110,6 +117,7 @@ export interface ExtensionRuntime {
   readonly commands: Readonly<Record<string, ExtensionCommandHandler>>;
   readonly conditions: Readonly<Record<string, ExtensionConditionHandler>>;
   readonly choices: Readonly<Record<string, ExtensionChoiceHandler>>;
+  readonly playerStep: Readonly<{ call: string; args: JsonValue }> | null;
   readonly codec: ExtensionCodec | null;
   readonly validate: ExtensionValidator | null;
   readonly allowUnknown: boolean;
@@ -168,12 +176,26 @@ export function createExtensionRuntime(options: ExtensionOptions = {}): Extensio
       throw new Error(`extension call ${JSON.stringify(call)} must use a namespaced name such as "game.action"`);
     }
   }
+  let playerStep: ExtensionRuntime["playerStep"] = null;
+  if (options.playerStep !== undefined) {
+    const call = options.playerStep.call;
+    if (!extensionCallNameValid(call)) {
+      throw new Error(`playerStep call ${JSON.stringify(call)} must use a namespaced name such as "game.action"`);
+    }
+    if (!commands[call]) {
+      throw new Error(`playerStep command ${JSON.stringify(call)} is not registered`);
+    }
+    const args = deepClone(options.playerStep.args ?? {});
+    assertJsonValue(args, "playerStep args");
+    playerStep = { call, args };
+  }
   const initial = deepClone(options.initial ?? null);
   const runtime: ExtensionRuntime = {
     initial,
     commands,
     conditions,
     choices,
+    playerStep,
     codec: options.codec ?? null,
     validate: options.validate ?? null,
     allowUnknown: options.allowUnknown ?? false,

@@ -448,11 +448,11 @@ simDescribe("sunstone — render budget", () => {
     // streamed tile loader, to 822,635 B measured.
     // The loop/break commands, the eventTouch trigger and the {v:} text
     // token add shared interpreter/session/save-check code: 831,224 B
-    // measured.
+    // measured. The optional playerStep hook adds 1,218 B: 832,442 B.
     // The ui/demo and ui/audio input-graph tests separately prove
     // non-opted-in code stays out; the bound keeps a narrow margin so an
     // accidental bundle-in still trips it.
-    expect(jsBytes).toBeLessThan(834_000);
+    expect(jsBytes).toBeLessThan(835_000);
   });
 });
 

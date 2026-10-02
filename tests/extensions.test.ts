@@ -199,6 +199,76 @@ function choiceModal(state: SessionState) {
 }
 
 describe("KB1 extension commands and conditions", () => {
+  test("playerStep runs on ordinary and forced landings but not placement or a blocked route", () => {
+    const stepHook: ExtensionOptions = {
+      initial: { steps: 0 },
+      commands: {
+        "demo.player_step": (context) => ({
+          ext: { steps: (context.ext as { steps: number }).steps + 1 },
+          writes: { "hook.steps": (context.ext as { steps: number }).steps + 1 },
+        }),
+      },
+      playerStep: { call: "demo.player_step", args: {} },
+    };
+    const p = projectWithEvents([{
+      id: "route",
+      x: 4,
+      y: 2,
+      pages: [{
+        trigger: "action",
+        commands: [{
+          op: "moveRoute",
+          target: "player",
+          wait: true,
+          route: { steps: ["moveDown"], repeat: false, skippable: true },
+        }],
+      }],
+    }]);
+    const session = createSession(p, 60, { extensions: stepHook });
+    let state = startSession(p, session);
+
+    for (let frame = 0; frame < 8; frame++) state = step(session, state, { buttons: RIGHT });
+    expect([state.move.tx, state.move.ty]).toEqual([3, 2]);
+    expect(state.ext).toEqual({ steps: 1 });
+    expect(state.sw.variables["hook.steps"]).toBe(1);
+
+    state = step(session, state, { buttons: 0, confirmEdge: true });
+    for (let frame = 0; frame < 12; frame++) state = step(session, state);
+    expect([state.move.tx, state.move.ty]).toEqual([3, 3]);
+    expect(state.ext).toEqual({ steps: 2 });
+    expect(state.sw.variables["hook.steps"]).toBe(2);
+
+    const placed = project([{ op: "place", target: "player", x: 4, y: 4 }, { op: "erase" }]);
+    const placedSession = createSession(placed, 60, { extensions: stepHook });
+    let placedState = startSession(placed, placedSession);
+    for (let frame = 0; frame < 3; frame++) placedState = step(placedSession, placedState);
+    expect([placedState.move.tx, placedState.move.ty]).toEqual([4, 4]);
+    expect(placedState.ext).toEqual({ steps: 0 });
+
+    const blocked = project([{
+      op: "moveRoute",
+      target: "player",
+      wait: true,
+      route: { steps: ["moveUp"], repeat: false, skippable: true },
+    }]);
+    blocked.maps[0]!.passage = [[8, "block"]];
+    const blockedSession = createSession(blocked, 60, { extensions: stepHook });
+    let blockedState = startSession(blocked, blockedSession);
+    for (let frame = 0; frame < 12; frame++) blockedState = step(blockedSession, blockedState);
+    expect([blockedState.move.tx, blockedState.move.ty]).toEqual([2, 2]);
+    expect(blockedState.ext).toEqual({ steps: 0 });
+  });
+
+  test("playerStep registration rejects malformed and missing command hooks", () => {
+    expect(() => createExtensionRuntime({
+      commands: { "demo.step": () => undefined },
+      playerStep: { call: "not-namespaced" },
+    })).toThrow("playerStep call");
+    expect(() => createExtensionRuntime({
+      playerStep: { call: "demo.step" },
+    })).toThrow('playerStep command "demo.step" is not registered');
+  });
+
   for (const hz of [60, 30, 20, 4]) test(`sleeping guards see earlier parallel writes at ${hz} Hz`, () => {
     const p = project([]);
     p.maps[0]!.events = [

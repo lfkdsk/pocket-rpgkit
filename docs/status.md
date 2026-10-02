@@ -27,7 +27,7 @@ The links point to where each feature is described in detail.
 | Page and `if` conditions on switches, variables, self switches, items, gold, facing, appearance, tile-property overrides, `worldIdle`, `bgmPlaying`, or an extension predicate | Done | |
 | Cross-event input lock (`lockInput` / `unlockInput`) | Done | |
 | Map transfers with an optional fade and variable targets | Done | |
-| Game extensions | Done | Namespaced pure commands (`ext`) and choice boxes whose rows come from an extension (`extChoice`); see [Game extensions and Battle Processing](../README.md#game-extensions-and-battle-processing) |
+| Game extensions | Done | Namespaced pure commands (`ext`), choice boxes whose rows come from an extension (`extChoice`), and an opt-in completed-player-tile command hook; see [Game extensions and Battle Processing](../README.md#game-extensions-and-battle-processing) |
 | Shops (RPG Maker MV-style buy and sell) | Done | |
 | Text interpolation of variables (`{v:<id>}`, RPG Maker `\V[n]`) | Done | Opt-in with `system.textVariables`; text, choices and `extChoice` prompts; expanded once when the box opens. See [Text tokens](../README.md#text-tokens) |
 | Text interpolation of actor names (`\N[n]`) and text colour codes | Planned | Only the player's `{name}` today |

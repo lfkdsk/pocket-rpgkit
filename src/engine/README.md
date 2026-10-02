@@ -457,7 +457,7 @@ without changing `MAP_SCHEMA_HASH`.
 | option | type | default | purpose |
 | --- | --- | --- | --- |
 | `maps` | `MapRepository` | — | required when the project is a sharded `ProjectShell` (see "Host map source" below); ignored for inline documents |
-| `extensions` | `ExtensionOptions` | none | registered `ext` commands, conditions, and `extChoice` providers |
+| `extensions` | `ExtensionOptions` | none | registered `ext` commands, conditions, `extChoice` providers, and an optional completed-player-tile hook |
 | `battle` | `BattleRules` | `null` | the game-owned scene reducer; a project that uses battle commands without one fails at `createSession` |
 | `scene` | `{ worldContinues?: boolean }` | `{ worldContinues: false }` | let map fibers keep folding while a scene owns the screen |
 | `verifyMapManifest` | `boolean` | `false` | recompute a sharded shell's declared content hash for untrusted inputs |
@@ -498,6 +498,14 @@ its optional codec wraps save/restore bytes, and save checksums cover the
 encoded form. Inline projects validate every namespaced call at
 `createSession`; sharded projects also validate each acquired map.
 `allowUnknown` is an explicit preview-only escape hatch.
+
+`ExtensionOptions.playerStep` names one registered extension command and
+optional JSON arguments. The session runs it once after every completed
+player tile, whether input, a forced route, pathfinding or autonomous motion
+drove the landing. Blocked attempts, `place`, and transfers do not count.
+The handler uses the ordinary extension command's saved RNG and atomic
+publication path. When omitted, the session performs only a null check and
+allocates no hook state.
 
 Condition handlers normally receive defensive clones and are evaluated on
 every relevant read. Setting both `immutableConditions` and

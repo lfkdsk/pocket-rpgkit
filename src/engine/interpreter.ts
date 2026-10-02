@@ -3400,6 +3400,21 @@ function runExtensionCommand(
   );
 }
 
+/** Run a session-owned extension hook through the same saved-RNG and atomic
+ * publication path as an authored `ext` command. The caller already owns
+ * `s` and `ext0`; the returned value replaces its extension slot. */
+export function runExtensionHookInPlace(
+  w: World,
+  s: InterpState,
+  ext0: JsonValue,
+  call: string,
+  args: JsonValue,
+): JsonValue {
+  const extension: MutableExtensionScope = { runtime: w.extensions, ext: ext0 };
+  runExtensionCommand(s, w, extension, call, args);
+  return extension.ext;
+}
+
 interface ResolvedExtensionChoiceOption {
   key: string;
   label: string;

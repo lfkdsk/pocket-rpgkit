@@ -81,10 +81,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // instructions), and 2,887 for detecting bumps and refused steps.
 // Merged with everything above, the three measure 524,071, 831,224 and
 // 665,381.
+// The optional playerStep extension hook (a null check and two number
+// reads per tick when unused) adds 1,218 shared bytes to each bundle:
+// 525,289, 832,442 and 666,599.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 524_071;
-const EXPECTED_SUNSTONE_QOA_BYTES = 831_224;
-const EXPECTED_WAV_FIXTURE_BYTES = 665_381;
+const EXPECTED_MEADOW_BYTES = 525_289;
+const EXPECTED_SUNSTONE_QOA_BYTES = 832_442;
+const EXPECTED_WAV_FIXTURE_BYTES = 666_599;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

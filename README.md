@@ -1007,7 +1007,13 @@ const session = createSession(project, simulationHz(), {
         ext: addMember(ctx.ext, args),
         writes: { "party.size": partySize(ctx.ext) + 1 },
       }),
+      "game.on_player_step": (ctx) => ({
+        ext: addPlayerStep(ctx.ext),
+      }),
     },
+    // Optional: invoke a registered command after every completed player
+    // tile (ordinary input, forced routes, pathfinding and wander).
+    playerStep: { call: "game.on_player_step", args: {} },
     conditions: {
       "game.party_ready": (ctx) => partyReady(ctx.ext),
     },
@@ -1038,6 +1044,14 @@ random API. Item and gold results update the same `SessionState.sw` backpack
 and wallet used by authored item/gold commands and shops; a later command or
 condition in the same tick sees the committed values. Call names must contain
 a namespace (`game.action`).
+
+`playerStep` reuses a registered extension command as a movement hook. It
+runs once, immediately after each genuine player tile landing, including
+forced routes, pathfinding and autonomous movement. A blocked move, direct
+placement or map transfer does not run it. The hook shares the authored
+`ext` command's saved RNG and atomic state-update contract, so saves, rewind
+and all supported simulation rates reproduce the same results. Omitting it
+keeps the movement hook inactive.
 
 An `extChoice` command has the shape
 `{ op:"extChoice", call, args, prompt, cancel?, write? }`. `prompt` is at
