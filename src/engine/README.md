@@ -458,10 +458,16 @@ Transfer semantics:
   transfer may replace that instant swap with one eight-reference-tick
   crossing, but only when the injected immutable-layout resolver proves the
   exact coordinate-preserving opening and the base passage tables admit it.
+  An accepted crossing is the transition and therefore replaces any authored
+  transfer fade. A failed proof leaves the command untouched, including its
+  original fade duration, on the legacy timeline.
   The source remains the sole page/NPC/collision owner until the final tick;
-  target pages start one tick after atomic entry. Any failed proof uses the
-  legacy transfer. The in-flight state participates in attract rewind and
-  blocks saves; it is removed by `enterMap`, so v1 snapshots remain unchanged.
+  target pages start one tick after atomic entry. The ordinary landing on the
+  source edge runs `playerStep` once; the crossing's atomic target placement
+  is not another step. A fatal source-map content error cancels the crossing,
+  snaps the player to that source edge and freezes there. The in-flight state
+  participates in attract rewind and blocks saves; it is removed by entry or
+  fatal cancellation, so v1 snapshots remain unchanged.
 - The render structure that makes a transfer cheap is one ground and one
   upper `Image` per **current** map plus per-map NPC containers: a swap is
   an `Image` src change and a container `display` toggle — O(maps), not the
@@ -555,10 +561,11 @@ encoded form. Inline projects validate every namespaced call at
 `ExtensionOptions.playerStep` names one registered extension command and
 optional JSON arguments. The session runs it once after every completed
 player tile, whether input, a forced route, pathfinding or autonomous motion
-drove the landing. Blocked attempts, `place`, and transfers do not count.
-The handler uses the ordinary extension command's saved RNG and atomic
-publication path. When omitted, the session performs only a null check and
-allocates no hook state.
+drove the landing. For seamless handoff, the source-edge landing counts once
+and the later atomic target placement does not; legacy transfers, blocked
+attempts and `place` do not count. The handler uses the ordinary extension
+command's saved RNG and atomic publication path. When omitted, the session
+performs only a null check and allocates no hook state.
 
 Condition handlers normally receive defensive clones and are evaluated on
 every relevant read. Setting both `immutableConditions` and

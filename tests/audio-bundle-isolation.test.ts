@@ -127,10 +127,12 @@ const maybeTest = preflight.ok ? test : test.skip;
 // three input graphs to 569,421 (+8,368), 917,053 (+11,305) and 723,778
 // (+9,325). Concrete parallax and item-icon components remain opt-in and are
 // checked separately by krm3v-ui-bundle-isolation.test.ts.
+// Deterministic seamless-handoff fatal cleanup (source-edge movement restore,
+// abort guards before commit) adds 440 shared engine bytes to each graph.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 569_421;
-const EXPECTED_SUNSTONE_QOA_BYTES = 917_053;
-const EXPECTED_WAV_FIXTURE_BYTES = 723_778;
+const EXPECTED_MEADOW_BYTES = 569_861;
+const EXPECTED_SUNSTONE_QOA_BYTES = 917_493;
+const EXPECTED_WAV_FIXTURE_BYTES = 724_218;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

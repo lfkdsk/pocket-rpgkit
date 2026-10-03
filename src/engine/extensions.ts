@@ -97,8 +97,10 @@ export interface ExtensionOptions {
   conditions?: Readonly<Record<string, ExtensionConditionHandler>>;
   choices?: Readonly<Record<string, ExtensionChoiceHandler>>;
   /** Optional game-owned command run once after each completed player tile.
-   * Placement and transfers are not steps. The handler uses the same saved
-   * RNG and atomic result contract as an authored `ext` command. */
+   * A seamless handoff counts only the ordinary landing on its source edge;
+   * its atomic target placement, legacy transfers and direct placements are
+   * not steps. The handler uses the same saved RNG and atomic result contract
+   * as an authored `ext` command. */
   playerStep?: {
     call: string;
     args?: JsonValue;

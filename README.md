@@ -800,7 +800,9 @@ a `playerTouch` page when the project mode, renderer topology hash, portal id,
 source edge, mapped landing, direction, dimensions and authored source/target
 passage all agree with a `coordinate-preserving` opening. Every omitted or
 mismatched part uses the ordinary transfer, including action/common/autorun/
-parallel transfers, portal-only openings, indoor maps and story warps.
+parallel transfers, portal-only openings, indoor maps and story warps. An
+accepted crossing is itself the visual transition and replaces any transfer
+fade; a rejected proof preserves and runs the original legacy fade.
 
 An accepted handoff performs one normal tile-length crossing over eight 60 Hz
 reference ticks. The source map remains the only simulation owner during the
@@ -808,6 +810,11 @@ crossing; at the boundary the reducer atomically rebuilds the target map using
 normal transfer entry semantics, and target pages begin on the next reference
 tick. Facing and transfer-safe screen/audio state survive, while `local.*`
 state, characters, the map interpreter and the player's forced route reset.
+The ordinary landing on the source edge runs `playerStep` once, exactly as on
+the legacy route; crossing interpolation and atomic target placement do not
+add another call. If source-map execution raises a fatal content error during
+the crossing, the reducer cancels it, restores the source-edge boundary and
+freezes there instead of committing the target.
 The in-flight phase is reducer state for rewind but is not saveable; saved data
 keeps the existing map/local v1 shape. A headless session can opt in by passing
 `createWorldHandoffResolver(project.worldLayout)` as `SessionOptions.handoff`.
@@ -1253,10 +1260,12 @@ a namespace (`game.action`).
 `playerStep` reuses a registered extension command as a movement hook. It
 runs once, immediately after each genuine player tile landing, including
 forced routes, pathfinding and autonomous movement. A blocked move, direct
-placement or map transfer does not run it. The hook shares the authored
-`ext` command's saved RNG and atomic state-update contract, so saves, rewind
-and all supported simulation rates reproduce the same results. Omitting it
-keeps the movement hook inactive.
+placement or legacy map transfer does not run it. A seamless handoff invokes
+the hook for the ordinary landing on its source-edge tile; its later atomic
+target placement is transfer bookkeeping, not a second step. The hook shares
+the authored `ext` command's saved RNG and atomic state-update contract, so
+saves, rewind and all supported simulation rates reproduce the same results.
+Omitting it keeps the movement hook inactive.
 
 An `extChoice` command has the shape
 `{ op:"extChoice", call, args, prompt, cancel?, write? }`. `prompt` is at

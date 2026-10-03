@@ -159,7 +159,8 @@ const maybeTest = preflight.ok ? test : test.skip;
 // optional shop-icon and parallax GameView seams add 11,305 bytes, measuring
 // 917,053. The concrete ParallaxLayer and ItemIconRow remain outside this
 // input graph (krm3v-ui-bundle-isolation.test.ts).
-const EXPECTED_BYTES = 917_053;
+// Deterministic seamless-handoff fatal cleanup adds 440 shared engine bytes.
+const EXPECTED_BYTES = 917_493;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

@@ -14,6 +14,7 @@ import {
   type SessionState,
 } from "../src/engine/session.ts";
 import { createWorldHandoffResolver } from "../src/engine/world-handoff.ts";
+import type { ExtensionOptions } from "../src/engine/extensions.ts";
 import type { Command, GameEvent, Project } from "../src/engine/types.ts";
 import { splitProjectMaps } from "../tools/lib/map-project.ts";
 import {
@@ -24,6 +25,7 @@ import {
   playerTouchTransfer,
   PORTAL_ONLY_EAST,
   SAFE_EAST,
+  SAFE_SOUTH,
   SAFE_WEST,
 } from "./fixtures/seamless-handoff/fixture-data.ts";
 
@@ -52,6 +54,21 @@ function walkToPortal(session: Session, state: SessionState, buttons: number): S
 
 function autorun(commands: Command[], id = "script"): GameEvent {
   return { id, x: 0, y: 0, pages: [{ trigger: "autorun", commands }] };
+}
+
+function fatalParallel(waitFrames: number, kind: "invalid-variable" | "unknown-map"): GameEvent {
+  const event = autorun([
+    { op: "wait", seconds: waitFrames / 60 },
+    {
+      op: "transfer",
+      map: kind === "invalid-variable" ? { variable: "missing.destination" } : "missing-map",
+      x: 0,
+      y: 0,
+      dir: "keep",
+    },
+  ], `fatal-${kind}`);
+  event.pages[0]!.trigger = "parallel";
+  return event;
 }
 
 function normalizeHostFrame(state: SessionState): SessionState {
@@ -132,6 +149,140 @@ describe("seamless-v1 opening handoff", () => {
     expect(state.move.px).toBe(48);
   });
 
+  test("lets an accepted crossing replace its fade but preserves the fade on legacy fallback", () => {
+    const acceptedTransfer = {
+      ...markedTransfer("east", 0, 1, "right", SAFE_EAST),
+      fade: 0.2,
+    };
+    const acceptedProject = handoffProject({
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: playerTouchTransfer("accepted-fade", 3, 1, acceptedTransfer),
+    });
+    const acceptedRuntime = runtime(acceptedProject);
+    let accepted = walkToPortal(acceptedRuntime.session, acceptedRuntime.state, 0x0020);
+    expect(accepted.handoff?.phase).toBe(0);
+    expect(accepted.fade).toBeNull();
+    accepted = step(acceptedRuntime.session, accepted, 8);
+    expect(accepted.mapId).toBe("east");
+    expect(accepted.fade).toBeNull();
+
+    const rejectedTransfer = {
+      ...markedTransfer("east", 1, 1, "right", SAFE_EAST),
+      fade: 0.2,
+    };
+    const rejectedProject = handoffProject({
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: playerTouchTransfer("rejected-fade", 3, 1, rejectedTransfer),
+    });
+    const rejectedRuntime = runtime(rejectedProject);
+    let rejected = walkToPortal(rejectedRuntime.session, rejectedRuntime.state, 0x0020);
+    expect(Object.hasOwn(rejected, "handoff")).toBe(false);
+    expect(rejected.mapId).toBe("west");
+    expect(rejected.fade).toEqual({ phase: "out", left: 6, half: 6 });
+    rejected = step(rejectedRuntime.session, rejected, 5);
+    expect(rejected.mapId).toBe("west");
+    expect(rejected.fade).toEqual({ phase: "out", left: 1, half: 6 });
+    rejected = step(rejectedRuntime.session, rejected);
+    expect(rejected.mapId).toBe("east");
+    expect(rejected.fade).toEqual({ phase: "in", left: 6, half: 6 });
+    rejected = step(rejectedRuntime.session, rejected, 6);
+    expect(rejected.fade).toBeNull();
+  });
+
+  test("matches legacy playerStep calls at the source edge without counting atomic target placement", () => {
+    const hook: ExtensionOptions = {
+      initial: { steps: 0 },
+      commands: {
+        "test.player_step": (context) => ({
+          ext: { steps: (context.ext as { steps: number }).steps + 1 },
+        }),
+      },
+      playerStep: { call: "test.player_step" },
+    };
+    const make = (traversal: Project["worldTraversal"]): Project => handoffProject({
+      traversal,
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: playerTouchTransfer(
+        "step-parity",
+        3,
+        1,
+        markedTransfer("east", 0, 1, "right", SAFE_EAST),
+      ),
+    });
+    const runRoute = (traversal: Project["worldTraversal"]) => {
+      const project = make(traversal);
+      const session = createSession(project, 60, {
+        extensions: hook,
+        handoff: createWorldHandoffResolver(HANDOFF_LAYOUT),
+      });
+      let state = startSession(project, session);
+      const calls: { map: string; x: number; y: number }[] = [];
+      let atSourceEdge: SessionState | undefined;
+      for (let frame = 0; frame < 16; frame++) {
+        const before = state;
+        const previousSteps = (before.ext as { steps: number }).steps;
+        state = stepSession(session, before, { buttons: frame < 8 ? 0x0020 : 0 });
+        const nextSteps = (state.ext as { steps: number }).steps;
+        if (nextSteps !== previousSteps) {
+          const dx = [0, -1, 0, 1][before.move.stepDir]!;
+          const dy = [1, 0, -1, 0][before.move.stepDir]!;
+          calls.push({
+            map: before.mapId,
+            x: before.move.moving ? before.move.tx + dx : state.move.tx,
+            y: before.move.moving ? before.move.ty + dy : state.move.ty,
+          });
+        }
+        if (frame === 7) atSourceEdge = state;
+      }
+      return { calls, atSourceEdge: atSourceEdge!, state };
+    };
+
+    const legacy = runRoute("legacy-transfer");
+    const seamless = runRoute("seamless-v1");
+    const sourceEdgeCall = [{ map: "west", x: 3, y: 1 }];
+    expect(legacy.calls).toEqual(sourceEdgeCall);
+    expect(seamless.calls).toEqual(sourceEdgeCall);
+    expect(legacy.atSourceEdge.mapId).toBe("east");
+    expect(Object.hasOwn(legacy.atSourceEdge, "handoff")).toBe(false);
+    expect(seamless.atSourceEdge.mapId).toBe("west");
+    expect(seamless.atSourceEdge.handoff).toMatchObject({
+      sourceMapId: "west",
+      sourceX: 3,
+      sourceY: 1,
+      phase: 0,
+    });
+    expect(legacy.state.mapId).toBe("east");
+    expect(seamless.state.mapId).toBe("east");
+    expect(legacy.state.ext).toEqual({ steps: 1 });
+    expect(seamless.state.ext).toEqual({ steps: 1 });
+  });
+
+  test("crosses a proven north-south opening", () => {
+    const project = handoffProject({
+      start: { map: "north", x: 1, y: 2, dir: "down" },
+      sourceEvent: playerTouchTransfer(
+        "safe-south",
+        1,
+        3,
+        markedTransfer("west", 1, 0, "down", SAFE_SOUTH),
+      ),
+    });
+    const { session } = runtime(project);
+    let state = walkToPortal(session, startSession(project, session), 0x0040);
+    expect(state.handoff).toMatchObject({
+      sourceMapId: "north",
+      targetMapId: "west",
+      direction: 0,
+      sourceX: 1,
+      sourceY: 3,
+      targetX: 1,
+      targetY: 0,
+    });
+    state = step(session, state, 8);
+    expect(state.mapId).toBe("west");
+    expect([state.move.tx, state.move.ty, state.move.facing]).toEqual([1, 0, 0]);
+  });
+
   const fallbackCases = [
     ["project mode omitted", undefined, "west", 2, 1, "right", 3, 1, 0x0020, markedTransfer("east", 0, 1, "right", SAFE_EAST)],
     ["command marker omitted", "seamless-v1", "west", 2, 1, "right", 3, 1, 0x0020, { op: "transfer", map: "east", x: 0, y: 1, dir: "right" }],
@@ -139,8 +290,10 @@ describe("seamless-v1 opening handoff", () => {
     ["wrong portal provenance", "seamless-v1", "west", 2, 1, "right", 3, 1, 0x0020, markedTransfer("east", 0, 1, "right", "missing")],
     ["wrong landing", "seamless-v1", "west", 2, 1, "right", 3, 1, 0x0020, markedTransfer("east", 0, 2, "right", SAFE_EAST)],
     ["wrong direction", "seamless-v1", "west", 2, 1, "right", 3, 1, 0x0020, markedTransfer("east", 0, 1, "left", SAFE_EAST)],
-    ["direction-only seam", "seamless-v1", "east", 1, 2, "down", 1, 3, 0x0040, markedTransfer("south", 1, 0, "down", "east:south")],
-    ["gap", "seamless-v1", "west", 1, 2, "down", 1, 3, 0x0040, markedTransfer("south", 0, 0, "down", "west:south:gap")],
+    ["wrong player facing", "seamless-v1", "west", 3, 0, "down", 3, 1, 0x0040, markedTransfer("east", 0, 1, "right", SAFE_EAST)],
+    ["source outside the opening span", "seamless-v1", "west", 2, 0, "right", 3, 0, 0x0020, markedTransfer("east", 0, 0, "right", SAFE_EAST)],
+    ["direction alone without opening geometry", "seamless-v1", "west", 0, 3, "right", 1, 3, 0x0020, markedTransfer("east", 0, 0, "right", SAFE_EAST)],
+    ["world-space gap", "seamless-v1", "west", 2, 1, "right", 3, 1, 0x0020, markedTransfer("east", 1, 1, "right", SAFE_EAST)],
     ["unplaced indoor story transfer", "seamless-v1", "west", 2, 1, "right", 3, 1, 0x0020, { op: "transfer", map: "indoor", x: 2, y: 2, dir: "up" }],
   ] satisfies readonly (readonly [
     string,
@@ -186,6 +339,70 @@ describe("seamless-v1 opening handoff", () => {
     const state = walkToPortal(session, startSession(project, session), 0x0020);
     expect(state.mapId).toBe("east");
     expect(Object.hasOwn(state, "handoff")).toBe(false);
+  });
+
+  test("falls back when the real map dimensions disagree with the opening placement", () => {
+    const project = handoffProject({
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: playerTouchTransfer(
+        "wrong-size",
+        3,
+        1,
+        markedTransfer("east", 0, 1, "right", SAFE_EAST),
+      ),
+    });
+    const east = project.maps.find((map) => map.id === "east")!;
+    east.width = 5;
+    east.ground = new Array(5 * east.height).fill("plain.0");
+    const { session } = runtime(project);
+    const state = walkToPortal(session, startSession(project, session), 0x0020);
+    expect(state.mapId).toBe("east");
+    expect(Object.hasOwn(state, "handoff")).toBe(false);
+  });
+
+  test("requires the authored source cell's exit edge to be open", () => {
+    const project = handoffProject({
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: playerTouchTransfer(
+        "blocked-source-exit",
+        3,
+        1,
+        markedTransfer("east", 0, 1, "right", SAFE_EAST),
+      ),
+    });
+    project.sheets.push({
+      id: "source-exit",
+      cols: 1,
+      rows: 1,
+      defaultPassage: "pass",
+      dirEdges: { "0": { exit: ["right"] } },
+    });
+    const west = project.maps.find((map) => map.id === "west")!;
+    west.sheets!.push("source-exit");
+    west.ground[1 * west.width + 3] = "source-exit.0";
+    const { session } = runtime(project);
+    const state = walkToPortal(session, startSession(project, session), 0x0020);
+    expect(state.mapId).toBe("east");
+    expect(Object.hasOwn(state, "handoff")).toBe(false);
+  });
+
+  test("does not let a runtime tile override revoke immutable opening topology", () => {
+    const portal = playerTouchTransfer(
+      "runtime-source-exit",
+      3,
+      1,
+      markedTransfer("east", 0, 1, "right", SAFE_EAST),
+    );
+    portal.pages[0]!.commands.unshift({ op: "tileProperty", x: 3, y: 1, exit: ["right"] });
+    const project = handoffProject({
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: portal,
+    });
+    const { session } = runtime(project);
+    const state = walkToPortal(session, startSession(project, session), 0x0020);
+    expect(state.interp.tileProperties?.["7"]?.exit).toEqual(["right"]);
+    expect(state.handoff?.phase).toBe(0);
+    expect(state.mapId).toBe("west");
   });
 
   test("requires a resolver bound to the project's topology identity", () => {
@@ -466,6 +683,64 @@ describe("seamless-v1 opening handoff", () => {
     expect(seamless.interp.audio?.bgm?.positionTicks).toBe(8);
   });
 
+  test("aborts mid-flight and completion-tick handoffs into the frozen source error state", () => {
+    const cases = [
+      { kind: "unknown-map", waitFrames: 10, lastSafePhase: 2, message: 'unknown map "missing-map"' },
+      {
+        kind: "invalid-variable",
+        waitFrames: 15,
+        lastSafePhase: 7,
+        message: "map variable must hold a non-empty string",
+      },
+    ] as const;
+    for (const scenario of cases) {
+      const project = handoffProject({
+        start: { map: "west", x: 2, y: 1, dir: "right" },
+        sourceEvent: playerTouchTransfer(
+          `fatal-handoff-${scenario.kind}`,
+          3,
+          1,
+          markedTransfer("east", 0, 1, "right", SAFE_EAST),
+        ),
+        mapEvents: { west: [fatalParallel(scenario.waitFrames, scenario.kind)] },
+      });
+      const { session } = runtime(project);
+      let state = walkToPortal(session, startSession(project, session), 0x0020);
+      expect(state.handoff?.phase, scenario.kind).toBe(0);
+      let lastSafePhase = 0;
+      for (let guard = 0; !state.interp.error && guard < 8; guard++) {
+        lastSafePhase = state.handoff?.phase ?? -1;
+        state = step(session, state);
+      }
+      expect(lastSafePhase, scenario.kind).toBe(scenario.lastSafePhase);
+      expect(state.interp.error, scenario.kind).toEqual({
+        kind: "content",
+        message: expect.stringContaining(scenario.message),
+      });
+      expect(state.mapId, scenario.kind).toBe("west");
+      expect(Object.hasOwn(state, "handoff"), scenario.kind).toBe(false);
+      expect(state.move, scenario.kind).toMatchObject({
+        tx: 3,
+        ty: 1,
+        px: 48,
+        py: 16,
+        facing: 3,
+        phase: 0,
+        moving: false,
+        walking: false,
+      });
+      const saving = saveSession(session, state, 0);
+      expect(saving.ok, scenario.kind).toBe(false);
+      if (!saving.ok) expect(saving.error.code, scenario.kind).toBe("not-safe-point");
+      const frozen = step(session, state);
+      expect(frozen.frame, scenario.kind).toBe(state.frame + 1);
+      expect(frozen.mapId, scenario.kind).toBe(state.mapId);
+      expect(frozen.interp, scenario.kind).toEqual(state.interp);
+      expect(frozen.move, scenario.kind).toEqual(state.move);
+      expect(Object.hasOwn(frozen, "handoff"), scenario.kind).toBe(false);
+    }
+  });
+
   test("folds the same virtual traversal at 20, 30 and 60 Hz", () => {
     const project = handoffProject({
       start: { map: "west", x: 2, y: 1, dir: "right" },
@@ -557,6 +832,55 @@ describe("seamless-v1 opening handoff", () => {
     }
     expect(keyed.state.mapId).toBe("east");
     expect(keyed.keyframeStats().lastRefoldStart).toBe(12);
+  });
+
+  test("rewinds before a source fatal and refolds to the same aborted handoff", () => {
+    const project = handoffProject({
+      start: { map: "west", x: 2, y: 1, dir: "right" },
+      sourceEvent: playerTouchTransfer(
+        "fatal-rewind",
+        3,
+        1,
+        markedTransfer("east", 0, 1, "right", SAFE_EAST),
+      ),
+      mapEvents: { west: [fatalParallel(15, "invalid-variable")] },
+    });
+    const tape = [...new Array<number>(8).fill(0x0020), ...new Array<number>(24).fill(0)];
+    const options = {
+      hz: 60,
+      tapeHz: 60,
+      idleFrames: 60_000,
+      endHoldFrames: 60_000,
+      rewindSeconds: 3 / 60,
+      keyframeIntervalFrames: 1,
+      worldTraversal: "seamless-v1" as const,
+      handoff: createWorldHandoffResolver(HANDOFF_LAYOUT),
+    };
+    const keyed = new AttractController(project, tape, options);
+    const fromZero = new AttractController(project, tape, { ...options, keyframeMaxBytes: 0 });
+    keyed.startAttract();
+    fromZero.startAttract();
+    for (let frame = 0; frame < 16; frame++) {
+      keyed.step(0);
+      fromZero.step(0);
+    }
+    expect(keyed.state.interp.error?.kind).toBe("content");
+    expect(Object.hasOwn(keyed.state, "handoff")).toBe(false);
+    expect(canonicalJson(keyed.state)).toBe(canonicalJson(fromZero.state));
+
+    keyed.step(0x0100);
+    fromZero.step(0x0100);
+    expect(keyed.state.handoff?.phase).toBe(5);
+    expect(canonicalJson(keyed.state)).toBe(canonicalJson(fromZero.state));
+    for (let frame = 0; frame < 3; frame++) {
+      keyed.step(0);
+      fromZero.step(0);
+      expect(canonicalJson(keyed.state), `fatal refold suffix ${frame}`).toBe(canonicalJson(fromZero.state));
+    }
+    expect(keyed.state.interp.error?.kind).toBe("content");
+    expect(keyed.state.mapId).toBe("west");
+    expect(Object.hasOwn(keyed.state, "handoff")).toBe(false);
+    expect(keyed.keyframeStats().lastRefoldStart).toBe(13);
   });
 
   test("a non-empty tape without traversal identity remains on the legacy timeline", () => {

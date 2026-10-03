@@ -15,6 +15,7 @@ export const MAP_SIZE = 4;
 
 export const SAFE_EAST = "west:east:safe";
 export const SAFE_WEST = "east:west:safe";
+export const SAFE_SOUTH = "north:west:safe";
 export const PORTAL_ONLY_EAST = "west:east:portal-only";
 
 export const HANDOFF_LAYOUT: WorldLayout = {
@@ -50,7 +51,7 @@ export const HANDOFF_LAYOUT: WorldLayout = {
         spanB: { start: 0, end: 4 },
         axis: "x",
         offsetAtoB: 0,
-        openingIds: [],
+        openingIds: [SAFE_SOUTH],
       },
       {
         mapA: "west",
@@ -70,6 +71,14 @@ export const HANDOFF_LAYOUT: WorldLayout = {
         source: { mapId: "east", side: "west", span: { start: 1, end: 2 } },
         target: { mapId: "west", side: "east", span: { start: 1, end: 2 } },
         axis: "y",
+        offset: 0,
+        compatibility: "coordinate-preserving",
+      },
+      {
+        portalId: SAFE_SOUTH,
+        source: { mapId: "north", side: "south", span: { start: 1, end: 2 } },
+        target: { mapId: "west", side: "north", span: { start: 1, end: 2 } },
+        axis: "x",
         offset: 0,
         compatibility: "coordinate-preserving",
       },

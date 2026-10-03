@@ -1862,8 +1862,8 @@ function foldSession(
       : null,
     ext: frozen ? s0.ext : cloneExtension(sess.extensions, s0.ext),
     scene: cloneScene(s0.scene, sess.battle?.immutableState),
-    ...(s0.handoff ? { handoff: { ...s0.handoff } } : {}),
   };
+  if (s0.handoff !== undefined) s.handoff = { ...s0.handoff };
   s.frame++;
   const ticks = sess.ticksPerFrame;
   const sceneAtFrameStart = s.scene !== null;
@@ -2020,8 +2020,9 @@ function mapDimensions(sess: Session, mapId: string): { width: number; height: n
 }
 
 /** Validate every runtime-owned part of a marked opening before publishing
- * reducer state. A failed proof is intentionally indistinguishable from an
- * ordinary transfer: unsafe or mismatched content keeps legacy semantics. */
+ * reducer state. An accepted crossing replaces even an authored transfer
+ * fade; a failed proof leaves the request intact so its complete legacy
+ * timeline, including fade, remains observable. */
 function tryStartSeamlessHandoff(
   sess: Session,
   s: SessionState,
@@ -2122,6 +2123,16 @@ function advanceSeamlessHandoffMotion(sess: Session, s: SessionState): boolean {
   return true;
 }
 
+/** A fatal source-map error owns the result just as it does on the legacy
+ * path. Discard only the synthetic crossing and restore its source boundary;
+ * the source interpreter, characters and error remain frozen in place. */
+function abortSeamlessHandoff(sess: Session, s: SessionState): void {
+  const handoff = s.handoff;
+  if (handoff === undefined) return;
+  s.move = initialMovement(handoff.sourceX, handoff.sourceY, handoff.direction, sess.cfg);
+  delete s.handoff;
+}
+
 function commitSeamlessHandoff(sess: Session, s: SessionState): { x: number; y: number } {
   const handoff = s.handoff!;
   // Re-acquire on the commit tick: rewind keyframes retain reducer state,
@@ -2218,6 +2229,7 @@ function stepReferenceTick(
   // clock advances but no mover, character, or interpreter fold runs, so a
   // cyclic program cannot consume steps or keep throwing tick after tick.
   if (s.interp.error) {
+    abortSeamlessHandoff(sess, s);
     advanceInterpAudioInPlace(s.interp);
     return { x: s.move.tx, y: s.move.ty };
   }
@@ -2499,6 +2511,7 @@ function stepReferenceTick(
   // so the values chars/motion read next tick are the ones commands just
   // wrote.
   s.sw = s.interp.sw;
+  if (handoffAtStart && s.interp.error) abortSeamlessHandoff(sess, s);
   const transfer = s.interp.pendingTransfer;
   if (transfer && !transferMapKnown(sess, transfer.map)) {
     s.interp.pendingTransfer = null;
@@ -2506,6 +2519,7 @@ function stepReferenceTick(
       kind: "content",
       message: `transfer in ${transfer.fiber}: unknown map ${JSON.stringify(transfer.map)}`,
     };
+    if (handoffAtStart) abortSeamlessHandoff(sess, s);
     const result: {
       x: number;
       y: number;
@@ -2562,7 +2576,7 @@ function stepReferenceTick(
   if (!handoffAtStart && s.scene === null && (s.interp.pendingScenes?.length ?? 0) > 0) {
     startNextGameScene(sess, s);
   }
-  if (handoffCompletes) {
+  if (handoffCompletes && s.handoff !== undefined) {
     const landed = commitSeamlessHandoff(sess, s);
     const result: {
       x: number;

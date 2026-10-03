@@ -297,7 +297,9 @@ export interface ChoiceIcon {
 export type WorldTraversalMode = "legacy-transfer" | "seamless-v1";
 
 /** Stable importer provenance for one transfer that may use an authored
- * world opening. Both the project mode and this marker must opt in. */
+ * world opening. Both the project mode and this marker must opt in. When the
+ * opening proof succeeds, its visible crossing replaces any authored transfer
+ * fade; a failed proof preserves the complete legacy transfer, including fade. */
 export interface TransferHandoff {
   mode: "seamless-v1";
   portalId: string;
