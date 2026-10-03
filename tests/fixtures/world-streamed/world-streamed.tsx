@@ -1,11 +1,17 @@
 import { mount } from "@pocketjs/framework";
+import { onCleanup, onMount, type Component } from "solid-js";
 import {
   GameView,
   type AnimatedTilesStats,
+  type GameViewOverlayConfig,
 } from "../../../src/ui/index.ts";
+import { createSessionSnapshot } from "../../../src/engine/save.ts";
+import { loadIntoView } from "../../../src/ui/session-saves.ts";
 import {
   createWorldRenderer,
   WorldStreamedTerrain,
+  type GameViewWorldConfig,
+  type GameViewWorldRenderProps,
   type WorldStreamedTerrainStats,
 } from "../../../src/ui/world/index.ts";
 import type { WorldComponent } from "../../../src/engine/types.ts";
@@ -17,6 +23,14 @@ export interface WorldStreamedFixtureStats {
   upper?: WorldStreamedTerrainStats;
   below?: AnimatedTilesStats;
   above?: AnimatedTilesStats;
+  worldView: { mounts: number; unmounts: number };
+}
+
+export interface WorldStreamedTransitionApi {
+  /** Queue one or more save-backed map replacements for the next host frame. */
+  transition(...mapIds: string[]): void;
+  loads: number;
+  error: string | null;
 }
 
 declare global {
@@ -26,6 +40,12 @@ declare global {
   var __worldStreamedStats: WorldStreamedFixtureStats | undefined;
   // eslint-disable-next-line no-var
   var __worldStreamedPreFrameCleanupReads: number | undefined;
+  // eslint-disable-next-line no-var
+  var __worldStreamedInitialMap: string | undefined;
+  // eslint-disable-next-line no-var
+  var __worldStreamedLegacy: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __worldStreamedTransition: WorldStreamedTransitionApi | undefined;
 }
 
 // Regression probe: disposing the terrain subtree before its first frame must
@@ -53,14 +73,92 @@ cleanupComponent = undefined;
 disposeCleanupProbe();
 globalThis.__worldStreamedPreFrameCleanupReads = cleanupReads;
 
-const stats: WorldStreamedFixtureStats = {};
+const stats: WorldStreamedFixtureStats = { worldView: { mounts: 0, unmounts: 0 } };
 globalThis.__worldStreamedStats = stats;
+
+function trackedWorldRenderer(): GameViewWorldConfig {
+  const factory = createWorldRenderer();
+  return {
+    create(host) {
+      const runtime = factory.create(host);
+      const BaseView = runtime.View;
+      const TrackedView: Component<GameViewWorldRenderProps> = (props) => {
+        onMount(() => { stats.worldView.mounts++; });
+        onCleanup(() => { stats.worldView.unmounts++; });
+        return <BaseView {...props} />;
+      };
+      return { ...runtime, View: TrackedView };
+    },
+  };
+}
+
+let queuedMaps: string[] = [];
+const transitionApi: WorldStreamedTransitionApi = {
+  transition(...mapIds) {
+    queuedMaps = [...mapIds];
+  },
+  loads: 0,
+  error: null,
+};
+globalThis.__worldStreamedTransition = transitionApi;
+
+function transitionTo(
+  host: Parameters<GameViewOverlayConfig["create"]>[0],
+  mapId: string,
+): boolean {
+  const snapshot = createSessionSnapshot(host.session, host.getState(), host.heldButtons());
+  snapshot.map = mapId;
+  snapshot.player = {
+    ...snapshot.player,
+    tx: 1,
+    ty: 1,
+    px: 16,
+    py: 16,
+    facing: 0,
+    phase: 0,
+    moving: false,
+    walking: false,
+    stepDir: 0,
+  };
+  delete snapshot.mapRuntime;
+  const loaded = loadIntoView(host, snapshot);
+  if (!loaded.ok) {
+    transitionApi.error = loaded.error.code;
+    return false;
+  }
+  transitionApi.loads++;
+  return true;
+}
+
+const transitions: GameViewOverlayConfig = {
+  create(host) {
+    const initialMap = globalThis.__worldStreamedInitialMap;
+    globalThis.__worldStreamedInitialMap = undefined;
+    if (initialMap) transitionTo(host, initialMap);
+    return {
+      step() {
+        if (queuedMaps.length === 0) return { consumed: false };
+        const maps = queuedMaps;
+        queuedMaps = [];
+        let changed = false;
+        for (const mapId of maps) changed = transitionTo(host, mapId) || changed;
+        return { consumed: true, stateChanged: changed };
+      },
+      isOpen: () => false,
+      render: () => null,
+    };
+  },
+};
+
+const world = globalThis.__worldStreamedLegacy ? undefined : trackedWorldRenderer();
+globalThis.__worldStreamedLegacy = undefined;
 
 mount(() => (
   <GameView
     project={WORLD_STREAMED_PROJECT}
     assets={GAME_ASSETS}
-    world={createWorldRenderer()}
+    world={world}
+    overlay={transitions}
     debugWorldCamera={() => globalThis.__worldStreamedCamera}
     onStreamStats={(layer, value) => { stats[layer] = value as WorldStreamedTerrainStats; }}
     onAnimatedStats={(layer, value) => { stats[layer] = value; }}

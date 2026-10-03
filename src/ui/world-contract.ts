@@ -82,6 +82,8 @@ export interface GameViewWorldRuntime {
   readonly View: Component<GameViewWorldRenderProps>;
   /** Pure opening resolver paired with this renderer's immutable layout. */
   readonly handoff: WorldHandoffResolver;
+  /** Whether View owns this map. A renderer may include isolated maps that
+   * are absent from the connected layout in order to preserve one subtree. */
   hasMap(mapId: string): boolean;
   frameFor(mapId: string, viewport: Readonly<GameViewWorldViewport>): GameViewWorldFrame | undefined;
   cameraFor(

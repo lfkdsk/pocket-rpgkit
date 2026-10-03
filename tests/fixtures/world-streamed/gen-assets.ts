@@ -1,5 +1,6 @@
-// Deterministically cook five placed maps into streamed TILESET entries plus
-// the player and two one-frame animated terrain atlases.
+// Deterministically cook five placed maps and two legacy-fallback maps into
+// streamed TILESET entries plus the player and two one-frame animated
+// terrain atlases.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -37,6 +38,8 @@ const upperMarker = new Map<string, readonly [number, number]>([
   ["c-southwest", [63, 0]],
   ["d-southeast", [0, 0]],
   ["e-small", [1, 4]],
+  ["unplaced-field", [63, 39]],
+  ["indoor-room", [1, 4]],
 ]);
 
 function paintChunk(

@@ -10,8 +10,10 @@ export const GAME_ASSETS: GameAssets = {
     "c-southwest": { w: 1024, h: 640 },
     "d-southeast": { w: 1024, h: 640 },
     "e-small": { w: 256, h: 160 },
+    "unplaced-field": { w: 1024, h: 640 },
+    "indoor-room": { w: 256, h: 160 },
   },
-  order: ["a-northwest","b-northeast","c-southwest","d-southeast","e-small"],
+  order: ["a-northwest","b-northeast","c-southwest","d-southeast","e-small","unplaced-field","indoor-room"],
   npcSrc: {},
   player: { idle: ["assets/player.png", "assets/player.png", "assets/player.png", "assets/player.png"], walkL: ["assets/player.png", "assets/player.png", "assets/player.png", "assets/player.png"], walkR: ["assets/player.png", "assets/player.png", "assets/player.png", "assets/player.png"] },
   stream: {
@@ -23,6 +25,8 @@ export const GAME_ASSETS: GameAssets = {
     "c-southwest": ["ui:tile.world-c-southwest-ground#0","ui:tile.world-c-southwest-ground#1","ui:tile.world-c-southwest-ground#2","ui:tile.world-c-southwest-ground#3","ui:tile.world-c-southwest-ground#4","ui:tile.world-c-southwest-ground#5","ui:tile.world-c-southwest-ground#6","ui:tile.world-c-southwest-ground#7","ui:tile.world-c-southwest-ground#8","ui:tile.world-c-southwest-ground#9","ui:tile.world-c-southwest-ground#10","ui:tile.world-c-southwest-ground#11"],
     "d-southeast": ["ui:tile.world-d-southeast-ground#0","ui:tile.world-d-southeast-ground#1","ui:tile.world-d-southeast-ground#2","ui:tile.world-d-southeast-ground#3","ui:tile.world-d-southeast-ground#4","ui:tile.world-d-southeast-ground#5","ui:tile.world-d-southeast-ground#6","ui:tile.world-d-southeast-ground#7","ui:tile.world-d-southeast-ground#8","ui:tile.world-d-southeast-ground#9","ui:tile.world-d-southeast-ground#10","ui:tile.world-d-southeast-ground#11"],
     "e-small": ["ui:tile.world-e-small-ground#0"],
+    "unplaced-field": ["ui:tile.world-unplaced-field-ground#0","ui:tile.world-unplaced-field-ground#1","ui:tile.world-unplaced-field-ground#2","ui:tile.world-unplaced-field-ground#3","ui:tile.world-unplaced-field-ground#4","ui:tile.world-unplaced-field-ground#5","ui:tile.world-unplaced-field-ground#6","ui:tile.world-unplaced-field-ground#7","ui:tile.world-unplaced-field-ground#8","ui:tile.world-unplaced-field-ground#9","ui:tile.world-unplaced-field-ground#10","ui:tile.world-unplaced-field-ground#11"],
+    "indoor-room": ["ui:tile.world-indoor-room-ground#0"],
   },
   upper: {
     "a-northwest": [null,null,null,null,null,null,null,null,null,null,null,"ui:tile.world-a-northwest-upper#11"],
@@ -30,6 +34,8 @@ export const GAME_ASSETS: GameAssets = {
     "c-southwest": [null,null,null,"ui:tile.world-c-southwest-upper#3",null,null,null,null,null,null,null,null],
     "d-southeast": ["ui:tile.world-d-southeast-upper#0",null,null,null,null,null,null,null,null,null,null,null],
     "e-small": ["ui:tile.world-e-small-upper#0"],
+    "unplaced-field": [null,null,null,null,null,null,null,null,null,null,null,"ui:tile.world-unplaced-field-upper#11"],
+    "indoor-room": ["ui:tile.world-indoor-room-upper#0"],
   },
   columns: {
     "a-northwest": 4,
@@ -37,6 +43,8 @@ export const GAME_ASSETS: GameAssets = {
     "c-southwest": 4,
     "d-southeast": 4,
     "e-small": 1,
+    "unplaced-field": 4,
+    "indoor-room": 1,
   },
 },
   animated: ANIMATED,

@@ -176,6 +176,9 @@ export function WorldAnimatedTiles(props: WorldAnimatedTilesProps): SolidJSX.Ele
     report();
   };
 
+  // Late-mounted renderer branches miss the host's already frozen callback
+  // list for this frame. Bind their initial visible cells before first paint.
+  sync();
   onFrame(sync);
   onCleanup(() => {
     clear();

@@ -383,7 +383,11 @@ export function WorldStreamedTerrain(props: WorldStreamedTerrainProps): SolidJSX
     return missing;
   };
 
-  const sync = (): void => {
+  const sync = (
+    groundBudgetAlreadyUsed: number,
+    upperBudgetAlreadyUsed: number,
+    captureLoaded?: Record<WorldStreamedTerrainBand, number>,
+  ): void => {
     if (props.active && !props.active()) return;
     const component = readComponent(props.component);
     const componentChanged = !sameComponent(currentComponent, component);
@@ -431,8 +435,8 @@ export function WorldStreamedTerrain(props: WorldStreamedTerrainProps): SolidJSX
     );
 
     const budget: Record<WorldStreamedTerrainBand, number> = {
-      ground: configuredBudget(props.ground, "ground"),
-      upper: configuredBudget(props.upper, "upper"),
+      ground: Math.max(0, configuredBudget(props.ground, "ground") - groundBudgetAlreadyUsed),
+      upper: Math.max(0, configuredBudget(props.upper, "upper") - upperBudgetAlreadyUsed),
     };
     const loaded: Record<WorldStreamedTerrainBand, number> = { ground: 0, upper: 0 };
     const load = props.loadTile ?? loadTileTexture;
@@ -456,6 +460,10 @@ export function WorldStreamedTerrain(props: WorldStreamedTerrainProps): SolidJSX
       });
       loaded[entry.band]++;
     }
+    if (captureLoaded) {
+      captureLoaded.ground = loaded.ground;
+      captureLoaded.upper = loaded.upper;
+    }
 
     // A failed (-1) load still consumes one unit and becomes resident,
     // matching the single-map layer's retry semantics.
@@ -471,7 +479,19 @@ export function WorldStreamedTerrain(props: WorldStreamedTerrainProps): SolidJSX
     } else if (visibilityChanged) report(upper, component, 0);
   };
 
-  onFrame(sync);
+  // A Show branch can mount after the host froze this frame's callback list
+  // (for example legacy -> connected-world). Populate the initial window now
+  // so that branch's first paint is the same as an ordinary mounted frame.
+  // Charge those loads to the first registered callback's band budgets too.
+  const mountBudgetUsed: Record<WorldStreamedTerrainBand, number> = { ground: 0, upper: 0 };
+  sync(0, 0, mountBudgetUsed);
+  onFrame(() => {
+    const groundBudgetAlreadyUsed = mountBudgetUsed.ground;
+    const upperBudgetAlreadyUsed = mountBudgetUsed.upper;
+    mountBudgetUsed.ground = 0;
+    mountBudgetUsed.upper = 0;
+    sync(groundBudgetAlreadyUsed, upperBudgetAlreadyUsed);
+  });
   onCleanup(() => {
     const component = currentComponent;
     for (const state of bands) {

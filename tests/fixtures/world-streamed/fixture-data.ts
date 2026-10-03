@@ -7,13 +7,23 @@ import type { AnimatedTile } from "../../../src/ui/game-assets.ts";
 
 export type Rgba = readonly [number, number, number, number];
 
-export const MAPS = [
+export const PLACED_MAPS = [
   { id: "a-northwest", width: 64, height: 40, originTileX: -64, originTileY: -40, ground: [34, 74, 126, 255] as Rgba, upper: [244, 190, 66, 255] as Rgba },
   { id: "b-northeast", width: 64, height: 40, originTileX: 0, originTileY: -40, ground: [52, 126, 82, 255] as Rgba, upper: [238, 104, 112, 255] as Rgba },
   { id: "c-southwest", width: 64, height: 40, originTileX: -64, originTileY: 0, ground: [104, 62, 146, 255] as Rgba, upper: [76, 214, 218, 255] as Rgba },
   { id: "d-southeast", width: 64, height: 40, originTileX: 0, originTileY: 0, ground: [164, 82, 54, 255] as Rgba, upper: [156, 224, 82, 255] as Rgba },
   { id: "e-small", width: 16, height: 10, originTileX: 64, originTileY: 15, ground: [196, 92, 178, 255] as Rgba, upper: [248, 146, 54, 255] as Rgba },
 ] as const;
+
+// These two maps deliberately stay outside WORLD_LAYOUT. Their streamed
+// sources are cooked like the placed maps so the same GameView can exercise
+// its legacy fallback without changing asset mode during a transfer.
+export const UNPLACED_MAPS = [
+  { id: "unplaced-field", width: 64, height: 40, originTileX: 0, originTileY: 0, ground: [88, 150, 96, 255] as Rgba, upper: [232, 202, 94, 255] as Rgba },
+  { id: "indoor-room", width: 16, height: 10, originTileX: 0, originTileY: 0, ground: [142, 74, 174, 255] as Rgba, upper: [246, 138, 72, 255] as Rgba },
+] as const;
+
+export const MAPS = [...PLACED_MAPS, ...UNPLACED_MAPS] as const;
 
 export const PLAYER_COLOUR: Rgba = [250, 244, 248, 255];
 export const PLAYER_OUTLINE: Rgba = [24, 18, 34, 255];
@@ -26,7 +36,7 @@ export const WORLD_LAYOUT: WorldLayout = {
     worldId: "fixture-world",
     componentId: "five-map-component",
     bounds: { minTileX: -64, minTileY: -40, maxTileX: 80, maxTileY: 40 },
-    placements: MAPS.map(({ id: mapId, originTileX, originTileY, width, height }) => ({
+    placements: PLACED_MAPS.map(({ id: mapId, originTileX, originTileY, width, height }) => ({
       mapId, originTileX, originTileY, width, height,
     })),
     seams: [
@@ -83,5 +93,13 @@ export const ANIMATED: Readonly<Record<string, readonly AnimatedTile[]>> = {
   "e-small": [
     { x: 1, y: 1, above: false, sprite: "assets/anim/below.png" },
     { x: 2, y: 1, above: true, sprite: "assets/anim/above.png" },
+  ],
+  "unplaced-field": [
+    { x: 4, y: 4, above: false, sprite: "assets/anim/below.png" },
+    { x: 5, y: 4, above: true, sprite: "assets/anim/above.png" },
+  ],
+  "indoor-room": [
+    { x: 4, y: 4, above: false, sprite: "assets/anim/below.png" },
+    { x: 5, y: 4, above: true, sprite: "assets/anim/above.png" },
   ],
 };

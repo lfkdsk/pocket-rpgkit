@@ -38,5 +38,21 @@
   {
     "key": "ui:tile.world-e-small-upper",
     "file": "assets/stream/world-e-small-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-indoor-room-ground",
+    "file": "assets/stream/world-indoor-room-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-indoor-room-upper",
+    "file": "assets/stream/world-indoor-room-upper.pkts"
+  },
+  {
+    "key": "ui:tile.world-unplaced-field-ground",
+    "file": "assets/stream/world-unplaced-field-ground.pkts"
+  },
+  {
+    "key": "ui:tile.world-unplaced-field-upper",
+    "file": "assets/stream/world-unplaced-field-upper.pkts"
   }
 ]

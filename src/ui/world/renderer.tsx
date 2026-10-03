@@ -3,7 +3,7 @@
 // type-only factory contract in ../world-contract.ts.
 
 import { View } from "@pocketjs/framework/components";
-import type { Component, JSX } from "solid-js";
+import { createMemo, type Component, type JSX } from "solid-js";
 import { clampCamera, followCamera } from "../../engine/camera.ts";
 import { cameraFocusAt, screenShakeOffset } from "../../engine/screen.ts";
 import { TILE } from "../../engine/tiles.ts";
@@ -32,6 +32,53 @@ interface WorldRenderBinding {
   placement: WorldPlacement;
 }
 
+function createIsolatedBinding(
+  mapId: string,
+  groundRefs: readonly (string | null)[],
+  groundColumns: number,
+  upperRefs: readonly (string | null)[],
+  upperColumns: number,
+  chunkPx: number,
+  tileSize: number,
+): WorldRenderBinding {
+  const extent = (refs: readonly unknown[], columns: number): readonly [number, number] => {
+    if (!Number.isInteger(columns) || columns < 1 || refs.length === 0) return [1, 1];
+    return [
+      Math.ceil(columns * chunkPx / tileSize),
+      Math.ceil(Math.ceil(refs.length / columns) * chunkPx / tileSize),
+    ];
+  };
+  const groundExtent = extent(groundRefs, groundColumns);
+  const upperExtent = extent(upperRefs, upperColumns);
+  const placement: WorldPlacement = {
+    mapId,
+    originTileX: 0,
+    originTileY: 0,
+    width: Math.max(groundExtent[0], upperExtent[0]),
+    height: Math.max(groundExtent[1], upperExtent[1]),
+  };
+  const component: WorldComponent = {
+    worldId: "rpgkit-isolated",
+    componentId: mapId,
+    bounds: {
+      minTileX: 0,
+      minTileY: 0,
+      maxTileX: placement.width,
+      maxTileY: placement.height,
+    },
+    placements: [placement],
+    seams: [],
+    openings: [],
+  };
+  return {
+    placement,
+    render: {
+      component,
+      visibleMaps: createVisibleWorldMapsReader(component, tileSize),
+    },
+  };
+}
+
 function createWorldRenderIndex(
   components: readonly WorldComponent[],
   tileSize: number,
@@ -51,7 +98,27 @@ function createRuntime(host: GameViewWorldFactoryHost): GameViewWorldRuntime {
   const bindingFor = (mapId: string): WorldRenderBinding | undefined => index.get(mapId);
 
   const WorldView: Component<GameViewWorldRenderProps> = (props) => {
-    const binding = (): WorldRenderBinding => bindingFor(props.activeMapId())!;
+    // Keep this subtree mounted for every streamed map. Maps absent from the
+    // authored layout become one-map components at the local origin, which
+    // gives them the same camera, clipping and z-order as the legacy path
+    // without a late-mounted fallback missing this host frame's callbacks.
+    const binding = createMemo<WorldRenderBinding>(() => {
+      const mapId = props.activeMapId();
+      const placed = bindingFor(mapId);
+      if (placed) return placed;
+      const groundRefs = props.ground.refs()[mapId] ?? [];
+      const upperRefs = props.upper.refs()[mapId] ?? [];
+      return createIsolatedBinding(
+        mapId,
+        groundRefs,
+        props.ground.columns()[mapId] ?? 0,
+        upperRefs,
+        props.upper.columns()[mapId] ?? 0,
+        props.stream.chunkPx,
+        host.tileSize,
+      );
+    });
+    const activeMapId = (): string => binding().placement.mapId;
     const component = (): WorldComponent => binding().render.component;
     const visibleMaps = (): readonly WorldPlacement[] => {
       const groundMargin = props.ground.margin() ?? props.stream.margin ?? TILE;
@@ -80,7 +147,7 @@ function createRuntime(host: GameViewWorldFactoryHost): GameViewWorldRuntime {
 
     return (
       <WorldStreamedTerrain
-        activeMapId={props.activeMapId}
+        activeMapId={activeMapId}
         component={component}
         visiblePlacements={visibleMaps}
         camera={props.camera}
@@ -95,7 +162,7 @@ function createRuntime(host: GameViewWorldFactoryHost): GameViewWorldRuntime {
           <>
             {props.animated ? (
               <WorldAnimatedTiles
-                activeMapId={props.activeMapId}
+                activeMapId={activeMapId}
                 component={component}
                 visibleMaps={visibleMaps}
                 tiles={props.animated}
@@ -126,7 +193,7 @@ function createRuntime(host: GameViewWorldFactoryHost): GameViewWorldRuntime {
           <>
             {props.animated ? (
               <WorldAnimatedTiles
-                activeMapId={props.activeMapId}
+                activeMapId={activeMapId}
                 component={component}
                 visibleMaps={visibleMaps}
                 tiles={props.animated}
@@ -150,7 +217,10 @@ function createRuntime(host: GameViewWorldFactoryHost): GameViewWorldRuntime {
   return {
     View: WorldView,
     handoff: createWorldHandoffResolver(host.layout),
-    hasMap: (mapId) => index.has(mapId),
+    // GameView creates this runtime only for streamed assets. Unplaced maps
+    // are rendered as isolated components, so no renderer branch remount is
+    // needed when crossing the authored layout boundary.
+    hasMap: () => true,
     frameFor(mapId, viewport) {
       const binding = bindingFor(mapId);
       if (!binding) return undefined;
