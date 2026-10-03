@@ -350,7 +350,9 @@ export function syncPages(
  *  would. With `detachPatrol` a page switch gives the patrol template its
  *  own copy of the new route, as a copy of the returned state would. The
  *  safe default detaches it; callers may opt out only when they immediately
- *  deep-clone the result before any route can advance. With `prune` false
+ *  deep-clone the result before any route can advance. `selectedPages`, when
+ *  supplied, records that same active-page decision so a caller need not
+ *  evaluate every condition a second time. With `prune` false
  *  only `events` are reconciled: characters of events outside the list are
  *  left alone instead of being removed as no longer live. */
 export function syncPagesInPlace(
@@ -368,6 +370,7 @@ export function syncPagesInPlace(
   conditionContext?: ConditionContext,
   appearances?: Readonly<Record<string, EventAppearanceState>>,
   prune = true,
+  selectedPages?: Map<GameEvent, number>,
 ): SyncResult {
   const abortedWaiters: string[] = [];
   const liveSlot = new Array<boolean>(events.length);
@@ -375,6 +378,7 @@ export function syncPagesInPlace(
 
   for (const { ev, key, index: slot } of events) {
     const index = activeIndexAt(ev, sw, key, facing, extension, conditionContext);
+    selectedPages?.set(ev, index);
     if (motion && index >= 0) motion[ev.id] = ev.pages[index]!.moveType ?? "static";
     liveSlot[slot] = index >= 0 && !isErased(key);
     if (!liveSlot[slot]) continue;

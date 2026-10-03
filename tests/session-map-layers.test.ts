@@ -191,6 +191,35 @@ describe("releaseSessionMapLayers", () => {
     expect(session.tables.has("map_b")).toBe(true);
   });
 
+  test("a seamless session leaves fade-transfer eviction to its external cache owner", () => {
+    const source = transferProject();
+    source.worldTraversal = "seamless-v1";
+    source.worldLayout = { topologyHash: "cache-owner", components: [] };
+    const split = splitProjectMaps(source);
+    const files = new Map(split.entries.map((entry) => [entry.meta.id, entry.bytes]));
+    const repository = createJsonMapRepository(split.shell.mapIndex, {
+      read: (entry) => {
+        const meta = split.shell.mapIndex.find((candidate) => candidate.entry === entry);
+        return meta ? files.get(meta.id) : undefined;
+      },
+    });
+    const session = createSession(split.shell, 60, {
+      maps: repository,
+      worldTraversal: "seamless-v1",
+      handoff: { topologyHash: "cache-owner", resolve: () => null },
+    });
+    let state = startSession(split.shell, session);
+
+    state = stepSession(session, state, { buttons: 0, confirmEdge: true });
+
+    expect(state.mapId).toBe("map_b");
+    expect([...session.maps.keys()].sort()).toEqual(["map_a", "map_b"]);
+    expect([...session.worlds.keys()].sort()).toEqual(["map_a", "map_b"]);
+    expect([...session.tables.keys()].sort()).toEqual(["map_a", "map_b"]);
+    releaseSessionMapsExcept(session, [state.mapId]);
+    expect([...session.maps.keys()]).toEqual(["map_b"]);
+  });
+
   test("evicts the repository cache to the parsed keep-set", () => {
     const split = splitProjectMaps(project());
     const files = new Map(split.entries.map((entry) => [entry.meta.id, entry.bytes]));

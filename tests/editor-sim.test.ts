@@ -767,8 +767,10 @@ simDescribe("editor budget", () => {
     // playtest-art fixture (its 11.7 KB document plus the three-kind art
     // manifest) brings the merged editor to 1,566,916 B. KRM3's label/
     // select-item/access/locationInfo/stop-se commands and the fix-4 engine
-    // changes land on top, bringing the merged editor to 1,591,111 B. Keep
-    // a narrow margin.
-    expect(js).toBeLessThan(1_595_000);
+    // changes land on top, bringing the merged editor to 1,591,111 B. The
+    // cold-path performance work (entry-page dependency cache, stable
+    // extension condition keys, deferred seamless eviction) brings it to
+    // 1,598,588 B. Keep a narrow margin.
+    expect(js).toBeLessThan(1_602_000);
   });
 });

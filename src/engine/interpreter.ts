@@ -31,6 +31,7 @@ import {
   assertJsonValue,
   cloneExtension,
   createExtensionRuntime,
+  extensionConditionCacheKey,
   type ExtensionChoiceResult,
   type ExtensionCommandContext,
   type ExtensionCommandResult,
@@ -3395,7 +3396,7 @@ interface GuardMemo {
   gold?: number;
   facing?: Facing;
   idle?: boolean;
-  ext?: JsonValue;
+  ext?: unknown;
   playerName?: string;
 }
 
@@ -3439,7 +3440,7 @@ function guardUnchanged(
     (!(mask & 16) || Object.is(memo.gold, s.sw.gold)) &&
     (!(mask & 32) || memo.facing === input.facing) &&
     (!(mask & 64) || memo.idle === isWorldIdle(s, input.worldIdleBlockers)) &&
-    (!(mask & 128) || memo.ext === extension.ext) &&
+    (!(mask & 128) || memo.ext === extensionConditionCacheKey(extension.runtime, extension.ext)) &&
     (!(mask & 256) || memo.playerName === s.sw.playerName);
 }
 
@@ -3466,7 +3467,7 @@ function rememberGuard(
     gold: mask & 16 ? s.sw.gold : undefined,
     facing: mask & 32 ? input.facing : undefined,
     idle: mask & 64 ? isWorldIdle(s, input.worldIdleBlockers) : undefined,
-    ext: mask & 128 ? extension.ext : undefined,
+    ext: mask & 128 ? extensionConditionCacheKey(extension.runtime, extension.ext) : undefined,
     playerName: mask & 256 ? s.sw.playerName : undefined,
   });
 }
@@ -3479,7 +3480,7 @@ interface IdleScanMemo {
   erased: object;
   touched: object;
   placements: object;
-  ext: JsonValue;
+  ext: unknown;
   gold: number;
   playerName: string;
   timer: number | undefined;
@@ -3522,7 +3523,7 @@ function sameIdleScan(
   memo: IdleScanMemo,
   s: InterpState,
   input: InterpInput,
-  ext: JsonValue,
+  ext: unknown,
 ): boolean {
   return memo.ext === ext && Object.is(memo.gold, s.sw.gold) && memo.playerName === s.sw.playerName &&
     memo.timer === (s.sw.timer === undefined ? undefined : timerSeconds(s.sw.timer)) &&
@@ -3548,7 +3549,7 @@ function sameIdleScan(
 function idleScanSnapshot(
   s: InterpState,
   input: InterpInput,
-  ext: JsonValue,
+  ext: unknown,
   steps: number,
 ): IdleScanMemo {
   return {
@@ -5705,7 +5706,8 @@ export function stepInterpWithExtensionsInPlace(
     (!input.confirmEdge || s.main !== null || s.inputLocked || messageHoldsPlayer(w, s));
   const canSleep = canCacheScan && parallelKeys!.length === 0;
   const sleeping = canSleep ? idleScans.get(w) : undefined;
-  if (sleeping && sameIdleScan(sleeping, s, input, ext0)) {
+  const conditionKey = extensionConditionCacheKey(w.extensions, ext0);
+  if (sleeping && sameIdleScan(sleeping, s, input, conditionKey)) {
     if (s.main) {
       runFiber(s, w, s.main, input, { remaining: RUNAWAY_STEP_LIMIT - sleeping.steps }, extension, local);
     }
@@ -5720,7 +5722,7 @@ export function stepInterpWithExtensionsInPlace(
   let keys: string[];
   if (active && active.count === parallelKeys!.length &&
       parallelKeys!.every((key) => active.pages[key] === s.parallels[key]!.pageIndex) &&
-      sameIdleScan(active.signature, s, input, ext0)) {
+      sameIdleScan(active.signature, s, input, conditionKey)) {
     pending = active.pending;
     keys = active.keys;
   } else {
@@ -5735,7 +5737,7 @@ export function stepInterpWithExtensionsInPlace(
       const pages = keyedRecord<number>();
       for (const key of liveKeys) pages[key] = s.parallels[key]!.pageIndex;
       activeScans.set(w, {
-        signature: idleScanSnapshot(s, input, extension.ext, 0),
+        signature: idleScanSnapshot(s, input, conditionKey, 0),
         pages,
         count: liveKeys.length,
         pending,
@@ -5828,7 +5830,12 @@ export function stepInterpWithExtensionsInPlace(
       s.modal === modalBeforeScan && !s.error) {
     idleScans.set(
       w,
-      idleScanSnapshot(s, input, extension.ext, RUNAWAY_STEP_LIMIT - budget.remaining),
+      idleScanSnapshot(
+        s,
+        input,
+        extensionConditionCacheKey(w.extensions, extension.ext),
+        RUNAWAY_STEP_LIMIT - budget.remaining,
+      ),
     );
   }
   if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension, local);

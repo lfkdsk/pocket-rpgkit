@@ -161,10 +161,14 @@ const maybeTest = preflight.ok ? test : test.skip;
 // bundles. KRM3 fix-6 (collect every popped completion, innermost first;
 // a transfer's map change discards the rest; exit/erase abort the event)
 // brings them to 580,265 (-102), 933,967 (-102) and 735,220 (-102).
+// The cold-path performance work (a session-scoped entry-page dependency
+// cache, one-pass page selection keyed on the effective player sprite,
+// stable extension condition keys and deferred seamless-transfer eviction)
+// adds 6,971 shared engine bytes to each: 587,236, 940,938 and 742,191.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 580_265;
-const EXPECTED_SUNSTONE_QOA_BYTES = 933_967;
-const EXPECTED_WAV_FIXTURE_BYTES = 735_220;
+const EXPECTED_MEADOW_BYTES = 587_236;
+const EXPECTED_SUNSTONE_QOA_BYTES = 940_938;
+const EXPECTED_WAV_FIXTURE_BYTES = 742_191;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

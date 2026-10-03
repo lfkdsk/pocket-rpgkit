@@ -88,6 +88,7 @@ import {
   assertJsonValue,
   cloneExtension,
   createExtensionRuntime,
+  extensionConditionCacheKey,
   extensionCallNameValid,
   type ExtensionOptions,
   type ExtensionRuntime,
@@ -1929,12 +1930,152 @@ interface PageSyncMemo {
   runtime: ExtensionRuntime;
 }
 
+interface EntryPageMemo {
+  dependencies: EntryPageDependencies;
+  signature: readonly unknown[];
+  chars: CharsState;
+  motion: Record<string, MotionType>;
+  pages: readonly number[];
+  runtime: ExtensionRuntime;
+}
+
+interface EntryPageDependencies {
+  switches: readonly string[];
+  self: readonly string[];
+  variables: readonly string[];
+  items: readonly string[];
+  gold: boolean;
+  facing: boolean;
+  playerAppearance: boolean;
+  worldIdle: boolean;
+  bgm: boolean;
+  timer: boolean;
+  extension: readonly { call: string; args: JsonValue }[];
+}
+
 const pageSyncMemo = new WeakMap<World, PageSyncMemo>();
 const pageCacheability = new WeakMap<World, boolean>();
+const ENTRY_PAGE_MEMO_LIMIT = 16;
+// Layered and legacy releases may both discard the parsed MapDef. Scope a
+// small map-id cache to the Session instead: project/runtime identity cannot
+// leak across sessions, and the weak outer key lets the whole cache die with
+// its owner. Values are validated against freshly selected page indices
+// before reuse, so extension handlers retain their complete live context.
+const entryPageMemos = new WeakMap<Session, Map<string, EntryPageMemo>>();
 
-/** Newer contextual conditions depend on richer live state. Keep their
- * reconciliation on the uncached path; the optimized path covers only the
- * dependency set whose identities are represented below. */
+function entryPageMemoFor(sess: Session, mapId: string): EntryPageMemo | undefined {
+  const cache = entryPageMemos.get(sess);
+  const memo = cache?.get(mapId);
+  if (memo !== undefined) {
+    // Refresh insertion order for deterministic LRU eviction.
+    cache!.delete(mapId);
+    cache!.set(mapId, memo);
+  }
+  return memo;
+}
+
+function rememberEntryPages(sess: Session, mapId: string, memo: EntryPageMemo): void {
+  let cache = entryPageMemos.get(sess);
+  if (cache === undefined) {
+    cache = new Map();
+    entryPageMemos.set(sess, cache);
+  }
+  cache.delete(mapId);
+  cache.set(mapId, memo);
+  if (cache.size > ENTRY_PAGE_MEMO_LIMIT) cache.delete(cache.keys().next().value!);
+}
+
+function entryPageDependencies(world: World): EntryPageDependencies {
+  const switches = new Set<string>();
+  const self = new Set<string>();
+  const variables = new Set<string>();
+  const items = new Set<string>();
+  let gold = false;
+  let facing = false;
+  let playerAppearance = false;
+  let worldIdle = false;
+  let bgm = false;
+  let timer = false;
+  const extension: { call: string; args: JsonValue }[] = [];
+  for (const { ev, key } of keyedEventsOf(world).events) {
+    for (const page of ev.pages) {
+      const condition = page.condition;
+      if (!condition) continue;
+      if (condition.switch !== undefined) switches.add(condition.switch);
+      if (condition.selfSwitch !== undefined) self.add(key);
+      if (condition.variable !== undefined) variables.add(condition.variable.id);
+      if (condition.item !== undefined) items.add(condition.item);
+      for (const clause of condition.all ?? []) {
+        switch (clause.kind) {
+          case "switch": switches.add(clause.id); break;
+          case "selfSwitch": self.add(key); break;
+          case "variable": variables.add(clause.id); break;
+          case "item": items.add(clause.id); break;
+          case "gold": gold = true; break;
+          case "facing": facing = true; break;
+          case "appearance":
+            if (clause.target === "player") playerAppearance = true;
+            break;
+          case "worldIdle": worldIdle = true; break;
+          case "bgmPlaying": bgm = true; break;
+          case "timer": timer = true; break;
+          case "ext": extension.push({ call: clause.call, args: clause.args }); break;
+          case "tileProperty": break;
+        }
+      }
+    }
+  }
+  return {
+    switches: [...switches], self: [...self], variables: [...variables], items: [...items],
+    gold, facing, playerAppearance, worldIdle, bgm, timer, extension,
+  };
+}
+
+function entryPageSignature(
+  s: SessionState,
+  worldIdle: boolean,
+  runtime: ExtensionRuntime,
+  dependencies: EntryPageDependencies,
+): readonly unknown[] | undefined {
+  if (dependencies.extension.length > 0 && runtime.entryConditionCacheKey === null) return undefined;
+  const signature: unknown[] = [];
+  for (const id of dependencies.switches) signature.push(s.sw.switches[id] ?? false);
+  for (const key of dependencies.self) signature.push(s.sw.self[key]);
+  for (const id of dependencies.variables) signature.push(s.sw.variables[id] ?? 0);
+  for (const id of dependencies.items) signature.push(s.sw.items[id] ?? 0);
+  if (dependencies.gold) signature.push(s.sw.gold);
+  if (dependencies.facing) signature.push(s.move.facing);
+  // The effective sprite (effectivePlayerAppearance) without allocating.
+  if (dependencies.playerAppearance) {
+    signature.push(s.sw.playerAppearance?.sprite ?? s.sw.playerAppearance?.defaultSprite ?? null);
+  }
+  if (dependencies.worldIdle) signature.push(worldIdle);
+  if (dependencies.bgm) {
+    signature.push(s.interp.audio?.bgm?.id, s.interp.audio?.bgm?.paused === true,
+      s.interp.audio?.me !== undefined);
+  }
+  if (dependencies.timer) {
+    signature.push(s.sw.timer === undefined ? undefined : timerSeconds(s.sw.timer));
+  }
+  if (dependencies.extension.length > 0) {
+    const context = {
+      ext: s.ext,
+      switches: s.sw.switches,
+      variables: s.sw.variables,
+      items: s.sw.items,
+      gold: s.sw.gold,
+      playerName: s.sw.playerName,
+    };
+    for (const condition of dependencies.extension) {
+      signature.push(runtime.entryConditionCacheKey!(context, condition.call, condition.args));
+    }
+  }
+  return signature;
+}
+
+/** Page reconciliation is cacheable when every extension condition accepts
+ * the immutable/deterministic contract. Contextual built-ins are represented
+ * explicitly in pageSyncSignature below. */
 function canCachePages(world: World): boolean {
   const previous = pageCacheability.get(world);
   if (previous !== undefined) return previous;
@@ -1942,10 +2083,6 @@ function canCachePages(world: World): boolean {
   for (const event of world.map.events ?? []) {
     for (const page of event.pages) {
       for (const clause of page.condition?.all ?? []) {
-        if (clause.kind === "appearance" || clause.kind === "tileProperty" || clause.kind === "bgmPlaying") {
-          cacheable = false;
-          break;
-        }
         if (clause.kind === "ext" &&
             (!world.extensions.immutableConditions || !world.extensions.deterministicConditions)) {
           cacheable = false;
@@ -1960,7 +2097,11 @@ function canCachePages(world: World): boolean {
   return cacheable;
 }
 
-function pageSyncSignature(s: SessionState, worldIdle: boolean): readonly unknown[] {
+function pageSyncSignature(
+  s: SessionState,
+  worldIdle: boolean,
+  extensions: ExtensionRuntime,
+): readonly unknown[] {
   return [
     recordRevision(s.sw.switches),
     recordRevision(s.sw.self),
@@ -1969,7 +2110,7 @@ function pageSyncSignature(s: SessionState, worldIdle: boolean): readonly unknow
     s.sw.gold,
     s.sw.playerName,
     s.sw.timer === undefined ? undefined : timerSeconds(s.sw.timer),
-    s.ext,
+    extensionConditionCacheKey(extensions, s.ext),
     recordRevision(s.interp.erased),
     recordRevision(s.interp.placements),
     s.move.facing,
@@ -1978,6 +2119,13 @@ function pageSyncSignature(s: SessionState, worldIdle: boolean): readonly unknow
     s.interp.eventAppearances === undefined
       ? undefined
       : JSON.stringify(s.interp.eventAppearances),
+    s.sw.playerAppearance?.sprite ?? s.sw.playerAppearance?.defaultSprite ?? null,
+    s.interp.tileProperties === undefined
+      ? undefined
+      : JSON.stringify(s.interp.tileProperties),
+    s.interp.audio?.bgm?.id,
+    s.interp.audio?.bgm?.paused === true,
+    s.interp.audio?.me !== undefined,
   ];
 }
 
@@ -2263,15 +2411,54 @@ function stepReferenceTick(
   let syncMotion = keyedRecord<MotionType>();
   const keyed = keyedEventsOf(world);
   const cacheablePages = sess.immutableState && canCachePages(world);
+  const freshEntry = cacheablePages && s.interp.frame === 0 &&
+    Object.keys(s.chars.chars).length === 0 &&
+    Object.keys(s.interp.erased).length === 0 &&
+    Object.keys(s.interp.placements).length === 0 &&
+    s.interp.eventAppearances === undefined &&
+    s.interp.tileProperties === undefined;
+  const entryMemo = freshEntry ? entryPageMemoFor(sess, s.mapId) : undefined;
+  const entryDependencies = freshEntry
+    ? entryMemo?.dependencies ?? entryPageDependencies(world)
+    : undefined;
+  const entrySignature = entryDependencies === undefined
+    ? undefined
+    : entryPageSignature(
+      s,
+      conditionContext.worldIdle ?? false,
+      sess.extensions,
+      entryDependencies,
+    );
+  const reusableEntry = entryMemo !== undefined && entryMemo.runtime === sess.extensions &&
+    entrySignature !== undefined && sameSignature(entryMemo.signature, entrySignature)
+    ? entryMemo
+    : undefined;
+  const reuseEntry = reusableEntry !== undefined;
   const signature = cacheablePages
-    ? pageSyncSignature(s, conditionContext.worldIdle ?? false)
+    ? pageSyncSignature(s, conditionContext.worldIdle ?? false, sess.extensions)
     : undefined;
   const memo = cacheablePages ? pageSyncMemo.get(world) : undefined;
-  const reusePages = memo !== undefined && memo.runtime === sess.extensions &&
+  const reusePages = !reuseEntry && memo !== undefined && memo.runtime === sess.extensions &&
     signature !== undefined && sameSignature(memo.signature, signature);
-  if (reusePages) syncMotion = memo.motion;
-  let selectedPages = reusePages ? memo!.pages : undefined;
-  const synced = reusePages ? { abortedWaiters: [] as string[] } : syncPagesInPlace(
+  if (reusableEntry !== undefined) {
+    const rng = s.chars.rng;
+    s.chars = shareChars(reusableEntry.chars, true);
+    // A restored state may deliberately carry a non-default character RNG
+    // even with an empty table. Reusing authored placements must not rewind
+    // that saved cursor.
+    s.chars.rng = rng;
+    syncMotion = reusableEntry.motion;
+  } else if (reusePages) {
+    syncMotion = memo.motion;
+  }
+  const selectedPages = reuseEntry
+    ? new Map(keyed.events.map(({ ev, index }) => [ev, reusableEntry.pages[index]!] as const))
+    : reusePages
+      ? memo!.pages
+    : cacheablePages
+      ? new Map<GameEvent, number>()
+      : undefined;
+  const synced = reuseEntry || reusePages ? { abortedWaiters: [] as string[] } : syncPagesInPlace(
     s.chars,
     keyed.events,
     keyed.slotsById,
@@ -2285,19 +2472,26 @@ function stepReferenceTick(
     true,
     conditionContext,
     s.interp.eventAppearances,
+    true,
+    selectedPages,
   );
-  if (cacheablePages && !reusePages) {
-    selectedPages = new Map<GameEvent, number>();
-    for (const { ev, key } of keyed.events) {
-      selectedPages.set(
-        ev,
-        activeIndexAt(ev, s.sw, key, syncFacing, extension, conditionContext),
-      );
-    }
-    pageSyncMemo.set(world, {
-      signature: pageSyncSignature(s, conditionContext.worldIdle ?? false),
+  if (freshEntry && !reuseEntry && entrySignature !== undefined) {
+    const entryChars = s.chars;
+    s.chars = shareChars(entryChars, true);
+    rememberEntryPages(sess, s.mapId, {
+      dependencies: entryDependencies!,
+      signature: entrySignature,
+      chars: entryChars,
       motion: syncMotion,
-      pages: selectedPages,
+      pages: keyed.events.map(({ ev }) => selectedPages!.get(ev)!),
+      runtime: sess.extensions,
+    });
+  }
+  if (cacheablePages && !reusePages) {
+    pageSyncMemo.set(world, {
+      signature: pageSyncSignature(s, conditionContext.worldIdle ?? false, sess.extensions),
+      motion: syncMotion,
+      pages: selectedPages!,
       runtime: sess.extensions,
     });
   }
@@ -2748,7 +2942,12 @@ function applyTransfer(
   const facing: Facing = dir === "keep" ? s.move.facing : DIR_INDEX[dir];
   enterMap(s, map, x, y, facing, sess.cfg);
   showMapNameBanner(s, map);
-  releaseSessionMapsExcept(sess, [mapId]);
+  // A seamless project has an external layered cache owner (the same owner
+  // that is required for seamless handoffs). Let it choose and evict the
+  // parsed/compiled keep-sets after presentation instead of recursively
+  // releasing the source map inside this transfer fold. Legacy projects
+  // retain the historical single-map policy.
+  if (sess.worldTraversal === "legacy-transfer") releaseSessionMapsExcept(sess, [mapId]);
 }
 
 /** A transfer destination authored as a live variable cannot be checked at

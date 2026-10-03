@@ -95,6 +95,19 @@ export interface ExtensionOptions {
   immutableConditions?: boolean;
   /** Same context and arguments produce the same result, without observable effects. */
   deterministicConditions?: boolean;
+  /** Optional identity used by reducer condition caches instead of the full
+   * extension value. The result is compared with Object.is and therefore
+   * must change before any registered condition can return a different
+   * result for otherwise unchanged context. It is only observed when both
+   * immutableConditions and deterministicConditions are enabled. */
+  conditionCacheKey?(value: JsonValue): unknown;
+  /** Optional identity for cross-map-entry page-template reuse. Unlike
+   * conditionCacheKey, this per-call key covers the complete
+   * ExtensionReadContext: it must change before that condition can return a
+   * different result. Returning the boolean result itself is valid. Without
+   * this hook, maps containing extension page conditions conservatively skip
+   * entry-template reuse. */
+  entryConditionCacheKey?(context: ExtensionReadContext, call: string, args: JsonValue): unknown;
   /** Fresh-session value. Defaults to null. */
   initial?: JsonValue;
   commands?: Readonly<Record<string, ExtensionCommandHandler>>;
@@ -129,6 +142,9 @@ export interface ExtensionRuntime {
   readonly allowUnknown: boolean;
   readonly immutableConditions: boolean;
   readonly deterministicConditions: boolean;
+  readonly conditionCacheKey: ((value: JsonValue) => unknown) | null;
+  readonly entryConditionCacheKey:
+    ((context: ExtensionReadContext, call: string, args: JsonValue) => unknown) | null;
 }
 
 const CALL_RE = /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/;
@@ -207,9 +223,20 @@ export function createExtensionRuntime(options: ExtensionOptions = {}): Extensio
     allowUnknown: options.allowUnknown ?? false,
     immutableConditions: options.immutableConditions === true,
     deterministicConditions: options.deterministicConditions === true,
+    conditionCacheKey: options.conditionCacheKey ?? null,
+    entryConditionCacheKey: options.entryConditionCacheKey ?? null,
   };
   validateExtension(runtime, initial, "extension initial state");
   return runtime;
+}
+
+/** Cache identity for extension conditions. Without an explicit narrower
+ * contract, the complete extension value remains the conservative key. */
+export function extensionConditionCacheKey(runtime: ExtensionRuntime, value: JsonValue): unknown {
+  return runtime.conditionCacheKey === null ||
+      !runtime.immutableConditions || !runtime.deterministicConditions
+    ? value
+    : runtime.conditionCacheKey(value);
 }
 
 export function cloneExtension(runtime: ExtensionRuntime, value: JsonValue, label = "extension state"): JsonValue {

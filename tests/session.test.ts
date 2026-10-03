@@ -267,6 +267,16 @@ describe("immutable session page cache", () => {
       },
     },
     {
+      // The effective player sprite falls back to defaultSprite, which a
+      // command can change while `sprite` stays unset.
+      name: "default appearance",
+      condition: { kind: "appearance", target: "player", sprite: "hero" } as const,
+      update(state: SessionState): SessionState {
+        const sw = { ...state.sw, playerAppearance: { defaultSprite: "hero" } };
+        return { ...state, sw, interp: { ...state.interp, sw } };
+      },
+    },
+    {
       name: "tile property",
       condition: { kind: "tileProperty", x: 0, y: 0, passage: "block" } as const,
       update(state: SessionState): SessionState {
@@ -289,7 +299,7 @@ describe("immutable session page cache", () => {
         };
       },
     },
-  ]) test(`${scenario.name} conditions bypass identity-only page reuse`, () => {
+  ]) test(`${scenario.name} conditions invalidate cached page selection`, () => {
     const gate = ge("gate", 6, 6, [
       { trigger: "action", commands: [] },
       { trigger: "action", commands: [], condition: { all: [scenario.condition] } },
@@ -300,6 +310,141 @@ describe("immutable session page cache", () => {
     expect(state.chars.chars.gate!.pageIndex).toBe(0);
     state = stepSession(sess, scenario.update(state), { buttons: 0 });
     expect(state.chars.chars.gate!.pageIndex).toBe(1);
+  });
+
+  test("an extension condition cache key ignores unrelated extension churn", () => {
+    const gate = ge("gate", 6, 6, [
+      { trigger: "action", commands: [] },
+      { trigger: "action", commands: [], condition: {
+        all: [{ kind: "ext", call: "demo.open", args: null }],
+      } },
+    ]);
+    const p = project([map("a", 8, 8, [gate])]);
+    const makeExtensions = (called: { count: number }) => ({
+      initial: { clock: 0, open: false },
+      immutableConditions: true,
+      deterministicConditions: true,
+      conditionCacheKey: (value: unknown) => (value as { open: boolean }).open,
+      conditions: { "demo.open": (context: { ext: unknown }) => {
+        called.count++;
+        return (context.ext as { open: boolean }).open;
+      } },
+    });
+    const referenceCalls = { count: 0 };
+    const cachedCalls = { count: 0 };
+    const reference = createSession(p, 60, { extensions: makeExtensions(referenceCalls) });
+    const cached = createSession(p, 60, {
+      immutableState: true,
+      extensions: makeExtensions(cachedCalls),
+    });
+    let a = startSession(p, reference), b = startSession(p, cached);
+    const callsBeforeFirstCachedStep = cachedCalls.count;
+    for (let frame = 0; frame < 12; frame++) {
+      const open = frame >= 6;
+      const update = (state: SessionState): SessionState => ({
+        ...state,
+        ext: { clock: frame, open },
+      });
+      a = stepSession(reference, update(a), { buttons: 0 });
+      b = stepSession(cached, update(b), { buttons: 0 });
+      expect(b).toEqual(a);
+      expect(b.chars.chars.gate!.pageIndex).toBe(open ? 1 : 0);
+      if (frame === 0) expect(cachedCalls.count - callsBeforeFirstCachedStep).toBe(1);
+    }
+    expect(cachedCalls.count).toBeLessThan(referenceCalls.count);
+  });
+
+  test("a same-map re-entry reuses the immutable initial character template", () => {
+    let conditionCalls = 0;
+    const probe = ge("probe", 6, 6, [{
+      trigger: "action",
+      commands: [],
+      condition: { all: [{ kind: "ext", call: "demo.open", args: null }] },
+    }]);
+    const transfer = ge("transfer", 2, 1, page("playerTouch", [
+      { op: "transfer", map: "a", x: 6, y: 6, dir: "up" },
+    ]));
+    const p = project([map("a", 8, 8, [probe, transfer])]);
+    const sess = createSession(p, 60, {
+      immutableState: true,
+      extensions: {
+        initial: { open: true },
+        immutableConditions: true,
+        deterministicConditions: true,
+        conditionCacheKey: (value: unknown) => (value as { open: boolean }).open,
+        entryConditionCacheKey: (context: { ext: unknown }) =>
+          (context.ext as { open: boolean }).open,
+        conditions: {
+          "demo.open": () => {
+            conditionCalls++;
+            return true;
+          },
+        },
+      },
+    });
+    let state = stepSession(sess, startSession(p, sess), { buttons: 0 });
+    expect(conditionCalls).toBe(1);
+    const initialProbe = state.chars.chars.probe;
+    state = run(sess, state, 8, { buttons: 0x0010 });
+    expect(state.interp.frame).toBe(0);
+    state = { ...state, chars: { rng: 0x1234_5678, chars: state.chars.chars } };
+    const callsBeforeReentry = conditionCalls;
+    state = stepSession(sess, state, { buttons: 0 });
+    expect(conditionCalls).toBe(callsBeforeReentry);
+    expect(state.chars.chars.probe).toBe(initialProbe);
+    expect(state.chars.chars.probe!.pageIndex).toBe(0);
+    expect(state.chars.rng).toBe(0x1234_5678);
+  });
+
+  test("a re-entry re-selects pages when only the default player appearance changed", () => {
+    const probe = ge("probe", 6, 6, [
+      { trigger: "action", commands: [] },
+      { trigger: "action", commands: [], condition: {
+        all: [{ kind: "appearance", target: "player", sprite: "hero" }],
+      } },
+    ]);
+    const transfer = ge("transfer", 2, 1, page("playerTouch", [
+      { op: "transfer", map: "a", x: 6, y: 6, dir: "up" },
+    ]));
+    const p = project([map("a", 8, 8, [probe, transfer])]);
+    const sess = createSession(p, 60, { immutableState: true });
+    let state = stepSession(sess, startSession(p, sess), { buttons: 0 });
+    expect(state.chars.chars.probe!.pageIndex).toBe(0);
+    state = run(sess, state, 8, { buttons: 0x0010 });
+    expect(state.interp.frame).toBe(0);
+    const sw = { ...state.sw, playerAppearance: { defaultSprite: "hero" } };
+    state = { ...state, sw, interp: { ...state.interp, sw } };
+    state = stepSession(sess, state, { buttons: 0 });
+    expect(state.chars.chars.probe!.pageIndex).toBe(1);
+  });
+
+  test("an entry template stays disabled without a complete extension context key", () => {
+    let conditionCalls = 0;
+    const probe = ge("probe", 6, 6, [{
+      trigger: "action",
+      commands: [],
+      condition: { all: [{ kind: "ext", call: "demo.open", args: null }] },
+    }]);
+    const transfer = ge("transfer", 2, 1, page("playerTouch", [
+      { op: "transfer", map: "a", x: 6, y: 6, dir: "up" },
+    ]));
+    const p = project([map("a", 8, 8, [probe, transfer])]);
+    const sess = createSession(p, 60, {
+      immutableState: true,
+      extensions: {
+        initial: null,
+        immutableConditions: true,
+        deterministicConditions: true,
+        conditionCacheKey: () => null,
+        conditions: { "demo.open": () => (++conditionCalls, true) },
+      },
+    });
+    let state = stepSession(sess, startSession(p, sess), { buttons: 0 });
+    state = run(sess, state, 8, { buttons: 0x0010 });
+    const callsBeforeReentry = conditionCalls;
+    state = stepSession(sess, state, { buttons: 0 });
+    expect(conditionCalls).toBe(callsBeforeReentry + 1);
+    expect(state.chars.chars.probe!.pageIndex).toBe(0);
   });
 
   for (const hz of [60, 30, 20, 4]) for (const opaque of [false, true])

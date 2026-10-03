@@ -488,9 +488,10 @@ simDescribe("sunstone — render budget", () => {
     // branch relocates the popped completions, innermost first, each firing
     // exactly once) plus the strict onDone save validation bring it to
     // 934,069 B (+1,128), and the fix-6 completion rules bring it to
-    // 933,967 B (-102). Keep a narrow margin so an accidental bundle-in
+    // 933,967 B (-102), and the cold-path performance work brings it to
+    // 940,938 B (+6,971). Keep a narrow margin so an accidental bundle-in
     // still trips it.
-    expect(jsBytes).toBeLessThan(935_000);
+    expect(jsBytes).toBeLessThan(943_000);
   });
 });
 

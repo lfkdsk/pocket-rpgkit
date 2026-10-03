@@ -173,8 +173,11 @@ const maybeTest = preflight.ok ? test : test.skip;
 // save-validate) bring the merged product to 932,110 (+1,187). Merging the
 // KRM3V/STUDIO4 follow-ups brings it to 932,941 (+831). The KRM3 fix-5
 // completion queue and strict onDone validation bring it to 934,069
-// (+1,128), and the fix-6 completion rules to 933,967 (-102).
-const EXPECTED_BYTES = 933_967;
+// (+1,128), and the fix-6 completion rules to 933,967 (-102). The cold-path
+// performance work (entry-page dependency cache, effective-sprite page keys,
+// stable extension condition keys, deferred seamless eviction) brings it to
+// 940,938 (+6,971).
+const EXPECTED_BYTES = 940_938;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
