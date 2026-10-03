@@ -757,6 +757,7 @@ function decodeEnvelopeTextUnchecked(
   // older checksum-valid v1 save; an explicitly malformed value remains in
   // place for the deep validator to reject below.
   hydrateLegacyV1(snapshot);
+  normalizeEmptyParallax(snapshot);
   // Checksum proved the bytes are intact, not that they form a legal
   // session: fully validate structure, ranges and save-time invariants
   // before anything can restore from this snapshot (F4/task-1173).
@@ -788,6 +789,22 @@ function hydrateLegacyV1(snapshot: SaveSnapshot): void {
       : [interp.pendingBattle];
   }
   if ((snapshot as SaveSnapshot & { ext?: JsonValue }).ext === undefined) snapshot.ext = null;
+}
+
+/** The kit normalizes an empty parallax image name to "no parallax"
+ *  everywhere a live state is built: createInterpState skips an authored
+ *  empty name and changeParallax with "" clears a live one. This is a kit
+ *  decision, not RPG Maker MV parity — MV keeps the empty name and keeps
+ *  scrolling the hidden layer. A checksum-valid save may still carry the
+ *  empty name (written by an older build, or hand-edited), so the decode
+ *  path drops it too: after the checksum proved the bytes intact, before
+ *  the deep validator runs, so a restored save matches the live paths and
+ *  never accumulates phase for an image that can never render. */
+function normalizeEmptyParallax(snapshot: SaveSnapshot): void {
+  const parallax = (snapshot.interp as { parallax?: unknown }).parallax;
+  if (isRecord(parallax) && parallax.image === "") {
+    delete (snapshot.interp as { parallax?: unknown }).parallax;
+  }
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

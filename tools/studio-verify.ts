@@ -61,6 +61,28 @@
 //   shots     dark, light, map editing, command tree, problems, narrow,
 //             and the play-test panel (light, dark, running, edited dialogue);
 //             the main light/dark shots pass layout, style and pixel checks
+//
+//   --double  optional capture-stability gate: every documentation shot is
+//             captured twice (settle, capture, settle, capture) and the two
+//             PNGs are compared pixel by pixel. Only anti-aliasing-level
+//             differences are allowed: at most 0.1% of pixels may differ, and
+//             no channel by more than 32/255 (text anti-aliasing on a light
+//             background reaches ~20; a real instability shifts regions by
+//             100+). Every shot is static: the play-test is frozen at a fixed
+//             state first, so normal and play-test shots alike are compared;
+//             only the one explicitly live (un-paused) play-test shot skips
+//             the comparison. Run it when changing the canvas renderer, the
+//             settle logic, or anything that draws during a capture; it is
+//             off by default because it roughly doubles the capture time.
+//             STUDIO_VERIFY_MUTATE_DOUBLE=1 is the gate's fault injection:
+//             it recolours the page between the two captures of the normal
+//             documentation shot() path only (the regression it guards is
+//             "shot() captures only once"), and removes the recolour right
+//             after the second capture so it can never leak into a later
+//             shot or a committed screenshot. The gate must go red
+//             (tools/studio-verify-double-mutation.sh runs exactly that and
+//             fails on a green run; its reverse variant proves the self-test
+//             goes red when shot() is reverted to a single capture).
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -89,6 +111,7 @@ const OUT = resolve(option("out", join(ROOT, "dist", "studio-verify")));
 const SHOTS = resolve(option("shots", join(ROOT, "docs", "screenshots", "studio")));
 const TUXEMON_PROJECT = option("tuxemon-project", "");
 const CHROME = option("chrome", Bun.which("google-chrome") ?? Bun.which("chromium") ?? "/usr/bin/google-chrome");
+const DOUBLE = process.argv.includes("--double");
 
 if (!existsSync(join(SITE, "studio", "index.html"))) {
   console.error(`studio-verify: no Studio at ${SITE}/studio; run \`bun run web\` (or bun tools/studio-build.ts) first`);
@@ -219,6 +242,115 @@ async function main(): Promise<void> {
     // that the turn itself did not queue another canvas draw.
     await evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     await waitFor(`${label}: post-composite canvas settle`, `globalThis.__studio?.canvas?.settled === true`, 10_000);
+    // The rpgkit-check lint is debounced (250 ms) and async, so the problems
+    // count in the status bar can update after the canvas settles. Wait for
+    // the lint to be idle before a capture, so two captures of the same
+    // state agree (the --double gate would otherwise race the lint).
+    await waitFor(`${label}: problems lint idle`, `globalThis.__studio?.lintIdle?.() ?? true`, 5_000);
+  };
+  /** Capture one settled frame. In --double mode capture it twice and
+   *  compare the two PNGs; only anti-aliasing-level differences are allowed
+   *  (at most 0.1% of pixels differ, and no channel by more than 32/255).
+   *  Text anti-aliasing on a light background reaches ~20; a real
+   *  instability (a running animation, a transient element) shifts whole
+   *  regions by 100+. The first capture is returned either way, so the
+   *  documentation shot is deterministic. `frozen` is false only for the
+   *  one explicitly live (un-paused) play-test shot, whose frame advances
+   *  between captures by design, so the comparison is skipped there.
+   *  `mutate` is the fault-injection switch for the --double self-test and
+   *  is passed only by the normal documentation shot() path: the regression
+   *  it guards is "shot() captures only once", so the recolour must fire
+   *  there, not on the studio/play-test paths (which would mask the
+   *  regression by failing anyway). The injected style is removed right
+   *  after the second capture, so it can never leak into a later shot's
+   *  first capture or into a committed screenshot. */
+  const captureStable = async (name: string, frozen = true, mutate = false): Promise<{ data: string }> => {
+    const first = await cdp.send("Page.captureScreenshot", { format: "png" });
+    if (!DOUBLE || !frozen) return first;
+    await settleStudio(`double ${name}`);
+    const mutated = mutate && process.env.STUDIO_VERIFY_MUTATE_DOUBLE === "1";
+    if (mutated) {
+      // Fault injection for the --double self-test: recolour the page between
+      // the two captures of this shot, simulating a real instability. The
+      // gate must fail; if a normal shot were only captured once, the
+      // injection could never fire and the self-test would pass wrongly.
+      await evaluate(`(() => {
+        document.getElementById("studio-verify-double-mutation")?.remove();
+        const style = document.createElement("style");
+        style.id = "studio-verify-double-mutation";
+        style.textContent = "html { filter: hue-rotate(90deg) !important; }";
+        document.head.appendChild(style);
+      })()`);
+    }
+    const second = await cdp.send("Page.captureScreenshot", { format: "png" });
+    if (mutated) {
+      await evaluate(`document.getElementById("studio-verify-double-mutation")?.remove()`);
+    }
+    const a = decodePng(new Uint8Array(Buffer.from(first.data, "base64")));
+    const b = decodePng(new Uint8Array(Buffer.from(second.data, "base64")));
+    if (a.width !== b.width || a.height !== b.height) {
+      expect(`double:${name}`, false, `size ${a.width}x${a.height} vs ${b.width}x${b.height}`);
+      return first;
+    }
+    let differing = 0;
+    let maxDelta = 0;
+    const pixels = a.width * a.height;
+    for (let i = 0; i < a.rgba.length; i += 4) {
+      const delta = Math.max(
+        Math.abs(a.rgba[i]! - b.rgba[i]!),
+        Math.abs(a.rgba[i + 1]! - b.rgba[i + 1]!),
+        Math.abs(a.rgba[i + 2]! - b.rgba[i + 2]!),
+      );
+      if (delta > 0) {
+        differing++;
+        if (delta > maxDelta) maxDelta = delta;
+      }
+    }
+    const share = differing / pixels;
+    // Record the per-shot comparison in the report so a --double run proves
+    // each documentation shot was really captured twice (the console line
+    // alone scrolls away). `mutated` marks the shots the fault injection
+    // recoloured, so the self-test can prove its failures come from the
+    // normal shot() path itself, not from another double-capturing path.
+    results[`double:${name}`] = { differing, pixels, share: +(share * 100).toFixed(4), maxDelta, ...(mutated ? { mutated: true } : {}) };
+    expect(
+      `double:${name}`,
+      share <= 0.001 && maxDelta <= 32,
+      `${differing}/${pixels} pixels differ (${(share * 100).toFixed(3)}%), max channel delta ${maxDelta}`,
+    );
+    return first;
+  };
+  /** FNV-1a hash a small square at each of the 16 previewed cell centres
+   *  (cells (2,2)..(5,5)), in row-major order. Theme-independent: it reads
+   *  the map canvas's own pixels. */
+  const patternPreviewHashes = (): Promise<number[]> =>
+    evaluate<number[]>(`(() => {
+      const canvas = document.querySelector(".map-canvas");
+      const rect = canvas.getBoundingClientRect();
+      const ratioX = canvas.width / rect.width;
+      const ratioY = canvas.height / rect.height;
+      const ctx = canvas.getContext("2d");
+      const hashCell = (x, y) => {
+        const center = __studio.cellToClient(x, y);
+        const half = Math.max(2, Math.floor(16 * __studio.app.view.zoom * ratioX * 0.22));
+        const cx = Math.round((center.x - rect.left) * ratioX);
+        const cy = Math.round((center.y - rect.top) * ratioY);
+        const pixels = ctx.getImageData(cx - half, cy - half, half * 2, half * 2).data;
+        let hash = 2166136261;
+        for (const value of pixels) hash = Math.imul(hash ^ value, 16777619);
+        return hash >>> 0;
+      };
+      const hashes = [];
+      for (let y = 2; y <= 5; y++) for (let x = 2; x <= 5; x++) hashes.push(hashCell(x, y));
+      return hashes;
+    })()`);
+  /** The 2×2 brush repeats every two cells (horizontally and vertically), and
+   *  its four tile types are not all the same texture. A uniform translucent
+   *  fill passes the drag-state checks but fails this. */
+  const patternPreviewIsTextured = (hashes: number[]): boolean => {
+    const periodic = [0, 1, 4, 5].every((origin) => [origin, origin + 2, origin + 8, origin + 10].every((index) => hashes[index] === hashes[origin]));
+    const textured = new Set([hashes[0], hashes[1], hashes[4], hashes[5]]).size >= 2;
+    return periodic && textured;
   };
   const stabilizeCaptureChrome = async () => {
     await evaluate(`(() => {
@@ -302,7 +434,14 @@ async function main(): Promise<void> {
     const resume = options.playtestState === undefined ? false : await freezePlaytest(options.playtestState);
     const data = await (async () => {
       try {
-        return await cdp.send("Page.captureScreenshot", { format: "png" });
+        // Every shot() is a static documentation shot: when it shows the
+        // play-test, freezePlaytest paused it at a fixed state first, so the
+        // frame is frozen and the --double comparison always runs. Only the
+        // one explicitly live play-test shot in playShot skips it. The third
+        // argument arms the fault injection for this path only: the
+        // regression the self-test guards is "shot() captures only once",
+        // so the recolour must fire here (and is a no-op without the env).
+        return await captureStable(name, true, true);
       } finally {
         await resumePlaytest(resume);
       }
@@ -362,7 +501,7 @@ async function main(): Promise<void> {
         inspectorClipX: inspector ? inspector.scrollWidth - inspector.clientWidth : null,
       };
     })()`);
-        const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+        const data = await captureStable(name, want.playtestState !== undefined);
         return { layout, data };
       } finally {
         await resumePlaytest(resume);
@@ -484,7 +623,7 @@ async function main(): Promise<void> {
         layers: document.querySelectorAll('[data-testid="layers-panel"] .layer-row').length,
       };
     })()`);
-    const data = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const data = await captureStable(name);
     const bytes = Buffer.from(data.data, "base64");
     const draft = join(OUT, `${name}.png`);
     writeFileSync(draft, bytes);
@@ -1061,30 +1200,9 @@ async function main(): Promise<void> {
     await mouse("mousePressed", previewFrom.x, previewFrom.y);
     await mouse("mouseMoved", previewTo.x, previewTo.y);
     await settleStudio("pattern rectangle live preview");
-    const previewHashes = await evaluate<number[]>(`(() => {
-      const canvas = document.querySelector(".map-canvas");
-      const rect = canvas.getBoundingClientRect();
-      const ratioX = canvas.width / rect.width;
-      const ratioY = canvas.height / rect.height;
-      const ctx = canvas.getContext("2d");
-      const hashCell = (x, y) => {
-        const center = __studio.cellToClient(x, y);
-        const half = Math.max(2, Math.floor(16 * __studio.app.view.zoom * ratioX * 0.22));
-        const cx = Math.round((center.x - rect.left) * ratioX);
-        const cy = Math.round((center.y - rect.top) * ratioY);
-        const pixels = ctx.getImageData(cx - half, cy - half, half * 2, half * 2).data;
-        let hash = 2166136261;
-        for (const value of pixels) hash = Math.imul(hash ^ value, 16777619);
-        return hash >>> 0;
-      };
-      const hashes = [];
-      for (let y = 2; y <= 5; y++) for (let x = 2; x <= 5; x++) hashes.push(hashCell(x, y));
-      return hashes;
-    })()`);
-    const periodic = [0, 1, 4, 5].every((origin) => [origin, origin + 2, origin + 8, origin + 10].every((index) => previewHashes[index] === previewHashes[origin]));
-    const textured = new Set([previewHashes[0], previewHashes[1], previewHashes[4], previewHashes[5]]).size >= 2;
+    const previewHashes = await patternPreviewHashes();
     expect("polish: rectangle drag previews the selected texture with 2×2 periodicity",
-      periodic && textured,
+      patternPreviewIsTextured(previewHashes),
       JSON.stringify(previewHashes));
     await studioShot("studio-pattern-preview-light", "light");
     await mouse("mouseReleased", previewTo.x, previewTo.y);
@@ -2070,7 +2188,12 @@ async function main(): Promise<void> {
     expect("problems: clicking a problem selects its event", located.kind === "event", JSON.stringify(located));
     const pulse = await waitFor<{ canvas: boolean; inspector: boolean }>("problem pulse", `(() => { const p = { canvas: __studio.canvas.flashing, inspector: !!document.querySelector("#inspector .ins-section.flash") }; return p.canvas && p.inspector ? p : null; })()`, 2000).catch(() => null);
     expect("problems: the jump pulses the event on the canvas and in the inspector", !!pulse, JSON.stringify(pulse));
-    await sleep(1200);
+    // The pulse is a ~1 s canvas animation: drawFlash re-requests a frame
+    // every frame it runs, so canvas.settled stays false until it ends.
+    // Wait for the pulse itself to finish instead of racing it with a fixed
+    // sleep; the inspector's CSS pulse is 0.01 s under the verifier's
+    // reduced-motion emulation.
+    await waitFor("problem pulse to fade", `globalThis.__studio?.canvas?.flashing === false`, 5_000);
     await shot("studio-problems");
 
     // ---- narrow ----
@@ -2461,6 +2584,10 @@ async function main(): Promise<void> {
     await settleStudio("dark pattern rectangle live preview");
     const darkPatternLive = await evaluate<boolean>(`__studio.canvas.drag?.kind === "rect" && __studio.app.tileSelection?.width === 2 && __studio.app.tileSelection?.height === 2`);
     expect("theme: the textured rectangle preview is live in the dark theme", darkPatternLive, String(darkPatternLive));
+    const darkHashes = await patternPreviewHashes();
+    expect("theme: the dark rectangle preview shows the same 2×2 texture, not a uniform fill",
+      patternPreviewIsTextured(darkHashes),
+      JSON.stringify(darkHashes));
     await studioShot("studio-pattern-preview-dark", "dark");
     await mouse("mouseReleased", darkPreviewTo.x, darkPreviewTo.y);
 

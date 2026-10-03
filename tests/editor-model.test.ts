@@ -110,7 +110,7 @@ describe("editor generated assets", () => {
         else byId.set(id, bytes);
       }
     }
-    expect([...byId.keys()].sort()).toEqual(["dun", "town"]);
+    expect([...byId.keys()].sort()).toEqual(["dun", "icons", "town"]);
   });
 });
 

@@ -160,7 +160,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // 917,053. The concrete ParallaxLayer and ItemIconRow remain outside this
 // input graph (krm3v-ui-bundle-isolation.test.ts).
 // Deterministic seamless-handoff fatal cleanup adds 440 shared engine bytes.
-const EXPECTED_BYTES = 917_493;
+// The per-tick prune of finished map animations and the empty-string
+// parallax clear (guarded no-ops when unused) add 228 bytes, measuring
+// 917,721. The save-decode normalization of an empty-name parallax to none
+// (a checksum-valid save may still carry image:"" from an older build) adds
+// 236 bytes to this graph only — meadow's graph never includes the save
+// decode path, so its pin is unchanged — measuring 917,957.
+const EXPECTED_BYTES = 917_957;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

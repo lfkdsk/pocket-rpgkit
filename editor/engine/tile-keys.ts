@@ -266,4 +266,7 @@ export const TILE_SRC: Record<string, string> = {
   "dun.129": "assets/tile-dun-129.png",
   "dun.130": "assets/tile-dun-130.png",
   "dun.131": "assets/tile-dun-131.png",
+  "icons.0": "assets/tile-icons-0.png",
+  "icons.1": "assets/tile-icons-1.png",
+  "icons.2": "assets/tile-icons-2.png",
 };

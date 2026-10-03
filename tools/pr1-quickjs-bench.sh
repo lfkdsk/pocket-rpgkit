@@ -4,7 +4,13 @@
 # interleaved main → candidate → candidate → main windows.
 #
 # Usage:
-#   tools/pr1-quickjs-bench.sh [baseline_ref]
+#   tools/pr1-quickjs-bench.sh <baseline_ref>
+#
+# The baseline is a REQUIRED explicit argument: name the commit the candidate
+# is compared against (e.g. the PR base, or $(git merge-base HEAD main)). There
+# is intentionally no built-in default: a stale hard-coded baseline hides
+# regressions behind an irrelevant comparison. The run header and the opening
+# line both record the resolved baseline commit.
 #
 # Environment options:
 #   PR1_QJS_ROUNDS=N   run N interleaved windows (default 1). With N>1 the
@@ -30,7 +36,21 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-baseline_ref="${1:-a0857e097c9a68880f28ace2c13e2253be886d1c}"
+if [ "$#" -lt 1 ] || [ -z "${1:-}" ]; then
+  echo "usage: tools/pr1-quickjs-bench.sh <baseline_ref>" >&2
+  echo "  baseline_ref: commit the candidate is compared against, e.g." >&2
+  echo "    \$(git -C \"$root\" merge-base HEAD main)   # the PR base" >&2
+  echo "    a0857e097c9a68880f28ace2c13e2253be886d1c   # a pinned release" >&2
+  exit 2
+fi
+baseline_ref="$1"
+if ! git -C "$root" rev-parse --verify "${baseline_ref}^{commit}" >/dev/null 2>&1; then
+  echo "pr1-quickjs-bench: baseline_ref '$baseline_ref' is not a commit" >&2
+  exit 2
+fi
+baseline_sha="$(git -C "$root" rev-parse "${baseline_ref}^{commit}")"
+baseline_subject="$(git -C "$root" log -1 --format=%s "$baseline_sha")"
+echo "PR1_QJS baseline=$baseline_sha subject=\"$baseline_subject\""
 scratch="${PR1_QJS_SCRATCH:-${XDG_CACHE_HOME:-$HOME/.cache}/pocket-rpgkit-bench/pr1-quickjs}"
 baseline="$scratch/main"
 host="$scratch/host"
@@ -56,7 +76,9 @@ mkdir -p "$scratch"
 if git -C "$root" worktree list --porcelain | grep -Fqx "worktree $baseline"; then
   git -C "$root" worktree remove --force "$baseline"
 fi
-git -C "$root" worktree add --detach "$baseline" "$baseline_ref" >/dev/null
+# Check out the resolved SHA, not the movable ref: a branch named as the
+# baseline could move between the rev-parse above and this checkout.
+git -C "$root" worktree add --detach "$baseline" "$baseline_sha" >/dev/null
 cleanup() {
   git -C "$root" worktree remove --force "$baseline" >/dev/null 2>&1 || true
 }
@@ -109,7 +131,7 @@ run_slot() {
 
 {
   echo "PR1_QJS meta=key candidate value=$(git -C "$root" rev-parse HEAD)"
-  echo "PR1_QJS meta=key baseline value=$baseline_ref"
+  echo "PR1_QJS meta=key baseline value=$baseline_sha"
   echo "PR1_QJS meta=key pocketjs value=$(git -C "$root/vendor/pocketjs" rev-parse HEAD)"
   echo "PR1_QJS meta=key bundle_main value=$(sha256sum "$scratch/main.js" | cut -d' ' -f1)"
   echo "PR1_QJS meta=key bundle_candidate value=$(sha256sum "$scratch/candidate.js" | cut -d' ' -f1)"

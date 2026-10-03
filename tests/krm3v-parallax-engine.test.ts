@@ -22,6 +22,8 @@ import {
   encodeEnvelope,
   type SaveSnapshot,
 } from "../src/engine/save.ts";
+import { restoreSessionSnapshot } from "../src/engine/save-restore.ts";
+import { MAP_SCHEMA_COMPATIBLE_HASHES, MAP_SCHEMA_HASH } from "../src/engine/schema-identity.ts";
 import { validateSnapshot } from "../src/engine/save-validate.ts";
 import { initialMovement } from "../src/engine/movement.ts";
 import { validateSchema } from "../src/engine/schema-validate.ts";
@@ -214,6 +216,27 @@ describe("KRM3V parallax reducer", () => {
     expect(stepInterp(createWorld(remover), changed, input()).parallax).toBeUndefined();
   });
 
+  test("an empty-string parallax image clears state like null and never accumulates phase", () => {
+    // An authored map default with an empty name installs no state at all:
+    // a hidden-but-scrolling parallax would accumulate phase for an image
+    // that can never render.
+    expect(createInterpState(undefined, {
+      image: "", loopX: true, loopY: true, sx: 4, sy: 8,
+    }).parallax).toBeUndefined();
+
+    // changeParallax with an empty name removes a live parallax. This is a
+    // kit decision (an empty name means "cleared"): MV keeps the empty name
+    // and keeps scrolling the hidden layer instead.
+    const before = createInterpState(undefined, {
+      image: "fog", loopX: true, loopY: true, sx: 2, sy: 4,
+    });
+    before.parallax!.phaseX = 6;
+    const clearer = map("a", undefined, [event("clear", 1, 1, [page("playerTouch", [{
+      op: "changeParallax", image: "", loopX: true, loopY: true, sx: 1, sy: 1,
+    }])])]);
+    expect(stepInterp(createWorld(clearer), before, input()).parallax).toBeUndefined();
+  });
+
   test("a fatal interpreter tick still advances parallax without replacing its object", () => {
     const state = createInterpState(undefined, {
       image: "storm", loopX: true, loopY: true, sx: -1, sy: 5,
@@ -298,4 +321,41 @@ describe("KRM3V parallax persistence and compact maps", () => {
     malformed.a.extra = true;
     expect(() => decodeCompactMap(malformed)).toThrow("unknown parallax field");
   });
+});
+
+describe("KRM3V empty-name parallax save recovery", () => {
+  /** A checksum-valid snapshot carrying an empty-name parallax with phase
+   *  already accumulated — what an older build (or a hand edit) could save.
+   *  The decode path must normalize it to no parallax. */
+  function emptyNameSnapshot(): SaveSnapshot {
+    const snapshot = createSnapshot(
+      "a",
+      initialMovement(1, 1, 2, { tile: 16, speed: 2 }),
+      createInterpState(),
+      0,
+    );
+    snapshot.interp.parallax = {
+      image: "", loopX: true, loopY: true, sx: 4, sy: 8, phaseX: 12, phaseY: 24,
+    };
+    return snapshot;
+  }
+
+  const current = { manifest: "test-manifest", schema: MAP_SCHEMA_HASH };
+  const cases: ReadonlyArray<readonly [string, { manifest: string; schema: string }]> = [
+    ["the current schema identity", current],
+    ["a compatible older schema identity", { manifest: current.manifest, schema: MAP_SCHEMA_COMPATIBLE_HASHES[0]! }],
+  ];
+
+  for (const [label, content] of cases) {
+    test(`a save encoded under ${label} restores no parallax and never accumulates`, () => {
+      const session = createSession(project([map("a")]));
+      const decoded = decodeEnvelopeText(encodeEnvelope(emptyNameSnapshot(), content), current);
+      expect(decoded.interp.parallax).toBeUndefined();
+      const restored = restoreSessionSnapshot(session, decoded);
+      expect(restored.interp.parallax).toBeUndefined();
+      // One tick on the restored state: no parallax means no phase growth.
+      const next = stepSession(session, restored, { buttons: 0 });
+      expect(next.interp.parallax).toBeUndefined();
+    });
+  }
 });

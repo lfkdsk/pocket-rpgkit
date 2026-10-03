@@ -791,6 +791,15 @@
   "assets/tile-dun-131.png": {
     "psm": 3
   },
+  "assets/tile-icons-0.png": {
+    "psm": 3
+  },
+  "assets/tile-icons-1.png": {
+    "psm": 3
+  },
+  "assets/tile-icons-2.png": {
+    "psm": 3
+  },
   "assets/playtest/player-dir0.png": {
     "psm": 3
   },
@@ -864,6 +873,21 @@
     "psm": 3
   },
   "assets/playtest/npc-runestone-lit.png": {
+    "psm": 3
+  },
+  "assets/playtest/anim-sparkle-0.png": {
+    "psm": 3
+  },
+  "assets/playtest/anim-sparkle-1.png": {
+    "psm": 3
+  },
+  "assets/playtest/anim-sparkle-2.png": {
+    "psm": 3
+  },
+  "assets/playtest/anim-sparkle-3.png": {
+    "psm": 3
+  },
+  "assets/playtest/parallax-dusk.png": {
     "psm": 3
   }
 }

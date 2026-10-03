@@ -24,5 +24,12 @@ export const SHEETS: SheetMeta[] = [
     "rows": 11,
     "tile": 16,
     "source": "examples/sunstone/assets/src/dungeon-tiles.png"
+  },
+  {
+    "id": "icons",
+    "cols": 3,
+    "rows": 1,
+    "tile": 16,
+    "source": "editor/fixtures/playtest-art/assets/src/icons.png"
   }
 ];

@@ -19,3 +19,6 @@ tests/fixtures/ks2-save/images.json
 
 # Downloaded font sources (tools/cjk-font.ts)
 .cache/
+
+# Throwaway mutant of the verifier built by the reverse self-test.
+tools/.studio-verify-reverse-mutant.ts

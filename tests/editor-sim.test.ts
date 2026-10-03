@@ -176,7 +176,7 @@ simDescribe("editor boot", () => {
     expect(s.editor.layer).toBe("ground");
     expect(s.notice.text).toContain("GAMEPAD MODE");
     // every tile the palette offers resolves to a baked pak image
-    expect(s.uploaded).toBe(264);
+    expect(s.uploaded).toBe(267);
   });
 
   test("framebuffer is non-degenerate: chrome, banner, palette and canvas all paint", async () => {
@@ -703,8 +703,10 @@ simDescribe("editor budget", () => {
     const js = statSync(appBundle("editor") + ".js").size;
     // E3 adds two 16px raw TILESET entries (37,836 B), 25 preview actor
     // images, and the larger text slots used by the play/debug chrome.
-    // Measured complete editor pak: 480,480 B.
-    expect(pak).toBeLessThan(490_000);
+    // The playtest-art fixture adds its icon sheet's 3 cells, 4 animation
+    // frames, one 128x64 parallax and a sheet-icons TILESET: measured
+    // complete editor pak 522,384 B.
+    expect(pak).toBeLessThan(530_000);
     // Shared framework + tile editor + structured event inspector, the map
     // inspector/passage mode/transfer picking (E2), the two bundled documents,
     // and KS1's embedded command schema/read-only summaries.
@@ -759,7 +761,12 @@ simDescribe("editor budget", () => {
     // sparse reducer state bring it to 1,528,850 B; the editor still does not
     // opt into the concrete world handoff resolver. KRM3V's embedded schema,
     // parallax/animation Studio preview and shared reducer support add 15,006
-    // B, measuring 1,543,856 B. Keep a narrow margin.
-    expect(js).toBeLessThan(1_547_000);
+    // B, measuring 1,543,856 B. The in-editor playtest now registers the
+    // opt-in ItemIconRow and ParallaxLayer renderers so shops draw the baked
+    // item-icon cells, adding 10,076 B: measured 1,553,932 B. The bundled
+    // playtest-art fixture (its 11.7 KB document plus the three-kind art
+    // manifest) brings the merged editor to 1,566,916 B. Keep a narrow
+    // margin.
+    expect(js).toBeLessThan(1_570_000);
   });
 });

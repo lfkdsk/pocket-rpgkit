@@ -71,8 +71,8 @@ describe("buildStudio", () => {
     }
 
     const manifest = JSON.parse(readFileSync(join(studio, "examples.json"), "utf8")) as StudioExamples;
-    expect(manifest.examples.map((example) => example.id)).toEqual(["sunstone", "meadow", "sunstone-pack"]);
-    expect(manifest.examples.map((example) => example.kind)).toEqual(["inline", "inline", "pack"]);
+    expect(manifest.examples.map((example) => example.id)).toEqual(["sunstone", "meadow", "playtest-art", "sunstone-pack"]);
+    expect(manifest.examples.map((example) => example.kind)).toEqual(["inline", "inline", "inline", "pack"]);
     for (const example of manifest.examples) {
       const urls = [example.document, ...Object.values(example.sheets), ...Object.values(example.sprites), ...(example.player ? [example.player] : [])];
       for (const url of urls) {
@@ -98,7 +98,14 @@ describe("buildStudio", () => {
         expect(readFileSync(join(studio, example.sprites[id]!)))
           .toEqual(readFileSync(join(KIT_ROOT, dirname(dirname(source.document)), sprite.src)));
       }
-      expect(example.player).toBe(`art/sprites/player-${source.id}.png`);
+      // Documents carry no player sprite of their own unless the example
+      // ships a walker frame; the playtest-art fixture has neither.
+      const playerFrame = join(KIT_ROOT, dirname(dirname(source.document)), "assets", "player-dir0.png");
+      if (existsSync(playerFrame)) {
+        expect(example.player).toBe(`art/sprites/player-${source.id}.png`);
+      } else {
+        expect(example.player).toBeUndefined();
+      }
     }
 
     const sunstone = manifest.examples.find((example) => example.id === "sunstone")!;

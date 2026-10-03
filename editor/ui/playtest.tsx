@@ -8,6 +8,8 @@ import type { SessionState } from "../../src/engine/session.ts";
 import type { JsonValue, Project } from "../../src/engine/types.ts";
 import { GameView, type BattleSceneViewProps, type SceneComponent } from "../../src/ui/GameView.tsx";
 import { ChoiceIconBox } from "../../src/ui/ChoiceIconBox.tsx";
+import { ItemIconRow } from "../../src/ui/ItemIconRow.tsx";
+import { ParallaxLayer } from "../../src/ui/ParallaxLayer.tsx";
 import { krm2ScreenPresentation } from "../../src/ui/krm2/index.ts";
 import type { GameAssets } from "../../src/ui/game-assets.ts";
 import {
@@ -184,6 +186,8 @@ export function PlaytestSurface(props: PlaytestSurfaceProps): JSX.Element {
         battle={PLAYTEST_BATTLE_RULES}
         battleScene={EditorBattleScene}
         choiceIcons={ChoiceIconBox}
+        itemIcons={ItemIconRow}
+        parallax={ParallaxLayer}
         scenes={playtestSceneRules(props.project)}
         sceneViews={playtestSceneViews(props.project)}
       />

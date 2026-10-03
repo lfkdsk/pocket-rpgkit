@@ -14,9 +14,11 @@ import { validateSchema } from "../src/engine/schema-validate.ts";
 import { buildPassage, canStepFrom } from "../src/engine/passability.ts";
 import type { Project } from "../src/engine/types.ts";
 import { RM_COMMANDS } from "../tools/rpgmaker-import/catalog.ts";
+import { itemId } from "../tools/rpgmaker-import/ids.ts";
 import { importToDirectory } from "../tools/rpgmaker-import/index.ts";
 import { loadRmProject, RmLoadError } from "../tools/rpgmaker-import/load.ts";
 import { importRmProject, invertInitialParty } from "../tools/rpgmaker-import/project.ts";
+import type { RmProject } from "../tools/rpgmaker-import/rm-types.ts";
 import { commandTableLines, staticCommandTable } from "../tools/rpgmaker-import/report.ts";
 import { writePngBytes } from "../tools/rpgmaker-import/png.ts";
 import { lintProject } from "../tools/rpgkit-check/src/lint.ts";
@@ -227,6 +229,37 @@ describe("rpgmaker-import: output", () => {
       zero: true,
     });
     expect(stage.cov.list("command").find((row) => row.key === "284")!.counts.Native).toBe(1);
+  });
+
+  test("an out-of-bounds iconIndex warns and falls back to the first sheet's first cell", async () => {
+    // Both sides of the guard: a cell past the sheet (>= count) and a
+    // negative index. The sprite falls back to "<firstSheet>.0" so the item
+    // still renders, and the warning names the kind, id and cell count.
+    // iconIndex === count (208) is the first illegal cell: the guard is
+    // `< count`, so a `<= count` mutant would let it through as iconset.208.
+    const rm = loadRmProject(HOLLOW);
+    const mutated: RmProject = {
+      ...rm,
+      items: [
+        ...rm.items.map((it) => (it && it.id === 1 ? { ...it, iconIndex: 99999 } : it)),
+        { ...rm.items.find((it) => it && it.id === 1)!, id: 3, name: "Seal Charm", iconIndex: 208 },
+      ],
+      weapons: rm.weapons.map((it) => (it && it.id === 1 ? { ...it, iconIndex: -1 } : it)),
+    };
+    const result = await importRmProject(mutated);
+    const potion = result.project.items.find((it) => it.id === itemId("item", 1))!;
+    const staff = result.project.items.find((it) => it.id === itemId("weapon", 1))!;
+    expect(potion.sprite).toBe("ts1.0");
+    expect(staff.sprite).toBe("ts1.0");
+    const charm = result.project.items.find((it) => it.id === itemId("item", 3))!;
+    expect(charm.sprite).toBe("ts1.0");
+    const warnings = result.warnings.filter((w) => w.includes("iconIndex"));
+    expect(warnings).toContain("item 1: iconIndex 99999 is outside IconSet (208 cells)");
+    expect(warnings).toContain("item 3: iconIndex 208 is outside IconSet (208 cells)");
+    expect(warnings).toContain("weapon 1: iconIndex -1 is outside IconSet (208 cells)");
+    // In-bounds items on the same run keep their authored icon cell.
+    const cavePass = result.project.items.find((it) => it.id === itemId("item", 2))!;
+    expect(cavePass.sprite).toBe("iconset.195");
   });
 
   test("silent placeholders drop the text but still count as Placeholder", async () => {

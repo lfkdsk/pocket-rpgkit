@@ -1077,6 +1077,9 @@ function validateProg(prog: unknown, path: string): string | null {
         if (ins.layer !== "below" && ins.layer !== "above") {
           return fail(`${here}.layer`, "'below' or 'above' required");
         }
+        if (typeof ins.follow !== "boolean") {
+          return fail(`${here}.follow`, "boolean required");
+        }
         if (ins.loop !== null && typeof ins.loop !== "boolean") {
           return fail(`${here}.loop`, "boolean or null required");
         }

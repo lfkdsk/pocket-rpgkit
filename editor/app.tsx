@@ -228,6 +228,7 @@ import {
   type PlaytestTab,
 } from "./engine/playtest-layout.ts";
 import { createPlaytestAssets } from "./engine/playtest-view.ts";
+import { PLAYTEST_BUNDLED_ART } from "./engine/playtest-bundled-art.ts";
 import type { GameAssets } from "../src/ui/game-assets.ts";
 import type { SessionState } from "../src/engine/session.ts";
 import { PlaytestSurface, type PlaytestPort } from "./ui/playtest.tsx";
@@ -1426,7 +1427,7 @@ export function EditorApp(): JSX.Element {
       setPlayTab("switch");
       setPlayPage(0);
       setPlayIssues(issues);
-      setPlayAssets(createPlaytestAssets(candidate));
+      setPlayAssets(createPlaytestAssets(candidate, PLAYTEST_BUNDLED_ART));
       setPlayProject(candidate);
     });
   };

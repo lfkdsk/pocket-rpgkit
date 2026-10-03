@@ -6,5 +6,9 @@
   {
     "key": "ui:tile.editor-sheet-dun",
     "file": "assets/playtest/sheet-dun.pkts"
+  },
+  {
+    "key": "ui:tile.editor-sheet-icons",
+    "file": "assets/playtest/sheet-icons.pkts"
   }
 ]

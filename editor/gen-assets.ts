@@ -20,6 +20,8 @@
 //   assets/playtest/*.pkts           raw 16px TILESET entries for GameView
 //   assets/playtest/player-*.png     preview player's static walk frames
 //   assets/playtest/npc-*.png        bundled projects' static NPC art
+//   assets/playtest/anim-*.png       bundled Show Animation frames
+//   assets/playtest/parallax-*.png   bundled parallax images
 //   pak.json                         raw TILESET entries for the pak builder
 //   engine/playtest-assets.ts        preview texture manifest literals
 //   engine/projects.ts               the bundled documents as TEXT (the
@@ -32,7 +34,9 @@
 import { copyFileSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { encodePNG } from "../vendor/pocketjs/tests/png.ts";
+import { decodePng } from "../vendor/pocketjs/framework/compiler/pak.ts";
 import { loadTileCells } from "../tools/lib/bake.ts";
+import { loadAnimationSheet } from "../tools/lib/anim-sheet.ts";
 import { encodeStreamedLayer } from "../tools/lib/stream.ts";
 import { validateSchema } from "../src/engine/schema-validate.ts";
 import type { Project } from "../src/engine/types.ts";
@@ -97,6 +101,7 @@ const tileKeyRows: string[] = [];
 const written = new Set<string>();
 const playtestRefs: Record<string, readonly (string | null)[]> = {};
 const pakEntries: { key: string; file: string }[] = [];
+const tileSrcByTile = new Map<string, string>();
 
 for (const sheet of sheets.values()) {
   const cells = await loadTileCells(join(ROOT, sheet.source), sheet.cols, sheet.rows, TILE);
@@ -119,6 +124,7 @@ for (const sheet of sheets.values()) {
     written.add(name);
     imageMeta[`assets/${name}`] = { psm: 3 }; // PSM_8888: exact Kenney colors
     tileKeyRows.push(`  ${JSON.stringify(`${sheet.id}.${cell}`)}: ${JSON.stringify(`assets/${name}`)},`);
+    tileSrcByTile.set(`${sheet.id}.${cell}`, `assets/${name}`);
   }
 }
 // A sheet dropped from the sources must not leave stale cells in the pak.
@@ -162,6 +168,65 @@ for (const source of EDITOR_SOURCES) {
   }
 }
 
+/** Parallax image ids a document references: map defaults and
+ *  changeParallax commands. */
+function parallaxIds(project: Project): Set<string> {
+  const ids = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+    } else if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      if (record.op === "changeParallax" && typeof record.image === "string" && record.image.length > 0) {
+        ids.add(record.image);
+      }
+      for (const child of Object.values(record)) visit(child);
+    }
+  };
+  for (const map of project.maps) {
+    if (map.parallax?.image) ids.add(map.parallax.image);
+    for (const event of map.events ?? []) for (const page of event.pages) visit(page.commands);
+  }
+  for (const common of project.commonEvents ?? []) visit(common.commands);
+  return ids;
+}
+
+// Show Animation frames and parallax images for the editor playtest, cooked
+// from the fixture sources named in editor/sources.ts. playtest-view.ts
+// renders all three kinds (item icons, animations, parallaxes).
+const animArt: Record<string, { frames: string[]; w: number; h: number }> = {};
+const parallaxArt: Record<string, { image: string; w: number; h: number }> = {};
+for (const doc of docs) {
+  const source = EDITOR_SOURCES.find((candidate) => candidate.id === doc.id);
+  const project = JSON.parse(doc.json) as Project;
+  for (const anim of project.animations ?? []) {
+    const sheetPath = source?.animationSheets?.[anim.sheet];
+    if (!sheetPath) {
+      throw new Error(`editor gen-assets: animation "${anim.id}" sheet "${anim.sheet}" has no source PNG in editor/sources.ts`);
+    }
+    const cooked = await loadAnimationSheet(join(ROOT, sheetPath), anim);
+    const frames: string[] = [];
+    for (let index = 0; index < cooked.frames.length; index++) {
+      const file = `anim-${anim.id}-${index}.png`;
+      writeFileSync(join(PLAYTEST_ASSETS, file), cooked.frames[index]!);
+      imageMeta[`assets/playtest/${file}`] = { psm: 3 };
+      frames.push(`assets/playtest/${file}`);
+    }
+    animArt[anim.id] = { frames, w: cooked.w, h: cooked.h };
+  }
+  for (const id of parallaxIds(project)) {
+    const imagePath = source?.parallaxes?.[id];
+    if (!imagePath) {
+      throw new Error(`editor gen-assets: parallax "${id}" has no source PNG in editor/sources.ts`);
+    }
+    const png = decodePng(new Uint8Array(await Bun.file(join(ROOT, imagePath)).arrayBuffer()));
+    const file = `parallax-${id}.png`;
+    writeFileSync(join(PLAYTEST_ASSETS, file), encodePNG(png.rgba, png.width, png.height));
+    imageMeta[`assets/playtest/${file}`] = { psm: 3 };
+    parallaxArt[id] = { image: `assets/playtest/${file}`, w: png.width, h: png.height };
+  }
+}
+
 // images.json must include the copied preview art too.
 writeFileSync(join(HERE, "images.json"), JSON.stringify(imageMeta, null, 2) + "\n");
 
@@ -190,6 +255,33 @@ writeFileSync(
     `export const PLAYTEST_SHEET_REFS: Record<string, readonly (string | null)[]> = ${JSON.stringify(playtestRefs, null, 2)};\n\n` +
     `export const PLAYTEST_PLAYER: PlayerFrames = {\n${player("idle", "") }\n${player("walkL", "l")}\n${player("walkR", "r")}\n};\n\n` +
     `export const PLAYTEST_NPC_SRC: Record<string, string> = ${JSON.stringify(npcSource, null, 2)};\n`,
+);
+
+// Item icons for the editor playtest: a bundled item whose sprite names a
+// baked sheet cell gets that cell as its icon (the same PNG the tile palette
+// draws). The playtest-art fixture also registers its Show Animation frames
+// and its parallax image, so the in-editor playtest draws all three kinds.
+const itemSrc: Record<string, string> = {};
+for (const doc of docs) {
+  const project = JSON.parse(doc.json) as Project;
+  for (const item of project.items ?? []) {
+    const src = item.sprite ? tileSrcByTile.get(item.sprite) : undefined;
+    if (src) itemSrc[item.sprite] = src;
+  }
+}
+const manifestEntries = [
+  `  itemSrc: ${JSON.stringify(itemSrc, null, 2)},`,
+  ...(Object.keys(animArt).length > 0 ? [`  animations: ${JSON.stringify(animArt, null, 2)},`] : []),
+  ...(Object.keys(parallaxArt).length > 0 ? [`  parallaxes: ${JSON.stringify(parallaxArt, null, 2)},`] : []),
+];
+writeFileSync(
+  join(ENGINE, "playtest-bundled-art.ts"),
+  `// AUTO-GENERATED by editor/gen-assets.ts — the baked art the editor\n` +
+    `// playtest dresses its documents in: item icons, Show Animation frames\n` +
+    `// and parallax images (cells and slices of the bundled example sheets).\n` +
+    `// Editor-only, like playtest-assets.ts. Do not edit by hand.\n\n` +
+    `import type { PlaytestArt } from "./playtest-view.ts";\n\n` +
+    `export const PLAYTEST_BUNDLED_ART: PlaytestArt = {\n${manifestEntries.join("\n")}\n};\n`,
 );
 
 const sheetMeta = [...sheets.values()].map(({ id, cols, rows, source }) => ({ id, cols, rows, tile: TILE, source }));

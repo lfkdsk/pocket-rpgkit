@@ -24,7 +24,8 @@ import {
 } from "../editor/engine/model.ts";
 import { createSession, startSession, stepSession } from "../src/engine/session.ts";
 import type { Command, Project } from "../src/engine/types.ts";
-import { PLAYTEST_SCENE_RULES, playtestSceneRules } from "../editor/engine/playtest-view.ts";
+import { PLAYTEST_SCENE_RULES, playtestSceneRules, createPlaytestAssets } from "../editor/engine/playtest-view.ts";
+import { PLAYTEST_BUNDLED_ART } from "../editor/engine/playtest-bundled-art.ts";
 
 function project(commands: Command[] = []): Project {
   return {
@@ -343,5 +344,55 @@ describe("editor playtest diagnostics", () => {
       parallel: false,
     });
     expect(fibers[0]!.frames[0]).toMatchObject({ depth: 0, pc: 0, length: 1, op: "wait" });
+  });
+});
+
+describe("editor playtest bundled art", () => {
+  test("item icons resolve to the baked sheet cells and reach GameAssets", () => {
+    // Sunstone's items name town.108/109/110; the generated manifest maps
+    // each sprite to the same cell PNG the tile palette bakes, so the
+    // playtest's shop rows draw real icons instead of placeholders.
+    expect(PLAYTEST_BUNDLED_ART.itemSrc?.["town.108"]).toBe("assets/tile-town-108.png");
+    expect(PLAYTEST_BUNDLED_ART.itemSrc?.["town.109"]).toBe("assets/tile-town-109.png");
+    expect(PLAYTEST_BUNDLED_ART.itemSrc?.["town.110"]).toBe("assets/tile-town-110.png");
+
+    const p: Project = {
+      format: "rpgkit-project/v1",
+      title: "Icon",
+      tileSize: 16,
+      start: { map: "one", x: 0, y: 0, dir: "right" },
+      sheets: [{ id: "town", cols: 16, rows: 16, pak: "chunks" }],
+      items: [{ id: "torch", name: "Torch", sprite: "town.109" }],
+      maps: [{ id: "one", name: "One", width: 1, height: 1, sheets: ["town"], ground: ["town.0"] }],
+    };
+    const assets = createPlaytestAssets(p, PLAYTEST_BUNDLED_ART);
+    expect(assets.itemSrc?.["town.109"]).toBe("assets/tile-town-109.png");
+  });
+
+  test("playtest assets without art carry no item icons", () => {
+    expect(createPlaytestAssets(project()).itemSrc).toBeUndefined();
+  });
+
+  test("the playtest-art fixture registers all three art kinds", () => {
+    // The bundled playtest-art fixture authors a shop (icon items), a dusk
+    // parallax and a looping sparkle animation; the generated manifest must
+    // carry cooked art for all three so the in-editor playtest draws them.
+    expect(PLAYTEST_BUNDLED_ART.itemSrc?.["icons.0"]).toBe("assets/tile-icons-0.png");
+    expect(PLAYTEST_BUNDLED_ART.itemSrc?.["icons.1"]).toBe("assets/tile-icons-1.png");
+    expect(PLAYTEST_BUNDLED_ART.itemSrc?.["icons.2"]).toBe("assets/tile-icons-2.png");
+    expect(PLAYTEST_BUNDLED_ART.parallaxes?.dusk).toEqual({
+      image: "assets/playtest/parallax-dusk.png",
+      w: 128,
+      h: 64,
+    });
+    const sparkle = PLAYTEST_BUNDLED_ART.animations?.sparkle;
+    expect(sparkle?.frames).toEqual([
+      "assets/playtest/anim-sparkle-0.png",
+      "assets/playtest/anim-sparkle-1.png",
+      "assets/playtest/anim-sparkle-2.png",
+      "assets/playtest/anim-sparkle-3.png",
+    ]);
+    expect(sparkle?.w).toBe(16);
+    expect(sparkle?.h).toBe(16);
   });
 });

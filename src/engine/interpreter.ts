@@ -1953,7 +1953,9 @@ export function createInterpState(
     pendingPlacements: [],
     abortedRoutes: [],
   };
-  if (parallax?.image !== null && parallax?.image !== undefined) {
+  // An authored empty name installs no parallax state (kit decision: an
+  // empty name means "cleared", so it must not accumulate phase either).
+  if (parallax?.image !== null && parallax?.image !== undefined && parallax.image !== "") {
     state.parallax = {
       image: parallax.image,
       loopX: parallax.loopX,
@@ -4033,7 +4035,11 @@ function applyChangeParallaxCommand(
   s: InterpState,
   ins: Extract<Instr, { op: "changeParallax" }>,
 ): void {
-  if (ins.image === null) {
+  if (ins.image === null || ins.image === "") {
+    // An empty name clears the parallax: no state means no phase accumulation
+    // either. This is a kit decision — MV keeps the empty name and keeps
+    // scrolling the hidden layer; the decode path normalizes the same way
+    // (save.ts normalizeEmptyParallax).
     delete s.parallax;
     return;
   }
@@ -5135,6 +5141,11 @@ export function stepInterpWithExtensionsInPlace(
   s.cues = [];
   delete s.hostActions;
   emitLiveMapAnimTimings(s, w);
+  // A finished one-shot leaves the state the tick its playthrough completes,
+  // so saves and rewinds never carry a dead instance (mapAnim/stopAnim also
+  // prune eagerly when they execute). Guarded so a project without map
+  // animations pays nothing per tick.
+  if (s.anims !== undefined) pruneMapAnims(s, w);
   // Transfer/route/place requests live only on the step that issued them:
   // P1④ reads them off that step, performs the work, then resumes the fiber.
   // Battle requests are different: they remain FIFO-queued until the scene

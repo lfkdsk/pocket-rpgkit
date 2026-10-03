@@ -523,3 +523,30 @@ folder with its own art and plays it. Before each capture it waits for camera
 interpolation, inertia and requested canvas drawing to finish, and it freezes
 changing readouts and play-test frames. It verifies light and dark polished
 states before regenerating their screenshots in `docs/screenshots/studio/`.
+The problems-jump flash pulse is covered by the same settle wait (the canvas
+re-requests frames for the pulse's ~1 s, so `settled` stays false until it
+ends), not a fixed sleep.
+
+`bun tools/studio-verify.ts --double` adds a capture-stability gate: every
+documentation shot is captured twice and the two PNGs are compared pixel by
+pixel, allowing only anti-aliasing-level differences (at most 0.1% of pixels
+differing, no channel by more than 32/255 — text anti-aliasing on a light
+background reaches ~20, while a real instability shifts whole regions by
+100+). Every shot is static when captured — the play-test is frozen at a
+fixed state first — so normal and play-test shots alike are compared; the
+one explicitly live (un-paused) play-test shot is excluded since its frame
+advances by design. Run it when changing the canvas renderer, the settle
+logic, or anything that draws during a capture; it is off by default
+because it roughly doubles the capture time.
+`STUDIO_VERIFY_MUTATE_DOUBLE=1 tools/studio-verify-double-mutation.sh` is the
+gate's self-test: it recolours the page between the two captures of the
+normal documentation `shot()` path only (the regression it guards is
+"shot() captures only once"), removes the recolour right after the second
+capture, and writes its report and screenshots to isolated directories under
+`dist/` (never `docs/`). It asserts the run goes red, that every non-live
+shot has a name-by-name `double:` comparison, and that every `double:`
+failure is one of the recoloured shots — so another double-capturing path
+can no longer make the self-test pass while `shot()` itself regresses.
+`tools/studio-verify-double-mutation-reverse.sh` proves the self-test has
+bite: it builds a temporary mutant of the verifier with `shot()` reverted to
+a single capture and asserts the self-test goes red on it.

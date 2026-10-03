@@ -30,6 +30,7 @@ import {
 import {
   canonicalJson,
   createSessionSnapshot,
+  createSnapshot,
   decodeEnvelopeText,
   encodeEnvelope,
   encodeSaveCode,
@@ -37,6 +38,7 @@ import {
   fnv1aText,
   SaveError,
 } from "../src/engine/save.ts";
+import { initialMovement } from "../src/engine/movement.ts";
 import { validateSchema } from "../src/engine/schema-validate.ts";
 import { restoreSessionEnvelope } from "../src/engine/save-restore.ts";
 import type { AnimationDef, Command, GameEvent, MapDef, Project } from "../src/engine/types.ts";
@@ -123,7 +125,7 @@ const animIds = (s: ReturnType<typeof createInterpState>): string[] =>
   (s.anims ?? []).map((a) => a.id);
 
 describe("mapAnim instance lifecycle", () => {
-  test("a one-shot instance starts on the run tick and prunes on the next start command", () => {
+  test("a one-shot instance starts on the run tick and leaves state when its playthrough completes", () => {
     const w = createWorld(map([
       event("burst", 2, 3, [page("action", [
         { op: "mapAnim", id: "fx1", anim: "pulse", x: 3, y: 3 },
@@ -146,8 +148,10 @@ describe("mapAnim instance lifecycle", () => {
     expect(first.loop).toBe(false);
 
     // 0.1s/frame * 4 frames = 24 ticks at 60 Hz.
-    s = fold(w, s, 25);
-    expect(animIds(s), "finished instances stay until pruned by a command").toEqual(["fx1", "fx2", "fx3"]);
+    s = fold(w, s, 23); // one tick short of the playthrough: still live
+    expect(animIds(s)).toEqual(["fx1", "fx2", "fx3"]);
+    s = fold(w, s, 1); // the playthrough completes; the instances leave state
+    expect(animIds(s), "finished one-shots leave state on the completion tick").toEqual([]);
 
     s = stepInterp(w, s, confirm(3)); // face the event to the east and confirm
     expect(animIds(s)).toEqual(["fx4"]);
@@ -405,6 +409,31 @@ describe("mapAnim target binding", () => {
       confirmEdge: true,
       liveEventCells: { burst: { x: 2, y: 3 } },
     }));
+    expect(s.anims![0]!.target).toEqual({ event: "burst" });
+    expect([s.anims![0]!.x, s.anims![0]!.y]).toEqual([2, 3]);
+  });
+
+  test("target this inside a called common event binds to the calling map event", () => {
+    // The common op pushes the common program onto the calling fiber's own
+    // stack, so the fiber key (and thus `this`) stays the map event's. A
+    // regression that re-keys the fiber for common calls would resolve
+    // `this` to the common event id ("fx-common"), which has no live
+    // character, and surface as a content error instead of an instance.
+    const w = createWorld(map([
+      event("burst", 2, 3, [page("action", [
+        { op: "common", id: "fx-common" },
+      ])]),
+    ]), [{
+      id: "fx-common",
+      trigger: "none",
+      commands: [{ op: "mapAnim", id: "fx", anim: "pulse", target: "this" }],
+    }], 60, { animations: [PULSE] });
+    const s = stepInterp(w, createInterpState(), input(0, {
+      confirmEdge: true,
+      liveEventCells: { burst: { x: 2, y: 3 } },
+    }));
+    expect(s.error).toBeUndefined();
+    expect(s.anims).toHaveLength(1);
     expect(s.anims![0]!.target).toEqual({ event: "burst" });
     expect([s.anims![0]!.x, s.anims![0]!.y]).toEqual([2, 3]);
   });
@@ -944,6 +973,39 @@ describe("mapAnim save/load", () => {
     expect(error).toBeInstanceOf(SaveError);
     expect((error as SaveError).code).toBe("shape");
     expect((error as SaveError).message).toMatch(/anims\[0\].layer/);
+  });
+
+  test("a save carrying a mapAnim instruction without follow is refused", () => {
+    // The compiled instruction always carries follow (c.follow ?? true); a
+    // save that drops it is refused at the same granularity as the other
+    // mapAnim fields. A parallel fiber parks in animWait on the waited
+    // instruction, and parallel fibers serialize in their running state.
+    const snapshot = createSnapshot(
+      MAP_ID,
+      initialMovement(2, 2, 0, { tile: 16, speed: 2 }),
+      createInterpState(),
+      0,
+    );
+    snapshot.interp.parallels[`${MAP_ID}/burst`] = {
+      key: `${MAP_ID}/burst`, pageIndex: 0, parallel: true,
+      stack: [{ prog: [{
+        op: "mapAnim", id: "fx", anim: "pulse", x: 1, y: 1, target: null,
+        layer: "above", loop: null, wait: true,
+        // follow omitted on purpose
+      }], pc: 0 }],
+      mode: "animWait", since: 0, erase: false,
+    } as never;
+    const envelope = JSON.parse(encodeEnvelope(snapshot)) as { state: unknown; checksum: string };
+    envelope.checksum = fnv1aText(canonicalJson(envelope.state));
+    let error: unknown;
+    try {
+      decodeEnvelopeText(JSON.stringify(envelope));
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(SaveError);
+    expect((error as SaveError).code).toBe("shape");
+    expect((error as SaveError).message).toMatch(/follow/);
   });
 
   test("a save with duplicate instance ids is refused", () => {

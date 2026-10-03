@@ -19,6 +19,14 @@ export interface EditorSource {
   /** The example's demo chapters (save points), offered by Studio's
    * play-test: a module and the name of its exported DemoOptions. */
   chapters?: { module: string; export: string };
+  /** Parallax image id -> source PNG, for documents that author a parallax
+   *  (a map default or a changeParallax command). gen-assets cooks each into
+   *  the editor playtest's parallax art. */
+  parallaxes?: Record<string, string>;
+  /** Animation sheet id -> source PNG, for documents that author
+   *  animations. gen-assets slices each into the playtest's animation
+   *  frames. */
+  animationSheets?: Record<string, string>;
 }
 
 export const EDITOR_SOURCES: readonly EditorSource[] = [
@@ -36,6 +44,23 @@ export const EDITOR_SOURCES: readonly EditorSource[] = [
     document: "examples/meadow/data/meadow.json",
     sheets: {
       town: "examples/meadow/assets/src/town-tiles.png",
+    },
+  },
+  {
+    // Editor-only fixture: a small stage that authors all three playtest
+    // art kinds (item icons, a parallax and a Show Animation), so the
+    // in-editor playtest and tools/editor-playtest-shots.ts exercise them.
+    id: "playtest-art",
+    document: "editor/fixtures/playtest-art/project.json",
+    sheets: {
+      town: "examples/sunstone/assets/src/town-tiles.png",
+      icons: "editor/fixtures/playtest-art/assets/src/icons.png",
+    },
+    parallaxes: {
+      dusk: "editor/fixtures/playtest-art/assets/src/sky.png",
+    },
+    animationSheets: {
+      fx: "editor/fixtures/playtest-art/assets/src/fx.png",
     },
   },
 ];

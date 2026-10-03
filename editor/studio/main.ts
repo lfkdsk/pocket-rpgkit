@@ -29,6 +29,7 @@ import { mountMapTree } from "./map-tree.ts";
 import { mountPalette } from "./palette.ts";
 import { keyLabel, SHORTCUT_GROUPS } from "./shortcuts.ts";
 import { schemaProblems, type StudioProblem } from "./problems.ts";
+import { LintScheduler } from "./problem-lint.ts";
 
 const host: StudioHost = (globalThis as { studioHost?: StudioHost }).studioHost ?? new BrowserHost();
 const app = new StudioApp();
@@ -344,8 +345,17 @@ function askAgent(): void {
 
 let problems: StudioProblem[] = [];
 let problemsOpen = false;
-let lintTimer: ReturnType<typeof setTimeout> | null = null;
-let lintRun = 0;
+/** The debounced async rpgkit-check lint. pending stays true from a schedule
+ *  until the latest generation's run has rendered, so a capture can wait for
+ *  the problems count in the status bar to stop changing. */
+const lintScheduler = new LintScheduler({
+  run: recomputeProblems,
+  commit: (next) => {
+    problems = next;
+    renderStatus();
+    renderProblems();
+  },
+});
 
 async function recomputeProblems(): Promise<StudioProblem[]> {
   const session = app.session;
@@ -361,17 +371,7 @@ async function recomputeProblems(): Promise<StudioProblem[]> {
 }
 
 function scheduleProblems(): void {
-  if (lintTimer) clearTimeout(lintTimer);
-  lintTimer = setTimeout(async () => {
-    lintTimer = null;
-    const run = ++lintRun;
-    const next = await recomputeProblems();
-    // A newer edit started its own run meanwhile; keep only the latest.
-    if (run !== lintRun) return;
-    problems = next;
-    renderStatus();
-    renderProblems();
-  }, 250);
+  lintScheduler.schedule();
 }
 
 function locate(problem: StudioProblem): void {
@@ -806,6 +806,7 @@ host.onCommand?.(runHostCommand);
   hoverCard,
   askAgent,
   frameStats: () => canvas?.stats,
+  lintIdle: () => lintScheduler.idle(),
   cellToClient: (x: number, y: number) => canvas?.cellToClient(x, y),
   tileAt: (x: number, y: number) => {
     const map = app.currentMap();

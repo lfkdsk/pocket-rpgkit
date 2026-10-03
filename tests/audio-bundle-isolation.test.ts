@@ -129,10 +129,16 @@ const maybeTest = preflight.ok ? test : test.skip;
 // checked separately by krm3v-ui-bundle-isolation.test.ts.
 // Deterministic seamless-handoff fatal cleanup (source-edge movement restore,
 // abort guards before commit) adds 440 shared engine bytes to each graph.
+// The per-tick prune of finished map animations and the empty-string
+// parallax clear (both guarded no-ops when unused) add 103/228/103 bytes.
+// The save-decode normalization of an empty-name parallax to none adds 236
+// bytes to the sunstone graph only (its input graph includes the save decode
+// path; meadow's and the WAV fixture's do not), so only the sunstone pin
+// moves: 917,721 -> 917,957.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 569_861;
-const EXPECTED_SUNSTONE_QOA_BYTES = 917_493;
-const EXPECTED_WAV_FIXTURE_BYTES = 724_218;
+const EXPECTED_MEADOW_BYTES = 569_964;
+const EXPECTED_SUNSTONE_QOA_BYTES = 917_957;
+const EXPECTED_WAV_FIXTURE_BYTES = 724_321;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

@@ -271,6 +271,11 @@ export const PLAYTEST_SHEET_REFS: Record<string, readonly (string | null)[]> = {
     "ui:tile.editor-sheet-dun#129",
     "ui:tile.editor-sheet-dun#130",
     "ui:tile.editor-sheet-dun#131"
+  ],
+  "icons": [
+    "ui:tile.editor-sheet-icons#0",
+    "ui:tile.editor-sheet-icons#1",
+    "ui:tile.editor-sheet-icons#2"
   ]
 };
 
