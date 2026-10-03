@@ -1438,6 +1438,7 @@ function startGameScene(sess: Session, s: SessionState, request: PendingScene): 
       items: keyedRecord(s.interp.sw.items),
       gold: s.interp.sw.gold,
       playerName: s.interp.sw.playerName,
+      itemCatalog: sess.worldOptions.items,
     },
   );
   if (started === null) {
@@ -1989,6 +1990,13 @@ const displacedCellMemo = new WeakMap<
   RecentStateMetadata<object, Record<string, { x: number; y: number }>>
 >();
 
+/** The cells of event characters that moved off their authored cell this
+ *  tick, keyed by event id. The interpreter resolves an event's live
+ *  position from this record over its authored (x,y): a character that
+ *  walked back onto its authored cell drops out of the record, and
+ *  eventOrigin then reads the authored cell — which IS its live cell —
+ *  instead of a stale durable placement. Memoized per position revision in
+ *  immutable mode, so a static map allocates nothing per tick. */
 function displacedCells(
   map: MapDef,
   chars: CharsState,
@@ -2462,11 +2470,13 @@ function stepReferenceTick(
     s.sw = s.interp.sw;
   }
 
-  // 4. Interpreter — only displaced NPC cells need to supplement the
-  // world's authored spatial index. Static characters resolve from the
-  // indexed event origin without growing the per-frame record. A world
-  // with event-targeted mapAnim additionally gets every live character's
-  // cell so the command resolves the target without an authored fallback.
+  // 4. Interpreter — the displaced-character record supplements the world's
+  // authored spatial index: eventOrigin reads it over the authored (x,y), so
+  // a moved event is found on its current cell, and a character that walked
+  // back onto its authored cell reads the authored cell (its live cell)
+  // instead of a stale durable placement. A world with event-targeted
+  // mapAnim additionally gets every live character's cell so the command
+  // resolves the target without an authored fallback.
   const eventCells = displacedCells(map, s.chars, sess.immutableState);
   const liveEventCells = world.needsMapAnimTarget ? keyedRecord<{ x: number; y: number }>() : undefined;
   for (const ev of map.events ?? []) {

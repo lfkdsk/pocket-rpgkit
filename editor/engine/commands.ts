@@ -120,12 +120,16 @@ export const EDITABLE_COMMAND_OPS = [
   "erasePicture",
   "timer",
   "inputNumber",
+  "selectItem",
   "openMenu",
   "openSave",
   "gameOver",
   "returnTitle",
   "changeName",
   "mapNameDisplay",
+  "menuAccess",
+  "saveAccess",
+  "locationInfo",
   "wait",
   "gold",
   "item",
@@ -139,6 +143,7 @@ export const EDITABLE_COMMAND_OPS = [
   "fadeoutBgs",
   "playMe",
   "playSe",
+  "stopSe",
   "saveBgm",
   "replayBgm",
   "erase",
@@ -156,6 +161,8 @@ export const EDITABLE_COMMAND_OPS = [
   "scene",
   "loop",
   "break",
+  "label",
+  "jumpLabel",
 ] as const;
 
 export type EditableCommandOp = (typeof EDITABLE_COMMAND_OPS)[number];
@@ -271,6 +278,9 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
     case "inputNumber":
       command = { op, variable: "variable", digits: 1 };
       break;
+    case "selectItem":
+      command = { op, variable: "variable", itemType: "regular" };
+      break;
     case "openMenu":
     case "openSave":
     case "gameOver":
@@ -282,6 +292,13 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
       break;
     case "mapNameDisplay":
       command = { op, visible: true };
+      break;
+    case "menuAccess":
+    case "saveAccess":
+      command = { op, enabled: true };
+      break;
+    case "locationInfo":
+      command = { op, variable: "variable", x: 0, y: 0, kind: "terrain" };
       break;
     case "wait":
       command = { op, seconds: 1 };
@@ -299,6 +316,9 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
     case "playBgs":
     case "playSe":
       command = { op, id: "audio", volume: 100, pitch: 100 };
+      break;
+    case "stopSe":
+      command = { op };
       break;
     case "fadeoutBgm":
     case "fadeoutBgs":
@@ -350,6 +370,10 @@ export function defaultCommand<Op extends EditableCommandOp>(op: Op): CommandOf<
       break;
     case "break":
       command = { op };
+      break;
+    case "label":
+    case "jumpLabel":
+      command = { op, name: "label" };
       break;
   }
   return command as CommandOf<Op>;
@@ -470,6 +494,8 @@ export function commandSummary(command: unknown): string {
       return `Play ME ${text(command.id)} for ${numberText(command.duration)}s`;
     case "playSe":
       return `Play SE ${text(command.id)}`;
+    case "stopSe":
+      return "Stop SE";
     case "saveBgm":
       return "Save BGM";
     case "replayBgm":
@@ -547,6 +573,8 @@ export function commandSummary(command: unknown): string {
       return "Stop timer";
     case "inputNumber":
       return `Input ${numberText(command.digits)} digit number into ${text(command.variable)}`;
+    case "selectItem":
+      return `Select ${text(command.itemType)} item into ${text(command.variable)}`;
     case "openMenu":
       return "Open menu";
     case "openSave":
@@ -559,6 +587,12 @@ export function commandSummary(command: unknown): string {
       return `Change player name to ${text(command.name)}`;
     case "mapNameDisplay":
       return `Map name display ${boolText(command.visible)}`;
+    case "menuAccess":
+      return `Menu access ${boolText(command.enabled)}`;
+    case "saveAccess":
+      return `Save access ${boolText(command.enabled)}`;
+    case "locationInfo":
+      return `Location ${text(command.kind)} at (${operandSummary(command.x)}, ${operandSummary(command.y)}) into ${text(command.variable)}`;
     case "mapAnim": {
       const at = command.target === undefined
         ? `tile (${numberText(command.x)}, ${numberText(command.y)})`
@@ -579,6 +613,10 @@ export function commandSummary(command: unknown): string {
     }
     case "break":
       return "Break loop";
+    case "label":
+      return `Label ${text(command.name)}`;
+    case "jumpLabel":
+      return `Jump to label ${text(command.name)}`;
     default:
       return `Unknown command${typeof command.op === "string" ? ` (${command.op})` : ""}`;
   }
@@ -632,8 +670,8 @@ function childBranches(command: Command, address: CommandAddress): ChildBranch[]
   } else if (value.op === "battle") {
     for (const [branch, property, label] of [
       ["win", "onWin", "Win"],
-      ["lose", "onLose", "Lose"],
       ["escape", "onEscape", "Escape"],
+      ["lose", "onLose", "Lose"],
     ] as const) {
       const commands = value[property];
       if (Array.isArray(commands)) {
@@ -965,6 +1003,7 @@ export const CONDITION_KINDS = [
   "worldIdle",
   "bgmPlaying",
   "timer",
+  "region",
   "ext",
 ] as const;
 
@@ -1008,6 +1047,9 @@ export function defaultCondition<Kind extends ConditionKind>(kind: Kind): Condit
     case "timer":
       condition = { kind, op: ">=", seconds: 0 };
       break;
+    case "region":
+      condition = { kind, x: 0, y: 0, id: 0 };
+      break;
     case "ext":
       condition = { kind, call: "game.condition", args: null };
       break;
@@ -1040,6 +1082,8 @@ export function conditionSummary(condition: unknown): string {
       return `Appearance ${targetSummary(condition.target)} uses ${condition.sprite === null ? "default sprite" : text(condition.sprite)}`;
     case "tileProperty":
       return `Tile property (${numberText(condition.x)}, ${numberText(condition.y)}) ${jsonPreview({ passage: condition.passage, enter: condition.enter, exit: condition.exit })}`;
+    case "region":
+      return `Region ${numberText(condition.id)} at (${numberText(condition.x)}, ${numberText(condition.y)})`;
     case "worldIdle":
       return condition.negate === true ? "World is busy" : "World is idle";
     case "bgmPlaying": {

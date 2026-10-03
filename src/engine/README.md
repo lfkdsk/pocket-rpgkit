@@ -353,8 +353,11 @@ a `battle` result, a `scene` result: each runs as its own stack frame) is
 `to`. A `break` outside any loop is `{ up: depth, to: null }`, which ends the
 page or common-event body. Common events compile on their own, so a
 `break` never crosses a `common` call. When a `break` leaves a battle or
-scene result branch before it reached the completion transfer the session
-appended (`transfer.completion`), that transfer still runs.
+scene result branch, the completion transfer hung on that frame (its
+`onDone` queue) still runs: the popped frames' completions are collected,
+innermost first, and fired in order — a branch parked at its program's
+end because its last command pushed a child frame is collected all the
+same. See Labels below for the cross-map and `exit`/`erase` boundaries.
 
 At a `repeat` the fiber yields to the next tick, staying in `run` mode at
 the loop start, once it has taken `LOOP_YIELD_STEPS` (1,000) steps in this
@@ -364,14 +367,36 @@ pay nothing: the check runs only at a `repeat`. `save-validate.ts` accepts
 `repeat` only as a backward (or self) jump and checks `break`'s shape; the
 runtime refuses a `break` that would pop past the fiber's stack.
 
-Labels and jump-to-label (RPG Maker 118/119) are not supported. MV jumps
-anywhere in the flat command list, including into the middle of a choice
-branch; here branches are separate programs entered only through their
-command, so such jumps have no equivalent, and the editor's command tree
-is structured. The common shapes lower without them: a backward jump to a
-label at the top of a block is a `loop` whose last command is the jump's
-condition followed by `break`; a forward jump past a block is an `if`
-around the block, or `break`/`exit` when it goes to the end.
+Labels and jump-to-label (RPG Maker 118/119) are supported. A `label` is a
+no-op position marker; a `jumpLabel` continues at the first label with that
+name anywhere in the same page or common event, at any nesting depth. The
+label table is built per compiled program and cached. A jump whose target
+sits in an ancestor frame pops the frames above it; a jump into a branch
+program not on the stack pushes the frames to enter it, so the branch runs
+from the label and completes normally. Either way, a jump that leaves a
+battle/scene result branch keeps that branch's completion transfer: it
+hangs on the frame as an ordered `onDone` queue, and a jump that pops the
+frame relocates the queue to the landing frame (ahead of any completion
+it already carries), so completions fire innermost first however the
+branch is left — a branch parked at its program's end because its last
+command pushed a child frame is collected all the same (a frame that
+already fired a completion is parked in external mode, which a jump
+never pops). Two boundaries apply. First, a cross-map transfer rebuilds
+the interpreter for the new map: the old map's fibers end, so any
+completions still queued on them are discarded — of nested cross-map
+completions only the innermost takes effect (unlike RPG Maker MV, whose
+interpreter keeps running across a map swap). Second, `exit` or `erase`
+inside a result branch ends the whole event, abandoning the queued
+completion with the fiber. A jump to a name with no label does nothing
+(MV parity). Common events are their own label scope (MV's child interpreter):
+a jump inside one never sees the caller's labels, and vice versa. A
+backward jump that never reaches a label again is bounded by the same
+per-frame step budget as loops. The `unit` frame marker that names a scope
+root is a plain enumerable frame property, saved and restored like the rest
+of the frame; a save taken before the field existed is rebuilt on restore
+(the bottom frame is the page root, a `common` call's frame is its own
+scope), so a jumpLabel after resume resolves in the same scope it would
+have when the save was taken.
 
 ### Text tokens
 

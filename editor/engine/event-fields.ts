@@ -414,6 +414,12 @@ export function conditionFields(
         field(p("enter"), "ENTER", directionListValue(condition.enter)),
         field(p("exit"), "EXIT", directionListValue(condition.exit)),
       ];
+    case "region":
+      return [
+        field(p("x"), "X", condition.x, "integer"),
+        field(p("y"), "Y", condition.y, "integer"),
+        field(p("id"), "REGION", condition.id, "integer"),
+      ];
   }
 }
 
@@ -500,8 +506,12 @@ export function commandFields(
     case "lockInput":
     case "unlockInput":
     case "break":
+    case "stopSe":
     // A loop's only payload is its body, edited as a nested command branch.
     case "loop": return [];
+    case "label":
+    case "jumpLabel":
+      return [field("name", "NAME", command.name)];
     case "moveControl": {
       const fields = [
         field("target", "TARGET", target(command.target)),
@@ -670,10 +680,27 @@ export function commandFields(
       ];
     case "inputNumber":
       return [field("variable", "VARIABLE", command.variable), field("digits", "DIGITS", command.digits, "integer")];
+    case "selectItem":
+      return [
+        field("variable", "VARIABLE", command.variable),
+        field("itemType", "TYPE", command.itemType, "enum", ["regular", "key", "hiddenA", "hiddenB"]),
+      ];
     case "changeName":
       return [field("name", "NAME", command.name)];
     case "mapNameDisplay":
       return [field("visible", "VISIBLE", command.visible, "boolean", BOOLS)];
+    case "menuAccess":
+      return [field("enabled", "ENABLED", command.enabled, "boolean", BOOLS)];
+    case "saveAccess":
+      return [field("enabled", "ENABLED", command.enabled, "boolean", BOOLS)];
+    case "locationInfo":
+      return [
+        field("variable", "VARIABLE", command.variable),
+        field("x", "X", operand(command.x)),
+        field("y", "Y", operand(command.y)),
+        field("kind", "KIND", command.kind, "enum", ["terrain", "event", "tile", "region"]),
+        field("layer", "LAYER", command.layer ?? 0, "integer"),
+      ];
     case "shop":
       return [
         field("id", "ID", command.id),
@@ -818,6 +845,17 @@ function editConditionUnchecked(condition: Condition, key: string, raw: string):
     if (key === "enter" || key === "exit") {
       const value = directionList(raw, key);
       return value.ok ? good(setOptional(condition, key, value.value)) : value;
+    }
+  } else if (condition.kind === "region") {
+    if (key === "x" || key === "y") {
+      const value = integer(raw, key, 0);
+      return value.ok ? good({ ...condition, [key]: value.value }) : value;
+    }
+    if (key === "id") {
+      // Region 0 is schema-valid: it matches every unmarked cell (the
+      // regions plane only lists nonzero ids), so the editor must accept it.
+      const value = integer(raw, "region id", 0, 255);
+      return value.ok ? good({ ...condition, id: value.value }) : value;
     }
   }
   return bad(`field ${key} is not editable`);
@@ -1379,6 +1417,17 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
       }
       break;
     }
+    case "selectItem": {
+      if (key === "variable") {
+        const value = identifier(raw, "variable id");
+        return value.ok ? good({ ...command, variable: value.value }) : value;
+      }
+      if (key === "itemType") {
+        const value = enumValue(raw, ["regular", "key", "hiddenA", "hiddenB"] as const, "item type");
+        return value.ok ? good({ ...command, itemType: value.value }) : value;
+      }
+      break;
+    }
     case "changeName": {
       if (key === "name") return raw.length >= 1 && raw.length <= 24
         ? good({ ...command, name: raw })
@@ -1390,6 +1439,40 @@ function editCommandFieldUnchecked(command: Command, key: string, raw: string): 
         const value = bool(raw);
         return value === null ? bad("visible must be true or false") : good({ ...command, visible: value });
       }
+      break;
+    }
+    case "menuAccess":
+    case "saveAccess": {
+      if (key === "enabled") {
+        const value = bool(raw);
+        return value === null ? bad("enabled must be true or false") : good({ ...command, enabled: value });
+      }
+      break;
+    }
+    case "locationInfo": {
+      if (key === "variable") {
+        const value = identifier(raw, "variable id");
+        return value.ok ? good({ ...command, variable: value.value }) : value;
+      }
+      if (key === "x" || key === "y") {
+        const value = parsePictureCoordinate(raw, key);
+        return value.ok ? good({ ...command, [key]: value.value }) : value;
+      }
+      if (key === "kind") {
+        const value = enumValue(raw, ["terrain", "event", "tile", "region"] as const, "kind");
+        return value.ok ? good({ ...command, kind: value.value }) : value;
+      }
+      if (key === "layer") {
+        const value = integer(raw, "layer", 0, 3);
+        return value.ok ? good({ ...command, layer: value.value as 0 | 1 | 2 | 3 }) : value;
+      }
+      break;
+    }
+    case "label":
+    case "jumpLabel": {
+      if (key === "name") return raw.length >= 1 && raw.length <= 100
+        ? good({ ...command, name: raw })
+        : bad("label name needs 1-100 characters");
       break;
     }
     case "wait": { if (key === "seconds") { const value = finite(raw, "seconds", Number.MIN_VALUE, 30); return value.ok ? good({ ...command, seconds: value.value }) : value; } break; }

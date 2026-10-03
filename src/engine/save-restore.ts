@@ -37,7 +37,7 @@ import {
 } from "./save.ts";
 import { validateSnapshot } from "./save-validate.ts";
 import { MapNotReadyError } from "./map-repository.ts";
-import { cloneInterp, createSwitchState } from "./interpreter.ts";
+import { cloneInterp, createSwitchState, reconstructLabelScopes } from "./interpreter.ts";
 import { cloneChars, createChars } from "./chars.ts";
 import { clonePathSearch } from "./pathfind.ts";
 import { decodeExtension } from "./extensions.ts";
@@ -175,6 +175,11 @@ export function restoreSessionSnapshot(
   // even though save-validate.ts already requires a decoded envelope's
   // gold/items/shopStock/variables to be safe integers.
   interp.sw = createSwitchState(interp.sw);
+  // Saves written before frames recorded their label-scope root lack the
+  // `unit` markers that keep a common event's label lookups in its own
+  // list. Rebuild them from the fiber/page/common stack structure so a
+  // restored common event does not silently fall back to the page scope.
+  reconstructLabelScopes(interp);
   let ext;
   try {
     ext = decodeExtension(session.extensions, snap.ext);

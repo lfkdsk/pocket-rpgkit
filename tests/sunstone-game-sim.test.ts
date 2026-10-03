@@ -476,7 +476,21 @@ simDescribe("sunstone — render budget", () => {
     // KRM3V's additive reducer/save support and the optional presentation
     // seams measure 917,053 B. Its concrete parallax and item-icon components
     // remain outside this input graph.
-    expect(jsBytes).toBeLessThan(920_000);
+    // KRM3's label/selectItem/access/locationInfo/stopSe command handlers and
+    // the SoundCue union add 12,272 B of shared interpreter code, measuring
+    // 929,325 B; the select-item scene stays opt-in and absent. Seamless-
+    // handoff fatal cleanup adds 440 B, and the KRM3 fix-2 engine changes
+    // bring the merged product to 930,277 B. The KRM3 fix-4 engine changes
+    // (single event-position source, frame-carried battle/scene completion
+    // transfers, onDone save-validate) bring it to 932,110 B, and merging
+    // the KRM3V/STUDIO4 follow-ups brings it to 932,941 B. The KRM3 fix-5
+    // completion queue (an ordered onDone queue so a jump leaving a result
+    // branch relocates the popped completions, innermost first, each firing
+    // exactly once) plus the strict onDone save validation bring it to
+    // 934,069 B (+1,128), and the fix-6 completion rules bring it to
+    // 933,967 B (-102). Keep a narrow margin so an accidental bundle-in
+    // still trips it.
+    expect(jsBytes).toBeLessThan(935_000);
   });
 });
 

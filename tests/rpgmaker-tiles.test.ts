@@ -565,10 +565,8 @@ describe("composeMap", () => {
     expect(rows.get("A1 water")!.Native).toBe(1);
     expect(rows.get("star (upper layer)")!.Native).toBe(2);
     expect(rows.get("shadow")!.Native).toBe(1);
-    expect(rows.get("region id")!.Dropped).toBe(1);
-    expect(cov.list("tile").find((r) => r.key === "region id")!.reasons).toEqual([
-      "regions are not carried into the kit map",
-    ]);
+    expect(rows.get("region id")!.Native).toBe(1);
+    expect(cov.list("tile").find((r) => r.key === "region id")!.reasons).toEqual([]);
   });
 
   test("identical pixels with different passage stay distinct; keys reuse across maps", () => {
@@ -652,7 +650,7 @@ describe("composeMap", () => {
     expect(rows.get("ladder")!.Degraded).toBe(1);
     expect(rows.get("bush")!.Degraded).toBe(1);
     expect(rows.get("damage floor")!.Dropped).toBe(1);
-    expect(rows.get("terrain tag")!.Dropped).toBe(1);
+    expect(rows.get("terrain tag")!.Native).toBe(1);
   });
 
   test("a missing sheet draws nothing and records Degraded", () => {

@@ -1362,6 +1362,26 @@ function hollowCave(): RmMap {
 
   const events = [
     event(1, "Exit", 10, 14, [page({ trigger: 1, list: list(switchOff(S_IN_CAVE), transfer(1, 19, 1, 2, 2)) })]),
+    // A counted goto loop (Label/Jump to Label) plus Get Location Info, Stop
+    // SE, Select Item and the menu/save access flags: exercises the KRM3
+    // command mappings with real MV parameter shapes.
+    event(99, "Scout", 3, 13, [page({
+      trigger: 0,
+      list: list(
+        cmd(134, 0), // Change Save Access: 0 disables
+        cmd(135, 1), // Change Menu Access: nonzero enables
+        cmd(122, 8, 0, 0, 0, 0), // v8 = 0
+        cmd(118, "scout-loop"), // Label scout-loop
+        cmd(122, 8, 8, 0, 1, 1), // v8 += 1
+        cmd(285, 9, 0, 0, 3, 13), // v9 = terrain tag at (3,13), direct
+        cmd(285, 10, 2, 0, 3, 13), // v10 = tile id on layer 1 at (3,13)
+        cmd(104, 11, 1), // Select Item into v11, itypeId 1 (regular)
+        cmd(251), // Stop SE
+        ...ifThen(ifVar(8, 3, 3), [cmd(119, "scout-loop")]), // if v8 < 3 jump back
+        cmd(135, 0), // Change Menu Access: 0 disables
+        cmd(134, 1), // Change Save Access: nonzero enables
+      ),
+    })]),
     event(2, "Golem", 10, 4, [
       page({
         image: { characterName: "$Golem", characterIndex: 0 },

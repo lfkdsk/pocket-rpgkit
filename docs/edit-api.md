@@ -676,8 +676,12 @@ The movement, presentation, modal, extension, and battle forms use:
 | `erasePicture` | `id` |
 | `timer` | `action`, then `seconds` for `start` or `variable` for `read`; `stop` has no other field |
 | `inputNumber` | `variable`, `digits` (1–8) |
+| `selectItem` | `variable`, `itemType` (`regular`, `key`, `hiddenA`, `hiddenB`) |
 | `changeName` | `name` |
 | `mapNameDisplay` | `visible` |
+| `menuAccess` / `saveAccess` | `enabled` |
+| `locationInfo` | `variable`, `x`, `y`, `kind` (`terrain`, `event`, `tile`, `region`), `layer` (0..3, the raw tile plane; only used by `kind: "tile"`) |
+| `label` / `jumpLabel` | `name` |
 | `shop` | `id`, `goods` (JSON array), `sell`, `sellList` |
 | `mapAnim` | `id`, `anim`, `placement`; then `x`/`y` for `tile` or `target` (`player`, `this`, or an event id) for `target`; also `follow`, `layer`, `loop`, `wait` |
 | `stopAnim` | `selector` (`all`, `id`, or `anim`), then the selected `id` or `anim` |
@@ -694,8 +698,8 @@ Audio fields are `id`, `volume`, and `pitch` for `playBgm`, `playBgs`, and
 `playSe`; `playMe` also has `duration`; `fadeoutBgm` and `fadeoutBgs` have
 `duration`. `stopBgm`, `pauseBgm`, `resumeBgm`, `saveBgm`, `replayBgm`,
 `erase`, `exit`, `openMenu`, `openSave`, `gameOver`, `returnTitle`,
-`lockInput`, `unlockInput`, and `break` are supported but have no parameter
-fields. `loop` has no parameter fields either: its only
+`lockInput`, `unlockInput`, `break`, and `stopSe` are supported but have no
+parameter fields. `loop` has no parameter fields either: its only
 payload is its `commands` body, edited with `insert-command`/`delete-command`
 at `loop` body addresses.
 
@@ -721,6 +725,7 @@ condition fields are prefixed with `if.`:
 | `facing` | `dir` |
 | `appearance` | `target`, `sprite` (`null` means the default sprite) |
 | `tileProperty` | `x`, `y`, `passage`, `enter`, `exit` |
+| `region` | `x`, `y`, `id` |
 | `worldIdle` | `negate` |
 | `bgmPlaying` | `id` (`(any)` or an empty string omits it), `negate` |
 | `timer` | `op` (`>=` or `<=`), `seconds` |

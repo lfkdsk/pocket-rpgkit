@@ -129,10 +129,10 @@ describe("KRM3V animation timing", () => {
     const world = createWorld(map, [], 60, { animations: [TIMED] });
     let state = stepInterp(world, createInterpState(), input(true));
     const start = state.anims![0]!.start;
-    const heard: { elapsed: number; name: string }[] = state.cues.map((cue) => ({ elapsed: 0, name: cue.name }));
+    const heard: { elapsed: number; name: string }[] = state.cues.flatMap((cue) => ("name" in cue ? [{ elapsed: 0, name: cue.name }] : []));
     for (let i = 0; i < 16; i++) {
       state = stepInterp(world, state, input());
-      for (const cue of state.cues) heard.push({ elapsed: state.frame - start, name: cue.name });
+      for (const cue of state.cues) if ("name" in cue) heard.push({ elapsed: state.frame - start, name: cue.name });
     }
     expect(heard).toEqual([
       { elapsed: 0, name: "start" },

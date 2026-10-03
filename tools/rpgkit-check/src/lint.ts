@@ -296,9 +296,19 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
     loc: FindingLocation,
     map: MapDef | null,
   ): void => {
+    // Labels are list-local: a jumpLabel resolves against the labels of the
+    // page or common event that contains it, at any nesting depth. Collect
+    // them in one pass, then warn on jumps to a name with no label.
+    const labels = new Set<string>();
+    const jumps: { name: string; loc: FindingLocation }[] = [];
     walkCommands(commands, (command, path) => {
       commandCount++;
       const cloc = { ...loc, commandPath: path };
+      if (command.op === "label") {
+        labels.add(command.name);
+      } else if (command.op === "jumpLabel") {
+        jumps.push({ name: command.name, loc: cloc });
+      }
       // `{v:<id>}` tokens: with system.textVariables each is a live READ of
       // the variable; without it the braces print verbatim.
       const tokenIds = commandTexts(command).flatMap(textVariableIds);
@@ -335,6 +345,16 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           // The scene prefills from the current value and replaces it on OK.
           note(variables, command.variable, "reads", cloc);
           note(variables, command.variable, "writes", cloc);
+          break;
+        case "selectItem":
+          // The scene writes the chosen item's numeric id (0 on cancel).
+          note(variables, command.variable, "writes", cloc);
+          break;
+        case "locationInfo":
+          // Writes the cell fact; variable coordinates are live reads.
+          note(variables, command.variable, "writes", cloc);
+          if (typeof command.x === "object") note(variables, command.x.variable, "reads", cloc);
+          if (typeof command.y === "object") note(variables, command.y.variable, "reads", cloc);
           break;
         case "selfSwitch":
           // Writes are collected per event with walkProjectCommands (common
@@ -581,6 +601,17 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
           break;
       }
     });
+    for (const jump of jumps) {
+      if (!labels.has(jump.name)) {
+        findings.push(makeFinding(
+          "lint/jump-label-missing",
+          "warning",
+          `jumpLabel targets ${JSON.stringify(jump.name)}, but this page or common event has no label with that name`,
+          "the jump does nothing (RPG Maker parity) — add a matching label or fix the name",
+          jump.loc,
+        ));
+      }
+    }
   };
 
   // ---- per-map walks ------------------------------------------------------

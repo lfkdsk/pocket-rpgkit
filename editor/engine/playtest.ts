@@ -258,8 +258,8 @@ function addCommands(commands: readonly Command[], scan: CommandScan): void {
     } else if (command.op === "battle") {
       scan.battles?.add(JSON.stringify(command.setup));
       addCommands(command.onWin ?? [], scan);
-      addCommands(command.onLose ?? [], scan);
       addCommands(command.onEscape ?? [], scan);
+      addCommands(command.onLose ?? [], scan);
     } else if (command.op === "scene") {
       scan.scenes?.add(command.id);
       addCommands(command.onDone ?? [], scan);

@@ -24,7 +24,7 @@
 /** SHA-256 of canonical src/data/schema.json. A test derives it from the file
  * so schema edits cannot leave it stale; keeping the literal avoids hashing
  * the schema at startup. */
-export const MAP_SCHEMA_HASH = "0e510772cbf540414553fd8f4204e0cecba80f4d8c844146e3be46d23841daae";
+export const MAP_SCHEMA_HASH = "3315cbf7af3ceb5f6690824bf7fe0d0d7ac90f080fd741c7e24159a2b3e99ddb";
 
 /** Earlier schema identities whose shells and saves remain loadable, newest
  * first. Each entry names the change that superseded it.
@@ -59,7 +59,19 @@ export const MAP_SCHEMA_HASH = "0e510772cbf540414553fd8f4204e0cecba80f4d8c844146
  * tests/fixtures/schema-compat keeps a refused fixture and a recorded
  * counterexample for each of these. */
 export const MAP_SCHEMA_COMPATIBLE_HASHES: readonly string[] = Object.freeze([
+  // superseded by: the optional label `ord` (flat RPG Maker source index, so
+  // a jumpLabel resolves the first label in source order even when the
+  // importer reordered branches)
+  "1b66bce2dff2f3f8476a9dcc3212ee826053447c5a7683c9942adbcfd122fc12",
+  // superseded by: the KRM3 fixes — map `tiles` (four raw tile layers for
+  // Get Location Info), item `kind` (weapon/armor exclusion), locationInfo
+  // layer 0..3
+  "3a57e757f9f5d4f3da13529cd376ceb8ef50a354a3a618e45a8fa41641b84562",
   // superseded by: optional parallax/timing data, commands, and mapAnim `this`
+  "0e510772cbf540414553fd8f4204e0cecba80f4d8c844146e3be46d23841daae",
+  // superseded by: KRM3 label/jumpLabel, selectItem, menu/save access,
+  // locationInfo, stopSe, region condition, map regions/terrain, item type
+  "3ac9e23fa3289a6021dfe4e0141e732b303aefad37c2ba70538423701f00156e",
   "49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8ba161586f4c0149a1",
   // superseded by: optional project traversal identity and transfer handoff provenance
   "bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906",

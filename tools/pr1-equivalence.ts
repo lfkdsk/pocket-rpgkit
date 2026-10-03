@@ -50,6 +50,15 @@ function jsonText(value: unknown): string {
     if (ArrayBuffer.isView(item) && !(item instanceof DataView)) {
       return Array.from(item as unknown as ArrayLike<number>);
     }
+    // A stack frame's `unit` marker says "this program is a label-scope root"
+    // (a page or a called common event). It is structural, not mutable state:
+    // a build that adds the marker and one that does not hash the same
+    // behavioral state once it is stripped.
+    if (item !== null && typeof item === "object" && !Array.isArray(item) &&
+        "prog" in item && "pc" in item && "unit" in item) {
+      const { unit: _unit, ...rest } = item as Record<string, unknown>;
+      return rest;
+    }
     return item;
   });
 }

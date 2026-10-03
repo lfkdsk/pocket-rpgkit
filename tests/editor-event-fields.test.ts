@@ -101,13 +101,20 @@ const NEWER_COMMAND_FIELDS = [
   ["fadeoutBgs", ["duration"]],
   ["playMe", ["id", "duration", "volume", "pitch"]],
   ["playSe", ["id", "volume", "pitch"]],
+  ["stopSe", []],
   ["saveBgm", []],
   ["replayBgm", []],
+  ["label", ["name"]],
+  ["jumpLabel", ["name"]],
+  ["selectItem", ["variable", "itemType"]],
+  ["menuAccess", ["enabled"]],
+  ["saveAccess", ["enabled"]],
+  ["locationInfo", ["variable", "x", "y", "kind", "layer"]],
 ] as const;
 
 describe("event inspector command fields", () => {
-  test("describes every owned command, including all 42 newer operations", () => {
-    expect(NEWER_COMMAND_FIELDS).toHaveLength(42);
+  test("describes every owned command, including all 49 newer operations", () => {
+    expect(NEWER_COMMAND_FIELDS).toHaveLength(49);
     for (const [op, keys] of NEWER_COMMAND_FIELDS) {
       const command = defaultCommand(op);
       expect(commandFields(command).map((entry) => entry.key), op).toEqual([...keys]);
@@ -236,6 +243,12 @@ describe("event inspector command fields", () => {
       { op: "fadeoutBgs", field: "duration", raw: "0.5", expected: { duration: 0.5 } },
       { op: "playMe", field: "duration", raw: "4", expected: { duration: 4 } },
       { op: "playSe", field: "pitch", raw: "120", expected: { pitch: 120 } },
+      { op: "selectItem", field: "itemType", raw: "key", expected: { itemType: "key" } },
+      { op: "selectItem", field: "variable", raw: "picked", expected: { variable: "picked" } },
+      { op: "locationInfo", field: "x", raw: "$coordX", expected: { x: { variable: "coordX" } } },
+      { op: "locationInfo", field: "y", raw: "$coordY", expected: { y: { variable: "coordY" } } },
+      { op: "locationInfo", field: "layer", raw: "3", expected: { layer: 3 } },
+      { op: "locationInfo", field: "kind", raw: "region", expected: { kind: "region" } },
     ];
 
     const edited: Command[] = [];
@@ -264,6 +277,30 @@ describe("event inspector command fields", () => {
     expect(timer).toEqual({ op: "timer", action: "read", variable: "variable" });
     expect(commandFields(timer).map((entry) => entry.key)).toEqual(["action", "variable"]);
     expect(edit(timer, "variable", "timer-left")).toEqual({ op: "timer", action: "read", variable: "timer-left" });
+  });
+
+  test("locationInfo variable coordinates display, edit and retain", () => {
+    // A variable coordinate shows as $id (not 0), edits to $id create a
+    // variable reference, and the reference survives a field round trip.
+    let command: Command = { op: "locationInfo", variable: "located", x: { variable: "coordX" }, y: 4, kind: "region" };
+    const fields = () => Object.fromEntries(commandFields(command).map((entry) => [entry.key, entry.value]));
+    expect(fields()).toMatchObject({ x: "$coordX", y: 4 });
+    command = edit(command, "y", "$coordY");
+    expect(command).toMatchObject({ y: { variable: "coordY" } });
+    expect(fields()).toMatchObject({ x: "$coordX", y: "$coordY" });
+    // Back to a literal.
+    command = edit(command, "x", "9");
+    expect(command).toMatchObject({ x: 9 });
+    expect(validateProject(projectWith([command]))).toEqual([]);
+  });
+
+  test("selectItem type and variable are editable", () => {
+    let command: Command = { op: "selectItem", variable: "pick", itemType: "regular" };
+    command = edit(command, "itemType", "hiddenB");
+    expect(command).toMatchObject({ itemType: "hiddenB" });
+    command = edit(command, "variable", "chosen");
+    expect(command).toMatchObject({ variable: "chosen" });
+    expect(validateProject(projectWith([command]))).toEqual([]);
   });
 
   test("rejects invalid JSON, ranges, enums, and schema-breaking edits", () => {
@@ -525,6 +562,7 @@ describe("event inspector page and condition fields", () => {
       ["worldIdle", ["negate"]],
       ["timer", ["op", "seconds"]],
       ["ext", ["call", "args"]],
+      ["region", ["x", "y", "id"]],
     ] as const;
     for (const [kind, keys] of descriptors) {
       const fields = conditionFields(defaultCondition(kind));
@@ -544,6 +582,7 @@ describe("event inspector page and condition fields", () => {
       [3, "negate", "true"],
       [4, "op", "<="],
       [5, "args", '{"chapter":2}'],
+      [6, "id", "42"],
     ] as const;
     for (const [index, fieldName, raw] of edits) {
       const result = editPageConditionField(page, { kind: "all", index }, fieldName, raw);
@@ -557,6 +596,7 @@ describe("event inspector page and condition fields", () => {
       { kind: "worldIdle", negate: true },
       { kind: "timer", op: "<=", seconds: 0 },
       { kind: "ext", call: "game.condition", args: { chapter: 2 } },
+      { kind: "region", x: 0, y: 0, id: 42 },
     ]);
     expect(validateProject(projectWith([], page))).toEqual([]);
 
@@ -566,6 +606,25 @@ describe("event inspector page and condition fields", () => {
     ]);
     expect(editCommandField(conditional, "if.id", "rain"))
       .toMatchObject({ ok: true, value: { if: { id: "rain" } } });
+  });
+
+  test("region condition id accepts the full schema range 0..255", () => {
+    // Region 0 is schema-valid (the regions plane only lists nonzero ids, so
+    // 0 matches every unmarked cell) and the command factory defaults to it;
+    // the editor must round-trip both boundaries instead of clamping 0 to 1.
+    const edit = (raw: string) => {
+      const page: Page = { trigger: "action", condition: { all: [defaultCondition("region")] }, commands: [] };
+      return editPageConditionField(page, { kind: "all", index: 0 }, "id", raw);
+    };
+    const edited = (raw: string): Page => {
+      const result = edit(raw);
+      if (!result.ok) throw new Error(`expected ok for ${raw}: ${result.error}`);
+      return result.value;
+    };
+    expect(edited("0").condition?.all).toEqual([{ kind: "region", x: 0, y: 0, id: 0 }]);
+    expect(edited("255").condition?.all).toEqual([{ kind: "region", x: 0, y: 0, id: 255 }]);
+    expect(edit("256").ok).toBe(false);
+    expect(edit("-1").ok).toBe(false);
   });
 
   test("rejects invalid newer-condition values and schema-breaking omission", () => {

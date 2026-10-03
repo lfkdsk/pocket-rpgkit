@@ -285,6 +285,47 @@ export function validateMapDefStructure(map: unknown): asserts map is MapDef {
   };
   sparseLayer("upper");
   sparseLayer("passage");
+  // Sparse cell planes the compiler reads through sparseCellMap/sparseTileMap:
+  // regions/terrain are [index, tag] pairs with a bounded tag, tiles is an
+  // [index, [l0..l3]] quad. A malformed entry (the review's `[1]`, `[2]`,
+  // `[3]` payloads) would otherwise reach `new Map(entries)` in createWorld
+  // and die there with a context-less TypeError.
+  const sparseCellLayer = (name: "regions" | "terrain", maxTag: number): void => {
+    const layer = value[name];
+    if (layer === undefined) return;
+    if (!Array.isArray(layer)) mapStructureError(`${value.id} ${name} must be an array`);
+    for (const item of layer) {
+      if (!Array.isArray(item) || item.length !== 2 ||
+        !Number.isInteger(item[0]) || !Number.isInteger(item[1])) {
+        mapStructureError(`${value.id} ${name} entries must be [integer, integer] pairs`);
+      }
+      const index = item[0] as number;
+      if (index < 0 || index >= cells) {
+        throw new Error(`map repository: ${value.id} ${name} index ${index} out of range`);
+      }
+      const tag = item[1] as number;
+      if (tag < 1 || tag > maxTag) {
+        throw new Error(`map repository: ${value.id} ${name} tag ${tag} out of range 1..${maxTag}`);
+      }
+    }
+  };
+  sparseCellLayer("regions", 255);
+  sparseCellLayer("terrain", 7);
+  const tiles = value.tiles;
+  if (tiles !== undefined) {
+    if (!Array.isArray(tiles)) mapStructureError(`${value.id} tiles must be an array`);
+    for (const item of tiles) {
+      if (!Array.isArray(item) || item.length !== 2 || !Number.isInteger(item[0]) ||
+        !Array.isArray(item[1]) || item[1].length !== 4 ||
+        !(item[1] as unknown[]).every((v) => Number.isInteger(v) && (v as number) >= 0)) {
+        mapStructureError(`${value.id} tiles entries must be [integer, [integer, integer, integer, integer]] pairs`);
+      }
+      const index = item[0] as number;
+      if (index < 0 || index >= cells) {
+        throw new Error(`map repository: ${value.id} tiles index ${index} out of range`);
+      }
+    }
+  }
   const events = value.events;
   if (!Array.isArray(events)) mapStructureError(`${value.id} events must be an array`);
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {

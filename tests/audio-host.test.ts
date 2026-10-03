@@ -202,6 +202,36 @@ describe("opt-in audio host", () => {
     expect(ops.ended).toEqual([3, 6]);
   });
 
+  test("a stop cue destroys every live SE voice but leaves BGM/BGS/ME playing", () => {
+    const ops = new MockAudioOps();
+    const resources = Object.fromEntries(
+      ["bgm", "a", "b"].map((id) => [id, `audio:wav.${id}`]),
+    );
+    const driver = new AudioDriver(ops, resources, () => wav([1, 2, 3, 4]));
+    driver.sync(frame(1, {
+      bgm: { id: "bgm", volume: 100, pitch: 100, positionTicks: 0 },
+    }, [
+      { name: "a", volume: 100, pitch: 100 },
+      { name: "b", volume: 100, pitch: 100 },
+    ]));
+    expect(ops.created).toHaveLength(3); // bgm + two SE
+    expect(ops.streams.size).toBe(3);
+
+    // Stop SE: both SE voices are destroyed; the BGM voice survives.
+    driver.sync(frame(2, {
+      bgm: { id: "bgm", volume: 100, pitch: 100, positionTicks: 1 },
+    }, [{ stop: true }]));
+    expect(ops.destroyed).toEqual([2, 3]);
+    expect(ops.streams.has(1)).toBe(true);
+    expect(ops.streams.size).toBe(1);
+
+    // A later SE plays on a fresh voice; the stop was one-shot.
+    driver.sync(frame(3, {
+      bgm: { id: "bgm", volume: 100, pitch: 100, positionTicks: 2 },
+    }, [{ name: "a", volume: 100, pitch: 100 }]));
+    expect(ops.streams.has(4)).toBe(true);
+  });
+
   test("applies reducer fade volume monotonically while refilling credits", () => {
     const ops = new MockAudioOps();
     const driver = new AudioDriver(ops, { field: "audio:wav.field" }, () => wav([1, 2, 3, 4]));

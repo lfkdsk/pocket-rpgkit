@@ -216,6 +216,11 @@ export type Condition =
   /** True only while the map world is the unobstructed top-level state.
    *  `negate` asks for any blocking world state instead. */
   | { kind: "worldIdle"; negate?: boolean }
+  /** True when the region id authored at cell (x, y) equals `id`. Cells
+   *  without a region read 0, so `{kind:"region", x, y, id: 0}` matches
+   *  unmarked cells. Coordinates are literals (like tileProperty); read a
+   *  variable coordinate through the `locationInfo` command instead. */
+  | { kind: "region"; x: number; y: number; id: number }
   /** True while a BGM is audibly advancing. A paused BGM or one suspended
    *  behind an ME is not playing. `id` omitted matches any BGM. */
   | { kind: "bgmPlaying"; id?: string; negate?: boolean }
@@ -445,6 +450,13 @@ export type Command =
   /** Built-in digit editor. The scene host writes the committed non-negative
    * integer to `variable` and parks this event until confirmation. */
   | { op: "inputNumber"; variable: string; digits: number }
+  /** Built-in item picker (RPG Maker 104 Select Item). The scene lists only
+   *  items the party currently holds, of `itemType` and item kind (weapons
+   *  and armour are excluded, MV's Window_EventItem), and writes the chosen
+   *  item's numeric id (the trailing integer of its id, MV's database id)
+   *  to `variable`; cancelling or an empty list writes 0. Items without a
+   *  `type` are "regular". */
+  | { op: "selectItem"; variable: string; itemType: "regular" | "key" | "hiddenA" | "hiddenB" }
   /** Host-owned scene transitions. They publish a one-frame callback request;
    * without a registered host callback they are deterministic no-ops. */
   | { op: "openMenu" }
@@ -455,6 +467,37 @@ export type Command =
   | { op: "changeName"; name: string }
   /** Enable/disable automatic map-name banners on subsequent map entries. */
   | { op: "mapNameDisplay"; visible: boolean }
+  /** Enable/disable the host's menu entry (RPG Maker 135). Default enabled;
+   *  a disabled menu makes openMenu a no-op and the host shows the entry
+   *  disabled. See SwitchState.menuAccess. */
+  | { op: "menuAccess"; enabled: boolean }
+  /** Enable/disable the host's save entry (RPG Maker 134). Default enabled;
+   *  a disabled save makes openSave a no-op and the host shows the entry
+   *  disabled. See SwitchState.saveAccess. */
+  | { op: "saveAccess"; enabled: boolean }
+  /** Write a fact about one map cell to a variable (RPG Maker 285 Get
+   *  Location Info). The coordinate is a literal or a variable read at
+   *  execution. `kind` selects the fact:
+   *  - "terrain": the cell's terrain tag (0 when none; the importer derives
+   *    it from the tileset flags, MV parity).
+   *  - "event": the numeric id of the lowest-id event on the cell, 0 when
+   *    the cell is empty (the trailing integer of the kit's event id). The
+   *    event's LIVE position is read, so a moved event is found.
+   *  - "tile": the cell's tile id on layer 0..3 (RPG Maker's four tile
+   *    layers). Imported maps carry the raw RPG Maker tile ids in `tiles`,
+   *    so this returns exactly what RPG Maker would; a hand-authored map
+   *    without that data returns the ground/upper cell's sheet index for
+   *    layers 0/1 and 0 for layers 2/3.
+   *  - "region": the cell's region id (0 when none).
+   *  An out-of-bounds cell writes 0. */
+  | {
+      op: "locationInfo";
+      variable: string;
+      x: number | VariableRef;
+      y: number | VariableRef;
+      kind: "terrain" | "event" | "tile" | "region";
+      layer?: 0 | 1 | 2 | 3;
+    }
   | { op: "wait"; seconds: number }
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }
@@ -470,6 +513,10 @@ export type Command =
    *  it expires, an unpaused BGM resumes from its held position. */
   | { op: "playMe"; id: string; duration: number; volume?: number; pitch?: number }
   | { op: "playSe"; id: string; volume?: number; pitch?: number }
+  /** Stop every sound effect currently playing (RPG Maker 251). A
+   *  one-shot side effect: it appends a stop entry to the deterministic
+   *  cue sequence the host audio bridge drains, and is never saved. */
+  | { op: "stopSe" }
   | { op: "saveBgm" }
   | { op: "replayBgm" }
   | { op: "erase" }
@@ -483,6 +530,27 @@ export type Command =
   /** Leave the innermost enclosing `loop`; outside any loop it ends the
    *  current page or common event. */
   | { op: "break" }
+  /** A named position in this page or common event (RPG Maker 118). Labels
+   *  are scoped to the list that contains them — the whole page or common
+   *  event tree, branches included — and a `jumpLabel` finds the FIRST label
+   *  with this name anywhere in that tree, at any nesting depth. A label is
+   *  a no-op when execution reaches it.
+   *
+   *  `ord` is the label's position in the original flat RPG Maker source
+   *  list (set by the importer). MV's jumpTo scans that flat list top-down
+   *  and stops at the first match, so the "first" label is the one with the
+   *  lowest `ord` — not the first one a nested-tree walk happens to visit.
+   *  Hand-authored lists omit it and fall back to tree-walk order. */
+  | { op: "label"; name: string; ord?: number }
+  /** Jump to the first `label` with this name in the same page or common
+   *  event (RPG Maker 119). The label may sit inside an if/choices/battle/
+   *  scene branch: jumping out of a block abandons it like MV's flat-list
+   *  jumpTo, and jumping into one enters that branch unconditionally (its
+   *  choice/battle/scene is not replayed; the branch simply runs from the
+   *  label and completes normally). A name with no label does nothing, like
+   *  MV. A backward jump that never reaches a label again is stopped by the
+   *  same per-frame step budget that bounds loops. */
+  | { op: "jumpLabel"; name: string }
   | { op: "common"; id: string }
   /** T2-10 shop: a goods list plus buy/sell. `id` namespaces this shop's
    *  persisted stock counters (SessionState.sw.shopStock) so two shops
@@ -659,6 +727,22 @@ export interface MapDef {
   passage?: [number, "pass" | "block"][];
   /** Optional map backdrop and its reference-tick scroll configuration. */
   parallax?: ParallaxDef;
+  /** Sparse RPG Maker region ids: [row-major index, region id]. Only cells
+   *  with a nonzero region are listed; a map without them carries no data.
+   *  Read by the `locationInfo` command and the `region` condition. */
+  regions?: [number, number][];
+  /** Sparse RPG Maker terrain tags: [row-major index, tag]. Only cells with
+   *  a nonzero tag are listed; the importer derives each cell's tag from its
+   *  tileset flags (the topmost tile with a tag, like MV's terrainTag). */
+  terrain?: [number, number][];
+  /** Sparse RPG Maker raw tile ids per cell: [row-major index, [z0, z1, z2,
+   *  z3]]. Only cells with a nonzero tile in any of the four layers are
+   *  listed; the importer carries the map's four raw tile-data planes so the
+   *  `locationInfo` tile kind returns exactly what RPG Maker would. A
+   *  hand-authored map without it answers layers 0/1 from ground/upper and
+   *  layers 2/3 as 0. Order does not matter: the runtime builds a cell-index
+   *  map, and a duplicate index keeps the last entry. */
+  tiles?: [number, [number, number, number, number]][];
   /** Interactive events (P1③: page selection + interpretation). */
   events?: GameEvent[];
 }
@@ -767,6 +851,14 @@ export interface Item {
    *  flag. An unsellable row still lists in the sell tab (disabled) unless
    *  the shop's `sellList` is "hide". */
   sellable?: boolean;
+  /** RPG Maker item type (MV itypeId): 1 regular, 2 key, 3 hidden A,
+   *  4 hidden B. Absent defaults to "regular". The select-item scene
+   *  filters on this; key items are also unsellable by default on import. */
+  type?: "regular" | "key" | "hiddenA" | "hiddenB";
+  /** RPG Maker database kind. Absent defaults to "item". The select-item
+   *  scene only lists kind "item" (MV parity: weapons and armors are never
+   *  offered by Select Item, even when the party holds them). */
+  kind?: "item" | "weapon" | "armor";
 }
 
 export interface CommonEvent {

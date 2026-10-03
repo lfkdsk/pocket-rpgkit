@@ -316,6 +316,20 @@ describe("instant commands", () => {
     expect(next.cues).toEqual([]); // cues live one frame
   });
 
+  test("stopSe emits a stop cue in the same sequence", () => {
+    const w = createWorld(map([event("e", 10, 9, [
+      { op: "se", name: "a" },
+      { op: "stopSe" },
+      { op: "se", name: "b" },
+    ])]));
+    const fired = confirmAt(createInterpState(), w);
+    expect(fired.cues).toEqual([
+      { name: "a", volume: 80, pitch: 100 },
+      { stop: true },
+      { name: "b", volume: 80, pitch: 100 },
+    ]);
+  });
+
   test("exit stops the interpreter before later commands", () => {
     const s = run([
       { op: "switch", id: "a", value: true },

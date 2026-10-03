@@ -845,7 +845,7 @@ conversion point are documented in `src/ui/world-contract.ts`.
 | `switch` | set a global switch |
 | `variable` | set/add/sub, a seeded random range, or arithmetic against another variable (copy/add/sub/mul/div/mod) |
 | `selfSwitch` | set the event-local A/B/C/D flag |
-| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, derived `worldIdle`, current `bgmPlaying`, the global timer, or a registered `ext` predicate, with `else` |
+| `if` | condition over switch/variable/selfSwitch/item/gold/facing, effective appearance, explicit tile-property overrides, a cell's region id, derived `worldIdle`, current `bgmPlaying`, the global timer, or a registered `ext` predicate, with `else` |
 | `transfer` | swap maps at x/y/dir, with an optional fade; map/x/y/dir may be `{ "variable": "id" }`; a direct `playerTouch` transfer may carry a `seamless-v1` opening marker when the project opts into [world-layout handoff](#world-layout-data) |
 | `moveRoute` | route the player, this event, or a named event through moves, turns, waits, deterministic `pathTo`, and `approach` |
 | `moveControl` | change a target's autonomous mode, stop it, start bounded wandering, or override speed/run/frequency/collision/facing settings |
@@ -868,10 +868,12 @@ conversion point are documented in `src/ui/world-contract.ts`.
 | `erasePicture` | remove one numbered picture |
 | `timer` | start, stop, or read the global countdown; a timer condition reads its remaining whole seconds |
 | `inputNumber` | open the built-in 1–8 digit editor and write the confirmed non-negative integer to a variable |
+| `selectItem` | open the built-in item picker (regular/key/hidden A/hidden B) and write the chosen item's numeric id to a variable, 0 on cancel |
 | `openMenu` / `openSave` | request a game-owned menu or save screen through `GameView.hostActions` |
 | `gameOver` / `returnTitle` | request a game-owned game-over or title transition through `GameView.hostActions` |
 | `changeName` | replace the player name used by the `{name}` text token |
 | `mapNameDisplay` | enable or disable the automatic three-second banner on subsequent map entries |
+| `menuAccess` / `saveAccess` | enable or disable the host menu/save entry (default enabled; a disabled entry drops the matching `openMenu`/`openSave` request) |
 | `wait` | virtual-time pause (seconds, compiled against `simulationHz`) |
 | `gold` | add/sub gold |
 | `item` | add/remove an item count |
@@ -882,14 +884,17 @@ conversion point are documented in `src/ui/world-contract.ts`.
 | `playBgs` / `fadeoutBgs` | start ambient background sound or fade it to silence independently of BGM |
 | `playMe` | play a duration-authored music effect while BGM is suspended, then resume BGM |
 | `playSe` | emit a transient sound effect by logical audio id (`se` remains compatible) |
+| `stopSe` | stop every sound effect currently playing |
 | `saveBgm` / `replayBgm` | snapshot and restore BGM id, volume, pitch, and virtual position |
 | `erase` | remove this event for the rest of the map visit |
 | `exit` | end this fiber |
 | `loop` | repeat its `commands` until a `break` leaves it ([Loops](#loops)) |
 | `break` | leave the innermost `loop`; outside a loop, end the current page or common event |
+| `label` / `jumpLabel` | name a position and jump to the first matching label in the same page or common event, at any nesting depth; a missing label is a no-op |
 | `common` | run a common event's command list |
 | `lockInput` / `unlockInput` | cross-event input lock; freezes the mover and action but not autorun/parallel |
 | `place` | relocate the player, `"this"`, or a named event to a tile, optionally facing a direction |
+| `locationInfo` | write a cell's terrain tag, event id, tile id or region id to a variable (literal or variable coordinates) |
 | `shop` | MV-style buy/sell over gold and item counts, from an `id`-namespaced goods list with per-good price/sellPrice/stock/condition overrides |
 | `mapAnim` | play a project frame animation on a tile or following the player/a named event (`follow:false` pins it to the execution tile), above or below characters, looping or once; `wait` parks the fiber until one playthrough completes (one-shot) or until `stopAnim` stops the instance (looping) |
 | `stopAnim` | stop one map animation instance by id, every instance of an animation name, or all live map animations |
@@ -918,8 +923,23 @@ fiber yields at the loop's end and continues on the next tick. Such a
 busy loop therefore advances one slice per tick, and how many passes it
 makes per virtual second depends on the tick rate, like RPG Maker's
 per-frame freeze check; a short counting loop still finishes in the tick it
-starts. Labels and jumps (RPG Maker Label / Jump to Label) are not
-supported: see [Loops and labels](src/engine/README.md#loops-and-labels).
+starts. Labels and jumps are supported — see [Labels](#labels) below.
+
+#### Labels
+
+`{ "op": "label", "name" }` names a position; `{ "op": "jumpLabel", "name" }`
+continues at the first label with that name in the same page or common event,
+at any nesting depth (RPG Maker 118/119). "First" follows MV's flat source
+order: the importer stamps each label with its source ordinal and the resolver
+picks the lowest, so a Battle Processing list resolves Win/Escape/Lose and a
+reversed Gold condition keeps its original Then/Else label order even though
+the importer swaps the branches. Hand-authored lists use tree-walk order,
+with battle branches visited Win/Escape/Lose. A jump out of a block abandons
+it; a jump into a `choices`/`battle`/`scene` branch enters that branch
+unconditionally and runs it to completion. A jump to a name with no label
+does nothing, like MV. A common event is its own label scope: a jump inside
+one never sees the caller's labels. A backward jump that never reaches a
+label again is bounded by the same per-frame step budget as loops.
 
 #### Text tokens
 

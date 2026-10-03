@@ -159,14 +159,22 @@ const maybeTest = preflight.ok ? test : test.skip;
 // optional shop-icon and parallax GameView seams add 11,305 bytes, measuring
 // 917,053. The concrete ParallaxLayer and ItemIconRow remain outside this
 // input graph (krm3v-ui-bundle-isolation.test.ts).
-// Deterministic seamless-handoff fatal cleanup adds 440 shared engine bytes.
-// The per-tick prune of finished map animations and the empty-string
-// parallax clear (guarded no-ops when unused) add 228 bytes, measuring
-// 917,721. The save-decode normalization of an empty-name parallax to none
-// (a checksum-valid save may still carry image:"" from an older build) adds
-// 236 bytes to this graph only — meadow's graph never includes the save
-// decode path, so its pin is unchanged — measuring 917,957.
-const EXPECTED_BYTES = 917_957;
+// KRM3's label/jumpLabel, selectItem, menu/save access, locationInfo and
+// stopSe command handlers plus the SoundCue union add 12,272 bytes of shared
+// interpreter code, measuring 929,325. The select-item scene (engine rules
+// and UI) stays opt-in: it is registered through the scenes/sceneViews props
+// and is absent from this bundle. Deterministic seamless-handoff fatal
+// cleanup adds 440 shared engine bytes, and the KRM3 fix-2 engine changes
+// (live eventCells origin, cell-index tile map, label-scope rebuild) bring
+// the merged product to 930,277. The KRM3 fix-3 label `ord` field adds its
+// schema description text to the bundled schema (map-repository), measuring
+// 930,923 (+646). The KRM3 fix-4 engine changes (single event-position
+// source, frame-carried battle/scene completion transfers, onDone
+// save-validate) bring the merged product to 932,110 (+1,187). Merging the
+// KRM3V/STUDIO4 follow-ups brings it to 932,941 (+831). The KRM3 fix-5
+// completion queue and strict onDone validation bring it to 934,069
+// (+1,128), and the fix-6 completion rules to 933,967 (-102).
+const EXPECTED_BYTES = 933_967;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

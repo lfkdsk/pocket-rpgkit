@@ -179,8 +179,11 @@ describe("EditSession.open limits", () => {
   });
 
   test(`${MAX_MAPS} maps are accepted; ${MAX_MAPS + 1} are refused`, () => {
-    expect(EditSession.open(JSON.stringify(projectWithMaps(MAX_MAPS))).maps()).toHaveLength(MAX_MAPS);
-    const error = errorOf(() => EditSession.open(JSON.stringify(projectWithMaps(MAX_MAPS + 1))));
+    // The limit is on map count, not content: use 1x1 maps so the test is
+    // milliseconds and load-independent (the full-map form built a ~16 MiB
+    // project and ran past Bun's 5 s default under full-suite load).
+    expect(EditSession.open(JSON.stringify(projectWithTinyMaps(MAX_MAPS))).maps()).toHaveLength(MAX_MAPS);
+    const error = errorOf(() => EditSession.open(JSON.stringify(projectWithTinyMaps(MAX_MAPS + 1))));
     expect(error.code).toBe("TOO_LARGE");
     expect(error.path).toBe("$.maps");
     expect(error.message).toBe("the project has 1,025 maps; a project can have at most 1,024.");
@@ -221,10 +224,13 @@ describe("sharded pack limits", () => {
   });
 
   test(`${MAX_SHARDS} shards are accepted; ${MAX_SHARDS + 1} are refused before the shell is validated`, () => {
-    const atLimit = packOf(projectWithMaps(MAX_SHARDS));
+    // Count limit, not content: 1x1 maps keep the pack small and the test
+    // load-independent (the full-map form neared Bun's 5 s default under
+    // full-suite load).
+    const atLimit = packOf(projectWithTinyMaps(MAX_SHARDS));
     expect(parseShardedPack(atLimit).shards.size).toBe(MAX_SHARDS);
     expect(EditSession.open(atLimit).maps()).toHaveLength(MAX_SHARDS);
-    const over = packOf(projectWithMaps(MAX_SHARDS + 1));
+    const over = packOf(projectWithTinyMaps(MAX_SHARDS + 1));
     const error = errorOf(() => EditSession.open(over));
     expect(error.code).toBe("TOO_LARGE");
     expect(error.message).toBe("the pack has 1,025 map shards; a pack can have at most 1,024.");

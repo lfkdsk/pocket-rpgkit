@@ -81,8 +81,8 @@ describe("editor command tree", () => {
       "shop",
       "battle",
       "switch",
-      "erase",
       "wait",
+      "erase",
     ]);
     expect(rows.map((row) => row.depth)).toEqual([0, 0, 1, 2, 2, 2, 1, 0, 1, 1, 1]);
     expect(rows.map((row) => row.branch ?? null)).toEqual([
@@ -95,8 +95,8 @@ describe("editor command tree", () => {
       "Else",
       null,
       "Win",
-      "Lose",
       "Escape",
+      "Lose",
     ]);
     expect(rows.every((row) => row.editable && !row.readOnly)).toBe(true);
     expect(rows[3]!.key).toBe("i1:then/c0:option:0#0");
@@ -125,7 +125,7 @@ describe("editor command tree", () => {
 
     expect(JSON.stringify(original)).toBe(snapshot);
     expect(flattenCommands(next).map((row) => row.command.op === "switch" ? row.command.id : row.command.op)).toEqual([
-      "if", "then", "else", "choices", "option", "cancel", "battle", "win", "lose", "escape",
+      "if", "then", "else", "choices", "option", "cancel", "battle", "win", "escape", "lose",
     ]);
     expect((next[0] as Extract<Command, { op: "if" }>).else).toEqual([switchCommand("else")]);
     expect((next[1] as Extract<Command, { op: "choices" }>).cancel?.commands).toEqual([switchCommand("cancel")]);
@@ -461,6 +461,7 @@ describe("editor condition and route helpers", () => {
       "World is idle",
       "Any BGM is playing",
       "Timer >= 0s",
+      "Region 0 at (0, 0)",
       "Extension game.condition null",
     ]);
     expect(CONDITION_KINDS.map((kind) => defaultPageCondition(kind))).toEqual([
@@ -475,6 +476,7 @@ describe("editor condition and route helpers", () => {
       { all: [{ kind: "worldIdle", negate: false }] },
       { all: [{ kind: "bgmPlaying", negate: false }] },
       { all: [{ kind: "timer", op: ">=", seconds: 0 }] },
+      { all: [{ kind: "region", x: 0, y: 0, id: 0 }] },
       { all: [{ kind: "ext", call: "game.condition", args: null }] },
     ]);
   });

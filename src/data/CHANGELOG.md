@@ -39,7 +39,11 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `3315cbf7af3ceb5f6690824bf7fe0d0d7ac90f080fd741c7e24159a2b3e99ddb` | optional label `ord` (the label's position in the original flat RPG Maker source list, so a `jumpLabel` resolves the first label in source order even when the importer reordered branches) | additive |
+| `1b66bce2dff2f3f8476a9dcc3212ee826053447c5a7683c9942adbcfd122fc12` | optional map `tiles` (four raw RPG Maker tile layers for Get Location Info), optional item `kind` (weapon/armor), `locationInfo` layer 0..3 | additive |
+| `3a57e757f9f5d4f3da13529cd376ceb8ef50a354a3a618e45a8fa41641b84562` | the merged KRM3 and KRM3V batches together: `label`/`jumpLabel`, `selectItem`, `menuAccess`/`saveAccess`, `locationInfo`, `stopSe`, the `region` condition, map `regions`/`terrain` and item `type`, plus map parallax/`changeParallax` and animation sound/flash timings | additive |
 | `0e510772cbf540414553fd8f4204e0cecba80f4d8c844146e3be46d23841daae` | optional map parallax data and `changeParallax`; optional animation sound/flash timings; `mapAnim` may target the issuing event as `this` | additive |
+| `3ac9e23fa3289a6021dfe4e0141e732b303aefad37c2ba70538423701f00156e` | `label`/`jumpLabel`, `selectItem`, `menuAccess`/`saveAccess`, `locationInfo`, `stopSe` commands; `region` condition; optional map `regions`/`terrain`; optional item `type` | additive |
 | `49d96a259da5a5bae6f15eb0c3e7184e8f874de1b0f13a8ba161586f4c0149a1` | optional project `worldTraversal` identity and optional transfer `handoff` opening provenance; absent fields retain the legacy transfer timeline | additive |
 | `bc4e72429a7ed9f491dcddf7a9b6bbd5ef8216d2521721ad1c078cabccf26906` | optional root `uiText` (the kit's interface words, including the demo error sentence templates) | additive |
 | `4a9a831002d95a662f16c83de31dea57998ae72b7c2183d5433eabd932f4c4a1` | `scrollMap`; `showPicture` / `movePicture` / `rotatePicture` / `tintPicture` / `erasePicture`; `timer`; `inputNumber`; `openMenu` / `openSave` / `gameOver` / `returnTitle`; `changeName`; `mapNameDisplay`; `timer` condition; optional `system.mapNameDisplay` | additive |

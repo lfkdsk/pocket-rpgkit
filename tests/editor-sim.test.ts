@@ -765,8 +765,10 @@ simDescribe("editor budget", () => {
     // opt-in ItemIconRow and ParallaxLayer renderers so shops draw the baked
     // item-icon cells, adding 10,076 B: measured 1,553,932 B. The bundled
     // playtest-art fixture (its 11.7 KB document plus the three-kind art
-    // manifest) brings the merged editor to 1,566,916 B. Keep a narrow
-    // margin.
-    expect(js).toBeLessThan(1_570_000);
+    // manifest) brings the merged editor to 1,566,916 B. KRM3's label/
+    // select-item/access/locationInfo/stop-se commands and the fix-4 engine
+    // changes land on top, bringing the merged editor to 1,591,111 B. Keep
+    // a narrow margin.
+    expect(js).toBeLessThan(1_595_000);
   });
 });

@@ -28,6 +28,20 @@ import {
 } from "../../../../src/engine/interpreter.ts";
 import { flattenPageCondition } from "../conditions.ts";
 import { walkCommands } from "../walk.ts";
+import { NAME_INPUT_SCENE_ID } from "../../../../src/engine/name-input.ts";
+import { NUMBER_INPUT_SCENE_ID } from "../../../../src/engine/number-input.ts";
+import { SELECT_ITEM_SCENE_ID } from "../../../../src/engine/select-item.ts";
+
+/** Built-in scene ids the engine compiles commands into (inputNumber,
+ *  selectItem) or that a game may scene into explicitly (nameInput). They
+ *  never appear as `scene` commands in the document, so the document walk
+ *  below would not register rules for them; the session fail-fasts on a
+ *  missing SceneRules, so the checker must register noop rules for them. */
+const BUILT_IN_SCENE_IDS: readonly string[] = [
+  NUMBER_INPUT_SCENE_ID,
+  SELECT_ITEM_SCENE_ID,
+  NAME_INPUT_SCENE_ID,
+];
 
 export const CHECK_HZ = 60;
 
@@ -90,9 +104,12 @@ export const NOOP_SCENE_RULES: SceneRules = {
 /** Every scene id referenced by the document (map events, common events,
  *  nested branches) must have a registered SceneRules or createSession
  *  throws. The checks measure event/lock/world liveness, not scene logic,
- *  so every id gets the shared noop rules. */
+ *  so every id gets the shared noop rules. The engine's built-in scenes
+ *  (inputNumber/selectItem/nameInput) are registered too: the first two
+ *  are compiled from commands, not authored as `scene`, so the document
+ *  walk would miss them. */
 export function checkSceneRules(project: Project): Record<string, SceneRules> {
-  const ids = new Set<string>();
+  const ids = new Set<string>(BUILT_IN_SCENE_IDS);
   const collect = (commands: readonly Command[]): void => {
     walkCommands(commands, (command) => {
       if (command.op === "scene") ids.add(command.id);

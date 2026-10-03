@@ -544,7 +544,7 @@ simDescribe("event editor pointer integration", () => {
     expect(battle.onLose).toEqual([{ op: "switch", id: "switch", value: true }]);
     expect(battle.onEscape).toEqual([{ op: "wait", seconds: 1 }]);
     expect(commandInspectorRows(selectedEvent().pages[0]!.commands).filter((row) => row.depth === 1).map((row) => row.branch)).toEqual([
-      "Win", "Lose", "Escape",
+      "Win", "Escape", "Lose",
     ]);
 
     const del = inspectorLayout(720, 480).commandActions.find(

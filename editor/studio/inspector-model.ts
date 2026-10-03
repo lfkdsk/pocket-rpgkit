@@ -53,10 +53,13 @@ const CATEGORY_OF: Readonly<Record<string, CommandCategory>> = {
   openSave: "flow",
   gameOver: "flow",
   returnTitle: "flow",
+  label: "flow",
+  jumpLabel: "flow",
   text: "message",
   choices: "message",
   balloon: "message",
   inputNumber: "message",
+  selectItem: "message",
   switch: "state",
   variable: "state",
   selfSwitch: "state",
@@ -66,6 +69,9 @@ const CATEGORY_OF: Readonly<Record<string, CommandCategory>> = {
   tileProperty: "state",
   timer: "state",
   changeName: "state",
+  menuAccess: "state",
+  saveAccess: "state",
+  locationInfo: "state",
   moveRoute: "move",
   transfer: "move",
   moveControl: "move",
@@ -100,6 +106,7 @@ const CATEGORY_OF: Readonly<Record<string, CommandCategory>> = {
   fadeoutBgs: "audio",
   playMe: "audio",
   playSe: "audio",
+  stopSe: "audio",
   saveBgm: "audio",
   replayBgm: "audio",
 };
@@ -130,12 +137,19 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   mapAnim: "Map animation",
   stopAnim: "Stop animation",
   break: "Break loop",
+  label: "Label",
+  jumpLabel: "Jump to label",
   inputNumber: "Input number",
+  selectItem: "Select item",
   openMenu: "Open menu screen",
   openSave: "Open save screen",
   gameOver: "Game over",
   returnTitle: "Return to title screen",
   mapNameDisplay: "Map name display",
+  menuAccess: "Menu access",
+  saveAccess: "Save access",
+  locationInfo: "Get location info",
+  stopSe: "Stop SE",
   changeParallax: "Change parallax",
 };
 
@@ -231,7 +245,7 @@ export function commandBranchTargets(command: Command, address: CommandAddress):
       return targets;
     }
     case "battle":
-      return ([["win", "onWin", "Win"], ["lose", "onLose", "Lose"], ["escape", "onEscape", "Escape"]] as const).map(
+      return ([["win", "onWin", "Win"], ["escape", "onEscape", "Escape"], ["lose", "onLose", "Lose"]] as const).map(
         ([key, property, label]) => ({ key, label, path: battleBranchPath(address, key), present: Array.isArray(value[property]) }),
       );
     case "scene":

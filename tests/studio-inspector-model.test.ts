@@ -131,7 +131,7 @@ describe("branches and the visible tree", () => {
     const ifTargets = commandBranchTargets(getCommand(commands, ifAddress)!, ifAddress);
     expect(ifTargets.map((target) => [target.key, target.present])).toEqual([["then", true], ["else", true]]);
     expect(commandBranchTargets({ op: "battle", setup: {} } as unknown as Command, { path: [], index: 0 }).map((t) => t.key))
-      .toEqual(["win", "lose", "escape"]);
+      .toEqual(["win", "escape", "lose"]);
     expect(commandBranchTargets({ op: "scene", id: "x" } as Command, { path: [], index: 0 }).map((t) => t.key)).toEqual(["done", "cancel"]);
     expect(commandBranchTargets({ op: "wait", seconds: 1 }, { path: [], index: 0 })).toEqual([]);
     expect(commandBranchTargets({ op: "loop", commands: [] }, { path: [], index: 2 })).toEqual([

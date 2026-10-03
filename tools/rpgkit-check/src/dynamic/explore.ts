@@ -103,6 +103,10 @@ const STATE_MUTATING_OPS: ReadonlySet<Command["op"]> = new Set<Command["op"]>([
   "resumeBgm",
   "playMe",
   "replayBgm",
+  // Scenes that write a variable (the chosen item id / a cell fact) can
+  // change which pages are active once the modal resolves.
+  "selectItem",
+  "locationInfo",
 ]);
 
 export interface ExploreOptions {

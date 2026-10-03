@@ -7,7 +7,7 @@
 // session's saved mulberry32 cursor. Their only effects are returned data.
 
 import { deepClone, keyedRecord } from "./clone.ts";
-import type { JsonValue, VariableValue } from "./types.ts";
+import type { Item, JsonValue, VariableValue } from "./types.ts";
 
 export interface ExtensionReadContext {
   readonly ext: JsonValue;
@@ -18,6 +18,10 @@ export interface ExtensionReadContext {
   /** KG1: the live player name, so a scene (name input) can prefill its
    *  edit buffer from the current value. */
   readonly playerName: string;
+  /** The project's immutable item catalog (id, name, type, …), for scenes
+   *  that list items (the built-in select-item scene). Absent for extension
+   *  command/condition contexts, which only see the backpack counts. */
+  readonly itemCatalog?: readonly Item[];
 }
 
 export interface ExtensionCommandContext extends ExtensionReadContext {

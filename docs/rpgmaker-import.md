@@ -127,7 +127,7 @@ In short:
 ## Command table
 
 Every MV/MZ event command code and what the importer does with a minimal
-use of it: 53 of the 107 commands map natively, 3 run degraded, 4 become
+use of it: 60 of the 107 commands map natively, 3 run degraded, 4 become
 placeholders (Battle Processing, Script and the two plugin commands) and
 47 are dropped, many of them actor, enemy and battle-only commands. "Needs
 kit" names the runtime capability a native mapping would take; it is the
@@ -142,7 +142,7 @@ for that project, to `coverage.md`.
 | 101 | Show Text | MV/MZ | Native |  | face graphics per message (portrait keyed by file/index, not speaker) |
 | 102 | Show Choices | MV/MZ | Native |  | single-option lists and a default cursor row |
 | 103 | Input Number | MV/MZ | Native |  |  |
-| 104 | Select Item | MV/MZ | Dropped |  | an item picker writing the chosen item id to a variable |
+| 104 | Select Item | MV/MZ | Native |  |  |
 | 105 | Show Scrolling Text | MV/MZ | Degraded | scrolling text shown as message pages | a scrolling credits-style text box |
 | 108 | Comment | MV/MZ | Native |  |  |
 | 109 | Skip | MZ | Native |  |  |
@@ -151,8 +151,8 @@ for that project, to `coverage.md`.
 | 113 | Break Loop | MV/MZ | Native |  |  |
 | 115 | Exit Event Processing | MV/MZ | Native |  | a return-from-common-event command (exit ends the calling fiber) |
 | 117 | Common Event | MV/MZ | Native |  |  |
-| 118 | Label | MV/MZ | Dropped |  | labels and goto |
-| 119 | Jump to Label | MV/MZ | Dropped |  | labels and goto |
+| 118 | Label | MV/MZ | Native |  |  |
+| 119 | Jump to Label | MV/MZ | Native |  |  |
 | 121 | Control Switches | MV/MZ | Native |  |  |
 | 122 | Control Variables | MV/MZ | Native |  | variable sources for actor, character, party and remaining game data |
 | 123 | Control Self Switch | MV/MZ | Native |  | four independent self switches per event (the kit keeps one slot) |
@@ -164,8 +164,8 @@ for that project, to `coverage.md`.
 | 129 | Change Party Member | MV/MZ | Native |  | a party roster (the importer keeps one switch per actor) |
 | 132 | Change Battle BGM | MV/MZ | Dropped |  | battle audio settings in the battle setup |
 | 133 | Change Victory ME | MV/MZ | Dropped |  | battle audio settings in the battle setup |
-| 134 | Change Save Access | MV/MZ | Dropped |  | a save-access flag the host save menu honours |
-| 135 | Change Menu Access | MV/MZ | Dropped |  | a menu-access flag the host menu honours |
+| 134 | Change Save Access | MV/MZ | Native |  |  |
+| 135 | Change Menu Access | MV/MZ | Native |  |  |
 | 136 | Change Encounter | MV/MZ | Dropped |  | random encounters |
 | 137 | Change Formation Access | MV/MZ | Dropped |  | a party formation menu |
 | 138 | Change Window Color | MV/MZ | Dropped |  | a runtime UI theme command |
@@ -203,13 +203,13 @@ for that project, to `coverage.md`.
 | 246 | Fadeout BGS | MV/MZ | Native |  |  |
 | 249 | Play ME | MV/MZ | Degraded | ME length unknown; plays for 4 s | ME length from the decoded audio file (playMe needs an authored duration) |
 | 250 | Play SE | MV/MZ | Native |  | audio pan |
-| 251 | Stop SE | MV/MZ | Dropped |  | a stop-all-SE command |
+| 251 | Stop SE | MV/MZ | Native |  |  |
 | 261 | Play Movie | MV/MZ | Dropped |  | video playback |
 | 281 | Change Map Name Display | MV/MZ | Native |  |  |
 | 282 | Change Tileset | MV/MZ | Dropped |  | runtime tileset swaps (a ground/upper layer variant per tileset) |
 | 283 | Change Battle Background | MV/MZ | Dropped |  | battle backgrounds in the battle setup |
 | 284 | Change Parallax | MV/MZ | Native |  |  |
-| 285 | Get Location Info | MV/MZ | Dropped |  | a variable source for terrain tag/event id/tile id/region at a cell |
+| 285 | Get Location Info | MV/MZ | Native |  |  |
 | 301 | Battle Processing | MV/MZ | Placeholder | no RPG Maker battle system; the game runs a placeholder battle | an RPG Maker battle system (troops, actors, skills) behind the battle op |
 | 302 | Shop Processing | MV/MZ | Native |  |  |
 | 303 | Name Input Processing | MV/MZ | Native |  | per-actor names (only the player name has a text token) |
@@ -265,9 +265,11 @@ constructs. Of note:
   checked again only after the page program ends and is eligible to start
   anew. A Break Loop outside a parsed loop ends that page or common event
   and is conservatively counted Degraded for malformed flat command lists.
-  Label and Jump to Label remain Dropped: RPG Maker permits arbitrary jumps
-  through its flat command list, which a structured command tree cannot
-  represent. See [Loops and labels](../src/engine/README.md#loops-and-labels).
+  Label and Jump to Label map natively: a jump goes to the first label with
+  that name anywhere in the same page or common event, at any nesting depth,
+  entering or leaving branch blocks unconditionally like MV's flat-list
+  jumpTo. A jump to a name with no label does nothing. See
+  [Loops and labels](../src/engine/README.md#loops-and-labels).
 - **Self switches**: the kit keeps one self-switch letter per event, so an
   event that sets B after A loses A (counted Degraded where it happens).
 - **Waited movement routes** that change a switch, the character's
@@ -327,9 +329,11 @@ constructs. Of note:
 - **No battle system, actors or classes.** Actor, enemy and battle-only
   commands are dropped; Battle Processing is a placeholder.
 - **Maps are capped at 256 × 256**, the kit's limit.
-- Region ids, terrain tags, damage floors and map encounters are not carried
-  over; ladders, bushes and counters keep their passage but not their special
-  behaviour.
+- Region ids and terrain tags are carried over as sparse per-cell map data
+  (Get Location Info and the `region` condition read them); damage floors and
+  map encounters are not. Ladders, bushes and counters keep their passage but
+  not their special behaviour.
+- Item icons (`IconSet.png`) are not imported.
 - MZ Effekseer animations are not converted. MV target-only flash, temporary
   target hiding and blend interaction with the map are reported as degraded,
   while their remaining animation still imports.

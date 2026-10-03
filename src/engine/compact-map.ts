@@ -14,7 +14,7 @@ export const COMPACT_MAP_MAGIC = "rpgkit-map/1";
 function isCompactMapField(key: string): boolean {
   return key === "$" || key === "i" || key === "n" || key === "w" || key === "h" ||
     key === "s" || key === "g" || key === "u" || key === "p" || key === "a" ||
-    key === "k" || key === "e";
+    key === "k" || key === "e" || key === "r" || key === "t" || key === "l";
 }
 
 type DenseLayer =
@@ -41,6 +41,9 @@ interface CompactMapEnvelope {
   a?: unknown;
   k?: string[];
   e?: unknown;
+  r?: unknown;
+  t?: unknown;
+  l?: unknown;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -258,6 +261,106 @@ function decodePassage(value: unknown, cells: number): [number, "pass" | "block"
   return out;
 }
 
+/** Decode a sparse [index, small-int] layer (regions 1..255, terrain tags
+ *  1..7): the same raw/grouped shapes as passage, with the value validated
+ *  against `min`..`max`. */
+function decodeSparseInt(value: unknown, cells: number, label: string, min: number, max: number): [number, number][] {
+  if (!Array.isArray(value) || typeof value[0] !== "string") fail(`${label} encoding is malformed`);
+  if (value[0] === "j") {
+    if (value.length !== 2 || !Array.isArray(value[1])) fail(`raw ${label} must be an array`);
+    const out: [number, number][] = [];
+    for (let cursor = 0; cursor < value[1].length; cursor++) {
+      const pair = value[1][cursor];
+      if (!Array.isArray(pair) || pair.length !== 2) fail(`raw ${label} entry ${cursor} must be a pair`);
+      const index = integer(pair[0], `raw ${label} entry ${cursor} index`);
+      if (index >= cells) fail(`${label} index is out of range`);
+      const tag = pair[1];
+      if (typeof tag !== "number" || !Number.isSafeInteger(tag) || tag < min || tag > max) {
+        fail(`${label} entry ${cursor} value must be an integer in ${min}..${max}`);
+      }
+      out.push([index, tag]);
+    }
+    return out;
+  }
+  if (value[0] !== "g" || value.length !== 2 || !Array.isArray(value[1])) {
+    fail(`unsupported ${label} encoding ${JSON.stringify(value[0])}`);
+  }
+  const out: [number, number][] = [];
+  const seen = new Set<number>();
+  for (let groupIndex = 0; groupIndex < value[1].length; groupIndex++) {
+    const group = value[1][groupIndex];
+    if (!Array.isArray(group) || group.length !== 3 ||
+      typeof group[0] !== "number" || !Number.isSafeInteger(group[0]) || group[0] < min || group[0] > max ||
+      (group[1] !== "d" && group[1] !== "r")) {
+      fail(`${label} group ${groupIndex} is malformed`);
+    }
+    const encoded = numbers(group[2], `${label} group ${groupIndex}`);
+    const indices = group[1] === "d"
+      ? deltaDecode(encoded, `${label} group ${groupIndex}`)
+      : rangeDecode(encoded, `${label} group ${groupIndex}`, cells);
+    for (const index of indices) {
+      if (index >= cells) fail(`${label} index is out of range`);
+      if (seen.has(index)) fail(`${label} index is duplicated`);
+      seen.add(index);
+      out.push([index, group[0]]);
+    }
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+
+/** Decode the sparse raw-tile layer [index, [z0,z1,z2,z3]]: the raw "j"
+ *  spelling or the palette "d" spelling (per-map tuple dictionary plus
+ *  delta/palette-index pairs), the same shapes as the upper layer. */
+function decodeTiles(value: unknown, cells: number): [number, [number, number, number, number]][] {
+  if (!Array.isArray(value) || typeof value[0] !== "string") fail("tiles encoding is malformed");
+  if (value[0] === "j") {
+    if (value.length !== 2 || !Array.isArray(value[1])) fail("raw tiles must be an array");
+    const out: [number, [number, number, number, number]][] = [];
+    for (let cursor = 0; cursor < value[1].length; cursor++) {
+      const pair = value[1][cursor];
+      if (!Array.isArray(pair) || pair.length !== 2) fail(`raw tiles entry ${cursor} must be a pair`);
+      const index = integer(pair[0], `raw tiles entry ${cursor} index`);
+      if (index >= cells) fail("tiles index is out of range");
+      out.push([index, tileQuad(pair[1], `raw tiles entry ${cursor}`)]);
+    }
+    return out;
+  }
+  if (value[0] !== "d" || value.length !== 3) fail(`unsupported tiles encoding ${JSON.stringify(value[0])}`);
+  if (!Array.isArray(value[1]) || value[1].length === 0) fail("tiles palette must not be empty");
+  const palette: [number, number, number, number][] = [];
+  for (let i = 0; i < value[1].length; i++) {
+    palette.push(tileQuad(value[1][i], `tiles palette ${i}`));
+  }
+  const encoded = numbers(value[2], "tiles entries");
+  if (encoded.length % 2 !== 0) fail("tiles entries must be delta/index pairs");
+  const out: [number, [number, number, number, number]][] = [];
+  let index = -1;
+  for (let cursor = 0; cursor < encoded.length; cursor += 2) {
+    const delta = encoded[cursor]!;
+    const paletteIndex = encoded[cursor + 1]!;
+    if (delta < 1) fail("tiles deltas must be positive");
+    index += delta;
+    if (index >= cells) fail("tiles index is out of range");
+    if (paletteIndex >= palette.length) fail("tiles palette index is out of range");
+    out.push([index, palette[paletteIndex]!]);
+  }
+  return out;
+}
+
+function tileQuad(value: unknown, label: string): [number, number, number, number] {
+  if (!Array.isArray(value) || value.length !== 4) fail(`${label} must be a four-tuple`);
+  const out = new Array<number>(4);
+  for (let i = 0; i < 4; i++) {
+    const v = value[i];
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
+      fail(`${label}[${i}] must be a non-negative integer`);
+    }
+    out[i] = v;
+  }
+  return out as [number, number, number, number];
+}
+
 interface DecodeTask {
   input: unknown;
   parent: unknown[] | Record<string, unknown>;
@@ -359,6 +462,9 @@ export function decodeCompactMap(value: unknown): MapDef {
   if (value.s !== undefined) out.sheets = value.s;
   if (value.u !== undefined) out.upper = decodeSparseTiles(value.u, cells);
   if (value.p !== undefined) out.passage = decodePassage(value.p, cells);
+  if (value.r !== undefined) out.regions = decodeSparseInt(value.r, cells, "regions", 1, 255);
+  if (value.t !== undefined) out.terrain = decodeSparseInt(value.t, cells, "terrain", 1, 7);
+  if (value.l !== undefined) out.tiles = decodeTiles(value.l, cells);
   if (value.a !== undefined) out.parallax = decodeParallax(value.a);
   if (value.e !== undefined) {
     if (!Array.isArray(value.k) || value.k.some((key) => typeof key !== "string") || new Set(value.k).size !== value.k.length) {

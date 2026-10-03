@@ -334,7 +334,9 @@
         "sprite": { "$ref": "#/$defs/tileId" },
         "usable": { "type": "boolean" },
         "price": { "type": "integer", "minimum": 0, "description": "Shop price. A shop's goods entry may override it for buying, and override its own sellPrice for selling; a shop with no such override sells at floor(price/2)." },
-        "sellable": { "type": "boolean", "description": "Whether this item can be sold for gold at all. Absent defaults to true whenever its effective sell price is > 0; an effective sell price of 0 is never sellable regardless of this flag." }
+        "sellable": { "type": "boolean", "description": "Whether this item can be sold for gold at all. Absent defaults to true whenever its effective sell price is > 0; an effective sell price of 0 is never sellable regardless of this flag." },
+        "type": { "enum": ["regular", "key", "hiddenA", "hiddenB"], "description": "RPG Maker item type (MV itypeId). Absent defaults to regular. The select-item scene filters on this." },
+        "kind": { "enum": ["item", "weapon", "armor"], "description": "RPG Maker database kind. Absent defaults to item. The select-item scene only lists kind item (MV parity: weapons and armors are never offered)." }
       }
     },
     "actor": {
@@ -515,6 +517,42 @@
           "uniqueItems": true
         },
         "parallax": { "$ref": "#/$defs/parallax" },
+        "regions": {
+          "type": "array",
+          "description": "Sparse RPG Maker region ids: [row-major index, region id]. Only cells with a nonzero region are listed.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [{ "type": "integer", "minimum": 0 }, { "type": "integer", "minimum": 1, "maximum": 255 }]
+          },
+          "uniqueItems": true
+        },
+        "terrain": {
+          "type": "array",
+          "description": "Sparse RPG Maker terrain tags: [row-major index, tag]. Only cells with a nonzero tag are listed.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [{ "type": "integer", "minimum": 0 }, { "type": "integer", "minimum": 1, "maximum": 7 }]
+          },
+          "uniqueItems": true
+        },
+        "tiles": {
+          "type": "array",
+          "description": "Sparse RPG Maker raw tile ids per cell: [row-major index, [layer0, layer1, layer2, layer3]]. Only cells with a nonzero tile in any of the four layers are listed; read by the locationInfo command's tile kind.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [
+              { "type": "integer", "minimum": 0 },
+              { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "integer", "minimum": 0 } }
+            ]
+          },
+          "uniqueItems": true
+        },
         "events": {
           "type": "array",
           "items": { "$ref": "#/$defs/event" }
@@ -1061,6 +1099,17 @@
           },
           "description": "Open the built-in digit editor and write its committed value to an event variable."
         },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "variable", "itemType"],
+          "description": "Open the built-in item picker (RPG Maker 104) and write the chosen item's numeric id to a variable, 0 on cancel.",
+          "properties": {
+            "op": { "const": "selectItem" },
+            "variable": { "type": "string", "minLength": 1 },
+            "itemType": { "enum": ["regular", "key", "hiddenA", "hiddenB"] }
+          }
+        },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "openMenu" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "openSave" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "gameOver" } } },
@@ -1081,6 +1130,40 @@
           "properties": {
             "op": { "const": "mapNameDisplay" },
             "visible": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "enabled"],
+          "description": "Enable/disable the host's menu entry (RPG Maker 135). Default enabled; a disabled menu makes openMenu a no-op.",
+          "properties": {
+            "op": { "const": "menuAccess" },
+            "enabled": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "enabled"],
+          "description": "Enable/disable the host's save entry (RPG Maker 134). Default enabled; a disabled save makes openSave a no-op.",
+          "properties": {
+            "op": { "const": "saveAccess" },
+            "enabled": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "variable", "x", "y", "kind"],
+          "description": "Write a fact about one map cell to a variable (RPG Maker 285): its terrain tag, the lowest event id on it, the composed tile's sheet index, or its region id. An out-of-bounds cell writes 0.",
+          "properties": {
+            "op": { "const": "locationInfo" },
+            "variable": { "type": "string", "minLength": 1 },
+            "x": { "oneOf": [{ "type": "integer" }, { "$ref": "#/$defs/variableRef" }] },
+            "y": { "oneOf": [{ "type": "integer" }, { "$ref": "#/$defs/variableRef" }] },
+            "kind": { "enum": ["terrain", "event", "tile", "region"] },
+            "layer": { "enum": [0, 1, 2, 3], "description": "For kind 'tile': which of the four RPG Maker tile layers (0 = ground, default)." }
           }
         },
         {
@@ -1190,6 +1273,7 @@
             "pitch": { "type": "integer", "minimum": 50, "maximum": 150 }
           }
         },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "description": "Stop every sound effect currently playing (RPG Maker 251).", "properties": { "op": { "const": "stopSe" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "saveBgm" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "replayBgm" } } },
         { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "erase" } } },
@@ -1205,6 +1289,27 @@
           }
         },
         { "type": "object", "additionalProperties": false, "required": ["op"], "description": "Leave the innermost loop; outside a loop, end the current page or common event.", "properties": { "op": { "const": "break" } } },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "name"],
+          "description": "A named position in this page or common event (RPG Maker 118). A jumpLabel finds the first label with this name anywhere in the same list, at any nesting depth. `ord` is the label's position in the original flat RPG Maker source list (set by the importer); the first label is the lowest-ord one, matching MV's jumpTo scan. Hand-authored lists omit it.",
+          "properties": {
+            "op": { "const": "label" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "ord": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "name"],
+          "description": "Jump to the first label with this name in the same page or common event (RPG Maker 119). A name with no label does nothing.",
+          "properties": {
+            "op": { "const": "jumpLabel" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 100 }
+          }
+        },
         {
           "type": "object",
           "additionalProperties": false,
@@ -1732,6 +1837,18 @@
             "negate": { "type": "boolean", "description": "Invert the derived world-idle result." }
           },
           "description": "True only while the map world is the unobstructed top-level state: no blocking event, input lock, modal, player route, transfer/fade, queued or active scene, fatal overlay, or host menu. Derived at the exact condition evaluation point and never saved."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "x", "y", "id"],
+          "properties": {
+            "kind": { "const": "region" },
+            "x": { "type": "integer", "minimum": 0 },
+            "y": { "type": "integer", "minimum": 0 },
+            "id": { "type": "integer", "minimum": 0, "maximum": 255, "description": "The region id to match; 0 matches an unmarked cell." }
+          },
+          "description": "True when the region id authored at cell (x, y) equals id. Cells without a region read 0."
         },
         {
           "type": "object",

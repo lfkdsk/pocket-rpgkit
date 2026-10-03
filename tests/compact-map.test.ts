@@ -187,6 +187,9 @@ describe("compact map codec", () => {
       ground: ["tiles.0", null],
       upper: [],
       passage: [],
+      regions: [],
+      terrain: [],
+      tiles: [],
       events: [],
     };
     const absent: MapDef = {
@@ -201,10 +204,53 @@ describe("compact map codec", () => {
     const decodedAbsent = decodeCompactMap(JSON.parse(encodeCompactMap(absent).text));
     expect(canonicalJson(decodedEmpty)).toBe(canonicalJson(empty));
     expect(canonicalJson(decodedAbsent)).toBe(canonicalJson(absent));
-    for (const key of ["sheets", "upper", "passage", "events"]) {
+    for (const key of ["sheets", "upper", "passage", "events", "regions", "terrain", "tiles"]) {
       expect(hasOwn(decodedEmpty, key), `empty map retains ${key}`).toBe(true);
       expect(hasOwn(decodedAbsent, key), `absent map omits ${key}`).toBe(false);
     }
+  });
+
+  test("round-trips regions, terrain tags and the four raw tile planes", () => {
+    const map: MapDef = {
+      id: "planes",
+      name: "Planes",
+      width: 8,
+      height: 2,
+      sheets: ["tiles"],
+      ground: new Array(16).fill("tiles.0"),
+      regions: [[0, 1], [3, 255], [10, 7], [15, 1]],
+      terrain: [[1, 1], [4, 7], [12, 3]],
+      tiles: [
+        [0, [1, 2, 3, 4]],
+        [5, [0, 16, 0, 0]],
+        [9, [1024, 0, 0, 0]],
+        [15, [1, 2, 3, 4]],
+      ],
+    };
+    const encoded = encodeCompactMap(map);
+    const decoded = decodeCompactMap(JSON.parse(encoded.text));
+    expect(canonicalJson(decoded)).toBe(canonicalJson(map));
+    // Field-by-field, so a future codec change cannot hide a dropped plane
+    // behind a canonical-json quirk.
+    expect(decoded.regions).toEqual(map.regions);
+    expect(decoded.terrain).toEqual(map.terrain);
+    expect(decoded.tiles).toEqual(map.tiles);
+  });
+
+  test("a map without the new planes encodes exactly as before", () => {
+    const map: MapDef = {
+      id: "no-planes",
+      name: "No planes",
+      width: 2,
+      height: 1,
+      sheets: ["tiles"],
+      ground: ["tiles.0", "tiles.0"],
+    };
+    const value = JSON.parse(encodeCompactMap(map).text) as Record<string, unknown>;
+    expect(hasOwn(value, "r")).toBe(false);
+    expect(hasOwn(value, "t")).toBe(false);
+    expect(hasOwn(value, "l")).toBe(false);
+    expect(canonicalJson(decodeCompactMap(value))).toBe(canonicalJson(map));
   });
 
   test("non-increasing sparse layers fall back to raw pairs without reordering or deduplication", () => {

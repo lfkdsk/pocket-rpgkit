@@ -58,8 +58,15 @@ const NEWER_COMMAND_CASES: readonly {
   { op: "fadeoutBgs", edits: [["duration", "0.1"]] },
   { op: "playMe", edits: [["id", "victory"], ["duration", "0.1"]] },
   { op: "playSe", edits: [["id", "door"], ["pitch", "120"]] },
+  { op: "stopSe", edits: [] },
   { op: "saveBgm", edits: [] },
   { op: "replayBgm", edits: [] },
+  { op: "label", edits: [["name", "checkpoint"]] },
+  { op: "jumpLabel", edits: [["name", "checkpoint"]] },
+  { op: "selectItem", edits: [["variable", "pick"], ["itemType", "key"]] },
+  { op: "menuAccess", edits: [["enabled", "false"]] },
+  { op: "saveAccess", edits: [["enabled", "false"]] },
+  { op: "locationInfo", edits: [["variable", "cell"], ["x", "3"], ["y", "4"], ["kind", "region"], ["layer", "1"]] },
 ] as const;
 
 const INPUT: InterpInput = {
@@ -125,7 +132,8 @@ describe("newer editor commands roundtrip through the runtime", () => {
       "openMenu", "openSave", "gameOver", "returnTitle", "changeName", "mapNameDisplay",
       "mapAnim", "stopAnim", "shop", "battle", "ext", "extChoice",
       "playBgm", "fadeoutBgm", "stopBgm", "pauseBgm", "resumeBgm",
-      "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm",
+      "playBgs", "fadeoutBgs", "playMe", "playSe", "stopSe", "saveBgm", "replayBgm",
+      "label", "jumpLabel", "selectItem", "menuAccess", "saveAccess", "locationInfo",
     ]);
     expect(new Set(NEWER_COMMAND_CASES.map(({ op }) => op)).size).toBe(NEWER_COMMAND_CASES.length);
   });
@@ -139,7 +147,7 @@ describe("newer editor commands roundtrip through the runtime", () => {
 
       const command = loaded.project.maps[0]!.events![0]!.pages[0]!.commands[0]!;
       expect(command).toEqual(authored);
-      const compiledOp = entry.op === "inputNumber"
+      const compiledOp = ["inputNumber", "selectItem"].includes(entry.op)
         ? "scene"
         : ["openMenu", "openSave", "gameOver", "returnTitle"].includes(entry.op)
           ? "hostAction"

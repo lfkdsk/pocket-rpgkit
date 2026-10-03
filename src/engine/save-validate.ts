@@ -19,15 +19,16 @@ import { extensionCallNameValid, jsonValueProblem } from "./extensions.ts";
 
 const INTEGER_OPS = new Set([
   "text", "choices", "switch", "variable", "selfSwitch", "if", "jmp", "repeat", "break",
+  "label", "jumpLabel",
   "wait", "gold", "item", "se",
   "playBgm", "fadeoutBgm", "stopBgm", "pauseBgm", "resumeBgm",
-  "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm",
+  "playBgs", "fadeoutBgs", "playMe", "playSe", "saveBgm", "replayBgm", "stopSe",
   "erase", "exit", "transfer",
   "moveRoute", "moveControl", "common", "lockInput", "unlockInput", "place", "shop",
   "mapAnim", "stopAnim", "appearance", "layer", "changeParallax", "tileProperty",
   "screenFade", "screenTint", "screenFlash", "screenShake", "camera", "scrollMap", "balloon", "screenBackdrop",
   "showPicture", "movePicture", "rotatePicture", "tintPicture", "erasePicture",
-  "timer", "hostAction", "changeName", "mapNameDisplay",
+  "timer", "hostAction", "changeName", "mapNameDisplay", "menuAccess", "saveAccess", "locationInfo",
   "ext", "extChoice", "battle", "scene",
 ]);
 
@@ -232,6 +233,14 @@ function validateCondition(v: unknown, path: string): string | null {
     case "worldIdle":
       if (v.negate !== undefined && typeof v.negate !== "boolean") {
         return fail(`${path}.negate`, "boolean required");
+      }
+      return null;
+    case "region":
+      if (!isNonNegInt(v.x) || !isNonNegInt(v.y)) {
+        return fail(`${path}.x`, "non-negative integers required");
+      }
+      if (!isNonNegInt(v.id) || (v.id as number) > 255) {
+        return fail(`${path}.id`, "integer 0..255 required");
       }
       return null;
     case "bgmPlaying":
@@ -643,6 +652,24 @@ function validateProg(prog: unknown, path: string): string | null {
           return fail(`${here}.to`, "forward integer target after the break required");
         }
         break;
+      case "label":
+        // A name is free-form; the runtime resolves it against the list's
+        // label table (a missing label is a no-op, so no target check here).
+        if (typeof ins.name !== "string" || ins.name.length === 0 || ins.name.length > 100) {
+          return fail(`${here}.name`, "string of 1..100 characters required");
+        }
+        // `ord` records the label's flat source position for first-in-source-
+        // order resolution; absent for hand-authored lists.
+        if (ins.ord !== undefined && !isNonNegInt(ins.ord)) {
+          return fail(`${here}.ord`, "non-negative integer or absent required");
+        }
+        break;
+      case "jumpLabel": {
+        if (typeof ins.name !== "string" || ins.name.length === 0 || ins.name.length > 100) {
+          return fail(`${here}.name`, "string of 1..100 characters required");
+        }
+        break;
+      }
       case "wait":
         if (!isNonNegInt(ins.frames)) return fail(`${here}.frames`, "non-negative integer required");
         break;
@@ -1017,6 +1044,28 @@ function validateProg(prog: unknown, path: string): string | null {
       case "mapNameDisplay":
         if (typeof ins.visible !== "boolean") return fail(`${here}.visible`, "boolean required");
         break;
+      case "menuAccess":
+      case "saveAccess":
+        if (typeof ins.enabled !== "boolean") return fail(`${here}.enabled`, "boolean required");
+        break;
+      case "locationInfo": {
+        if (needStr("variable")) return fail(`${here}.variable`, "string required");
+        const coord = (key: string): string | null => {
+          const v = ins[key];
+          if (typeof v === "number") return Number.isInteger(v) ? null : fail(`${here}.${key}`, "integer required");
+          if (isRecord(v) && typeof v.variable === "string" && v.variable.length > 0) return null;
+          return fail(`${here}.${key}`, "integer or {variable} required");
+        };
+        const cx = coord("x");
+        if (cx) return cx;
+        const cy = coord("y");
+        if (cy) return cy;
+        if (!["terrain", "event", "tile", "region"].includes(ins.kind as string)) {
+          return fail(`${here}.kind`, "terrain|event|tile|region required");
+        }
+        if (![0, 1, 2, 3].includes(ins.layer as number)) return fail(`${here}.layer`, "0|1|2|3 required");
+        break;
+      }
       case "common":
         if (needStr("id")) return fail(`${here}.id`, "string required");
         break;
@@ -1160,6 +1209,46 @@ const FIBER_MODES = new Set([
   "run", "text", "choices", "shop", "wait", "animWait", "screenWait", "external",
 ]);
 
+/** Keys a frame completion transfer may carry: a PendingTransfer minus the
+ *  `fiber` key, which the runtime fills in from the owning fiber. */
+const COMPLETION_KEYS = ["map", "x", "y", "dir", "fadeFrames", "handoff", "playerTouch"];
+
+/** Validate one entry of a frame's `onDone` completion queue (a
+ *  PendingTransfer without the fiber key, which the runtime fills in from
+ *  the owning fiber). Mirrors the transfer instruction's field checks and
+ *  rejects the `fiber` key (the runtime owns it) and any unknown key, so a
+ *  save cannot inject an owner or smuggle extra state into the completion. */
+function validateCompletionTransfer(v: unknown, path: string): string | null {
+  if (!isRecord(v)) return fail(path, "completion transfer must be an object");
+  for (const key of Object.keys(v)) {
+    if (!COMPLETION_KEYS.includes(key)) {
+      return fail(`${path}.${key}`, key === "fiber" ? "fiber is owned by the runtime" : "unknown completion field");
+    }
+  }
+  if (typeof v.map !== "string" || v.map.length === 0) {
+    return fail(`${path}.map`, "non-empty string required");
+  }
+  if (!isFiniteNumber(v.x)) return fail(`${path}.x`, "number required");
+  if (!isFiniteNumber(v.y)) return fail(`${path}.y`, "number required");
+  if (v.dir !== "keep" && !["down", "left", "right", "up"].includes(v.dir as string)) {
+    return fail(`${path}.dir`, 'Dir or "keep" required');
+  }
+  if (!isFiniteNumber(v.fadeFrames)) return fail(`${path}.fadeFrames`, "number required");
+  if (v.handoff !== undefined) {
+    if (!isRecord(v.handoff)) return fail(`${path}.handoff`, "object required");
+    if (v.handoff.mode !== "seamless-v1") {
+      return fail(`${path}.handoff.mode`, '"seamless-v1" required');
+    }
+    if (typeof v.handoff.portalId !== "string" || v.handoff.portalId.length === 0) {
+      return fail(`${path}.handoff.portalId`, "non-empty string required");
+    }
+  }
+  if (v.playerTouch !== undefined && v.playerTouch !== true) {
+    return fail(`${path}.playerTouch`, "true or absent required");
+  }
+  return null;
+}
+
 function validateFiber(
   v: unknown,
   path: string,
@@ -1192,9 +1281,19 @@ function validateFiber(
     const here = `${path}.stack[${i}]`;
     if (!isRecord(frame)) return fail(here, "stack frame must be an object");
     if (!Array.isArray(frame.prog)) return fail(`${here}.prog`, "program array required");
+    if (frame.unit !== undefined && frame.unit !== true) {
+      return fail(`${here}.unit`, "true or absent required");
+    }
     const pc = frame.pc;
     if (typeof pc !== "number" || !Number.isInteger(pc) || pc < 0 || pc > frame.prog.length) {
       return fail(`${here}.pc`, "pc must index inside the program");
+    }
+    if (frame.onDone !== undefined) {
+      if (!Array.isArray(frame.onDone)) return fail(`${here}.onDone`, "completion queue must be an array");
+      for (let i = 0; i < frame.onDone.length; i++) {
+        const e = validateCompletionTransfer(frame.onDone[i], `${here}.onDone[${i}]`);
+        if (e) return e;
+      }
     }
     const e = validateProg(frame.prog, `${here}.prog`);
     if (e) return e;
@@ -1532,6 +1631,13 @@ function validateSwitchState(v: unknown, path: string): string | null {
   }
   if (v.mapNameDisplay !== undefined && v.mapNameDisplay !== true) {
     return fail(`${path}.mapNameDisplay`, "true or absent required");
+  }
+  // Menu/save access default to enabled; only an explicit disable is stored.
+  if (v.menuAccess !== undefined && v.menuAccess !== false) {
+    return fail(`${path}.menuAccess`, "false or absent required");
+  }
+  if (v.saveAccess !== undefined && v.saveAccess !== false) {
+    return fail(`${path}.saveAccess`, "false or absent required");
   }
   if (v.playerAppearance !== undefined) {
     if (!isRecord(v.playerAppearance)) return fail(`${path}.playerAppearance`, "object required");

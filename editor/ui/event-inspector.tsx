@@ -206,6 +206,7 @@ function conditionSummary(condition: Condition): string {
     case "ext": return condition.call;
     case "appearance": return `appearance ${condition.sprite ?? "default"}`;
     case "tileProperty": return `tile (${condition.x}, ${condition.y})`;
+    case "region": return `region ${condition.id} at (${condition.x}, ${condition.y})`;
   }
 }
 

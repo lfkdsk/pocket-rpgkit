@@ -151,6 +151,12 @@ const PICTURE_EASING = ["linear", "easeIn", "easeOut", "easeInOut"] as const;
 /** One head command with its continuation lines and nested blocks. */
 export interface RmNode {
   cmd: RmCommand;
+  /** Flat index of `cmd` in the source command list: the source order MV's
+   *  jumpTo scans when resolving a label. Carried onto `label` commands so
+   *  the runtime's label table picks the first label in source order even
+   *  when the importer reorders branches (e.g. a reversed condition swaps
+   *  then/else). */
+  ord?: number;
   /** Continuation lines (401, 405, 408, 505, 605, 655, 657). */
   lines: RmCommand[];
   /** 111 then-body, 112 loop body, or lines nested under any other
@@ -201,9 +207,10 @@ export function parseTree(list: readonly RmCommand[]): RmNode[] {
   };
 
   const one = (): RmNode => {
+    const ord = i;
     const head = list[i++]!;
     const d = head.indent;
-    const node: RmNode = { cmd: head, lines: [] };
+    const node: RmNode = { cmd: head, ord, lines: [] };
     const cont = CONTINUATION[head.code];
     if (cont !== undefined) {
       while (isAt(cont, d)) node.lines.push(list[i++]!);
@@ -260,6 +267,15 @@ interface State {
   /** Movement speed of "this" event's page, when known. */
   pageSpeed: number | undefined;
   selfMulti?: boolean;
+  /** Per-conversion counter for the synthetic labels that keep an
+   *  unevaluable condition's Then reachable by jumpLabel. Must reset per
+   *  conversion so re-running the importer is byte-stable. */
+  deadBranchSeq: number;
+  /** Authored label names (118) and jump targets (119) in this list. MV
+   *  scopes both to the flat command list, so a synthetic control-flow name
+   *  that matches one could be reached by an authored jump or shadow an
+   *  authored label. Synthetic names are generated to avoid this set. */
+  reservedLabels: Set<string>;
 }
 
 /** Facts a branch body may rely on: gold/item floors proven by an
@@ -279,7 +295,22 @@ function makeState(ctx: EventContext, trigger: OwnerTrigger, pageSpeed?: number)
     calledCommon: ctx.owner.kind === "common" && trigger === "none",
     eventless: ctx.owner.kind === "common" && trigger !== "none",
     pageSpeed,
+    deadBranchSeq: 0,
+    reservedLabels: new Set(),
   };
+}
+
+/** Collect every name the authored list uses for a label (118) or a jump
+ *  target (119). MV scopes both to the flat command list, so a synthetic
+ *  name matching one could be reached by an authored jump or shadow an
+ *  authored label; deadBranch keeps its synthetic names out of this set. */
+function collectReservedLabels(list: readonly RmCommand[], st: State): void {
+  for (const c of list) {
+    if (c.code === 118 || c.code === 119) {
+      const name = c.parameters?.[0];
+      if (typeof name === "string") st.reservedLabels.add(name);
+    }
+  }
 }
 
 function rec(st: State, code: number, d: Disposition, reason?: string): void {
@@ -300,6 +331,21 @@ const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.m
 const seconds = (frames: unknown): number => Math.max(0, num(frames)) / FPS;
 const byte = (v: unknown): number => clamp(int(v), 0, 255);
 
+/** MV Select Item itemType is the database itypeId (1 regular, 2 key,
+ *  3 hidden A, 4 hidden B). Returns the kit type for one of the four
+ *  standard values, or undefined for anything else; the caller has already
+ *  classified anything else as a non-standard itypeId (whose MV list is
+ *  empty) and degrades it. */
+function selectItemType(v: number): "regular" | "key" | "hiddenA" | "hiddenB" | undefined {
+  switch (v) {
+    case 1: return "regular";
+    case 2: return "key";
+    case 3: return "hiddenA";
+    case 4: return "hiddenB";
+    default: return undefined;
+  }
+}
+
 /** RM map id of the page owner's map, when the owner is a page. */
 function ownerRmMapId(st: State): number | undefined {
   const o = st.ctx.owner;
@@ -317,6 +363,7 @@ export function convertCommands(list: RmCommand[], ctx: EventContext): Command[]
 
 function convertList(list: readonly RmCommand[], ctx: EventContext, trigger: OwnerTrigger, pageSpeed?: number): Command[] {
   const st = makeState(ctx, trigger, pageSpeed);
+  collectReservedLabels(list, st);
   return emitList(parseTree(list), st, ROOT_SCOPE);
 }
 
@@ -470,9 +517,26 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
     case 103:
       rec(st, 103, "Native");
       return [{ op: "inputNumber", variable: variableId(int(p[0])), digits: clamp(int(p[1], 1), 1, 8) }];
-    case 104:
-      rec(st, 104, "Dropped", needs(104));
+    case 104: {
+      // MV's corescript is `setItemChoice(params[0], params[1] || 2)`: a
+      // missing or zero itypeId is key items (2). Only the strict integers
+      // 1-4 are standard itypeIds; any other value (0.5, 1.5, true, "2",
+      // 5, ...) is a non-standard itypeId whose MV item list is empty,
+      // which the kit cannot represent, so it is recorded Degraded —
+      // naming the ORIGINAL value, never truncated or coerced into a
+      // standard type — and dropped rather than faking a picker.
+      const raw = p[1];
+      if (raw === undefined || raw === null || raw === 0) {
+        rec(st, 104, "Native");
+        return [{ op: "selectItem", variable: variableId(int(p[0])), itemType: "key" }];
+      }
+      if (typeof raw === "number" && Number.isInteger(raw) && raw >= 1 && raw <= 4) {
+        rec(st, 104, "Native");
+        return [{ op: "selectItem", variable: variableId(int(p[0])), itemType: selectItemType(raw)! }];
+      }
+      rec(st, 104, "Degraded", `non-standard itypeId ${JSON.stringify(raw)}; MV's item list for it is empty, the kit supports only itypeIds 1-4`);
       return [];
+    }
     case 105: {
       const lines = wrap(convertMessage(nd.lines.map((l) => String(l.parameters?.[0] ?? "")), ctx));
       rec(st, 105, "Degraded", "scrolling text shown as message pages");
@@ -507,13 +571,11 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
       return [{ op: "common", id: commonId(n) }];
     }
     case 118:
-      // The kit's structured branch programs cannot represent RM's flat-list
-      // jump targets, including a target inside a choice branch.
-      rec(st, 118, "Dropped", needs(118));
-      return [];
+      rec(st, 118, "Native");
+      return [{ op: "label", name: String(p[0] ?? ""), ...(nd.ord !== undefined ? { ord: nd.ord } : {}) }];
     case 119:
-      rec(st, 119, "Dropped", needs(119));
-      return [];
+      rec(st, 119, "Native");
+      return [{ op: "jumpLabel", name: String(p[0] ?? "") }];
     case 121: {
       const out: Command[] = [];
       for (let id = int(p[0]); id <= int(p[1]); id++) out.push({ op: "switch", id: switchId(id), value: int(p[2]) === 0 });
@@ -638,6 +700,36 @@ function emitNode(nd: RmNode, st: State, scope: Scope): Command[] {
     case 246:
       rec(st, 246, "Native");
       return [{ op: "fadeoutBgs", duration: Math.max(0, num(p[0])) }];
+    case 251:
+      rec(st, 251, "Native");
+      return [{ op: "stopSe" }];
+    case 134:
+      rec(st, 134, "Native");
+      // MV: parameter 0 disables, any other value enables.
+      return [{ op: "saveAccess", enabled: int(p[0]) !== 0 }];
+    case 135:
+      rec(st, 135, "Native");
+      // MV: parameter 0 disables, any other value enables.
+      return [{ op: "menuAccess", enabled: int(p[0]) !== 0 }];
+    case 285: {
+      rec(st, 285, "Native");
+      // MV layout: [variableId, infoType, locationType, x, y]. infoType 0 is
+      // terrain tag, 1 the live event id, 2-5 tile layers 1-4, anything else
+      // region id. locationType 0 names direct coordinates, otherwise the two
+      // parameters are variable ids.
+      const infoType = int(p[1]);
+      const kind = infoType === 0 ? "terrain" : infoType === 1 ? "event" : infoType >= 2 && infoType <= 5 ? "tile" : "region";
+      const direct = int(p[2]) === 0;
+      const out: Command = {
+        op: "locationInfo",
+        variable: variableId(int(p[0])),
+        x: direct ? int(p[3]) : { variable: variableId(int(p[3])) },
+        y: direct ? int(p[4]) : { variable: variableId(int(p[4])) },
+        kind,
+      };
+      if (kind === "tile") out.layer = (int(p[1]) - 2) as 0 | 1 | 2 | 3;
+      return [out];
+    }
     case 281:
       rec(st, 281, "Native");
       return [{ op: "mapNameDisplay", visible: int(p[0]) === 0 }];
@@ -981,14 +1073,63 @@ function emitBranch(nd: RmNode, st: State, scope: Scope): Command[] {
   const thenCmds = emitList(nd.body ?? [], st, thenScope);
   const elseCmds = nd.elseBody ? emitList(nd.elseBody, st, elseScope) : undefined;
   if (!r.cond) {
-    // Unevaluable: only the else branch can run. The then-branch was still
-    // walked so its commands are counted.
-    return [...(r.placeholder ?? []), ...(elseCmds ?? [])];
+    // Unevaluable: the condition is treated as always-false, so the Then
+    // can only be entered by a jumpLabel. MV's command119 can jump to any
+    // 118 in the flat list, including one inside a conditional branch, so
+    // the Then's structure (and its labels) must survive. Fall-through
+    // skips the Then via a synthetic jump; a jump into the Then runs it
+    // and skips the Else. The condition itself stays Placeholder/Degraded
+    // in coverage.
+    return deadBranch(st, thenCmds, elseCmds, r.placeholder);
   }
   const out: Command[] = [...r.pre];
   if (r.swap) out.push({ op: "if", if: r.cond, then: elseCmds ?? [], else: thenCmds });
   else if (elseCmds) out.push({ op: "if", if: r.cond, then: thenCmds, else: elseCmds });
   else out.push({ op: "if", if: r.cond, then: thenCmds });
+  return out;
+}
+
+/** The structure of an unevaluable conditional: the Then is dead code on
+ *  fall-through (the condition is always false) but stays reachable by
+ *  label. Synthetic jumpLabel/label pairs skip the Then on fall-through
+ *  and skip the Else when a jump lands in the Then. The synthetic label
+ *  names are unique per conversion (byte-stable re-imports) and avoid every
+ *  name the authored list uses for a label or jump target, so an authored
+ *  label can never shadow or be shadowed by one. */
+function deadBranch(
+  st: State,
+  thenCmds: Command[],
+  elseCmds: Command[] | undefined,
+  placeholder: Command[] | undefined,
+): Command[] {
+  const out: Command[] = [...(placeholder ?? [])];
+  if (thenCmds.length === 0) {
+    // No Then to preserve: the always-false condition just runs the Else.
+    if (elseCmds) out.push(...elseCmds);
+    return out;
+  }
+  // The else/end pair shares an index in the common (collision-free) case;
+  // a colliding name advances just that side, keeping the pair's other
+  // name stable so re-imports stay byte-identical.
+  const n = st.deadBranchSeq++;
+  let elseN = n;
+  while (st.reservedLabels.has(`__dead_else_${elseN}`)) elseN = st.deadBranchSeq++;
+  let endN = n;
+  while (st.reservedLabels.has(`__dead_end_${endN}`)) endN = st.deadBranchSeq++;
+  const elseLabel = `__dead_else_${elseN}`;
+  const endLabel = `__dead_end_${endN}`;
+  // Fall-through skips the Then.
+  out.push({ op: "jumpLabel", name: elseLabel });
+  out.push(...thenCmds);
+  if (elseCmds && elseCmds.length > 0) {
+    // A jump that landed in the Then skips the Else.
+    out.push({ op: "jumpLabel", name: endLabel });
+    out.push({ op: "label", name: elseLabel });
+    out.push(...elseCmds);
+    out.push({ op: "label", name: endLabel });
+  } else {
+    out.push({ op: "label", name: elseLabel });
+  }
   return out;
 }
 

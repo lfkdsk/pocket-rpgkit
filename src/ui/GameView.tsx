@@ -835,7 +835,7 @@ export interface GameScreenPresentation {
   hud?: GameScreenPresentationComponent;
 }
 
-export { dispatchGameViewHostActions, type GameViewHostCallbacks } from "./game-host-actions.ts";
+export { dispatchGameViewHostActions, hostActionAllowed, type GameViewHostCallbacks } from "./game-host-actions.ts";
 
 export interface GameViewProps {
   /** Enable identity-based reducer and actor caches. Published snapshots

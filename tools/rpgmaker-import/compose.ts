@@ -130,6 +130,9 @@ export interface ComposedMap {
   animated: AnimatedCell[];
   /** The z5 region plane, row-major. */
   regions: number[];
+  /** Per-cell terrain tag (MV terrainTag: first nonzero tag scanning the
+   *  four tile layers top-down), row-major. */
+  terrain: number[];
 }
 
 /** One drawing step of a lower or upper stack. */
@@ -198,7 +201,7 @@ export function composeMap(
     return downscale(img, factor);
   };
 
-  const out: ComposedMap = { width, height, ground: [], upper: [], animated: [], regions: [] };
+  const out: ComposedMap = { width, height, ground: [], upper: [], animated: [], regions: [], terrain: [] };
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -207,6 +210,14 @@ export function composeMap(
       const shadowBits = at(x, y, 4) & 0x0f;
       const region = at(x, y, 5);
       out.regions.push(region);
+      // MV terrainTag: scan the four tile layers top-down (z3..z0) and take
+      // the first nonzero tag (flags >> 12).
+      let terrain = 0;
+      for (let z = 3; z >= 0; z--) {
+        const tag = terrainTag(flagOf(at(x, y, z)));
+        if (tag !== 0) { terrain = tag; break; }
+      }
+      out.terrain.push(terrain);
 
       // MV _paintTiles order: z0, z1, shadow, table edge, z2, z3; star
       // tiles are pulled out into the upper stack in the same order.
@@ -289,6 +300,6 @@ function recordCell(
   if (any(RM_FLAG.BUSH)) rec("bush", "Degraded", "no half-submerged character drawing");
   if (any(RM_FLAG.COUNTER)) rec("counter", "Degraded", "talking across a counter is not modelled");
   if (any(RM_FLAG.DAMAGE)) rec("damage floor", "Dropped", "damage floors are not modelled");
-  if (ids.some((id) => terrainTag(flagOf(id)) !== 0)) rec("terrain tag", "Dropped", "terrain tags are not carried into the kit map");
-  if (region !== 0) rec("region id", "Dropped", "regions are not carried into the kit map");
+  if (ids.some((id) => terrainTag(flagOf(id)) !== 0)) rec("terrain tag", "Native");
+  if (region !== 0) rec("region id", "Native");
 }

@@ -127,18 +127,44 @@ const maybeTest = preflight.ok ? test : test.skip;
 // three input graphs to 569,421 (+8,368), 917,053 (+11,305) and 723,778
 // (+9,325). Concrete parallax and item-icon components remain opt-in and are
 // checked separately by krm3v-ui-bundle-isolation.test.ts.
-// Deterministic seamless-handoff fatal cleanup (source-edge movement restore,
-// abort guards before commit) adds 440 shared engine bytes to each graph.
-// The per-tick prune of finished map animations and the empty-string
-// parallax clear (both guarded no-ops when unused) add 103/228/103 bytes.
-// The save-decode normalization of an empty-name parallax to none adds 236
-// bytes to the sunstone graph only (its input graph includes the save decode
-// path; meadow's and the WAV fixture's do not), so only the sunstone pin
-// moves: 917,721 -> 917,957.
+// KRM3's label/selectItem/access/locationInfo/stopSe command handlers and the
+// SoundCue union add shared interpreter code to all three: 578,931 (+9,510),
+// 929,325 (+12,272) and 733,886 (+10,108). The select-item scene stays
+// opt-in and is absent from every bundle. Deterministic seamless-handoff
+// fatal cleanup (source-edge movement restore, abort guards before commit)
+// adds 440 shared engine bytes to each graph. The KRM3 fix-2 engine changes
+// (locationInfo resolves the live eventCells origin, the tile plane is a
+// cell-index map, label-scope markers are rebuilt at restore) net to
+// 579,262 (-109), 930,277 (+512) and 734,217 (-109). The KRM3 fix-3 label
+// `ord` field adds its schema description text to the bundled schema,
+// measuring 930,923 (+646) for sunstone only.
+// KRM3 fix-4 makes the live character cell the single event-position source
+// (a step-local LocalCells holder replaces the freshPlacements Set on
+// InterpInput; eventOrigin no longer reads the durable placements record),
+// hangs battle/scene completion transfers on the frame as `onDone` (the
+// branch runs its original program, so a jumpLabel inside it preserves the
+// transfer; cloneFiber/break/applyJumpLabel/save-validate carry it), and
+// adds the onDone completion-transfer validator. These net to 579,656
+// (-252), 932,110 (+1,187) and 734,611 (-252); sunstone additionally pulls
+// in the shared save-validate path its graph already bundled. Merging the
+// KRM3V/STUDIO4 follow-ups (Show Animation target:"this" through a common
+// event, empty-parallax clear, mapAnim.follow save validation, per-tick
+// anim prune) brings the merged product to 579,759 (+103), 932,941
+// (+831) and 734,714 (+103).
+// KRM3 fix-5 turns the frame's `onDone` into an ordered completion queue so
+// a jump that leaves a battle/scene result branch (to a parent list, a
+// sibling, or an outer scope) relocates the popped frames' completions to
+// the landing frame, innermost first, and each fires exactly once; the save
+// validator rejects a forged `fiber` key and any unknown completion field.
+// These net to 580,367 (+608), 934,069 (+1,128) and 735,322 (+608);
+// sunstone's larger delta is the save-validate strictness its graph already
+// bundles. KRM3 fix-6 (collect every popped completion, innermost first;
+// a transfer's map change discards the rest; exit/erase abort the event)
+// brings them to 580,265 (-102), 933,967 (-102) and 735,220 (-102).
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 569_964;
-const EXPECTED_SUNSTONE_QOA_BYTES = 917_957;
-const EXPECTED_WAV_FIXTURE_BYTES = 724_321;
+const EXPECTED_MEADOW_BYTES = 580_265;
+const EXPECTED_SUNSTONE_QOA_BYTES = 933_967;
+const EXPECTED_WAV_FIXTURE_BYTES = 735_220;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

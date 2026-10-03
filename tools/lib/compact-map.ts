@@ -132,6 +132,58 @@ function encodePassage(passage: readonly [number, "pass" | "block"][]): unknown 
   return jsonLength(compact) < jsonLength(raw) ? compact : raw;
 }
 
+/** Sparse [index, small-int] layers (regions 1..255, terrain tags 1..7):
+ *  group indices by value and delta/range encode each group, the same shape
+ *  as passage. A map whose layer is already the smallest spelling keeps it. */
+function encodeSparseInt(entries: readonly [number, number][]): unknown {
+  const raw = ["j", entries];
+  if (!strictlyIncreasing(entries)) return raw;
+  const byValue = new Map<number, number[]>();
+  for (const [index, value] of entries) {
+    const list = byValue.get(value);
+    if (list) list.push(index);
+    else byValue.set(value, [index]);
+  }
+  const groups = [...byValue.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([value, indices]) => {
+      const deltas = deltaEncode(indices);
+      const ranges = rangeEncode(indices);
+      return [value, jsonLength(deltas) <= jsonLength(ranges) ? "d" : "r",
+        jsonLength(deltas) <= jsonLength(ranges) ? deltas : ranges] as const;
+    });
+  const compact = ["g", groups];
+  return jsonLength(compact) < jsonLength(raw) ? compact : raw;
+}
+
+/** Sparse [index, [z0,z1,z2,z3]] raw-tile layer: a per-map palette of the
+ *  four-tuples plus delta/palette-index pairs, the same shape as the upper
+ *  layer's "d" spelling. */
+function encodeTiles(entries: readonly [number, [number, number, number, number]][]): unknown {
+  const raw = ["j", entries];
+  if (!strictlyIncreasing(entries)) return raw;
+  const token = (value: readonly number[]): string => value.join(",");
+  const counts = new Map<string, { value: [number, number, number, number]; count: number }>();
+  for (const [, value] of entries) {
+    const tk = token(value);
+    const row = counts.get(tk);
+    if (row) row.count++;
+    else counts.set(tk, { value: [...value] as [number, number, number, number], count: 1 });
+  }
+  const palette = [...counts.values()]
+    .sort((a, b) => b.count - a.count || compareText(token(a.value), token(b.value)))
+    .map((row) => row.value);
+  const byToken = new Map(palette.map((value, index) => [token(value), index]));
+  const encoded: number[] = [];
+  let previous = -1;
+  for (const [index, value] of entries) {
+    encoded.push(index - previous, byToken.get(token(value))!);
+    previous = index;
+  }
+  const compact = ["d", palette, encoded];
+  return jsonLength(compact) < jsonLength(raw) ? compact : raw;
+}
+
 function collectKeys(value: unknown, counts: Map<string, number>): void {
   if (Array.isArray(value)) {
     for (const item of value) collectKeys(item, counts);
@@ -175,6 +227,9 @@ export function encodeCompactMap(map: MapDef): EncodedCompactMap {
   if (hasOwn(map, "sheets")) value.s = map.sheets;
   if (hasOwn(map, "upper")) value.u = encodeUpper(map.upper ?? []);
   if (hasOwn(map, "passage")) value.p = encodePassage(map.passage ?? []);
+  if (hasOwn(map, "regions")) value.r = encodeSparseInt(map.regions ?? []);
+  if (hasOwn(map, "terrain")) value.t = encodeSparseInt(map.terrain ?? []);
+  if (hasOwn(map, "tiles")) value.l = encodeTiles(map.tiles ?? []);
   if (hasOwn(map, "parallax")) value.a = map.parallax;
   if (hasOwn(map, "events")) {
     const encoded = encodeEvents(map.events ?? []);

@@ -83,6 +83,51 @@ const BALLOON_FRAME_SECONDS = 8 / 60;
 
 const truncate = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
 
+/** Sparse [index, value] pairs for a row-major plane, keeping only nonzero
+ *  cells so a map without regions/terrain carries no data. */
+function sparseCells(plane: readonly number[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < plane.length; i++) {
+    const v = plane[i]!;
+    if (v !== 0) out.push([i, v]);
+  }
+  return out;
+}
+
+/** Sparse [index, [z0, z1, z2, z3]] from an MV map's six-plane data array,
+ *  keeping only cells with a nonzero tile in any of the four tile layers so
+ *  Get Location Info's tile kind returns the raw MV tile ids. */
+function sparseTileLayers(data: readonly number[], width: number, height: number): [number, [number, number, number, number]][] {
+  const plane = width * height;
+  const out: [number, [number, number, number, number]][] = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const layers: [number, number, number, number] = [
+        data[0 * plane + i] ?? 0,
+        data[1 * plane + i] ?? 0,
+        data[2 * plane + i] ?? 0,
+        data[3 * plane + i] ?? 0,
+      ];
+      if (layers[0] !== 0 || layers[1] !== 0 || layers[2] !== 0 || layers[3] !== 0) {
+        out.push([i, layers]);
+      }
+    }
+  }
+  return out;
+}
+
+/** MV itypeId (1 regular, 2 key, 3 hidden A, 4 hidden B). Absent/other
+ *  defaults to regular. */
+function itemTypeOf(itypeId: number | undefined): Item["type"] {
+  switch (itypeId) {
+    case 2: return "key";
+    case 3: return "hiddenA";
+    case 4: return "hiddenB";
+    default: return "regular";
+  }
+}
+
 function clampNumber(value: unknown, lo: number, hi: number, fallback: number): number {
   const numeric = Number(value);
   return Math.min(hi, Math.max(lo, Number.isFinite(numeric) ? numeric : fallback));
@@ -370,6 +415,9 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       ...(parallaxArt.zero ? { zero: true } : {}),
       ...(rmMap.parallaxShow ? { showInEditor: true } : {}),
     } : undefined;
+    const regions = sparseCells(composed.regions);
+    const terrain = sparseCells(composed.terrain);
+    const tiles = rmMap.data.length > 0 ? sparseTileLayers(rmMap.data, rmMap.width, rmMap.height) : [];
     maps.push({
       id,
       name: truncate(nonEmpty(rmMap.displayName || info?.name, id), 40),
@@ -379,6 +427,9 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       ground: composed.ground.map(cellId),
       ...(parallax ? { parallax } : {}),
       ...(composed.upper.length > 0 ? { upper: composed.upper.map(([i, c]) => [i, cellId(c)] as [number, TileId]) } : {}),
+      ...(regions.length > 0 ? { regions } : {}),
+      ...(terrain.length > 0 ? { terrain } : {}),
+      ...(tiles.length > 0 ? { tiles } : {}),
       events,
     });
     const opened = [...bumpCells].sort((a, b) => a - b).filter((i) => {
@@ -553,6 +604,14 @@ export async function importRmProject(rm: RmProject, options: ImportOptions = {}
       if (entry.price > 0) item.price = entry.price;
       if (kind === "item" && entry.itypeId === 2) item.sellable = false;
       if (kind === "item" && entry.consumable === false) item.usable = false;
+      if (kind === "item") {
+        const type = itemTypeOf(entry.itypeId);
+        if (type !== "regular") item.type = type;
+      } else {
+        // MV's Select Item only offers database items; mark weapons and
+        // armors so the scene can exclude them (DataManager.isItem parity).
+        item.kind = kind;
+      }
       items.push(item);
     }
   }

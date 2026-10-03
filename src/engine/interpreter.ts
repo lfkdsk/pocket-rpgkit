@@ -96,6 +96,7 @@ import type {
   RouteTarget,
   ScreenColor,
   ShopGood,
+  TileId,
   TilePropertyOverride,
   TransferCoordinate,
   TransferDirection,
@@ -267,6 +268,13 @@ export interface SwitchState {
   /** Automatic map-name banner flag. Omitted/false keeps legacy projects
    * pixel-identical; importers opt in explicitly. */
   mapNameDisplay?: boolean;
+  /** RPG Maker menu/save access (MV $gameSystem.isMenuEnabled /
+   *  isSaveEnabled). Absent means ENABLED (the MV default); only an
+   *  explicit disable is stored, so games that never touch the flags keep
+   *  their prior reducer/save shape. The host menu/save entries and the
+   *  openMenu/openSave commands honor them. */
+  menuAccess?: boolean;
+  saveAccess?: boolean;
   /** Project-wide player walking appearance. Absent is the baked player
    *  art at full opacity. `defaultSprite` is the reset baseline while
    *  `sprite` is the current MV-style Change Image override. */
@@ -301,6 +309,10 @@ export function createSwitchState(init?: Partial<SwitchState>): SwitchState {
     };
   }
   if (init?.mapNameDisplay === true) state.mapNameDisplay = true;
+  // Menu/save access default to enabled (MV); only an explicit disable is
+  // stored, so a legacy save (no field) hydrates with both enabled.
+  if (init?.menuAccess === false) state.menuAccess = false;
+  if (init?.saveAccess === false) state.saveAccess = false;
   return state;
 }
 
@@ -381,6 +393,9 @@ export interface ConditionContext {
   tileProperties?: Readonly<Record<string, TilePropertyOverride>>;
   mapWidth?: number;
   mapHeight?: number;
+  /** Sparse region ids (cell index -> region), for the `region` condition.
+   *  Populated only when the map carries regions and a condition reads them. */
+  regionCells?: ReadonlyMap<number, number>;
 }
 
 export function evalCondition(
@@ -441,6 +456,14 @@ export function evalCondition(
       // conservative false result.
       const idle = context?.worldIdle ?? false;
       return c.negate === true ? !idle : idle;
+    }
+    case "region": {
+      // A region condition needs the map's region table and bounds.
+      if (!Number.isInteger(c.x) || !Number.isInteger(c.y) || c.x < 0 || c.y < 0 ||
+          context?.mapWidth === undefined || context.mapHeight === undefined ||
+          c.x >= context.mapWidth || c.y >= context.mapHeight) return false;
+      const index = c.y * context.mapWidth + c.x;
+      return (context.regionCells?.get(index) ?? 0) === c.id;
     }
     case "bgmPlaying": {
       const bgm = context?.audio?.bgm;
@@ -625,6 +648,17 @@ export type Instr =
    *  set the new top frame's pc to `to` (null = that program's end). A break
    *  in the same frame as its loop compiles to a forward `jmp` instead. */
   | { op: "break"; up: number; to: number | null }
+  /** A label position (no-op at runtime; jumpLabel resolves against the
+   *  page/common-event list's label table). `ord` is the label's position
+   *  in the original flat RPG Maker source list (set by the importer): the
+   *  first label with a name is the lowest-`ord` one, matching MV's jumpTo
+   *  scan. Hand-authored programs omit it and use tree-walk order. */
+  | { op: "label"; name: string; ord?: number }
+  /** Goto the first `label` with this name in the same page or common event,
+   *  at any nesting depth. No label of that name: no effect. The resolved
+   *  target may live in another branch program of the same list; the frame
+   *  stack is rewound or extended to enter it (see applyJumpLabel). */
+  | { op: "jumpLabel"; name: string }
   | { op: "wait"; frames: number }
   | { op: "gold"; set: "add" | "sub"; amount: number }
   | { op: "item"; item: string; set: "add" | "sub"; count: number }
@@ -638,6 +672,7 @@ export type Instr =
   | { op: "fadeoutBgs"; frames: number }
   | { op: "playMe"; id: string; durationFrames: number; volume: number; pitch: number }
   | { op: "playSe"; id: string; volume: number; pitch: number }
+  | { op: "stopSe" }
   | { op: "saveBgm" }
   | { op: "replayBgm" }
   | { op: "erase" }
@@ -742,6 +777,16 @@ export type Instr =
   | { op: "hostAction"; action: HostAction }
   | { op: "changeName"; name: string }
   | { op: "mapNameDisplay"; visible: boolean }
+  | { op: "menuAccess"; enabled: boolean }
+  | { op: "saveAccess"; enabled: boolean }
+  | {
+      op: "locationInfo";
+      variable: string;
+      x: number | VariableRef;
+      y: number | VariableRef;
+      kind: "terrain" | "event" | "tile" | "region";
+      layer: 0 | 1 | 2 | 3;
+    }
   | { op: "common"; id: string }
   | { op: "shop"; id: string; goods: readonly ShopGood[]; sell: boolean; sellList: "disable" | "hide" }
   | {
@@ -859,6 +904,12 @@ function compileScoped(
           }
           break;
         }
+        case "label":
+          emit({ op: "label", name: c.name, ...(c.ord !== undefined ? { ord: c.ord } : {}) });
+          break;
+        case "jumpLabel":
+          emit({ op: "jumpLabel", name: c.name });
+          break;
         case "text":
           emit({ op: "text", lines: c.lines, cps: c.cps ?? DEFAULT_CPS });
           break;
@@ -939,6 +990,9 @@ function compileScoped(
           break;
         case "playSe":
           emit({ op: "playSe", id: c.id, volume: c.volume ?? 100, pitch: c.pitch ?? 100 });
+          break;
+        case "stopSe":
+          emit({ op: "stopSe" });
           break;
         case "erase":
           emit({ op: "erase" });
@@ -1146,6 +1200,15 @@ function compileScoped(
             onCancel: null,
           });
           break;
+        case "selectItem":
+          emit({
+            op: "scene",
+            id: "rpgkit.selectItem",
+            args: { variable: c.variable, itemType: c.itemType },
+            onDone: null,
+            onCancel: null,
+          });
+          break;
         case "openMenu":
           emit({ op: "hostAction", action: "menu" });
           break;
@@ -1163,6 +1226,22 @@ function compileScoped(
           break;
         case "mapNameDisplay":
           emit({ op: "mapNameDisplay", visible: c.visible });
+          break;
+        case "menuAccess":
+          emit({ op: "menuAccess", enabled: c.enabled });
+          break;
+        case "saveAccess":
+          emit({ op: "saveAccess", enabled: c.enabled });
+          break;
+        case "locationInfo":
+          emit({
+            op: "locationInfo",
+            variable: c.variable,
+            x: c.x,
+            y: c.y,
+            kind: c.kind,
+            layer: c.layer ?? 0,
+          });
           break;
         case "common":
           emit({ op: "common", id: c.id });
@@ -1236,6 +1315,205 @@ function compileScoped(
   return out;
 }
 
+// --- Labels (RPG Maker 118/119) ---------------------------------------------
+
+/** A resolved label position: a program and the pc of its `label` instr. */
+interface LabelTarget {
+  prog: Prog;
+  pc: number;
+  /** The label's position in the original flat RPG Maker source list, when
+   *  the importer recorded one. The first label with a name is the lowest-
+   *  ordinal one (MV's jumpTo scans the flat list top-down). */
+  ord?: number;
+}
+
+/** Per-list label index. `byName` keeps the FIRST label with a name: the one
+ *  with the lowest source `ord` when labels carry ordinals (MV's jumpTo
+ *  scans the flat source list top-down and stops at the first match), else
+ *  the first a tree walk visits. `parent` maps each branch program to the
+ *  program that owns its choices/battle/scene instruction and the pc right
+ *  AFTER that instruction, so a jump into a branch rebuilds a frame chain
+ *  that continues where MV would. */
+interface LabelTable {
+  byName: Map<string, LabelTarget>;
+  parent: Map<Prog, { prog: Prog; continue: number }>;
+}
+
+const labelTables = new WeakMap<Prog, LabelTable>();
+
+/** Build (or reuse) the label table for one list: the root program plus every
+ *  choices/battle/scene branch program it contains, recursively. Programs
+ *  are compiled once per immutable project, so the cache is stable for the
+ *  project's lifetime and rebuilds after a save/restore (fresh programs).
+ *  Branch programs are visited in MV's flat source order — battle results
+ *  are Win (601), Escape (602), Lose (603) — so a hand-authored list
+ *  without ordinals still resolves the first label the way MV would. */
+function labelTableFor(root: Prog): LabelTable {
+  let table = labelTables.get(root);
+  if (table === undefined) {
+    table = { byName: new Map(), parent: new Map() };
+    const visit = (prog: Prog, parent: { prog: Prog; continue: number } | null): void => {
+      if (parent !== null) table!.parent.set(prog, parent);
+      for (let i = 0; i < prog.length; i++) {
+        const ins = prog[i]!;
+        if (ins.op === "label") {
+          // Lowest source ordinal wins; a label without an ordinal sorts
+          // after every ordinal'd one (Infinity), and among ordinal-less
+          // labels the first visited stays (MV parity for hand-authored).
+          const ord = ins.ord ?? Infinity;
+          const existing = table!.byName.get(ins.name);
+          if (existing === undefined || ord < (existing.ord ?? Infinity)) {
+            table!.byName.set(ins.name, { prog, pc: i, ...(ins.ord !== undefined ? { ord: ins.ord } : {}) });
+          }
+        } else if (ins.op === "choices") {
+          const next = { prog, continue: i + 1 };
+          for (const branch of ins.branches) visit(branch, next);
+          if (ins.cancel) visit(ins.cancel, next);
+        } else if (ins.op === "battle") {
+          const next = { prog, continue: i + 1 };
+          if (ins.onWin) visit(ins.onWin, next);
+          if (ins.onEscape) visit(ins.onEscape, next);
+          if (ins.onLose) visit(ins.onLose, next);
+        } else if (ins.op === "scene") {
+          const next = { prog, continue: i + 1 };
+          if (ins.onDone) visit(ins.onDone, next);
+          if (ins.onCancel) visit(ins.onCancel, next);
+        }
+      }
+    };
+    visit(root, null);
+    labelTables.set(root, table);
+  }
+  return table;
+}
+
+/** The program naming this fiber's label scope: the topmost unit frame (a
+ *  page root or a called common event — MV runs common events as child
+ *  interpreters with their own label list), else the bottom frame. */
+function labelScopeRoot(f: Fiber): Prog {
+  for (const frame of f.stack) {
+    if (frame.unit) return frame.prog;
+  }
+  return f.stack[f.stack.length - 1]!.prog;
+}
+
+/** Apply a resolved jumpLabel: move execution to `target`, rewinding or
+ *  extending the frame stack as the target lives in an ancestor, sibling or
+ *  descendant branch program. Mirrors MV's jumpTo, which abandons the flat
+ *  list position and continues from the label wherever it sits: every branch
+ *  frame on the rebuilt chain is parked at the pc right AFTER the choices/
+ *  battle/scene instruction that owns its child, so when a branch runs out
+ *  execution continues after that instruction instead of re-running it.
+ *  A jump that leaves a battle/scene result branch completes that command:
+ *  the branch frame's `onDone` queue is relocated to the landing frame (ahead
+ *  of any completion it already carries, innermost first), so the completion
+ *  transfer fires exactly once however the branch is left. A popped frame is
+ *  collected whether or not it ran to its program's end: a branch whose last
+ *  command pushed a child frame is parked at pc === length with its whole
+ *  queue still pending, and a frame that already fired a completion is parked
+ *  in "external" mode, which a jump (running in "run" mode) never sees. */
+function applyJumpLabel(s: InterpState, f: Fiber, target: LabelTarget): void {
+  const top = f.stack[0]!;
+  if (target.prog === top.prog) {
+    top.pc = target.pc;
+    return;
+  }
+  const at = f.stack.findIndex((frame) => frame.prog === target.prog);
+  if (at >= 0) {
+    // The target program is already on the stack (an ancestor): pop the
+    // frames above it, relocating their completion transfers to the landing
+    // frame, and continue there.
+    const landing = f.stack[at]!;
+    const collected: FrameCompletion[] = [];
+    for (let i = 0; i < at; i++) {
+      const popped = f.stack.shift()!;
+      // Collect unconditionally: a popped frame parked at pc === length
+      // (its last command pushed a child frame) has fired nothing, and a
+      // frame that fired a completion is in "external" mode, never popped
+      // from a jump. See the function's header comment.
+      if (popped.onDone) collected.push(...popped.onDone);
+    }
+    if (collected.length > 0) {
+      landing.onDone = [...collected, ...(landing.onDone ?? [])];
+    }
+    landing.pc = target.pc;
+    return;
+  }
+  // The target is a branch program not currently on the stack. Rebuild the
+  // chain from the scope root down to it, popping whatever branch frames sit
+  // above the chain's entry point (MV abandons the current block).
+  const root = labelScopeRoot(f);
+  const table = labelTableFor(root);
+  const path: Prog[] = [];
+  const entries: { prog: Prog; continue: number }[] = [];
+  let cur: Prog | undefined = target.prog;
+  while (cur !== undefined && cur !== root) {
+    const parent = table.parent.get(cur);
+    if (!parent) break;
+    path.unshift(cur);
+    entries.unshift(parent);
+    cur = parent.prog;
+  }
+  if (cur !== root) {
+    // The target is not reachable from this fiber's scope root (a label
+    // table built for a different root); treat as no-op.
+    return;
+  }
+  const entry = entries[0]!;
+  // A jump that rebuilds the chain abandons the current branch frame but
+  // keeps its completion transfer: the rebuilt branch (a sibling under the
+  // same battle/scene instruction) inherits it, so the cross-map completion
+  // still fires when the rebuilt branch finishes.
+  const inheritedDone: FrameCompletion[] = [];
+  while (f.stack.length > 0 && f.stack[0]!.prog !== entry.prog) {
+    const popped = f.stack.shift()!;
+    // Same unconditional collection as the ancestor path above.
+    if (popped.onDone) inheritedDone.push(...popped.onDone);
+  }
+  if (f.stack.length === 0) {
+    // Defensive: the scope root itself was popped. Restart at the root,
+    // parked after the instruction that owns the first branch.
+    f.stack.push(makeFrame(root, entry.continue, true));
+  } else {
+    f.stack[0]!.pc = entry.continue;
+  }
+  for (let i = 0; i < path.length; i++) {
+    const prog = path[i]!;
+    const pc = i === path.length - 1 ? target.pc : entries[i + 1]!.continue;
+    const frame: Frame = { prog, pc };
+    if (i === 0 && inheritedDone.length > 0) frame.onDone = [...inheritedDone];
+    f.stack.unshift(frame);
+  }
+}
+
+/** Reconstruct the `unit` label-scope markers a fiber stack was written
+ *  without (a save produced before the field existed). The bottom frame is
+ *  always the page root (unit). Each frame above it was pushed by the
+ *  instruction its parent is parked after: a `common` call pushes a unit
+ *  frame (a child interpreter with its own label list, MV parity), a
+ *  choices/battle/scene result pushes a non-unit branch frame. The parent
+ *  is parked at pc = pushInstruction + 1, so prog[pc - 1] names the pusher.
+ *  Frames that already carry a marker (a new save) are left untouched. */
+function reconstructStackUnits(stack: Frame[]): void {
+  const bottom = stack[stack.length - 1]!;
+  bottom.unit = true;
+  for (let i = stack.length - 2; i >= 0; i--) {
+    if (stack[i]!.unit === true) continue;
+    const parent = stack[i + 1]!;
+    const owner = parent.pc >= 1 ? parent.prog[parent.pc - 1] : undefined;
+    if (owner?.op === "common") stack[i]!.unit = true;
+  }
+}
+
+/** Restore-time migration for saves written before frames recorded their
+ *  label-scope root. Without the markers a common event's label lookups fall
+ *  back to the page scope and silently jump to the wrong list (or no-op).
+ *  New saves already carry the markers, so this is a no-op for them. */
+export function reconstructLabelScopes(s: InterpState): void {
+  if (s.main) reconstructStackUnits(s.main.stack);
+  for (const f of Object.values(s.parallels)) reconstructStackUnits(f.stack);
+}
+
 // --- runtime state -----------------------------------------------------------
 
 export interface Cell {
@@ -1291,6 +1569,17 @@ export interface InterpInput {
    *  box holding the player). The session sets it only on a map with an
    *  eventTouch page and only when a contact happened; omitted otherwise. */
   touchContacts?: readonly string[];
+}
+
+/** Step-local override of an event's live cell: a `place` command run during
+ *  this step writes the cell it relocated the event to, so a same-step
+ *  eventOrigin read (Get Location Info) sees the placed cell instead of the
+ *  tick-start `eventCells` snapshot (MV's Set Event Location calls locate()
+ *  synchronously). The holder is created once per step on the fold's stack;
+ *  the Map is allocated lazily on the first `place`. It is never written to
+ *  the caller's input or to InterpState, so the public fold stays pure. */
+interface LocalCells {
+  map?: Map<string, Cell>;
 }
 
 export interface TextModal {
@@ -1465,11 +1754,13 @@ function shopRowEquals(a: ShopRow, b: ShopRow): boolean {
   );
 }
 
-export interface SoundCue {
-  name: string;
-  volume: number;
-  pitch: number;
-}
+/** One entry of the deterministic per-frame sound cue sequence. A play cue
+ *  starts one SE voice; `{stop:true}` ends every live SE voice (RPG Maker
+ *  Stop SE). Cues are runtime-only: drained after each step, never saved,
+ *  never replayed on a refold/rewind. */
+export type SoundCue =
+  | { name: string; volume: number; pitch: number }
+  | { stop: true };
 
 /** P1④ consumes these: the fiber is parked in "external" mode until
  *  continueExternal() is called. P1③ publishes the payload only. */
@@ -1561,11 +1852,47 @@ export type PendingPlacement = {
   afterRoutes?: number;
 };
 
+/** A battle/scene completion transfer, minus the fiber key the runtime
+ *  fills in from the owning fiber. */
+type FrameCompletion = Omit<PendingTransfer, "fiber">;
+
+/** One stack frame: a program and its pc. `unit` marks a label-scope root
+ *  (page or common-event program). It is a plain enumerable property so a
+ *  save taken while a common event is parked (a waited screen fade, a text
+ *  box) restores the same label scope: a jumpLabel after resume must resolve
+ *  inside the common event, not the page that called it.
+ *  `onDone` is the queue of completion transfers a battle/scene result
+ *  branch fires when the frame runs to completion. It hangs on the frame
+ *  (not appended to the program) so a jumpLabel that rebuilds the frame
+ *  chain from the label table preserves it: a jump leaving the branch — to
+ *  the parent list, a sibling, or an outer scope — relocates the queue to
+ *  the landing frame, ahead of any completion it already carries, so every
+ *  popped battle/scene command completes exactly once, innermost first.
+ *  A branch whose last command pushed a child frame is parked at pc ===
+ *  length with the queue intact; the jump that pops it collects the queue
+ *  all the same (a frame that already fired a completion is parked in
+ *  "external" mode and is never popped by a jump or break). */
+interface Frame {
+  prog: Prog;
+  pc: number;
+  unit?: true;
+  onDone?: FrameCompletion[];
+}
+
+function makeFrame(prog: Prog, pc: number, unit = false): Frame {
+  return unit ? { prog, pc, unit: true } : { prog, pc };
+}
+
 interface Fiber {
   key: string;
   pageIndex: number;
   parallel: boolean;
-  stack: { prog: Prog; pc: number }[];
+  /** `unit` marks a frame whose program is a label-scope root: the page
+   *  program, or a called common event's program (MV runs common events as
+   *  child interpreters with their own label list). A `jumpLabel` resolves
+   *  against the topmost unit frame's program and its branch programs. The
+   *  marker is saved and restored like the rest of the frame. */
+  stack: Frame[];
   mode: "run" | "text" | "choices" | "shop" | "wait" | "animWait" | "screenWait" | "external";
   /** Frame on which the current wait/text started. */
   since: number;
@@ -1745,6 +2072,21 @@ export interface World {
    * per-tick event-page records or tile metadata. */
   needsEventPages?: boolean;
   needsTilePropertyContext?: boolean;
+  /** True when some page/condition of the map reads a `region` condition:
+   *  the session then populates ConditionContext.regionCells. Maps without
+   *  one pay nothing. */
+  needsRegionContext?: boolean;
+  /** Sparse region ids and terrain tags (cell index -> value), built from
+   *  the MapDef when it carries them. Undefined for maps without. */
+  regionCells?: ReadonlyMap<number, number>;
+  terrainCells?: ReadonlyMap<number, number>;
+  /** Sparse raw tile quads (cell index -> [z0,z1,z2,z3]), built from the
+   *  MapDef's `tiles` plane when it carries them. A Map keyed by cell index
+   *  so a locationInfo tile query is O(1) and the plane's authored order
+   *  does not matter (the schema only requires unique pairs, not sorted
+   *  indices); a duplicate index keeps the last entry. Undefined for maps
+   *  without tile data. */
+  tilesCells?: ReadonlyMap<number, readonly [number, number, number, number]>;
   /** True when a page default or route control step needs the KM1 movement
    * path before a standalone moveControl command has created sparse state. */
   needsMovementControlPath?: boolean;
@@ -2024,18 +2366,26 @@ function liveConditionContext(
     context.mapWidth = w.map.width;
     context.mapHeight = w.map.height;
   }
+  if (w.needsRegionContext) {
+    context.regionCells = w.regionCells;
+    context.mapWidth = w.map.width;
+    context.mapHeight = w.map.height;
+  }
   return context;
 }
 
 const CONTEXT_EVENT_PAGES = 1;
 const CONTEXT_TILE_PROPERTIES = 2;
 const CONTEXT_MAP_ANIM_TARGET = 4;
+const CONTEXT_REGION = 8;
 
 function conditionContextFlags(condition: Condition): number {
   if (condition.kind === "appearance" && condition.target !== "player") {
     return CONTEXT_EVENT_PAGES;
   }
-  return condition.kind === "tileProperty" ? CONTEXT_TILE_PROPERTIES : 0;
+  if (condition.kind === "tileProperty") return CONTEXT_TILE_PROPERTIES;
+  if (condition.kind === "region") return CONTEXT_REGION;
+  return 0;
 }
 
 function pageConditionContextFlags(condition: PageCondition | undefined): number {
@@ -2172,6 +2522,9 @@ export function createWorld(
   };
   const animsById = new Map((options.animations ?? []).map((def) => [def.id, compileAnim(def, hz)]));
   const keyed = indexEvents(map);
+  const regionCells = sparseCellMap(map.regions);
+  const terrainCells = sparseCellMap(map.terrain);
+  const tilesCells = sparseTileMap(map.tiles);
   return {
     hz,
     map,
@@ -2184,6 +2537,10 @@ export function createWorld(
     slotsById: keyed.slotsById,
     needsEventPages: (contextFlags & CONTEXT_EVENT_PAGES) !== 0,
     needsTilePropertyContext: (contextFlags & CONTEXT_TILE_PROPERTIES) !== 0,
+    needsRegionContext: (contextFlags & CONTEXT_REGION) !== 0,
+    ...(regionCells ? { regionCells } : {}),
+    ...(terrainCells ? { terrainCells } : {}),
+    ...(tilesCells ? { tilesCells } : {}),
     needsMovementControlPath,
     needsMapAnimTarget: (contextFlags & CONTEXT_MAP_ANIM_TARGET) !== 0,
     ...(hasEventTouch ? { hasEventTouch } : {}),
@@ -2196,6 +2553,25 @@ export function createWorld(
     anims: animsById,
     extensions: options.extensions ?? createExtensionRuntime(),
   };
+}
+
+/** Build a sparse cell-index -> value map from a MapDef's [index, value][]
+ *  list, or undefined when the map carries no entries (so maps without
+ *  regions/terrain keep their prior shape and cost). */
+function sparseCellMap(entries: readonly [number, number][] | undefined): ReadonlyMap<number, number> | undefined {
+  if (!entries || entries.length === 0) return undefined;
+  return new Map(entries);
+}
+
+/** The raw-tile plane as a cell-index -> quad map. Built once per world so
+ *  a locationInfo tile query is O(1) and the plane's authored order does
+ *  not matter; a duplicate index keeps the last entry (the schema only
+ *  requires unique pairs, not sorted or unique indices). */
+function sparseTileMap(
+  entries: readonly [number, readonly [number, number, number, number]][] | undefined,
+): ReadonlyMap<number, readonly [number, number, number, number]> | undefined {
+  if (!entries || entries.length === 0) return undefined;
+  return new Map(entries);
 }
 
 /** True while the blocking interpreter owns the session: player movement
@@ -2248,7 +2624,11 @@ function cloneFiber(f: Fiber): Fiber {
     key: f.key,
     pageIndex: f.pageIndex,
     parallel: f.parallel,
-    stack: f.stack.map((frame) => ({ prog: frame.prog, pc: frame.pc })),
+    stack: f.stack.map((frame) => {
+      const clone = makeFrame(frame.prog, frame.pc, frame.unit === true);
+      if (frame.onDone) clone.onDone = frame.onDone.map((done) => ({ ...done }));
+      return clone;
+    }),
     mode: f.mode,
     since: f.since,
     erase: f.erase,
@@ -2299,6 +2679,8 @@ export function cloneInterp(s0: InterpState): InterpState {
   if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
   if (s0.sw.timer) sw.timer = { ...s0.sw.timer };
   if (s0.sw.mapNameDisplay === true) sw.mapNameDisplay = true;
+  if (s0.sw.menuAccess === false) sw.menuAccess = false;
+  if (s0.sw.saveAccess === false) sw.saveAccess = false;
   return copyInterp(s0, sw, false, false);
 }
 
@@ -2322,6 +2704,8 @@ export function shareInterp(s0: InterpState, immutable = false): InterpState {
   if (s0.sw.playerAppearance) sw.playerAppearance = { ...s0.sw.playerAppearance };
   if (s0.sw.timer) sw.timer = { ...s0.sw.timer };
   if (s0.sw.mapNameDisplay === true) sw.mapNameDisplay = true;
+  if (s0.sw.menuAccess === false) sw.menuAccess = false;
+  if (s0.sw.saveAccess === false) sw.saveAccess = false;
   SHARED_RECORDS.set(sw, new Set<SwitchRecord>(["switches", "self", "items", "variables", "shopStock"]));
   if (immutable) trackStateMetadata(SHARED_RECORDS, sw);
   return copyInterp(s0, sw, true, immutable);
@@ -2463,12 +2847,21 @@ const FRONT: Record<Facing, [number, number]> = {
   3: [1, 0], // right
 };
 
-/** The live top-left of an event's area rectangle: its moving character
- *  cell, else a durable `place` override, else the authored (x,y). */
-function eventOrigin(ev: GameEvent, s: InterpState, input: InterpInput): Cell {
+/** The live top-left of an event's area rectangle. The current frame's
+ *  actual character cell is the single source of truth: the session feeds
+ *  the displaced characters' cells each tick in `eventCells` (a character
+ *  that walked back onto its authored cell drops out, so the authored
+ *  cell — its live cell — is read), and a `place` command run earlier in
+ *  this step wins via the step-local override (it relocated the event
+ *  after the snapshot was taken; MV's locate() is synchronous). The
+ *  durable `placements` record is intentionally NOT consulted: it is a
+ *  save/spawn record, not a live position, and reading it made an event
+ *  that returned to its authored cell report a stale placement. */
+function eventOrigin(ev: GameEvent, input: InterpInput, local?: LocalCells): Cell {
+  const placed = local?.map?.get(ev.id);
+  if (placed) return placed;
   return (
     (input.eventCells ? keyedValue(input.eventCells, ev.id) : undefined) ??
-    keyedValue(s.placements, ev.id) ??
     { x: ev.x, y: ev.y }
   );
 }
@@ -2707,7 +3100,7 @@ function startFiber(
     key,
     pageIndex,
     parallel,
-    stack: [{ prog, pc: 0 }],
+    stack: [makeFrame(prog, 0, true)],
     mode: "run",
     since: s.frame,
     erase: false,
@@ -2852,9 +3245,10 @@ function scanTriggers(
   input: InterpInput,
   extension: ExtensionScope,
   selected?: PageSelections,
+  local?: LocalCells,
 ): Record<string, PendingParallel> {
   let pending: Record<string, PendingParallel> | undefined;
-  const rectOf = (ev: GameEvent): Rect | null => eventRect(ev, eventOrigin(ev, s, input));
+  const rectOf = (ev: GameEvent): Rect | null => eventRect(ev, eventOrigin(ev, input, local));
   const moved = input.prevCell.x !== input.playerCell.x || input.prevCell.y !== input.playerCell.y;
   const prevFacing = input.prevFacing ?? input.facing;
   const turned = prevFacing !== input.facing;
@@ -3024,6 +3418,7 @@ function guardMask(c: Condition, runtime: ExtensionRuntime): number {
     case "tileProperty":
     case "bgmPlaying":
     case "timer":
+    case "region":
       return -1;
   }
 }
@@ -3210,6 +3605,7 @@ type InstantInstr = Extract<
   | { op: "fadeoutBgs" }
   | { op: "playMe" }
   | { op: "playSe" }
+  | { op: "stopSe" }
   | { op: "saveBgm" }
   | { op: "replayBgm" }
 >;
@@ -3318,6 +3714,91 @@ function clampVariableRecord(
 function writeVariable(sw: SwitchState, id: string, value: VariableValue): void {
   if (!hasOwn(sw.variables, id) || !Object.is(sw.variables[id], value)) {
     ownRecord(sw, "variables")[id] = value;
+  }
+}
+
+/** Resolve a locationInfo coordinate: a literal, or a variable's live
+ *  value (0 when unset, non-numeric values coerce to 0). */
+function resolveLocationCoord(coord: number | VariableRef, sw: SwitchState): number {
+  if (typeof coord === "number") return coord;
+  const v = keyedValue(sw.variables, coord.variable) ?? 0;
+  return typeof v === "number" ? Math.trunc(v) : 0;
+}
+
+/** The trailing integer of an id like "ev007" / "plain.12", or 0 when the
+ *  id has none. MV returns the database/row id; the kit's ids are strings,
+ *  so their numeric suffix is the closest native analog. */
+function idNumericSuffix(id: string): number {
+  const match = /(\d+)$/.exec(id);
+  return match ? Number(match[1]) : 0;
+}
+
+/** The numeric "tile id" MV's Get Location Info would return for a cell:
+ *  the composed cell's sheet index (the numeric part of the tile id). The
+ *  kit has no raw RM tile ids at runtime. */
+function cellNumericId(cell: TileId): number {
+  if (cell === null) return 0;
+  return idNumericSuffix(cell);
+}
+
+/** The four raw tile ids of a cell from the world's sparse `tiles` plane,
+ *  or undefined when the cell (or the whole map) carries no tile data. The
+ *  plane is built into a cell-index keyed Map at world construction, so a
+ *  query is O(1) and the authored order of `map.tiles` does not matter. */
+function tileLayersAt(w: World, index: number): readonly [number, number, number, number] | undefined {
+  return w.tilesCells?.get(index);
+}
+
+/** Compute the value a `locationInfo` command writes for cell (x, y). */
+function locationInfoValue(
+  w: World,
+  input: InterpInput,
+  ins: Extract<Instr, { op: "locationInfo" }>,
+  x: number,
+  y: number,
+  local?: LocalCells,
+): number {
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 ||
+      x >= w.map.width || y >= w.map.height) {
+    return 0; // out of bounds (MV reads 0 for an off-map cell)
+  }
+  const index = y * w.map.width + x;
+  switch (ins.kind) {
+    case "terrain":
+      return w.terrainCells?.get(index) ?? 0;
+    case "region":
+      return w.regionCells?.get(index) ?? 0;
+    case "event": {
+      // MV reads each event's LIVE position (Game_Map.eventsXy filters by
+      // event.pos), so a moved event is found on its current cell. The live
+      // area rectangle moves with the event's character. Resolve from the
+      // single live source (eventOrigin): the per-frame eventCells the
+      // session feeds, plus a same-step `place` override — never the
+      // durable placements record.
+      let lowest = Infinity;
+      for (const ev of w.map.events ?? []) {
+        const { x: ox, y: oy } = eventOrigin(ev, input, local);
+        const ew = ev.w ?? 1;
+        const eh = ev.h ?? 1;
+        if (x < ox || y < oy || x >= ox + ew || y >= oy + eh) continue;
+        const n = idNumericSuffix(ev.id);
+        if (n < lowest) lowest = n;
+      }
+      return lowest === Infinity ? 0 : lowest;
+    }
+    case "tile": {
+      const layer = ins.layer ?? 0;
+      const layers = tileLayersAt(w, index);
+      if (layers) return layers[layer] ?? 0;
+      // A hand-authored map without raw tile data: answer layers 0/1 from
+      // the composed ground/upper cells (their sheet index), 2/3 as empty.
+      if (layer === 1) {
+        const upper = w.map.upper?.find(([i]) => i === index);
+        return upper ? cellNumericId(upper[1]) : 0;
+      }
+      if (layer === 0) return cellNumericId(w.map.ground[index] ?? null);
+      return 0;
+    }
   }
 }
 
@@ -3437,6 +3918,9 @@ function runInstant(s: InterpState, f: Fiber, ins: InstantInstr): void {
       break;
     case "playSe":
       s.cues.push({ name: ins.id, volume: ins.volume, pitch: ins.pitch });
+      break;
+    case "stopSe":
+      s.cues.push({ stop: true });
       break;
     case "saveBgm":
       if (s.audio?.bgm) {
@@ -4181,6 +4665,7 @@ function runFiber(
   input: InterpInput,
   budget: StepBudget,
   extension: MutableExtensionScope,
+  local?: LocalCells,
 ): void {
   // Steps this call has taken = budgetAtEntry - budget.remaining (read only
   // at a loop back-edge; see LOOP_YIELD_STEPS).
@@ -4465,6 +4950,18 @@ function runFiber(
     }
     const top = f.stack[0]!;
     if (top.pc >= top.prog.length) {
+      const done = top.onDone?.shift();
+      if (done) {
+        // A battle/scene result frame that ran to completion: fire its next
+        // completion transfer. The frame stays on the stack (pc at length)
+        // so that continueExternal's pc++ advances THIS frame — the run loop
+        // then fires the next queued completion or pops the frame — rather
+        // than the parent parked after the battle/scene instruction. The
+        // owning fiber is the live one, never anything the save carried.
+        f.mode = "external";
+        s.pendingTransfer = { ...done, fiber: f.key };
+        return;
+      }
       f.stack.shift();
       if (f.stack.length === 0) {
         finishFiber(s, f);
@@ -4487,6 +4984,21 @@ function runFiber(
       case "jmp":
         top.pc = ins.to;
         break;
+      case "label":
+        // A position marker only.
+        top.pc++;
+        break;
+      case "jumpLabel": {
+        const table = labelTableFor(labelScopeRoot(f));
+        const target = table.byName.get(ins.name);
+        if (target) {
+          applyJumpLabel(s, f, target);
+        } else {
+          // MV parity: a jump to a name with no label does nothing.
+          top.pc++;
+        }
+        break;
+      }
       case "repeat":
         top.pc = ins.to;
         // Yield at the back-edge: the fiber stays in "run" mode with its pc
@@ -4502,15 +5014,14 @@ function runFiber(
           s.error = { kind: "runaway", message: `interpreter: malformed break in ${f.key}` };
           return;
         }
-        // A break leaving a battle/scene result branch still performs the
-        // completion transfer appended to that branch.
-        let completion: Instr | null = null;
+        // A break leaving battle/scene result branches still performs their
+        // completion transfers, innermost first. A popped frame parked at
+        // pc === length (its last command pushed a child frame) has fired
+        // nothing; a frame that fired one is in "external" mode, never here.
+        const collected: FrameCompletion[] = [];
         for (let i = 0; i < ins.up; i++) {
           const popped = f.stack.shift()!;
-          const last = popped.prog[popped.prog.length - 1];
-          if (last?.op === "transfer" && last.completion && popped.pc < popped.prog.length) {
-            completion = last;
-          }
+          if (popped.onDone) collected.push(...popped.onDone);
         }
         const target = f.stack[0]!;
         const to = ins.to ?? target.prog.length;
@@ -4519,7 +5030,7 @@ function runFiber(
           return;
         }
         target.pc = to;
-        if (completion) f.stack.unshift({ prog: [completion], pc: 0 });
+        if (collected.length > 0) f.stack.unshift({ prog: [], pc: 0, onDone: collected });
         break;
       }
       case "switch":
@@ -4537,6 +5048,7 @@ function runFiber(
       case "fadeoutBgs":
       case "playMe":
       case "playSe":
+      case "stopSe":
       case "saveBgm":
       case "replayBgm":
         runInstant(s, f, ins);
@@ -4809,6 +5321,23 @@ function runFiber(
         }
         top.pc++;
         break;
+      case "menuAccess":
+        if (ins.enabled) delete s.sw.menuAccess;
+        else s.sw.menuAccess = false;
+        top.pc++;
+        break;
+      case "saveAccess":
+        if (ins.enabled) delete s.sw.saveAccess;
+        else s.sw.saveAccess = false;
+        top.pc++;
+        break;
+      case "locationInfo": {
+        const x = resolveLocationCoord(ins.x, s.sw);
+        const y = resolveLocationCoord(ins.y, s.sw);
+        writeVariable(s.sw, ins.variable, locationInfoValue(w, input, ins, x, y, local));
+        top.pc++;
+        break;
+      }
       case "place": {
         const p = { x: ins.x, y: ins.y, dir: ins.dir };
         const order = s.pendingMoveRoutes.length > 0 ? { afterRoutes: s.pendingMoveRoutes.length } : undefined;
@@ -4817,6 +5346,10 @@ function runFiber(
         } else {
           const eventId = ins.target === "this" ? f.key.split("/").pop()! : ins.target.event;
           ownInterpRecord(s, "placements")[eventId] = p;
+          // Step-local override: a same-step eventOrigin read (Get Location
+          // Info) sees the placed cell, not the tick-start eventCells
+          // snapshot. Never written to input or state.
+          if (local) (local.map ??= new Map()).set(eventId, { x: ins.x, y: ins.y });
           s.pendingPlacements.push({ eventId, ...p, ...order, ...publishedPage(s, w, input, extension, eventId) });
         }
         top.pc++;
@@ -5069,7 +5602,9 @@ function runFiber(
           return;
         }
         top.pc++;
-        f.stack.unshift({ prog, pc: 0 });
+        // A called common event is its own label scope (MV's child
+        // interpreter), so the frame is a unit root.
+        f.stack.unshift(makeFrame(prog, 0, true));
         break;
       }
       case "ext":
@@ -5154,6 +5689,10 @@ export function stepInterpWithExtensionsInPlace(
   s.pendingMoveRoutes = [];
   s.pendingPlacements = [];
   s.abortedRoutes = [];
+  // Step-local scratch: a `place` run this step must beat the tick-start
+  // eventCells snapshot for any same-step eventOrigin read. Lives only on
+  // this call's stack — never on the caller's input or on InterpState.
+  const local: LocalCells = {};
 
   const parallelKeys = immutable ? Object.keys(s.parallels) : undefined;
   const canCacheScan = immutable && w.onFiberStart === undefined &&
@@ -5168,7 +5707,7 @@ export function stepInterpWithExtensionsInPlace(
   const sleeping = canSleep ? idleScans.get(w) : undefined;
   if (sleeping && sameIdleScan(sleeping, s, input, ext0)) {
     if (s.main) {
-      runFiber(s, w, s.main, input, { remaining: RUNAWAY_STEP_LIMIT - sleeping.steps }, extension);
+      runFiber(s, w, s.main, input, { remaining: RUNAWAY_STEP_LIMIT - sleeping.steps }, extension, local);
     }
     if (!s.error) syncFollowAnchors(s, input);
     return extension.ext;
@@ -5186,7 +5725,7 @@ export function stepInterpWithExtensionsInPlace(
     keys = active.keys;
   } else {
     cancelStaleParallels(s, w, input.facing, extension, input);
-    pending = scanTriggers(s, w, input, extension, selectedPages);
+    pending = scanTriggers(s, w, input, extension, selectedPages, local);
     const liveKeys = Object.keys(s.parallels);
     keys = pending === NO_PENDING_PARALLELS
       ? liveKeys.sort()
@@ -5276,7 +5815,7 @@ export function stepInterpWithExtensionsInPlace(
       s.parallels[key] = fiber;
     }
     if (canSleep) ranFiber = true;
-    runFiber(s, w, s.parallels[key]!, input, budget, extension);
+    runFiber(s, w, s.parallels[key]!, input, budget, extension, local);
     if (s.error) break;
   }
   const parallelBattles = s.pendingBattles.splice(queuedBattleCount);
@@ -5292,7 +5831,7 @@ export function stepInterpWithExtensionsInPlace(
       idleScanSnapshot(s, input, extension.ext, RUNAWAY_STEP_LIMIT - budget.remaining),
     );
   }
-  if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension);
+  if (!s.error && s.main) runFiber(s, w, s.main, input, budget, extension, local);
   const mainBattles = s.pendingBattles.splice(queuedBattleCount);
   const mainScenes = (s.pendingScenes?.length ?? 0) > queuedSceneCount
     ? s.pendingScenes!.splice(queuedSceneCount)
@@ -5335,10 +5874,12 @@ export function continueExternal(s0: InterpState, fiberKey: string): InterpState
   return s;
 }
 
-/** Resume a Battle Processing instruction and push the result branch. A
- * completion transfer is appended to that branch, so authored result
- * commands run on the originating map before the map interpreter is rebuilt
- * at the transfer boundary. `draw` has no MV branch and simply continues. */
+/** Resume a Battle Processing instruction and push the result branch. The
+ * branch runs the ORIGINAL program (the one the label table knows), with
+ * the completion transfer hung on the frame as its `onDone` action: when
+ * the branch runs to completion the transfer fires, and a jumpLabel inside
+ * the branch — which rebuilds the frame from the label table — preserves
+ * it. `draw` has no MV branch and simply continues. */
 export function continueBattle(
   s0: InterpState,
   fiberKey: string,
@@ -5356,38 +5897,27 @@ export function continueBattle(
       : result === "lose" ? ins.onLose
       : result === "escape" ? ins.onEscape
       : null;
-    const continuation: Prog = branch ? [...branch] : [];
-    if (transfer) {
-      continuation.push({
-        op: "transfer",
-        map: transfer.map,
-        x: transfer.x,
-        y: transfer.y,
-        dir: transfer.dir,
-        fadeFrames: transfer.fadeFrames,
-        ...(transfer.handoff ? { handoff: { ...transfer.handoff } } : {}),
-        completion: true,
-      });
-    }
+    const branchProg = branch ?? [];
     top.pc++;
     f.mode = "run";
-    if (continuation.length > 0) {
-      if (f.stack.length >= MAX_FIBER_STACK_DEPTH) {
-        s.error = { kind: "runaway", message: `interpreter: stack depth exceeded in ${f.key}` };
-        return;
-      }
-      f.stack.unshift({ prog: continuation, pc: 0 });
+    if (branchProg.length === 0 && transfer === null) return;
+    if (f.stack.length >= MAX_FIBER_STACK_DEPTH) {
+      s.error = { kind: "runaway", message: `interpreter: stack depth exceeded in ${f.key}` };
+      return;
     }
+    const frame: Frame = { prog: branchProg, pc: 0 };
+    if (transfer) frame.onDone = [{ ...transfer }];
+    f.stack.unshift(frame);
   };
   resume(s.main);
   for (const f of Object.values(s.parallels)) resume(f);
   return s;
 }
 
-/** Resume a `scene` instruction and push the done/cancel branch. A
- *  completion transfer is appended to that branch, so authored result
- *  commands run on the originating map before the map interpreter is
- *  rebuilt at the transfer boundary. Mirrors continueBattle. */
+/** Resume a `scene` instruction and push the done/cancel branch. The branch
+ * runs the ORIGINAL program with the completion transfer hung on the frame
+ * as its `onDone` action (see continueBattle), so a jumpLabel inside the
+ * branch preserves the cross-map completion. Mirrors continueBattle. */
 export function continueScene(
   s0: InterpState,
   fiberKey: string,
@@ -5401,28 +5931,17 @@ export function continueScene(
     const ins = top?.prog[top.pc];
     if (!top || ins?.op !== "scene") return;
     const branch = cancelled ? ins.onCancel : ins.onDone;
-    const continuation: Prog = branch ? [...branch] : [];
-    if (transfer) {
-      continuation.push({
-        op: "transfer",
-        map: transfer.map,
-        x: transfer.x,
-        y: transfer.y,
-        dir: transfer.dir,
-        fadeFrames: transfer.fadeFrames,
-        ...(transfer.handoff ? { handoff: { ...transfer.handoff } } : {}),
-        completion: true,
-      });
-    }
+    const branchProg = branch ?? [];
     top.pc++;
     f.mode = "run";
-    if (continuation.length > 0) {
-      if (f.stack.length >= MAX_FIBER_STACK_DEPTH) {
-        s.error = { kind: "runaway", message: `interpreter: stack depth exceeded in ${f.key}` };
-        return;
-      }
-      f.stack.unshift({ prog: continuation, pc: 0 });
+    if (branchProg.length === 0 && transfer === null) return;
+    if (f.stack.length >= MAX_FIBER_STACK_DEPTH) {
+      s.error = { kind: "runaway", message: `interpreter: stack depth exceeded in ${f.key}` };
+      return;
     }
+    const frame: Frame = { prog: branchProg, pc: 0 };
+    if (transfer) frame.onDone = [{ ...transfer }];
+    f.stack.unshift(frame);
   };
   resume(s.main);
   for (const f of Object.values(s.parallels)) resume(f);

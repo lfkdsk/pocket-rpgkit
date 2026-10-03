@@ -26,6 +26,7 @@ export * from "./battle.ts";
 export * from "./scene.ts";
 export * from "./name-input.ts";
 export * from "./number-input.ts";
+export * from "./select-item.ts";
 export * from "./chars.ts";
 export * from "./session.ts";
 export * from "./attract.ts";

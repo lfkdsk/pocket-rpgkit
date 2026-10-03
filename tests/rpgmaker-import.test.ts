@@ -343,7 +343,7 @@ describe("rpgmaker-import: output", () => {
     expect(by.get(101)!.disposition).toBe("Native");
     expect(by.get(112)!.disposition).toBe("Native");
     expect(by.get(113)!.disposition).toBe("Native");
-    for (const code of [103, 124, 204, 212, 231, 232, 233, 234, 235, 281, 284, 351, 352, 353, 354]) {
+    for (const code of [103, 104, 124, 134, 135, 204, 212, 231, 232, 233, 234, 235, 251, 281, 284, 285, 351, 352, 353, 354]) {
       expect(by.get(code)!.disposition).toBe("Native");
       expect(by.get(code)!.needsKit).toBe("");
     }
@@ -351,8 +351,8 @@ describe("rpgmaker-import: output", () => {
     expect(by.get(320)!.needsKit).toContain("actors other than actor 1");
     expect(by.get(111)!.needsKit).not.toContain("timer");
     expect(by.get(122)!.needsKit).not.toContain("timer");
-    expect(by.get(118)!.disposition).toBe("Dropped");
-    expect(by.get(119)!.disposition).toBe("Dropped");
+    expect(by.get(118)!.disposition).toBe("Native");
+    expect(by.get(119)!.disposition).toBe("Native");
     expect(by.get(355)!.disposition).toBe("Placeholder");
     expect(by.get(357)!.disposition).toBe("Placeholder");
     expect(by.get(301)!.disposition).toBe("Placeholder");

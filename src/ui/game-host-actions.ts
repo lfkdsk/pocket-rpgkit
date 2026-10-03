@@ -13,13 +13,31 @@ export interface GameViewHostCallbacks {
   title?: (host: GameViewSessionHost) => void;
 }
 
+/** True when the host may act on a `menu`/`save` request: the corresponding
+ *  access flag (SwitchState.menuAccess / saveAccess) is enabled, which is
+ *  the default — only an explicit Change Menu/Save Access disable stores
+ *  false. A host without a live session state allows the request. A host
+ *  that renders its own menu/save entries reads the same flags from
+ *  `host.getState().sw` to show them disabled. */
+export function hostActionAllowed(action: HostAction, host: GameViewSessionHost): boolean {
+  const sw = host.getState?.().sw;
+  if (action === "menu") return sw?.menuAccess !== false;
+  if (action === "save") return sw?.saveAccess !== false;
+  return true;
+}
+
 /** Dispatch one reducer frame's requests in authored order, including
- * repeated actions. Omitted callbacks are deterministic no-ops. */
+ *  repeated actions. A `menu`/`save` request whose access flag is disabled
+ *  is dropped (the request is not delivered), matching RPG Maker's
+ *  disabled menu/save entries. Omitted callbacks are deterministic no-ops. */
 export function dispatchGameViewHostActions(
   actions: readonly HostAction[] | undefined,
   callbacks: Readonly<GameViewHostCallbacks> | undefined,
   host: GameViewSessionHost,
 ): void {
   if (!callbacks) return;
-  for (const action of actions ?? []) callbacks[action]?.(host);
+  for (const action of actions ?? []) {
+    if (!hostActionAllowed(action, host)) continue;
+    callbacks[action]?.(host);
+  }
 }

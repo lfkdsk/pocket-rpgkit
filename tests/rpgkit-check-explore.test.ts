@@ -727,3 +727,42 @@ describe("rpgkit-check explore: scene commands", () => {
     expect(stat!.pages[1] ?? 0).toBeGreaterThan(0);
   });
 });
+
+describe("rpgkit-check explore: built-in scenes", () => {
+  test("selectItem and inputNumber preview through registered noop rules", () => {
+    // The round-2 review probe: selectItem compiles to the built-in
+    // rpgkit.selectItem scene and inputNumber to rpgkit.numberInput. Neither
+    // appears as an authored `scene` command, so the document walk never
+    // registered rules for them; the session fail-fasts on a missing
+    // SceneRules and explore crashed. The checker now registers noop rules
+    // for the engine's built-in scenes, so the autorun previews through both
+    // and reaches the switch that activates its second page.
+    const project = grassProject([
+      {
+        id: "picker",
+        x: 1,
+        y: 1,
+        pages: [
+          {
+            trigger: "autorun",
+            commands: [
+              { op: "selectItem", variable: "picked", itemType: "regular" },
+              { op: "inputNumber", variable: "count", digits: 3 },
+              { op: "switch", id: "picker-done", value: true },
+            ],
+          },
+          {
+            condition: { switch: "picker-done" },
+            trigger: "parallel",
+            commands: [{ op: "text", lines: ["after picker"] }],
+          },
+        ],
+      },
+    ]);
+    const report = checkExplore(project, { frames: 600 });
+    expect(report.summary.errors).toBe(0);
+    const stat = report.events.find((e) => e.event === "picker");
+    expect(stat).toBeDefined();
+    expect(stat!.pages[1] ?? 0).toBeGreaterThan(0);
+  });
+});

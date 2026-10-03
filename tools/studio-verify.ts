@@ -960,7 +960,14 @@ async function main(): Promise<void> {
 
     // Hovering an event long enough shows its semantic summary. The merchant
     // has more room on the left, so the card must choose that side rather than
-    // merely taking the first side that fits.
+    // merely taking the first side that fits. The load-time camera fit runs
+    // once against whatever host size exists when the session loads and
+    // resize() does not re-fit, so re-fit against the settled host first:
+    // otherwise the map can stay centered for a transient host size and the
+    // merchant can land on either side of the center, flipping the
+    // roomier-side premise below.
+    await evaluate(`__studio.canvas.fit(true)`);
+    await waitFor("hover camera settle", `globalThis.__studio?.canvas?.settled === true`, 10_000);
     await key("v", "KeyV", 0, "v");
     const hoverPoint = await cell(11, 5);
     await mouse("mouseMoved", hoverPoint.x, hoverPoint.y, "none");
@@ -2516,6 +2523,10 @@ async function main(): Promise<void> {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
 
+    // Re-fit against the settled host (same premise as the light-theme hover
+    // card above) so the roomier-side choice is deterministic.
+    await evaluate(`__studio.canvas.fit(true)`);
+    await waitFor("dark hover camera settle", `globalThis.__studio?.canvas?.settled === true`, 10_000);
     const merchant2 = await cell(11, 5);
     await mouse("mouseMoved", merchant2.x, merchant2.y, "none");
     await waitFor("dark merchant hover card", `(() => { const card = document.querySelector(".event-hover-card"); return card && !card.hidden && card.dataset.event === "merchant"; })()`);

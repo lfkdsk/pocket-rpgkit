@@ -144,7 +144,10 @@ export class AudioDriver {
       // A refold ends on historical cues. Rebuild persistent tracks at their
       // restored positions, but never replay those one-shot side effects.
       if (!refolded) {
-        for (const cue of state.interp.cues) this.startSe(cue);
+        for (const cue of state.interp.cues) {
+          if ("stop" in cue) this.stopAllSe();
+          else this.startSe(cue);
+        }
       }
       this.lastState = state;
       this.lastFrame = state.frame;
@@ -277,6 +280,7 @@ export class AudioDriver {
   }
 
   private startSe(cue: Readonly<SoundCue>): void {
+    if ("stop" in cue) return; // a stop cue is handled by stopAllSe()
     const pakKey = this.resources[cue.name];
     if (!pakKey) return;
     const asset = this.loadAsset(pakKey);
@@ -295,6 +299,14 @@ export class AudioDriver {
     voice.volume = volume;
     this.ops.setVolume(voice.handle, volume);
     voice.desiredPlaying = true;
+  }
+
+  /** Stop every live SE voice (RPG Maker Stop SE). Persistent BGM/BGS/ME
+   *  voices are untouched. */
+  private stopAllSe(): void {
+    for (const voice of [...this.voices.values()]) {
+      if (voice.kind === "se") this.destroyVoice(voice);
+    }
   }
 
   private loadAsset(pakKey: string): AudioAsset | null {

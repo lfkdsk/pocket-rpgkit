@@ -645,6 +645,16 @@ describe("sharded map repository", () => {
       ["upper shape", (map) => { map.upper = ["bad"]; }, /upper entries/],
       ["upper bound", (map) => { map.upper = [[16, "tiles.0"]]; }, /upper index 16 out of range/],
       ["passage bound", (map) => { map.passage = [[-1, "pass"]]; }, /passage index -1 out of range/],
+      ["regions shape", (map) => { map.regions = ["bad"]; }, /regions entries must be/],
+      ["regions index bound", (map) => { map.regions = [[16, 1]]; }, /regions index 16 out of range/],
+      ["regions tag high", (map) => { map.regions = [[0, 256]]; }, /regions tag 256 out of range/],
+      ["regions tag low", (map) => { map.regions = [[0, 0]]; }, /regions tag 0 out of range/],
+      ["terrain shape", (map) => { map.terrain = [2]; }, /terrain entries must be/],
+      ["terrain tag high", (map) => { map.terrain = [[0, 8]]; }, /terrain tag 8 out of range/],
+      ["tiles shape", (map) => { map.tiles = [3]; }, /tiles entries must be/],
+      ["tiles quad short", (map) => { map.tiles = [[0, [1, 2, 3]]]; }, /tiles entries must be/],
+      ["tiles quad element", (map) => { map.tiles = [[0, [1, 2, 3, "x"]]]; }, /tiles entries must be/],
+      ["tiles index bound", (map) => { map.tiles = [[16, [1, 2, 3, 4]]]; }, /tiles index 16 out of range/],
       ["events", (map) => { map.events = null; }, /events must be an array/],
       ["pages", (map) => { (map.events as Record<string, unknown>[])[0]!.pages = null; }, /pages must be an array/],
       ["commands", (map) => {
@@ -670,6 +680,31 @@ describe("sharded map repository", () => {
       .toEqual(invalidCommand);
     const full = createJsonMapRepository(split.shell.mapIndex, source, { validate: "full" });
     expect(() => full.acquire(start.meta.id)).toThrow(/schema mismatch/);
+  });
+
+  test("structural validation rejects malformed regions/terrain/tiles payloads", () => {
+    // The round-3 review probe: a sharded map whose regions/terrain/tiles
+    // planes carry malformed entries passed the default structural check and
+    // only died later in createWorld with a context-less TypeError. The
+    // structure check now covers the three planes, so the default repository
+    // rejects the payload at acquire time with a contextual error.
+    const split = splitProjectMaps(fixture());
+    const start = split.entries[0]!;
+    const cases: [string, unknown, RegExp][] = [
+      ["regions scalar", [1], /regions entries must be/],
+      ["terrain scalar", [2], /terrain entries must be/],
+      ["tiles scalar", [3], /tiles entries must be/],
+      ["regions tag high", [[0, 999]], /regions tag 999 out of range/],
+      ["tiles quad short", [[0, [1, 2, 3]]], /tiles entries must be/],
+    ];
+    for (const [name, value, error] of cases) {
+      const map = JSON.parse(start.text) as Record<string, unknown>;
+      const plane = name.startsWith("regions") ? "regions" : name.startsWith("terrain") ? "terrain" : "tiles";
+      map[plane] = value;
+      const text = canonicalJson(map);
+      const repo = createJsonMapRepository(split.shell.mapIndex, { read: () => text });
+      expect(() => repo.acquire(start.meta.id), name).toThrow(error);
+    }
   });
 
   test("startup acquires only the start map; transfers evict and revisits reacquire", () => {

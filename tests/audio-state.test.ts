@@ -276,7 +276,7 @@ describe("session audio clock", () => {
     const p = project([testMap("m", [timed])]);
     const session = createSession(p, 30);
     const state = stepSession(session, startSession(p, session), { buttons: 0 });
-    expect(state.interp.cues.map((cue) => cue.name)).toEqual(["first", "second"]);
+    expect(state.interp.cues.flatMap((cue) => ("name" in cue ? [cue.name] : []))).toEqual(["first", "second"]);
 
     const transfer: GameEvent = {
       id: "transfer",
@@ -291,7 +291,7 @@ describe("session audio clock", () => {
     const session2 = createSession(p2, 60);
     const moved = stepSession(session2, startSession(p2, session2), { buttons: 0 });
     expect(moved.mapId).toBe("b");
-    expect(moved.interp.cues.map((cue) => cue.name)).toEqual(["door"]);
+    expect(moved.interp.cues.flatMap((cue) => ("name" in cue ? [cue.name] : []))).toEqual(["door"]);
   });
 
   test("audio survives map transfer and a save/load envelope", () => {

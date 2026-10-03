@@ -36,6 +36,7 @@ export {
 } from "./ScreenEffectsLayer.tsx";
 export {
   dispatchGameViewHostActions,
+  hostActionAllowed,
   type GameViewHostCallbacks,
 } from "./game-host-actions.ts";
 export {
@@ -77,6 +78,7 @@ export {
 } from "./world-cache-driver.ts";
 export { NameInputScene, type NameInputSceneProps } from "./name-input/NameInputScene.tsx";
 export { NumberInputScene, type NumberInputSceneProps } from "./number-input/NumberInputScene.tsx";
+export { SelectItemScene, type SelectItemSceneProps } from "./select-item/SelectItemScene.tsx";
 export type {
   AnimatedTile,
   CharacterFrames,

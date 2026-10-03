@@ -332,11 +332,47 @@ describe("loops", () => {
     expect(state.sw.switches.s001).toBe(true);
   });
 
-  test("Label and Jump to Label remain explicitly dropped", () => {
+  test("Label and Jump to Label map natively", () => {
     const { cmds, cov } = conv([C(118, 0, ["top"]), C(119, 0, ["top"])]);
-    expect(cmds).toEqual([]);
-    expect(only(cov, 118)).toBe("Dropped");
-    expect(only(cov, 119)).toBe("Dropped");
+    // The label carries its flat source index (ord) so the runtime resolves
+    // the first label in MV source order even when branches are reordered.
+    expect(cmds).toEqual([{ op: "label", name: "top", ord: 0 }, { op: "jumpLabel", name: "top" }]);
+    expect(only(cov, 118)).toBe("Native");
+    expect(only(cov, 119)).toBe("Native");
+  });
+
+  test("Select Item, access flags, Stop SE and Get Location Info map natively", () => {
+    // MV parameter layouts: 104 [variableId, itypeId] (1 regular, 2 key,
+    // 3 hidden A, 4 hidden B); 134/135 [0=disable, nonzero=enable]; 285
+    // [variableId, infoType, locationType, x, y] (infoType 0 terrain, 1
+    // event, 2-5 tile layers 1-4, else region; locationType 0 direct, else
+    // the two coordinates are variable ids).
+    const { cmds, cov } = conv([
+      C(104, 0, [1, 1]),
+      C(104, 0, [3, 2]),
+      C(134, 0, [1]),
+      C(135, 0, [0]),
+      C(251, 0, []),
+      C(285, 0, [2, 0, 0, 3, 4]),
+      C(285, 0, [5, 1, 0, 9, 9]),
+      C(285, 0, [6, 4, 0, 1, 1]),
+      C(285, 0, [7, 6, 1, 8, 9]),
+    ]);
+    expect(cmds).toEqual([
+      { op: "selectItem", variable: "v001", itemType: "regular" },
+      { op: "selectItem", variable: "v003", itemType: "key" },
+      { op: "saveAccess", enabled: true },
+      { op: "menuAccess", enabled: false },
+      { op: "stopSe" },
+      { op: "locationInfo", variable: "v002", x: 3, y: 4, kind: "terrain" },
+      { op: "locationInfo", variable: "v005", x: 9, y: 9, kind: "event" },
+      { op: "locationInfo", variable: "v006", x: 1, y: 1, kind: "tile", layer: 2 },
+      { op: "locationInfo", variable: "v007", x: { variable: "v008" }, y: { variable: "v009" }, kind: "region" },
+    ]);
+    for (const code of [104, 134, 135, 251, 285]) {
+      // Every occurrence maps Native (104 and 285 appear more than once).
+      expect(counts(cov, "command", String(code)).Native).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -478,6 +514,28 @@ describe("conditional branch", () => {
   const THEN: Command = { op: "switch", id: "s001", value: true };
   const ELSE: Command = { op: "switch", id: "s002", value: true };
   const tmp = "rmi-tmp1";
+  // The dead-branch structure an unevaluable condition compiles to: the
+  // Then is kept (its labels stay reachable) but skipped on fall-through,
+  // and the Else is skipped when a jump lands in the Then. Mirrors the
+  // importer's deadBranch for the first unevaluable condition (seq 0).
+  const dead = (then: Command[], els: Command[] | undefined, placeholder?: Command[]): Command[] => {
+    const out: Command[] = [...(placeholder ?? [])];
+    if (then.length === 0) {
+      if (els) out.push(...els);
+      return out;
+    }
+    out.push({ op: "jumpLabel", name: "__dead_else_0" });
+    out.push(...then);
+    if (els && els.length > 0) {
+      out.push({ op: "jumpLabel", name: "__dead_end_0" });
+      out.push({ op: "label", name: "__dead_else_0" });
+      out.push(...els);
+      out.push({ op: "label", name: "__dead_end_0" });
+    } else {
+      out.push({ op: "label", name: "__dead_else_0" });
+    }
+    return out;
+  };
 
   test.each<[string, unknown[], Command[], string, Disposition]>([
     ["switch ON", [0, 5, 0], [{ op: "if", if: { kind: "switch", id: "s005" }, then: [THEN], else: [ELSE] }], "switch", "Native"],
@@ -495,18 +553,18 @@ describe("conditional branch", () => {
     ["timer >=", [3, 60, 0], [{ op: "if", if: { kind: "timer", op: ">=", seconds: 60 }, then: [THEN], else: [ELSE] }], "timer", "Native"],
     ["timer <=", [3, 30, 1], [{ op: "if", if: { kind: "timer", op: "<=", seconds: 30 }, then: [THEN], else: [ELSE] }], "timer", "Native"],
     ["actor in party", [4, 2, 0], [{ op: "if", if: { kind: "switch", id: "party-actor002" }, then: [THEN], else: [ELSE] }], "actor", "Native"],
-    ["actor name", [4, 2, 1, "Bob"], [ELSE], "actor", "Degraded"],
-    ["enemy", [5, 0, 0], [ELSE], "enemy", "Degraded"],
+    ["actor name", [4, 2, 1, "Bob"], dead([THEN], [ELSE]), "actor", "Degraded"],
+    ["enemy", [5, 0, 0], dead([THEN], [ELSE]), "enemy", "Degraded"],
     ["player facing", [6, -1, 8], [{ op: "if", if: { kind: "facing", dir: "up" }, then: [THEN], else: [ELSE] }], "character", "Native"],
-    ["event facing", [6, 1, 8], [ELSE], "character", "Degraded"],
+    ["event facing", [6, 1, 8], dead([THEN], [ELSE]), "character", "Degraded"],
     ["gold >=", [7, 100, 0], [{ op: "if", if: { kind: "gold", amount: 100 }, then: [THEN], else: [ELSE] }], "gold", "Native"],
     ["gold <=", [7, 100, 1], [{ op: "if", if: { kind: "gold", amount: 101 }, then: [ELSE], else: [THEN] }], "gold", "Native"],
     ["gold <", [7, 100, 2], [{ op: "if", if: { kind: "gold", amount: 100 }, then: [ELSE], else: [THEN] }], "gold", "Native"],
     ["item", [8, 4], [{ op: "if", if: { kind: "item", id: "item004", count: 1 }, then: [THEN], else: [ELSE] }], "item", "Native"],
     ["weapon", [9, 4, false], [{ op: "if", if: { kind: "item", id: "weapon004", count: 1 }, then: [THEN], else: [ELSE] }], "weapon", "Native"],
     ["armor incl. equipped", [10, 4, true], [{ op: "if", if: { kind: "item", id: "armor004", count: 1 }, then: [THEN], else: [ELSE] }], "armor", "Degraded"],
-    ["button", [11, "ok"], [ELSE], "button", "Degraded"],
-    ["vehicle", [13, 0], [ELSE], "vehicle", "Degraded"],
+    ["button", [11, "ok"], dead([THEN], [ELSE]), "button", "Degraded"],
+    ["vehicle", [13, 0], dead([THEN], [ELSE]), "vehicle", "Degraded"],
   ])("%s", (_name, params, expected, key, d) => {
     const { cmds, cov } = conv(branch(params, true));
     expect(cmds).toEqual(expected);
@@ -522,11 +580,12 @@ describe("conditional branch", () => {
   });
 
   test("script condition: placeholder in both modes", () => {
+    const placeholder = { op: "text", lines: ["[Script condition not ported:", "$gameParty.size() > 2]"] } as Command;
     let r = conv(branch([12, "$gameParty.size() > 2"], true));
-    expect(r.cmds).toEqual([{ op: "text", lines: ["[Script condition not ported:", "$gameParty.size() > 2]"] }, ELSE]);
+    expect(r.cmds).toEqual(dead([THEN], [ELSE], [placeholder]));
     expect(only(r.cov, 111)).toBe("Placeholder");
     r = conv(branch([12, "x"], true), { placeholders: "silent" });
-    expect(r.cmds).toEqual([ELSE]);
+    expect(r.cmds).toEqual(dead([THEN], [ELSE]));
     expect(only(r.cov, 111)).toBe("Placeholder");
   });
 
