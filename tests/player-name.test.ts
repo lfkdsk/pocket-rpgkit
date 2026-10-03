@@ -14,7 +14,12 @@ import { createSession, startSession } from "../src/engine/session.ts";
 import {
   DEFAULT_PLAYER_NAME,
   NAME_TOKEN,
+  UNKNOWN_TEXT_TOKEN,
+  expandTextLines,
+  expandTextTokens,
   substitutePlayerName,
+  type TextTokenResolver,
+  type TextTokenView,
 } from "../src/engine/player-name.ts";
 import {
   canonicalJson,
@@ -178,5 +183,88 @@ describe("player name saves", () => {
     env.state.interp.sw.playerName = "";
     env.checksum = fnv1aText(canonicalJson(env.state));
     expect(() => decodeEnvelopeText(JSON.stringify(env))).toThrow(/playerName/);
+  });
+});
+
+// --- {x:} game-provided text tokens -----------------------------------------
+
+const view: TextTokenView = { playerName: "Red", variables: { coins: 7 }, gold: 250, mapId: "town" };
+
+describe("expandTextTokens {x:}", () => {
+  test("expands {x:} through the resolver in the same left-to-right pass", () => {
+    const seen: string[] = [];
+    const resolver: TextTokenResolver = (key, v) => {
+      seen.push(key);
+      if (key === "map") return v.mapId;
+      if (key === "gold") return `${v.gold}G`;
+      if (key === "who") return v.playerName;
+      return undefined;
+    };
+    const out = expandTextTokens("[{x:map}] {name} has {x:gold} ({x:who}, {x:nope})", "Red", null, resolver, view);
+    expect(out).toBe("[town] Red has 250G (Red, ???)");
+    expect(seen).toEqual(["map", "gold", "who", "nope"]);
+  });
+
+  test("the view is the live session slice: variables, gold, map id", () => {
+    const resolver: TextTokenResolver = (key, v) =>
+      key === "v" ? String(v.variables.coins) : key === "g" ? String(v.gold) : key === "m" ? v.mapId : undefined;
+    expect(expandTextTokens("{x:v}/{x:g}/{x:m}", "Red", { coins: 7 }, resolver, view)).toBe("7/250/town");
+  });
+
+  test("an unanswered key (resolver returns undefined) shows the fallback", () => {
+    const resolver: TextTokenResolver = () => undefined;
+    expect(expandTextTokens("a{x:date}b", "Red", null, resolver, view)).toBe(`a${UNKNOWN_TEXT_TOKEN}b`);
+    expect(expandTextTokens("{x:}", "Red", null, resolver, view)).toBe(UNKNOWN_TEXT_TOKEN);
+  });
+
+  test("without a resolver {x:} shows the fallback and {v:} keeps its gate", () => {
+    // No resolver: {x:} -> ??? regardless of the textVariables gate.
+    expect(expandTextTokens("{x:date}", "Red", null)).toBe(UNKNOWN_TEXT_TOKEN);
+    expect(expandTextTokens("{x:date}", "Red", { coins: 7 })).toBe(UNKNOWN_TEXT_TOKEN);
+    // {v:} still needs the variables argument; {name} still substitutes.
+    expect(expandTextTokens("{name}: {x:date} {v:coins}", "Red", null)).toBe(`Red: ${UNKNOWN_TEXT_TOKEN} {v:coins}`);
+    expect(expandTextTokens("{name}: {x:date} {v:coins}", "Red", { coins: 7 })).toBe(`Red: ${UNKNOWN_TEXT_TOKEN} 7`);
+  });
+
+  test("a resolver answer containing a token is printed literally (one pass)", () => {
+    const resolver: TextTokenResolver = (key) => (key === "inject" ? "{name}{x:date}" : undefined);
+    expect(expandTextTokens("{x:inject}", "Red", null, resolver, view)).toBe("{name}{x:date}");
+  });
+
+  test("text without {x:} is unchanged from the pre-{x:} behavior", () => {
+    // With a resolver registered but no {x:} in the text, output is exactly
+    // the {name}/{v:} path (and the resolver is never called).
+    const resolver: TextTokenResolver = () => { throw new Error("must not be called"); };
+    expect(expandTextTokens("Hi {name}, {v:coins}!", "Red", { coins: 7 }, resolver, view))
+      .toBe("Hi Red, 7!");
+    expect(expandTextTokens("plain", "Red", null, resolver, view)).toBe("plain");
+  });
+
+  test("an unclosed token passes through verbatim", () => {
+    const resolver: TextTokenResolver = () => "x";
+    expect(expandTextTokens("a {x:date b", "Red", null, resolver, view)).toBe("a {x:date b");
+    expect(expandTextTokens("a {x:date b", "Red", null)).toBe("a {x:date b");
+  });
+
+  test("expandTextLines carries the resolver to every line", () => {
+    const resolver: TextTokenResolver = (key, v) => (key === "map" ? v.mapId : undefined);
+    expect(expandTextLines(["{x:map}", "no token", "{x:nope}"], "Red", null, resolver, view))
+      .toEqual(["town", "no token", UNKNOWN_TEXT_TOKEN]);
+  });
+
+  test("without the system.textTokens opt-in {x:} stays literal, even with a resolver", () => {
+    // A project that does not declare system.textTokens keeps the pre-{x:}
+    // behavior: the braces print verbatim, the resolver is never called, and
+    // {name}/{v:} expand as before. This is what keeps the schema change
+    // additive (the review's old-document counterexample).
+    const resolver: TextTokenResolver = () => { throw new Error("resolver must not run without the opt-in"); };
+    expect(expandTextTokens("{x:date}", "Red", null, resolver, view, false)).toBe("{x:date}");
+    expect(expandTextTokens("a {x:date b", "Red", null, resolver, view, false)).toBe("a {x:date b");
+    expect(expandTextTokens("{name}: {x:date} {v:coins}", "Red", { coins: 7 }, resolver, view, false))
+      .toBe("Red: {x:date} 7");
+    expect(expandTextTokens("{name}: {x:date} {v:coins}", "Red", null, resolver, view, false))
+      .toBe("Red: {x:date} {v:coins}");
+    expect(expandTextLines(["{x:map}", "{name}"], "Red", null, resolver, view, false))
+      .toEqual(["{x:map}", "Red"]);
   });
 });

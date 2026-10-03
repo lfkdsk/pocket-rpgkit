@@ -79,6 +79,7 @@ import {
   type SwitchState,
   type WorldIdleBlockers,
   type TextPaginator,
+  type TextTokenResolver,
   type WorldOptions,
   type World,
   continueScene,
@@ -390,6 +391,11 @@ export interface SessionOptions {
    *  every world (see WorldOptions.paginateText). GameView passes the
    *  dialog box's paginator; without one every message is one page. */
   paginateText?: TextPaginator;
+  /** Resolver for `{x:<key>}` text tokens, forwarded to every world. Called
+   *  once per token when a text or choices box opens; it must be a pure
+   *  function of the view (no clock, randomness or mutation), so the
+   *  expanded text replays identically. An unanswered token shows ???. */
+  textTokens?: TextTokenResolver;
   /** Override used by a replay tape. A missing tape identity is supplied as
    * legacy-transfer by the attract controller. Live sessions omit this. */
   worldTraversal?: WorldTraversalMode;
@@ -763,11 +769,15 @@ export function createSession(
   const worldOptions: WorldOptions = {
     messageBlocksPlayer: project.system?.messageBlocksPlayer === true,
     textVariables: project.system?.textVariables === true,
+    // Declaring system.textTokens (the key allowlist) is the explicit {x:}
+    // opt-in: a document without it keeps the pre-{x:} literal behavior.
+    textTokensEnabled: Array.isArray(project.system?.textTokens),
     extensions,
     items: project.items,
     inventory: project.system?.inventory,
     onFiberStart: options.onFiberStart,
     animations: project.animations,
+    textTokens: options.textTokens,
   };
   if (options.paginateText) worldOptions.paginateText = options.paginateText;
   assertRegisteredExtensions(extensions, commonExtensionCalls(commonEvents));

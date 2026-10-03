@@ -1095,6 +1095,85 @@ describe("rpgkit-check lint: branches and reachability", () => {
   });
 });
 
+describe("rpgkit-check lint: {x:key} text tokens", () => {
+  /** The clean fixture with its page commands replaced by token-bearing
+   *  text/choices; `system` sets the project's resolver allowlist. */
+  function withTokens(system?: Project["system"]): Project {
+    const p = cleanProject();
+    p.system = system;
+    p.maps[0]!.events![0]!.pages[0]!.commands = [
+      { op: "text", lines: ["Today is {x:date}.", "Again {x:date} and {x:map}."] },
+      {
+        op: "choices",
+        prompt: "{x:gold}",
+        options: [{ text: "{x:unknown}", commands: [] }],
+      },
+    ];
+    return p;
+  }
+
+  test("without a declared allowlist, the key check is off and the opt-in warning fires", () => {
+    const report = lint(withTokens());
+    expect(findingsOf(report, "lint/text-token-unknown")).toEqual([]);
+    // The declaration is the runtime opt-in: without it {x:…} prints
+    // verbatim, so each command carrying a token gets one off-warning.
+    const off = findingsOf(report, "lint/text-token-off");
+    expect(off.map((f) => f.severity)).toEqual(["warning", "warning"]);
+    expect(off.map((f) => f.loc.commandPath)).toEqual([[0], [1]]);
+    expect(off.every((f) => f.suggestion.length > 0)).toBe(true);
+  });
+
+  test("a declared allowlist warns once per unknown key per command", () => {
+    const report = lint(withTokens({ textTokens: ["date"] }));
+    const unknown = findingsOf(report, "lint/text-token-unknown");
+    expect(unknown.map((f) => f.severity)).toEqual(["warning", "warning", "warning"]);
+    expect(unknown.map((f) => f.message)).toEqual([
+      expect.stringContaining("{x:map}"),
+      expect.stringContaining("{x:gold}"),
+      expect.stringContaining("{x:unknown}"),
+    ]);
+    // The choices command carries both the prompt and the option label, so
+    // both findings point at the command's path.
+    expect(unknown.map((f) => f.loc.commandPath)).toEqual([[0], [1], [1]]);
+    expect(unknown.every((f) => f.suggestion.length > 0)).toBe(true);
+    // Declared: the opt-in warning stays silent.
+    expect(findingsOf(report, "lint/text-token-off")).toEqual([]);
+  });
+
+  test("every key listed stays silent", () => {
+    const report = lint(withTokens({ textTokens: ["date", "map", "gold", "unknown"] }));
+    expect(findingsOf(report, "lint/text-token-unknown")).toEqual([]);
+    expect(findingsOf(report, "lint/text-token-off")).toEqual([]);
+  });
+
+  test("an empty allowlist warns on every key", () => {
+    const report = lint(withTokens({ textTokens: [] }));
+    expect(findingsOf(report, "lint/text-token-unknown").map((f) => f.loc.commandPath))
+      .toEqual([[0], [0], [1], [1]]);
+    expect(findingsOf(report, "lint/text-token-off")).toEqual([]);
+  });
+
+  test("extChoice prompts are checked like text and choices", () => {
+    // The checker's extChoice branch was untested (a green mutation deleted
+    // it without red): pin both the off-warning and the unknown-key warning
+    // for an extChoice prompt carrying {x:}.
+    const p = cleanProject();
+    p.maps[0]!.events![0]!.pages[0]!.commands = [
+      { op: "extChoice", call: "game.party", prompt: "Lead: {x:leader}", args: {} },
+    ];
+    const off = findingsOf(lint(p), "lint/text-token-off");
+    expect(off.map((f) => f.loc.commandPath)).toEqual([[0]]);
+    expect(off[0]?.message).toContain("{x:leader}");
+    p.system = { textTokens: ["leader"] };
+    expect(findingsOf(lint(p), "lint/text-token-unknown")).toEqual([]);
+    expect(findingsOf(lint(p), "lint/text-token-off")).toEqual([]);
+    p.system = { textTokens: ["other"] };
+    const unknown = findingsOf(lint(p), "lint/text-token-unknown");
+    expect(unknown.map((f) => f.loc.commandPath)).toEqual([[0]]);
+    expect(unknown[0]?.message).toContain("{x:leader}");
+  });
+});
+
 describe("rpgkit-check lint: example documents", () => {
   for (const path of [
     "examples/sunstone/data/sunstone.json",

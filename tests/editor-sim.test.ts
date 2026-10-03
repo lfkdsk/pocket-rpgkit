@@ -770,7 +770,8 @@ simDescribe("editor budget", () => {
     // changes land on top, bringing the merged editor to 1,591,111 B. The
     // cold-path performance work (entry-page dependency cache, stable
     // extension condition keys, deferred seamless eviction) brings it to
-    // 1,598,588 B. Keep a narrow margin.
-    expect(js).toBeLessThan(1_602_000);
+    // 1,598,588 B, and the {x:} text-token wiring brings it to 1,601,512 B.
+    // Keep a narrow margin.
+    expect(js).toBeLessThan(1_605_000);
   });
 });

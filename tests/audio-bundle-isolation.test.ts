@@ -165,10 +165,14 @@ const maybeTest = preflight.ok ? test : test.skip;
 // cache, one-pass page selection keyed on the effective player sprite,
 // stable extension condition keys and deferred seamless-transfer eviction)
 // adds 6,971 shared engine bytes to each: 587,236, 940,938 and 742,191.
+// The opt-in {x:} text tokens (the GameView/attract resolver wiring and the
+// frozen ext snapshot built only when a token expands) add 2,319, 2,428 and
+// 2,428 shared bytes: 589,555, 943,366 and 744,619. Without
+// system.textTokens the expansion path never runs.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 587_236;
-const EXPECTED_SUNSTONE_QOA_BYTES = 940_938;
-const EXPECTED_WAV_FIXTURE_BYTES = 742_191;
+const EXPECTED_MEADOW_BYTES = 589_555;
+const EXPECTED_SUNSTONE_QOA_BYTES = 943_366;
+const EXPECTED_WAV_FIXTURE_BYTES = 744_619;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

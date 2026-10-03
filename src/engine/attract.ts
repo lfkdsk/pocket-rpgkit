@@ -38,7 +38,7 @@
 
 import type { MapRepository, ProjectSource, WorldTraversalMode } from "./types.ts";
 import type { WorldHandoffResolver } from "./world-handoff-contract.ts";
-import { textModalPage, type Modal, type TextPaginator } from "./interpreter.ts";
+import { textModalPage, type Modal, type TextPaginator, type TextTokenResolver } from "./interpreter.ts";
 import type { ExtensionOptions } from "./extensions.ts";
 import type { BattleRules } from "./battle.ts";
 import type { SceneRules } from "./scene.ts";
@@ -170,6 +170,12 @@ export interface AttractOptions {
   /** Message pagination, forwarded to createSession (pure, like the
    *  registrations above). */
   paginateText?: TextPaginator;
+  /** Resolver for `{x:<key>}` text tokens, forwarded to createSession (the
+   *  same one GameView registers for live play, so a demo, a rewind and a
+   *  re-fold expand text identically). Called once per token when a box
+   *  opens; must be a pure function of the view. Only consulted when the
+   *  project declares `system.textTokens`. */
+  textTokens?: TextTokenResolver;
   /** Replay identity. Missing on a non-empty tape means legacy-transfer. */
   worldTraversal?: WorldTraversalMode;
   /** Optional connected-world opening resolver forwarded to Session. */
@@ -408,6 +414,7 @@ export class AttractController {
       scene: opts.scene,
       immutableState: opts.immutableState,
       paginateText: opts.paginateText,
+      textTokens: opts.textTokens,
       worldTraversal: opts.worldTraversal ?? (tape.length > 0 ? "legacy-transfer" : project.worldTraversal),
       handoff: opts.handoff,
     });

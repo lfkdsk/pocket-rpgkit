@@ -176,8 +176,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // (+1,128), and the fix-6 completion rules to 933,967 (-102). The cold-path
 // performance work (entry-page dependency cache, effective-sprite page keys,
 // stable extension condition keys, deferred seamless eviction) brings it to
-// 940,938 (+6,971).
-const EXPECTED_BYTES = 940_938;
+// 940,938 (+6,971). The opt-in {x:} text-token wiring brings it to
+// 943,366 (+2,428).
+const EXPECTED_BYTES = 943_366;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {

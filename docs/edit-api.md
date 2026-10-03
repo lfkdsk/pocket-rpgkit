@@ -707,9 +707,15 @@ Text lines (`text.lines`), the `choices` `prompt` and `option:<i>` labels,
 and the `extChoice` `prompt` are stored verbatim. They may hold `{name}` (the player's name) and, when the
 project sets `system.textVariables: true`, `{v:<variable-id>}` (that
 variable's live value, 0 when unset); without the flag the braces show
-verbatim. Tokens are expanded only at runtime, so the 52-character limit
+verbatim. A project that declares `system.textTokens` (the key allowlist)
+may also hold `{x:<key>}` tokens, which a session's
+`textTokens` resolver answers at runtime (`???` when unanswered); without
+the declaration the braces show verbatim, like `{v:}` without its flag. The
+edit API stores the placeholder text and never previews the value.
+Tokens are expanded only at runtime, so the 52-character limit
 applies to the raw authored text. The edit API has no operation for
-`project.system` fields; set `textVariables` or the initial
+`project.system` fields; set `textVariables`, the `textTokens`
+allowlist or the initial
 `mapNameDisplay` preference in the project JSON directly.
 
 Changing `if.kind` installs a schema-valid default condition. The remaining

@@ -38,7 +38,14 @@ import {
   type ExtensionReadContext,
   type ExtensionRuntime,
 } from "./extensions.ts";
-import { DEFAULT_PLAYER_NAME, expandTextLines, expandTextTokens } from "./player-name.ts";
+import {
+  DEFAULT_PLAYER_NAME,
+  expandTextLines,
+  expandTextTokens,
+  frozenJsonSnapshot,
+  type TextTokenResolver,
+  type TextTokenView,
+} from "./player-name.ts";
 import {
   advanceAudioStateInPlace,
   audioStateEmpty,
@@ -106,6 +113,8 @@ import type {
   VariableRef,
   VariableValue,
 } from "./types.ts";
+
+export type { TextTokenResolver, TextTokenView } from "./player-name.ts";
 
 export const TICK_HZ = 60;
 
@@ -2113,6 +2122,15 @@ export interface World {
   messageBlocksPlayer?: boolean;
   /** Project.system.textVariables: text and choices expand {v:<id>}. */
   textVariables?: boolean;
+  /** Project.system.textTokens is declared: text and choices expand {x:<key>}
+   *  through the session's resolver. Absent: {x:…} braces print verbatim,
+   *  the pre-{x:} behavior, so a document without the declaration is
+   *  byte-identical to the old runtime. */
+  textTokensEnabled?: boolean;
+  /** Session-registered resolver for `{x:<key>}` text tokens (see
+   *  SessionOptions.textTokens). Only consulted when textTokensEnabled is
+   *  set; an unanswered token shows ???. */
+  textTokens?: TextTokenResolver;
   /** Opt-in fiber-start trace (see WorldOptions.onFiberStart). */
   onFiberStart?: (key: string, pageIndex: number, parallel: boolean) => void;
   /** Message pagination (see WorldOptions.paginateText). */
@@ -2130,6 +2148,14 @@ export interface World {
 export interface WorldOptions {
   messageBlocksPlayer?: boolean;
   textVariables?: boolean;
+  /** Project.system.textTokens is declared: switches {x:<key>} expansion on.
+   *  Absent: {x:…} prints verbatim. */
+  textTokensEnabled?: boolean;
+  /** Resolver for `{x:<key>}` text tokens, forwarded from the session's
+   *  options. Called once per token when a box opens; must be a pure
+   *  function of the view. Only consulted when textTokensEnabled is set;
+   *  an unanswered token shows ???. */
+  textTokens?: TextTokenResolver;
   extensions?: ExtensionRuntime;
   items?: readonly Item[];
   inventory?: { maxPerItem?: number; maxKinds?: number };
@@ -2549,6 +2575,8 @@ export function createWorld(
     inventory: resolvedInventory,
     messageBlocksPlayer: options.messageBlocksPlayer === true,
     textVariables: options.textVariables === true,
+    textTokensEnabled: options.textTokensEnabled === true,
+    textTokens: options.textTokens,
     onFiberStart: options.onFiberStart,
     paginateText: options.paginateText,
     anims: animsById,
@@ -4650,13 +4678,52 @@ export function clearStaleEventAppearances(
   if (emptyRecord(appearances)) delete s.eventAppearances;
 }
 
-/** One box string with its text tokens expanded from live state. */
-function boxText(s: InterpState, w: World, text: string): string {
-  return expandTextTokens(text, s.sw.playerName ?? DEFAULT_PLAYER_NAME, w.textVariables ? s.sw.variables : null);
+/** The read-only session slice a `{x:}` token resolver sees: a deterministic
+ *  function of the state at box open (no clock, no RNG), so the expanded
+ *  modal survives saves, rewind and host-rate changes. The variable bank is
+ *  shallow-copied (its values are primitives) and the game's ext state is a
+ *  deep-frozen snapshot, so a resolver cannot mutate live state through the
+ *  view. The ext snapshot is built lazily on first read (only a resolver
+ *  that looks at view.ext pays for it). */
+function textTokenView(s: InterpState, w: World, ext: JsonValue): TextTokenView {
+  let extSnapshot: JsonValue | undefined;
+  return {
+    playerName: s.sw.playerName ?? DEFAULT_PLAYER_NAME,
+    variables: { ...s.sw.variables },
+    gold: s.sw.gold,
+    mapId: w.map.id,
+    get ext(): JsonValue {
+      if (extSnapshot === undefined) extSnapshot = frozenJsonSnapshot(ext);
+      return extSnapshot;
+    },
+  };
 }
 
-function boxLines(s: InterpState, w: World, lines: readonly string[]): string[] {
-  return expandTextLines(lines, s.sw.playerName ?? DEFAULT_PLAYER_NAME, w.textVariables ? s.sw.variables : null);
+/** One box string with its text tokens expanded from live state. */
+function boxText(s: InterpState, w: World, text: string, ext: JsonValue): string {
+  const xEnabled = w.textTokensEnabled === true;
+  const resolver = xEnabled ? (w.textTokens ?? null) : null;
+  return expandTextTokens(
+    text,
+    s.sw.playerName ?? DEFAULT_PLAYER_NAME,
+    w.textVariables ? s.sw.variables : null,
+    resolver,
+    resolver ? textTokenView(s, w, ext) : null,
+    xEnabled,
+  );
+}
+
+function boxLines(s: InterpState, w: World, lines: readonly string[], ext: JsonValue): string[] {
+  const xEnabled = w.textTokensEnabled === true;
+  const resolver = xEnabled ? (w.textTokens ?? null) : null;
+  return expandTextLines(
+    lines,
+    s.sw.playerName ?? DEFAULT_PLAYER_NAME,
+    w.textVariables ? s.sw.variables : null,
+    resolver,
+    resolver ? textTokenView(s, w, ext) : null,
+    xEnabled,
+  );
 }
 
 function runFiber(
@@ -4720,7 +4787,7 @@ function runFiber(
       // does not retype it (RPG Maker converts escapes once).
       const open = s.modal?.kind === "text"
         ? s.modal
-        : openTextModal(w, f.key, boxLines(s, w, ins.lines));
+        : openTextModal(w, f.key, boxLines(s, w, ins.lines, extension.ext));
       // The typewriter counts code points (one per drawn glyph), not UTF-16
       // units: a supplementary character is one step. Same as .length for
       // text without surrogate pairs. It types the open page only.
@@ -4776,8 +4843,8 @@ function runFiber(
         const opened: ChoiceModal = {
           kind: "choices",
           fiber: f.key,
-          prompt: boxText(s, w, ins.prompt),
-          options: ins.texts.map((text) => boxText(s, w, text)),
+          prompt: boxText(s, w, ins.prompt, extension.ext),
+          options: ins.texts.map((text) => boxText(s, w, text, extension.ext)),
           index: 0,
           cancellable: ins.cancel !== null,
         };
@@ -4832,10 +4899,15 @@ function runFiber(
           if (input.upEdge) index = (index + options.length - 1) % options.length;
           if (input.downEdge) index = (index + 1) % options.length;
         }
+        // The prompt is an open-box snapshot: expand it once when the box
+        // opens (previous === null) and keep that string while the box stays
+        // up, so a resolver runs once per open, not per tick, and a state
+        // change while the box is up does not retype it. Only the
+        // extension's dynamic rows/keys/enabled refresh.
         s.modal = {
           kind: "choices",
           fiber: f.key,
-          prompt: boxText(s, w, ins.prompt),
+          prompt: previous ? previous.prompt : boxText(s, w, ins.prompt, extension.ext),
           options: options.map((option) => option.label),
           keys: options.map((option) => option.key),
           enabled: options.map((option) => option.enabled),
@@ -5476,7 +5548,7 @@ function runFiber(
         if (s.modal) return;
         f.mode = "text";
         f.since = s.frame;
-        const firstLines = boxLines(s, w, ins.lines);
+        const firstLines = boxLines(s, w, ins.lines, extension.ext);
         s.modal = openTextModal(w, f.key, firstLines);
         return;
       case "choices": {
@@ -5486,8 +5558,8 @@ function runFiber(
         const opened: ChoiceModal = {
           kind: "choices",
           fiber: f.key,
-          prompt: boxText(s, w, ins.prompt),
-          options: ins.texts.map((text) => boxText(s, w, text)),
+          prompt: boxText(s, w, ins.prompt, extension.ext),
+          options: ins.texts.map((text) => boxText(s, w, text, extension.ext)),
           index: 0,
           cancellable: ins.cancel !== null,
         };
@@ -5509,7 +5581,7 @@ function runFiber(
         s.modal = {
           kind: "choices",
           fiber: f.key,
-          prompt: boxText(s, w, ins.prompt),
+          prompt: boxText(s, w, ins.prompt, extension.ext),
           options: options.map((option) => option.label),
           keys: options.map((option) => option.key),
           enabled: options.map((option) => option.enabled),

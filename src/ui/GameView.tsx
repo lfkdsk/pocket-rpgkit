@@ -67,6 +67,7 @@ import {
   type CompiledAnim,
   type EventAppearanceState,
   type Modal,
+  type TextTokenResolver,
   type TimerState,
 } from "../engine/interpreter.ts";
 import type {
@@ -853,6 +854,12 @@ export interface GameViewProps {
   scenes?: Record<string, SceneRules>;
   /** Full-screen scenes freeze map simulation unless explicitly enabled. */
   scene?: SceneOptions;
+  /** Resolver for `{x:<key>}` text tokens, forwarded to createSession()
+   *  for both live play and the attract/demo controller, so a demo, a
+   *  rewind and a re-fold expand text identically. Called once per token
+   *  when a box opens; must be a pure function of the view. Only consulted
+   *  when the project declares `system.textTokens`. */
+  textTokens?: TextTokenResolver;
   /** Full-screen renderer used while SessionState.scene is a battle. Its
    * only inputs are reducer state and the live logical resolution. */
   battleScene?: BattleSceneComponent;
@@ -1084,6 +1091,7 @@ export function GameView(props: GameViewProps) {
         scene: props.scene,
         immutableState: props.immutableState,
         paginateText,
+        textTokens: props.textTokens,
         worldTraversal: props.attractTape !== undefined
           ? props.attractTapeWorldTraversal ?? "legacy-transfer"
           : project.worldTraversal,
@@ -1101,6 +1109,7 @@ export function GameView(props: GameViewProps) {
         scene: props.scene,
         immutableState: props.immutableState,
         paginateText,
+        textTokens: props.textTokens,
         handoff: worldRenderer?.handoff,
       });
   startupProfileMark("game-view:session");

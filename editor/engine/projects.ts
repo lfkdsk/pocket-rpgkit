@@ -58,6 +58,7 @@ export const PROJECT_SCHEMA: Record<string, unknown> = {
       "properties": {
         "messageBlocksPlayer": { "type": "boolean", "description": "While any fiber's text or choices box is open (a parallel page's included), the player cannot move and no action, playerTouch or eventTouch page starts; autorun and parallel pages keep running. Default false." },
         "textVariables": { "type": "boolean", "description": "Expand {v:<id>} tokens in text lines and choice prompts/rows with the live value of variable id (0 when unset). Default false: braces show verbatim." },
+        "textTokens": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "Allowlist of {x:<key>} text-token keys the game's session resolver answers. Declaring it makes rpgkit-check warn on any {x:} key not listed; omit it to skip the check. Tokens are resolved at box open by the game's SessionOptions.textTokens function; an unanswered token shows ???." },
         "mapNameDisplay": { "type": "boolean", "description": "Show MapDef.name in the built-in banner on map entry. Default false." },
         "inventory": {
           "type": "object",

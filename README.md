@@ -954,6 +954,27 @@ wraps and pages the expanded text. The option is off by default so text
 written before the token existed keeps its braces; `rpgkit-check` warns
 (`lint/text-variable-token-off`) when a project uses `{v:` without it.
 
+A project that declares `system.textTokens` (the list of keys its resolver
+answers) may also use `{x:<key>}` tokens; a session then registers a
+resolver (`SessionOptions.textTokens`, a `(key, view) => string | undefined`
+function) and the token expands to the resolver's answer for `key`. The
+declaration is the explicit opt-in, like `textVariables`: a project without
+it keeps the pre-`{x:}` behavior and its braces print verbatim, so old
+documents are unchanged. The `view` is a read-only slice of the session at
+box open — the player's name, the variable bank, gold, the current map id
+and a frozen snapshot of the game's own `ext` state — and the resolver must
+be a pure function of it (no clock, randomness or mutation), so the
+expanded text survives saves, rewind and host-rate changes. A token no
+resolver answers (no resolver registered, or it returns `undefined`)
+shows `???`. `{x:}` expands in the same single left-to-right pass as
+`{name}`/`{v:}`, once when the box opens; an `extChoice` prompt keeps its
+opened snapshot while the box stays up (only its extension rows refresh).
+Projects that never declare `system.textTokens` pay nothing, and sessions
+without a resolver keep the pre-`{x:}` path. `rpgkit-check` warns
+(`lint/text-token-off`) when a project uses `{x:}` without the declaration,
+and (`lint/text-token-unknown`) on any `{x:}` key not listed once it is
+declared.
+
 Every timed screen command uses virtual seconds and has optional `wait`.
 Waiting parks only the issuing fiber while other event fibers and the map keep
 running. `screenFade` holds a completed fade-out until a later fade-in;

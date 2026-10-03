@@ -311,8 +311,10 @@ export interface TransferHandoff {
 }
 
 export type Command =
-  /** Lines may hold `{name}` (the player's name) and, when the project sets
-   *  `system.textVariables`, `{v:<id>}` (variable `id`'s value). Tokens are
+  /** Lines may hold `{name}` (the player's name), and, when the project sets
+   *  `system.textVariables`, `{v:<id>}` (variable `id`'s value). A project
+   *  that declares `system.textTokens` may also use `{x:<key>}`, answered by
+   *  the session's resolver (see SessionOptions.textTokens). Tokens are
    *  expanded when the box opens. */
   | { op: "text"; lines: string[]; cps?: number }
   | {
@@ -970,6 +972,14 @@ export interface ProjectSystem {
    *  live value of variable `id` (0 when unset). Off by default, so text
    *  authored before the token existed keeps showing its braces verbatim. */
   textVariables?: boolean;
+  /** Allowlist of `{x:<key>}` text-token keys the game's session resolver
+   *  answers. Declaring it is the explicit opt-in that switches `{x:}`
+   *  expansion on (like `textVariables`): without it the braces print
+   *  verbatim, so text authored before the token existed is unchanged. With
+   *  it, `rpgkit-check` warns on any `{x:}` key not listed; the resolver
+   *  itself is code-side (`SessionOptions.textTokens`), so the checker
+   *  cannot see it; an unanswered token shows `???` at runtime. */
+  textTokens?: string[];
   /** Show MapDef.name in the built-in banner on map entry. Default false so
    * projects authored before the banner keep byte/pixel-identical output. */
   mapNameDisplay?: boolean;

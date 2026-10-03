@@ -402,10 +402,26 @@ have when the save was taken.
 
 `player-name.ts` expands `{name}` and, when `World.textVariables` is set
 from `project.system.textVariables`, `{v:<id>}` in one left-to-right pass
-that never rescans its output. The interpreter expands a text box's lines
-and a choice box's prompt and rows once, when the box opens; while it stays
-up the modal keeps those strings, so the typewriter total, the reveal and
-the dialog's wrapping all work on the expanded text.
+that never rescans its output. A world whose project declares
+`system.textTokens` (the key allowlist) may also carry a `textTokens`
+resolver (from `SessionOptions.textTokens`): `{x:<key>}` then expands to
+the resolver's answer for `key`, handed a read-only view of the state at
+box open (player name, variables, gold, map id, and a frozen snapshot of
+the game's own `ext` state, built only if the resolver reads it). The
+declaration is the explicit opt-in: a world without it takes the pre-`{x:}`
+path and the braces print verbatim. The resolver must be a pure function of
+that view — the expanded strings enter the modal and have to survive
+saves, rewind and rate changes. An unanswered token (no resolver, or
+`undefined`) shows `???`. The interpreter expands a text box's lines and a
+choice box's prompt and rows once, when the box opens; while it stays up
+the modal keeps those strings, so the typewriter total, the reveal and the
+dialog's wrapping all work on the expanded text. An `extChoice` prompt is
+expanded once too, when its box opens: while the box stays up the modal
+keeps that prompt and only the extension's dynamic rows, keys and enabled
+flags refresh, so the resolver runs once per open, not per tick. A line
+with no `{x:}`, a session with no resolver and a project without the
+declaration all take the pre-`{x:}` path, so games that never use the
+token pay nothing.
 
 ## P1④ session (multi-map) fold
 

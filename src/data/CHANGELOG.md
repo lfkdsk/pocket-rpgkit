@@ -39,6 +39,7 @@ under the row's schema.
 
 | Identity | Change | Older |
 | --- | --- | --- |
+| `c0e962138a1f12dc5627590869b99f7c9b2ced3040e3d05ed0ebd663142d4857` | optional `system.textTokens` — declaring it is the explicit opt-in that switches `{x:<key>}` text-token expansion on (the allowlist of keys the game's session resolver answers); a document without it keeps the pre-`{x:}` literal behavior | additive |
 | `3315cbf7af3ceb5f6690824bf7fe0d0d7ac90f080fd741c7e24159a2b3e99ddb` | optional label `ord` (the label's position in the original flat RPG Maker source list, so a `jumpLabel` resolves the first label in source order even when the importer reordered branches) | additive |
 | `1b66bce2dff2f3f8476a9dcc3212ee826053447c5a7683c9942adbcfd122fc12` | optional map `tiles` (four raw RPG Maker tile layers for Get Location Info), optional item `kind` (weapon/armor), `locationInfo` layer 0..3 | additive |
 | `3a57e757f9f5d4f3da13529cd376ceb8ef50a354a3a618e45a8fa41641b84562` | the merged KRM3 and KRM3V batches together: `label`/`jumpLabel`, `selectItem`, `menuAccess`/`saveAccess`, `locationInfo`, `stopSe`, the `region` condition, map `regions`/`terrain` and item `type`, plus map parallax/`changeParallax` and animation sound/flash timings | additive |

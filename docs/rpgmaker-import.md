@@ -139,7 +139,7 @@ for that project, to `coverage.md`.
 <!-- rpgmaker-commands:begin -->
 | Code | Command | Flavor | Handling | Notes | Needs kit |
 |---:|---|---|---|---|---|
-| 101 | Show Text | MV/MZ | Native |  | face graphics per message (portrait keyed by file/index, not speaker) |
+| 101 | Show Text | MV/MZ | Native |  | face graphics per message (portrait keyed by file/index, not speaker); \N[n]/\P[n] for n > 1 (other party members) — map to {x:<key>} with a session resolver or a future kit token |
 | 102 | Show Choices | MV/MZ | Native |  | single-option lists and a default cursor row |
 | 103 | Input Number | MV/MZ | Native |  |  |
 | 104 | Select Item | MV/MZ | Native |  |  |
@@ -283,7 +283,10 @@ constructs. Of note:
   expanded from live state when the text or choice opens. Expansion is one
   pass; RPG Maker plugin-written strings containing another `\V` are not
   recursively expanded. Colour, icon, font-size and timing codes are
-  stripped.
+  stripped. `\N[n]`/`\P[n]` for `n > 1` (other party members) have no kit
+  token yet: map them to `{x:<key>}` once the game ships a
+  `SessionOptions.textTokens` resolver, or leave them for a future kit
+  token.
 - **Parallaxes**: `parallaxName`, both loop flags, signed `parallaxSx/Sy`,
   editor visibility and the leading-`!` zero-camera convention become the
   map's authored parallax. Change Parallax (284) replaces or clears the same

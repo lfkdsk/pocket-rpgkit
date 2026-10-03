@@ -111,7 +111,12 @@ empty choices, and static map reachability. With `system.textVariables` on,
 every `{v:<id>}` token in a `text` line, a `choices` prompt or option, or an
 `extChoice` prompt counts as a read of variable `id` (so the variable is not a
 dead write, and an id nothing sets is reported as
-`lint/variable-read-never-set`). `summary` adds `maps`, `events`, `pages`,
+`lint/variable-read-never-set`). With a declared `system.textTokens`
+allowlist, every `{x:<key>}` token in the same places must be listed (the
+resolver itself is code-side and invisible to the check); an unlisted key is
+`lint/text-token-unknown`. The declaration is also the runtime opt-in that
+switches `{x:}` expansion on, so a token used without it prints verbatim and
+is reported as `lint/text-token-off`. `summary` adds `maps`, `events`, `pages`,
 `commands`, and per-severity counts. A missing id in a declared
 `project.audio` table is retained as an `audio-missing` warning with its
 exact command location. It is not an error because a project may
@@ -366,6 +371,8 @@ prerequisite is a thrown error (exit 2).
 | `lint/map-unreachable` | warning | no sequence of literal-id transfers reaches the map from the start map | dynamic transfers can still reach it; add a transfer path or remove the map |
 | `lint/choices-empty` | error or warning | a choices modal with no options and no cancel (error), or empty branches (warning) | add an option or a cancel branch; give branches commands or remove them |
 | `lint/text-variable-token-off` | warning | a `text` line, `choices` prompt/option, or `extChoice` prompt holds a `{v:<id>}` token but `system.textVariables` is off, so the braces print verbatim | set `project.system.textVariables` to `true`, or remove the token |
+| `lint/text-token-unknown` | warning | a `text` line, `choices` prompt/option, or `extChoice` prompt holds a `{x:<key>}` token not listed in `system.textTokens` | add the key to `project.system.textTokens`, or fix the token; only reported when the allowlist is declared, and an unanswered token shows `???` at runtime |
+| `lint/text-token-off` | warning | a `text` line, `choices` prompt/option, or `extChoice` prompt holds a `{x:<key>}` token but `system.textTokens` is not declared, so the braces print verbatim | declare `project.system.textTokens` (the keys the session resolver answers) to expand the token, or remove it |
 | `lint/break-outside-loop` | info | a `break` is not inside any `loop` body (a `break` does not cross a `common` call) | legal (RPG Maker parity): it ends the current page or common event; keep it as an early exit or wrap the commands it should leave in a `loop` |
 | `lint/scene-id` | info | a scene id is used by the document but has no registration in it | scene rules are code-side (`SessionOptions.scenes`); register `SceneRules` for it (the kit ships `nameInputRules` / `rpgkit.nameInput` and `numberInputRules` / `rpgkit.numberInput`) or fix the id — an unregistered explicit `scene` id throws at session startup, while `inputNumber` likewise requires its pair before execution reaches it |
 

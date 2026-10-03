@@ -174,6 +174,25 @@ export function textVariableIds(text: string): string[] {
   return [...text.matchAll(TEXT_VARIABLE_TOKEN)].map((m) => m[1]!);
 }
 
+/** `{x:<key>}` text tokens (src/engine/player-name.ts): the key runs to the
+ *  next closing brace. */
+const TEXT_X_TOKEN = /\{x:([^{}]*)\}/g;
+
+/** The `{x:<key>}` token keys in `text`, de-duplicated in first-seen order. */
+export function textTokenKeys(text: string): string[] {
+  if (!text.includes("{x:")) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of text.matchAll(TEXT_X_TOKEN)) {
+    const key = m[1]!;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out;
+}
+
 /** The player-visible strings of one command that the runtime expands
  *  tokens in: text lines, a choices prompt and its option rows, an
  *  extChoice prompt (its rows come from the extension at runtime). */
@@ -206,6 +225,12 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
   const mapIds = new Set(project.maps.map((m) => m.id));
   const commonIds = new Set((project.commonEvents ?? []).map((c) => c.id));
   const textVariables = project.system?.textVariables === true;
+  // A declared allowlist is the explicit {x:} opt-in: it switches runtime
+  // expansion on and the key check on; an absent field means {x:…} prints
+  // verbatim (the pre-{x:} behavior), which the off-warning below reports.
+  const textTokenAllowlist = project.system?.textTokens
+    ? new Set(project.system.textTokens)
+    : null;
 
   const switches = new Map<string, Usage>();
   const variables = new Map<string, Usage>();
@@ -324,6 +349,33 @@ export function lintProject(project: Project, schemaErrors: readonly Finding[] =
             cloc,
           ));
         }
+      }
+      // `{x:<key>}` tokens: the resolver is code-side, so with a declared
+      // system.textTokens allowlist each key must be listed; without a
+      // declaration the token prints verbatim and the project likely forgot
+      // the opt-in. One finding per unknown/off key per command (a key on
+      // several lines counts once).
+      const xKeys = new Set(commandTexts(command).flatMap(textTokenKeys));
+      if (textTokenAllowlist) {
+        for (const key of xKeys) {
+          if (!textTokenAllowlist.has(key)) {
+            findings.push(makeFinding(
+              "lint/text-token-unknown",
+              "warning",
+              `${command.op} text holds {x:${key}} but project.system.textTokens does not list it`,
+              "add the key to project.system.textTokens, or fix the token; an unanswered token shows ??? at runtime",
+              cloc,
+            ));
+          }
+        }
+      } else if (xKeys.size > 0) {
+        findings.push(makeFinding(
+          "lint/text-token-off",
+          "warning",
+          `${command.op} text holds ${[...xKeys].map((key) => `{x:${key}}`).join(", ")} but project.system.textTokens is not declared, so the token prints verbatim`,
+          "declare project.system.textTokens (the keys the session resolver answers) to expand {x:<key>}, or remove the token",
+          cloc,
+        ));
       }
       switch (command.op) {
         case "switch":

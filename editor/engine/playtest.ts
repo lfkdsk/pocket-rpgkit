@@ -211,7 +211,10 @@ interface CommandScan {
   textVariables?: boolean;
 }
 
-/** Same token grammar as the runtime's expandTextTokens (src/engine/player-name.ts). */
+/** {v:<id>} token grammar (the runtime's expandTextTokens in
+ * src/engine/player-name.ts also expands {x:} keys, but those are answered
+ * by game-side session code and name no project entity, so the playtest
+ * scanner tracks {v:} only). */
 const TEXT_VARIABLE_TOKEN = /\{v:([^{}]*)\}/g;
 
 function addTextVariables(value: string, scan: CommandScan): void {
