@@ -169,10 +169,13 @@ const maybeTest = preflight.ok ? test : test.skip;
 // frozen ext snapshot built only when a token expands) add 2,319, 2,428 and
 // 2,428 shared bytes: 589,555, 943,366 and 744,619. Without
 // system.textTokens the expansion path never runs.
+// PocketJS upstream #514 replaces sparse touch-recorder arrays with packed,
+// releasable pages in the always-reachable DevTools wrapper. That shared host
+// code adds 2,020 bytes to each bundle: 591,575, 945,386 and 746,639.
 // Re-measure after every shared-path change.
-const EXPECTED_MEADOW_BYTES = 589_555;
-const EXPECTED_SUNSTONE_QOA_BYTES = 943_366;
-const EXPECTED_WAV_FIXTURE_BYTES = 744_619;
+const EXPECTED_MEADOW_BYTES = 591_575;
+const EXPECTED_SUNSTONE_QOA_BYTES = 945_386;
+const EXPECTED_WAV_FIXTURE_BYTES = 746_639;
 
 const HOST_AUDIO_NEEDLES = [
   "// src/ui/audio/driver.ts",

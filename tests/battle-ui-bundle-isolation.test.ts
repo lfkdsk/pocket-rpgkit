@@ -177,8 +177,9 @@ const maybeTest = preflight.ok ? test : test.skip;
 // performance work (entry-page dependency cache, effective-sprite page keys,
 // stable extension condition keys, deferred seamless eviction) brings it to
 // 940,938 (+6,971). The opt-in {x:} text-token wiring brings it to
-// 943,366 (+2,428).
-const EXPECTED_BYTES = 943_366;
+// 943,366 (+2,428). PocketJS upstream #514's packed, releasable touch-recorder
+// pages add 2,020 shared DevTools bytes, bringing it to 945,386.
+const EXPECTED_BYTES = 945_386;
 
 describe("KB4 does not reach games that never opt into battle", () => {
   maybeTest("sunstone's built bundle size is pinned", () => {
